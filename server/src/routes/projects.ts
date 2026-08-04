@@ -1035,7 +1035,9 @@ export function projectRoutes(db: Db) {
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
-    const project = await svc.remove(id);
+    const project = await svc.remove(id, {
+      deleteFiles: req.query.deleteFiles === "true" || req.query.deleteFiles === "1",
+    });
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
