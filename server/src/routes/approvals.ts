@@ -7,6 +7,7 @@ import {
   requestApprovalRevisionSchema,
   resolveApprovalSchema,
   resubmitApprovalSchema,
+  secretOperationPayloadSchema,
 } from "@paperclipai/shared";
 import { validate } from "../middleware/validate.js";
 import { logger } from "../middleware/logger.js";
@@ -240,14 +241,30 @@ export function approvalRoutes(
       : [];
     const uniqueIssueIds = Array.from(new Set(issueIds));
     const { issueIds: _issueIds, ...approvalInput } = req.body;
-    const normalizedPayload =
-      approvalInput.type === "hire_agent"
-        ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
-            companyId,
-            approvalInput.payload,
-            { strictMode: strictSecretsMode },
-          )
-        : approvalInput.payload;
+    let normalizedPayload = approvalInput.payload;
+    if (approvalInput.type === "hire_agent") {
+      normalizedPayload = await secretsSvc.normalizeHireApprovalPayloadForPersistence(
+        companyId,
+        approvalInput.payload,
+        { strictMode: strictSecretsMode },
+      );
+    } else if (approvalInput.type === "secret_operation") {
+      // Strict: an approved row is executed verbatim, so validate it now rather
+      // than at approve time, when the board has already made a decision.
+      const parsedSecretOperation = secretOperationPayloadSchema.safeParse(approvalInput.payload);
+      if (!parsedSecretOperation.success) {
+        res.status(422).json({
+          error: "Invalid secret_operation payload",
+          // Shape only — never echo the submitted payload back.
+          details: parsedSecretOperation.error.issues.map((issue) => ({
+            path: issue.path.join(".") || "(root)",
+            code: issue.code,
+          })),
+        });
+        return;
+      }
+      normalizedPayload = parsedSecretOperation.data;
+    }
 
     const actor = getActorInfo(req);
     const approval = await svc.create(companyId, {
@@ -301,7 +318,11 @@ export function approvalRoutes(
       return;
     }
     const decidedByUserId = req.actor.userId ?? "board";
-    const { approval, applied } = await svc.approve(id, decidedByUserId, req.body.decisionNote);
+    const { approval, applied, secretOperation } = await svc.approve(
+      id,
+      decidedByUserId,
+      req.body.decisionNote,
+    );
 
     if (applied) {
       const linkedIssues = await issueApprovalsSvc.listIssuesForApproval(approval.id);
@@ -406,7 +427,23 @@ export function approvalRoutes(
       });
     }
 
-    res.json(redactApprovalPayload(approval));
+    // A decision that was recorded but not carried out must not read as success.
+    // The wake and the activity/issue trail above have already run, so the
+    // requester still hears about it; this makes the board hear about it too.
+    if (secretOperation && !secretOperation.ok) {
+      res.status(500).json({
+        error: "Approval recorded, but the approved secret operation failed",
+        approval: redactApprovalPayload(approval),
+        secretOperation,
+      });
+      return;
+    }
+
+    res.json(
+      secretOperation
+        ? { ...redactApprovalPayload(approval), secretOperation }
+        : redactApprovalPayload(approval),
+    );
   });
 
   router.post("/approvals/:id/reject", validate(resolveApprovalSchema), async (req, res) => {

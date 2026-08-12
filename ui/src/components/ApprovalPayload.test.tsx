@@ -17,6 +17,18 @@ describe("approvalLabel", () => {
       }),
     ).toBe("Board Approval: Reply with an ASCII frog");
   });
+
+  it("labels a secret operation from its free-text title", () => {
+    // The board has to read what it is authorizing: the server executes a
+    // `secret_operation` the moment it is approved.
+    expect(
+      approvalLabel("secret_operation", {
+        op: "delete",
+        targetId: "7d2e9a41-6b3c-4f5d-8e19-2a4b6c8d0e1f",
+        title: "Delete the superseded gateway token",
+      }),
+    ).toBe("Secret Operation: Delete the superseded gateway token");
+  });
 });
 
 describe("ApprovalPayloadRenderer", () => {
