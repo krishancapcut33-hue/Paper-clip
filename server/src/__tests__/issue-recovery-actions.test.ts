@@ -2142,6 +2142,60 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     );
   });
 
+  it("names the working resolve route and body when the resolve body is malformed", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:fingerprint",
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const res = await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      // The body shape agents guess from the issue-disposition routes.
+      .send({ action: "mark_done", comment: "Verified the work is complete." })
+      .expect(400);
+    const issuesFromBody = res.body.details as { message: string }[];
+    expect(issuesFromBody.map((issue) => issue.message).join("\n")).toContain(
+      "POST /api/issues/{issueId}/recovery-actions/resolve",
+    );
+  });
+
+  it("returns actionable details when the action id is not the active action", async () => {
+    const { companyId, managerId, sourceIssueId } = await seedCompany();
+    const action = await issueRecoveryActionService(db).upsertSourceScoped({
+      companyId,
+      sourceIssueId,
+      kind: "missing_disposition",
+      ownerType: "agent",
+      ownerAgentId: managerId,
+      cause: "successful_run_missing_issue_disposition",
+      fingerprint: "missing-disposition:fingerprint",
+      nextAction: "Choose a valid issue disposition.",
+      wakePolicy: { type: "wake_owner" },
+    });
+    const res = await request(createApp())
+      .post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
+      .send({
+        actionId: randomUUID(),
+        outcome: "restored",
+        sourceIssueStatus: "todo",
+        resolutionNote: "Agent supplied a stale action id from an earlier read.",
+      })
+      .expect(404);
+    expect(res.body.details).toMatchObject({
+      route: "POST /api/issues/{issueId}/recovery-actions/resolve",
+      issueId: sourceIssueId,
+      activeRecoveryActionId: action.id,
+      reason: "action_id_does_not_match_active_recovery_action",
+    });
+  });
+
   it.each(["ask_user_questions", "request_confirmation"] as const)("does not retry past a new pending %s", async (kind) => {
     const { companyId, coderId, sourceIssueId } = await seedCompany();
     await db.update(issues).set({ status: "blocked", assigneeAgentId: coderId }).where(eq(issues.id, sourceIssueId));

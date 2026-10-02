@@ -21,9 +21,9 @@ import {
   rejectSteeredIdentity,
 } from "../services/run-identity.js";
 import { createHash, randomUUID } from "node:crypto";
-import { Router, type Request, type Response } from "express";
+import { Router, type NextFunction, type Request, type Response } from "express";
 import multer from "multer";
-import { z } from "zod";
+import { z, ZodError } from "zod";
 import {
   and,
   asc,
@@ -9048,6 +9048,57 @@ export function issueRoutes(
     res.json({ ok: true });
   });
 
+  // Agents guess at recovery-action paths constantly (company-scoped,
+  // action-scoped, `/complete`, PATCH) and read the bare 404 as "the endpoint
+  // does not exist", then abandon a well-formed resolve payload. Every 404 and
+  // every 400 out of this route family names the route and body that work.
+  const RECOVERY_ACTION_RESOLVE_HINT =
+    "Resolving a recovery action is POST /api/issues/{issueId}/recovery-actions/resolve, where " +
+    "{issueId} is the issue UUID or its identifier (AUT-1234). There is no company-scoped or " +
+    "action-scoped resolve route and no PATCH variant. Read the active action first with " +
+    "GET /api/issues/{issueId}/recovery-actions and pass its id as `actionId`.";
+
+  function recoveryActionRouteDetails(extra?: Record<string, unknown>) {
+    return {
+      route: "POST /api/issues/{issueId}/recovery-actions/resolve",
+      discoverActiveAction: "GET /api/issues/{issueId}/recovery-actions",
+      requestBody: {
+        actionId: "uuid of the active recovery action (optional; returned by the discover call)",
+        outcome: "restored | false_positive | blocked | cancelled",
+        sourceIssueStatus: "todo | done | in_review | blocked",
+        resolutionNote: "free text diagnosis of the cause (preserved on the action row)",
+        statusRules:
+          "restored -> sourceIssueStatus todo|done|in_review; blocked -> blocked; " +
+          "false_positive|cancelled -> done|in_review",
+      },
+      hint: RECOVERY_ACTION_RESOLVE_HINT,
+      ...extra,
+    };
+  }
+
+  // Same contract as validate(), but the 400 carries the route that works, since
+  // a body with the wrong keys is the other way agents guess the contract.
+  function validateRecoveryActionResolveBody() {
+    return (req: Request, _res: Response, next: NextFunction) => {
+      try {
+        req.body = resolveIssueRecoveryActionSchema.parse(req.body);
+      } catch (err) {
+        if (err instanceof ZodError) {
+          throw badRequest("Validation error", [
+            ...err.issues,
+            {
+              code: z.ZodIssueCode.custom,
+              message: RECOVERY_ACTION_RESOLVE_HINT,
+              path: [],
+            },
+          ]);
+        }
+        throw err;
+      }
+      next();
+    };
+  }
+
   router.get("/issues/:id/recovery-actions", async (req, res) => {
     const id = req.params.id as string;
     const issue = await getAccessibleResource(
@@ -9083,7 +9134,7 @@ export function issueRoutes(
 
   router.post(
     "/issues/:id/recovery-actions/resolve",
-    validate(resolveIssueRecoveryActionSchema),
+    validateRecoveryActionResolveBody(),
     async (req, res) => {
       const id = req.params.id as string;
       const existing = await getAccessibleResource(
@@ -9220,7 +9271,21 @@ export function issueRoutes(
           !activeRecoveryAction ||
           (actionId && activeRecoveryAction.id !== actionId)
         ) {
-          throw notFound("Active recovery action not found");
+          throw notFound(
+            "Active recovery action not found",
+            recoveryActionRouteDetails({
+              issueId: lockedIssue.id,
+              identifier: lockedIssue.identifier,
+              requestedActionId: actionId ?? null,
+              activeRecoveryActionId: activeRecoveryAction?.id ?? null,
+              reason: activeRecoveryAction
+                ? "action_id_does_not_match_active_recovery_action"
+                : "no_active_recovery_action",
+              alreadySettledHint:
+                "A resolve that timed out at the gateway may already have committed. Re-read the " +
+                "recovery action; a settled action is not an error and needs no second resolve.",
+            }),
+          );
         }
         await requireRecoveryActionAuthority(
           req,
@@ -9532,7 +9597,19 @@ export function issueRoutes(
           },
           tx,
         );
-        if (!recoveryAction) throw notFound("Active recovery action not found");
+        if (!recoveryAction)
+          throw notFound(
+            "Active recovery action not found",
+            recoveryActionRouteDetails({
+              issueId: existing.id,
+              identifier: existing.identifier,
+              requestedActionId: activeRecoveryAction.id,
+              reason: "recovery_action_settled_concurrently",
+              alreadySettledHint:
+                "Another resolve committed while this one waited on the issue lock. That resolve " +
+                "is the one that counts; re-read the recovery action instead of retrying.",
+            }),
+          );
 
         return { issue, recoveryAction, chatRetry };
       });

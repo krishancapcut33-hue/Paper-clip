@@ -8,7 +8,11 @@ import { emailChannelService } from "./services/email-channels.js";
 import { emailRoutes, emailWebhookRoutes } from "./routes/email.js";
 import { toolActionDeliveryService } from "./services/tool-action-delivery.js";
 import { registerAssignedMcpGateway } from "./services/native-runtime/assigned-mcp-tools.js";
-import express, { Router, type Request as ExpressRequest } from "express";
+import express, {
+  Router,
+  type Request as ExpressRequest,
+  type Response as ExpressResponse,
+} from "express";
 import {
   createServer as createHttpServer,
   type Server as HttpServer,
@@ -457,6 +461,40 @@ export function createManagedBundledPluginWorkerRecovery(input: {
     }
   };
 }
+
+// A bare 404 on the recovery-action family reads to an agent as "the endpoint
+// does not exist", so the well-formed resolve payload it already composed is
+// thrown away. Name the route that works instead. Exported so it can be mounted
+// in isolation by tests.
+export const recoveryActionNotFoundGuidance = (
+  req: ExpressRequest,
+  res: ExpressResponse,
+) => {
+  if (/recovery-actions/.test(req.path)) {
+    res.status(404).json({
+      error: "API route not found",
+      details: {
+        requestedPath: req.originalUrl,
+        route: "POST /api/issues/{issueId}/recovery-actions/resolve",
+        discoverActiveAction: "GET /api/issues/{issueId}/recovery-actions",
+        requestBody: {
+          actionId: "uuid of the active recovery action (optional; returned by the discover call)",
+          outcome: "restored | false_positive | blocked | cancelled",
+          sourceIssueStatus: "todo | done | in_review | blocked",
+          resolutionNote: "free text diagnosis of the cause (preserved on the action row)",
+        },
+        hint:
+          "Recovery actions are always scoped to a single issue, so there is no " +
+          "/api/companies/{companyId}/recovery-actions route, no action-scoped " +
+          "/api/recovery-actions/{actionId}/resolve route, and no PATCH variant. Use " +
+          "POST /api/issues/{issueId}/recovery-actions/resolve with {issueId} = the issue UUID " +
+          "or its identifier (AUT-1234).",
+      },
+    });
+    return;
+  }
+  res.status(404).json({ error: "API route not found" });
+};
 
 export async function createApp(
   db: Db,
@@ -960,9 +998,7 @@ export async function createApp(
     }),
   );
   app.use("/api", api);
-  app.use("/api", (_req, res) => {
-    res.status(404).json({ error: "API route not found" });
-  });
+  app.use("/api", recoveryActionNotFoundGuidance);
   app.use(
     pluginUiStaticRoutes(db, {
       localPluginDir: opts.localPluginDir ?? DEFAULT_LOCAL_PLUGIN_DIR,
