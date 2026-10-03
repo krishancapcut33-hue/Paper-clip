@@ -2640,6 +2640,13 @@
       "when": 1793041667443,
       "tag": "0378_environment_skill_runtime_hooks",
       "breakpoints": true
+    },
+    {
+      "idx": 379,
+      "version": "7",
+      "when": 1793041667444,
+      "tag": "0379_resumable_project_deletion",
+      "breakpoints": true
     }
   ]
 }
