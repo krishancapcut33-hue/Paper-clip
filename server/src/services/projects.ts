@@ -1141,6 +1141,9 @@ export function projectService(
         await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
         await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        if (project.status === "deleting" && !removeOptions.deletionClaimToken) {
+          throw conflict("Project deletion is already in progress. Retry the requested deletion.");
+        }
         if (removeOptions.deletionClaimToken) {
           if (
             project.status !== "deleting" ||
