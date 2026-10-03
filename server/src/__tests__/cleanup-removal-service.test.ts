@@ -311,7 +311,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   });
 
   it("deletes project-managed files only when explicitly requested", async () => {
-    const { companyId, projectId, workspaceCwd } = await seedProjectFixture();
+    const { companyId, projectId } = await seedProjectFixture();
     const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
 
     const removed = await projectService(db, { removeManagedFiles }).remove(projectId, {
@@ -321,7 +321,6 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removeManagedFiles).toHaveBeenCalledWith({
       companyId,
       projectId,
-      workspaceCwds: [workspaceCwd],
     });
     expect(removed?.fileCleanup).toBe("succeeded");
   });
