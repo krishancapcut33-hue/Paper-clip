@@ -1128,7 +1128,10 @@ export function projectService(
       return cleared;
     },
 
-    remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
+    remove: async (
+      id: string,
+      removeOptions: { deleteFiles?: boolean; deletionClaimToken?: string | null } = {},
+    ) => {
       const result = await db.transaction(async (tx) => {
         const project = await lockProjectRootMutation(tx, id);
         if (!project) return { row: null, workspaceCwds: [] };
@@ -1138,13 +1141,37 @@ export function projectService(
         await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
         await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);
+        if (removeOptions.deletionClaimToken) {
+          if (
+            project.status !== "deleting" ||
+            project.deletionClaimToken !== removeOptions.deletionClaimToken ||
+            !project.deletionClaimExpiresAt ||
+            project.deletionClaimExpiresAt.getTime() <= Date.now()
+          ) {
+            throw conflict("Project deletion claim expired. Retry the deletion.");
+          }
+        }
         const workspaceRows = removeOptions.deleteFiles
           ? await tx
               .select({ cwd: projectWorkspaces.cwd })
               .from(projectWorkspaces)
               .where(eq(projectWorkspaces.projectId, id))
           : [];
-        const rows = await tx.delete(projects).where(eq(projects.id, id)).returning();
+        const rows = await tx
+          .delete(projects)
+          .where(
+            removeOptions.deletionClaimToken
+              ? and(
+                  eq(projects.id, id),
+                  eq(projects.deletionClaimToken, removeOptions.deletionClaimToken),
+                  gt(projects.deletionClaimExpiresAt, new Date()),
+                )
+              : eq(projects.id, id),
+          )
+          .returning();
+        if (rows.length === 0 && removeOptions.deletionClaimToken) {
+          throw conflict("Project deletion claim expired. Retry the deletion.");
+        }
         return {
           row: rows[0] ?? null,
           workspaceCwds: workspaceRows

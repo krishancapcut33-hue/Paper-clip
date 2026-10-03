@@ -1,6 +1,6 @@
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
 import { activityLog, executionWorkspaces, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { museExternalAgents, withExternalExecutionAdmission } from "../modules/external-agents/index.js";
@@ -1114,6 +1114,9 @@ export function projectRoutes(db: Db) {
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
     const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
     let deletionClaimToken: string | null = null;
+    let claimLost = false;
+    let renewal: ReturnType<typeof setInterval> | null = null;
+    let renewalInFlight: Promise<void> | null = null;
     if (deleteFiles) {
       assertBoard(req);
       const claimToken = randomUUID();
@@ -1143,26 +1146,38 @@ export function projectRoutes(db: Db) {
         res.status(409).json({ error: "Project deletion is already in progress." });
         return;
       }
-      let claimLost = false;
-      const renewal = setInterval(() => {
-        void db
+      renewal = setInterval(() => {
+        if (renewalInFlight) return;
+        renewalInFlight = db
           .update(projects)
           .set({ deletionClaimExpiresAt: new Date(Date.now() + PROJECT_DELETION_CLAIM_TTL_MS) })
-          .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, claimToken)))
+          .where(and(
+            eq(projects.id, existing.id),
+            eq(projects.deletionClaimToken, claimToken),
+            gt(projects.deletionClaimExpiresAt, new Date()),
+          ))
           .returning({ id: projects.id })
           .then((rows) => { if (rows.length === 0) claimLost = true; })
-          .catch(() => { claimLost = true; });
+          .catch(() => { claimLost = true; })
+          .finally(() => { renewalInFlight = null; });
       }, PROJECT_DELETION_CLAIM_RENEW_MS);
       renewal.unref?.();
       try {
         await stopProjectDeletionActivity(existing);
+        await renewalInFlight;
         const stillClaimed = await db
-          .select({ id: projects.id })
+          .select({ id: projects.id, expiresAt: projects.deletionClaimExpiresAt })
           .from(projects)
           .where(and(eq(projects.id, existing.id), eq(projects.deletionClaimToken, claimToken)))
           .limit(1);
-        if (claimLost || stillClaimed.length === 0) {
+        if (
+          claimLost ||
+          stillClaimed.length === 0 ||
+          !stillClaimed[0].expiresAt ||
+          stillClaimed[0].expiresAt.getTime() <= Date.now()
+        ) {
           clearInterval(renewal);
+          await renewalInFlight;
           await db
             .update(projects)
             .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
@@ -1172,6 +1187,7 @@ export function projectRoutes(db: Db) {
         }
       } catch (err) {
         clearInterval(renewal);
+        await renewalInFlight;
         await db
           .update(projects)
           .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
@@ -1184,12 +1200,13 @@ export function projectRoutes(db: Db) {
         }
         throw err;
       }
-      clearInterval(renewal);
     }
     let project;
     try {
-      project = await svc.remove(existing.id, { deleteFiles });
+      project = await svc.remove(existing.id, { deleteFiles, deletionClaimToken });
     } catch (err) {
+      if (renewal) clearInterval(renewal);
+      await renewalInFlight;
       if (deleteFiles && deletionClaimToken) {
         await db
           .update(projects)
@@ -1198,6 +1215,8 @@ export function projectRoutes(db: Db) {
       }
       throw err;
     }
+    await renewalInFlight;
+    if (renewal) clearInterval(renewal);
     if (!project) {
       res.status(404).json({ error: "Project not found" });
       return;
