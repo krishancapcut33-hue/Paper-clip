@@ -2021,8 +2021,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       error: "connect ECONNREFUSED 10.0.0.1:443",
       stderrExcerpt: "connect ECONNREFUSED 10.0.0.1:443\n",
     });
-    // Text-matching classifiers read this marker to know `error` holds a
-    // stderr tail rather than adapter-owned text.
     expect(run?.resultJson).toMatchObject({
       errorMessageSource: "stderr_excerpt",
     });
@@ -2058,7 +2056,6 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
       error: "model provider returned 402",
       stderrExcerpt: "deprecation warning: ignore me\n",
     });
-    // An adapter-owned message stays classifiable, so no marker is written.
     expect(run?.resultJson).not.toHaveProperty("errorMessageSource");
   });
 

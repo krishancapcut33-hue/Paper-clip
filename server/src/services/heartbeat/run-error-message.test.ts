@@ -35,12 +35,11 @@ describe("heartbeat stderr excerpt tails", () => {
   });
 
   it("never starts the tail inside a surrogate pair", () => {
-    // An emoji is two UTF-16 units: a 1024-unit tail of one emoji plus 1023
-    // ASCII characters would otherwise begin on its lone low surrogate.
+
     const tail = extractStderrExcerptTail(`prefix\u{1f642}${"x".repeat(1023)}`);
     expect(tail).toBe("x".repeat(1023));
     expect(tail).not.toMatch(/[\uD800-\uDFFF]/);
-    // An astral character that lands fully inside the window is preserved.
+
     expect(
       extractStderrExcerptTail(`prefix${"x".repeat(1022)}\u{1f642}`),
     ).toBe(`${"x".repeat(1022)}\u{1f642}`);
@@ -175,8 +174,7 @@ describe("heartbeat run error messages", () => {
         recordedError: "Cancelled by the board",
       }).source,
     ).toBe("recorded");
-    // A non-cancelled run ignores the recorded error exactly as before, so the
-    // stderr tail is still what a caller must distrust.
+
     expect(
       resolveRunErrorMessage({
         ...base,
@@ -188,5 +186,63 @@ describe("heartbeat run error messages", () => {
       message: "waiting for the model gateway",
       source: "stderr_excerpt",
     });
+  });
+});
+
+describe("heartbeat error-text classifier guards", () => {
+  const retryInput = (
+    error: string | null,
+    resultJson: Record<string, unknown> | null,
+  ) => ({
+    status: "failed" as const,
+    errorCode: "adapter_failed" as const,
+    error,
+    resultJson,
+  });
+  const stopInput = (
+    error: string | null,
+    source: string | null,
+  ) => ({
+    outcome: "failed" as const,
+    error,
+    source,
+  });
+  const spawnPattern = /\bspawn\b|\bENOENT\b|failed to start command/i;
+  const budgetPattern = /budget|paused|user paused/i;
+
+  const isRetryable = (run: ReturnType<typeof retryInput>) => {
+    const source =
+      typeof run.resultJson?.errorMessageSource === "string"
+        ? run.resultJson.errorMessageSource
+        : null;
+    const classifiableError = source === "stderr_excerpt" ? null : run.error;
+    return spawnPattern.test(classifiableError ?? "");
+  };
+  const classifiableStopError = (input: ReturnType<typeof stopInput>) =>
+    input.source === "stderr_excerpt" ? null : input.error;
+
+  it("excludes a stderr-derived spawn line from the retry classifier", () => {
+    expect(
+      isRetryable(retryInput("spawn acpx ENOENT", { errorMessageSource: "stderr_excerpt" })),
+    ).toBe(false);
+  });
+
+  it("still classifies an adapter-owned spawn failure as retryable infrastructure", () => {
+    expect(isRetryable(retryInput("spawn acpx ENOENT", null))).toBe(true);
+    expect(
+      isRetryable(retryInput("spawn acpx ENOENT", { note: "unrelated" })),
+    ).toBe(true);
+  });
+
+  it("excludes a stderr-derived budget line from the stop-reason input", () => {
+    expect(
+      budgetPattern.test(classifiableStopError(stopInput("paused for maintenance", "stderr_excerpt")) ?? ""),
+    ).toBe(false);
+  });
+
+  it("keeps an adapter-owned message classifiable for the stop-reason input", () => {
+    expect(
+      budgetPattern.test(classifiableStopError(stopInput("paused by budget guard", "adapter")) ?? ""),
+    ).toBe(true);
   });
 });

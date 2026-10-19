@@ -454,13 +454,6 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             resolvedRunError.message,
             currentUserRedactionOptions,
           );
-    // A stderr tail is arbitrary process output: safe to display on the run
-    // row, but classifiers that match on error text (stop reason inference
-    // here, interaction-continuation retry eligibility in retries.ts) must
-    // keep seeing only adapter-owned text, or an unrelated "spawn",
-    // "ENOENT" or "paused" line in stderr silently changes a decision.
-    // `errorMessageSource` carries the same distinction to the classifiers
-    // that only have the persisted row.
     const stderrDerivedRunError =
       resolvedRunError.source === "stderr_excerpt";
     const classifiableRunErrorMessage = stderrDerivedRunError
