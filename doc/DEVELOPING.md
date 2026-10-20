@@ -33,6 +33,17 @@ delivery. Case detail/context roll up authorized task document metadata through
 `case-task-documents.ts`; system keys and inaccessible task documents are
 excluded before the document limit. Standard task document tools handle new
 documents; historical case document REST/storage remains intact.
+`read_case` keeps small responses structured. Large responses return bounded
+`readPage.text` JSON chunks with case/task routing versions on every page. Use
+`section: "fields"` to retrieve the entire fields object, including large keys,
+strings, and arrays. Continue with the same `section` and `snapshot`, passing
+`offsetBytes: readPage.nextOffsetBytes` until it is null; concatenate the text
+before parsing JSON. A 409 means facts, accessible references, or routing changed:
+restart at offset zero without the old snapshot. Each page reauthorizes current case access through
+`GET /api/cases/:id?agentRead=true`; no generic API tool or asset grant is needed.
+`limitBytes` is 4–8192 UTF-8 bytes. Ordinary REST reads retain their existing full
+response, and ordinary `update_case` mutation receipts remain unchanged.
+
 Keep native schemas aligned with their services/routes. Transactional source
 run checks must precede case writes, so Stop or an accepted handoff cannot race
 an HTTP request into a late mutation. Generic API rollout settings do not remove

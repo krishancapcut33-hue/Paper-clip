@@ -162,6 +162,58 @@ describe("native case tools through authenticated production routes", () => {
     await expect(f.call("read_case", { caseId: hidden!.id })).rejects.toThrow("Case not found");
     expect(await other.call("read_case")).toMatchObject({ status: 200, data: { id: other.record.id } });
   });
+  it("reads every large case field and current routing version through the dedicated native tool", async () => {
+    const f = await fixture();
+    const fields = { notes: "🧾\n\"".repeat(8_000), rows: Array.from({ length: 800 }, (_, index) => ({ index, exact: "row" })),
+      ["long-key-".repeat(2_000)]: ["exact final value", null] };
+    await server.db.update(cases).set({ fields, summary: "Large summary 🧾".repeat(400), phase: "verification", handoffVersion: 5 }).where(eq(cases.id, f.record.id));
+    await server.db.update(issues).set({ statusVersion: 9 }).where(eq(issues.id, f.issueId));
+    expect(f.authority.definitions().map(tool => tool.name)).not.toContain("call_api");
+    // Reproduce the existing generic transport's >24KiB asset-only response.
+    // The dedicated reader below must remain usable with generic API disabled.
+    const generic = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: true, apiToolsEnabled: true });
+    const baseline = await generic.execute({ tool: "call_api", callId: randomUUID(), arguments: {
+      operationId: "GET /api/cases/{id}", pathParams: { id: f.record.id }, query: { includeDocumentBodies: false },
+    } });
+    expect(baseline).toMatchObject({ ok: true, artifact: { artifactId: expect.any(String) } });
+    expect(baseline).not.toHaveProperty("data");
+    const before = await f.snapshot();
+    type Page = { ok: boolean; status: number; data: { id: string; handoffVersion: number;
+      workIssue: { statusVersion: number }; readPage: { mode: "json_text"; text: string; snapshot: string; nextOffsetBytes: number | null } } };
+    const first = await f.call("read_case") as Page;
+    expect(first).toMatchObject({ ok: true, status: 200, data: { id: f.record.id, handoffVersion: 5, phase: "verification", workIssue: { statusVersion: 9 }, readPage: { mode: "json_text" } } });
+    expect(first).not.toHaveProperty("artifact");
+    for (const section of ["case", "fields"] as const) {
+      let page = section === "case" ? first : await f.call("read_case", { section }) as Page;
+      let text = "";
+      for (let count = 0; ; count++) {
+        expect(count).toBeLessThan(100);
+        expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(24 * 1024);
+        expect(page).toMatchObject({ ok: true, status: 200, data: { id: f.record.id, handoffVersion: 5, workIssue: { statusVersion: 9 } } });
+        expect(page).not.toHaveProperty("artifact");
+        text += page.data.readPage.text;
+        const { nextOffsetBytes, snapshot } = page.data.readPage;
+        if (nextOffsetBytes === null) break;
+        page = await f.call("read_case", { section, offsetBytes: nextOffsetBytes, snapshot }) as Page;
+      }
+      const recovered = JSON.parse(text);
+      expect(section === "case" ? recovered.fields : recovered).toEqual(fields);
+    }
+    expect((await f.snapshot()).assets).toEqual(before.assets);
+    const snapshot = first.data.readPage.snapshot;
+    await server.db.update(issues).set({ statusVersion: 10 }).where(eq(issues.id, f.issueId));
+    expect(await f.call("read_case", { section: "case", offsetBytes: first.data.readPage.nextOffsetBytes, snapshot }))
+      .toMatchObject({ ok: false, status: 409 });
+    expect(await f.call("read_case")).toMatchObject({ data: { workIssue: { statusVersion: 10 } } });
+    // An ordinary facts mutation can still return its established capture;
+    // dedicated reads recover current facts without replaying that mutation.
+    await f.call("update_case", { idempotencyKey: "large-new-value", fields });
+    expect(await f.call("read_case", { section: "fields" })).toMatchObject({ ok: true, data: { readPage: { mode: "json_text" } } });
+    await server.db.insert(caseAccessSources).values({ companyId: f.companyId, caseId: f.record.id, sourceKind: "issue", sourceId: f.blockerId });
+    await server.db.update(issues).set({ visibility: "private", assigneeAgentId: null }).where(eq(issues.id, f.blockerId));
+    await expect(f.call("read_case", { section: "case", offsetBytes: first.data.readPage.nextOffsetBytes, snapshot })).rejects.toThrow("Case not found");
+  });
+
   it("retains case privacy on spilled response assets after source access is revoked", async () => {
     const f = await fixture();
     await server.db.insert(caseAccessSources).values({ companyId: f.companyId, caseId: f.record.id, sourceKind: "issue", sourceId: f.blockerId });

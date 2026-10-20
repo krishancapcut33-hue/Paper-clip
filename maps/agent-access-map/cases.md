@@ -27,6 +27,14 @@ API: `present` — representative operation IDs:
 Agent access: `available` — REST / native call_api; dedicated native `read_case`
 for an authorized standalone case or the task's primary case; agent cases reference.
 
+Native `read_case` has bounded UTF-8 JSON paging through the same authorized
+case GET (`agentRead=true`). Small cases remain structured; large cases and
+`section: "fields"` expose exact `readPage.text` chunks. Continuations require
+`offsetBytes` and the returned `snapshot`; a changed case/task version or selected
+projection returns 409. Every successful page retains handoff/task versions.
+Generic `call_api` remains optional and is not needed to recover large fields.
+
+
 Policy: enableCases gate; company/case/task boundaries, active run where required,
 source trust, and checked-out mutation ownership.
 

@@ -29,6 +29,15 @@ describe("production case data contracts", () => {
     },
   );
 
+  it("advertises bounded case JSON continuations without exposing arbitrary APIs", () => {
+    for (const schema of [readCaseAction.live.descriptor.inputSchema, paperclipSemanticAction("read_case")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      expect(validate({ section: "fields", offsetBytes: 8192, limitBytes: 8192, snapshot: "a".repeat(64) }), JSON.stringify(validate.errors)).toBe(true);
+      for (const input of [{ offsetBytes: 1 }, { limitBytes: 8193 }, { limitBytes: 3 }, { snapshot: "forged" },
+        { section: "secrets" }, { operationId: "GET /api/assets/{id}" }]) expect(validate(input)).toBe(false);
+    }
+  });
+
   it("requires a nonempty, idempotent facts update and excludes workflow and access mutations", () => {
     const validate = ajv.compile(updateCaseAction.live.descriptor.inputSchema);
     expect(validate({ idempotencyKey: "save-facts" })).toBe(false);

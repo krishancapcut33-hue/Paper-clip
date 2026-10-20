@@ -180,6 +180,17 @@ updates. Update receipts deduplicate identical keys within one admitted run;
 creation and handoff receipts remain principal-scoped. Ordinary `read_document`
 and `write_document` manage the active task's revisioned documents.
 
+`read_case` keeps small responses structured. Large responses return bounded
+`readPage.text` JSON chunks with case/task routing versions on every page. Use
+`section: "fields"` to retrieve the entire fields object, including large keys,
+strings, and arrays. Continue with the same `section` and `snapshot`, passing
+`offsetBytes: readPage.nextOffsetBytes` until it is null; concatenate the text
+before parsing JSON. A 409 means facts, accessible references, or routing changed:
+restart at offset zero without the old snapshot. Each page reauthorizes current case access through
+`GET /api/cases/:id?agentRead=true`; no generic API tool or asset grant is needed.
+`limitBytes` is 4–8192 UTF-8 bytes. Ordinary REST reads retain their existing full
+response, and ordinary `update_case` mutation receipts remain unchanged.
+
 Case context is authorized on each admission. Fresh sessions receive a bounded
 snapshot; verified native continuations send current routing metadata and new
 handoff instructions, plus case facts when their content or document revisions

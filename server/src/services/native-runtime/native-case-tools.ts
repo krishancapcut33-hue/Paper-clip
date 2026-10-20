@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { cases, type Db } from "@paperclipai/db";
 import { z } from "zod";
@@ -7,6 +8,7 @@ import { badRequest, forbidden, notFound } from "../../errors.js";
 import { assertActorCanReadCase } from "../case-access.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { caseReadPageShape } from "../case-agent-read.js";
 import type { RunnerApiCall } from "./runner-api-client.js";
 
 export const NATIVE_CASE_OPERATIONS = new Set([
@@ -37,7 +39,8 @@ export const createNativeCaseSchema = z.object({
 }).strict();
 
 const schemas = {
-  read_case: identity,
+  read_case: identity.extend(caseReadPageShape).refine(input => !input.offsetBytes || !!input.snapshot,
+    "A continuation offset requires the snapshot returned by the previous read"),
   update_case: patchCaseSchema.pick({ title: true, summary: true, fields: true })
     .extend({ caseId: z.string().guid().optional(), idempotencyKey: retryKey })
     .strict().refine(input => ["title", "summary", "fields"].some(key => Object.hasOwn(input, key)),
@@ -70,9 +73,10 @@ export async function executeNativeCaseTool(input: {
   const { caseId: _caseId, idempotencyKey, ...body } = values;
   const mutation = input.tool === "update_case";
   const method = mutation ? "PATCH" : "GET";
-  const result = await input.callApi(`case-tool:${input.tool}:${idempotencyKey ?? "read"}`, {
+  const requestKey = idempotencyKey ?? createHash("sha256").update(JSON.stringify(body)).digest("hex");
+  const result = await input.callApi(`case-tool:${input.tool}:${requestKey}`, {
     operationId: `${method} /api/cases/{id}`, pathParams: { id: caseRow.id },
-    query: { includeDocumentBodies: false }, ...(mutation ? { body } : {}),
+    query: { includeDocumentBodies: false, ...(!mutation ? { agentRead: true, ...body } : {}) }, ...(mutation ? { body } : {}),
   });
   if (!result || typeof result !== "object" || Array.isArray(result)) return result;
   const { operationId, ...response } = result as Record<string, unknown>;

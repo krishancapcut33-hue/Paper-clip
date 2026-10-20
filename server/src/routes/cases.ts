@@ -16,8 +16,10 @@ import {
   listCasesQuerySchema,
   listEventsQuerySchema,
   caseDetailQuerySchema,
+  caseAgentReadQuerySchema,
 } from "./cases-schemas.js";
 import { Router, type Request, type Response } from "express";
+import { projectAgentCaseRead } from "../services/case-agent-read.js";
 import multer from "multer";
 import { z } from "zod";
 import { and, asc, desc, eq, getTableColumns, ilike, inArray, isNull, or, sql } from "drizzle-orm";
@@ -1550,6 +1552,12 @@ export function caseRoutes(db: Db, storage: StorageService) {
   router.get("/cases/:id", async (req, res) => {
     await assertCasesEnabled(db);
     const row = await assertCaseAccess(db, req, req.params.id as string);
+    if (req.query.agentRead !== undefined) {
+      const { agentRead: _agentRead, includeDocumentBodies: _includeDocumentBodies, ...page } = caseAgentReadQuerySchema.parse(req.query);
+      const detail = await loadCaseDetail(db, row, req.actor, { includeDocumentBodies: false });
+      res.json(projectAgentCaseRead(detail, page));
+      return;
+    }
     const query = caseDetailQuerySchema.parse(req.query);
     res.json(await loadCaseDetail(db, row, req.actor, { includeDocumentBodies: query.includeDocumentBodies === undefined || parseBooleanQuery(query.includeDocumentBodies) }));
   });

@@ -109,3 +109,12 @@ export const caseDetailQuerySchema = z.object({
   includeDocumentBodies: z.enum(["true", "false", "1", "0"]).optional()
     .describe("Defaults to true. Set false to return document metadata without document bodies."),
 });
+
+/** Dedicated native reads use the same authorized resource with bounded output. */
+export const caseAgentReadQuerySchema = caseDetailQuerySchema.extend({
+  agentRead: z.enum(["true", "1"]),
+  section: z.enum(["case", "fields"]).optional(),
+  offsetBytes: z.coerce.number().int().min(0).max(Number.MAX_SAFE_INTEGER).optional(),
+  limitBytes: z.coerce.number().int().min(4).max(8192).optional(),
+  snapshot: z.string().regex(/^[a-f0-9]{64}$/).optional(),
+}).refine(input => !input.offsetBytes || !!input.snapshot, "A continuation offset requires its snapshot");
