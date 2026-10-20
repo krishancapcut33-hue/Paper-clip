@@ -38,6 +38,7 @@ const SEMANTIC_RECEIPT_SOURCES = [
   ["../../contracts/completion-result.ts", "semanticCompletionContractSourceSha256"],
   ["../../contracts/native-execution.ts", "nativeExecutionSourceSha256"],
   ["installation-integrity.ts", "guardedInstallationSourceSha256"],
+  ["../../live/runner-provider-launch.ts", "providerLaunchSourceSha256"],
   ["../../live/runnerd-codex-transport.ts", "runtimeRequestBridgeSourceSha256"],
   ["../codex/codex-session-notifications.ts", "runtimeRequestFacadeSourceSha256"],
   ["../codex/codex-thread-normalization.ts", "runtimeRequestNotificationSourceSha256"],
@@ -85,10 +86,20 @@ async function withCopilotTestPlatform<T>(arch: "x64" | "arm64", run: () => Prom
 vi.mock("./installation-integrity.js", () => ({ verifyNativeAcpxInstallation: vi.fn() }));
 
 describe("Copilot build-owned installation", () => {
-  it("admits profile49 after bounded completion-recovery compatibility revalidation", () => {
-    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(49);
+  it("admits the current profile after launch preparation extraction", () => {
+    expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(50);
     expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBeUndefined();
-    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:37a8f6a540a7417bb12becbf283158df8cca925c5136ecc0db14597441fff702");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:d8f89c8e75883a793122ed908016b7730ededa6c3df741f23298c2445d7e6fc4");
+  });
+
+  it("preserves v49 while binding the extracted provider launch builder", () => {
+    const prior = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v49-identity.json", import.meta.url), "utf8"));
+    const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v50-identity.json", import.meta.url), "utf8"));
+    expect(prior.commandDigest).toBe("sha256:37a8f6a540a7417bb12becbf283158df8cca925c5136ecc0db14597441fff702");
+    expect(Object.keys(current.declaration).filter(key => current.declaration[key] !== prior.declaration[key]).sort()).toEqual([
+      "agentProfileVersion", "profileCompatibilitySourceSha256", "providerLaunchSourceSha256", "runtimeRequestBridgeSourceSha256",
+    ]);
+    expect(isSupportedAcpxProfileVersion("copilot", 49)).toBe(true);
   });
 
   it("preserves qualified v48 while binding completion-proposal recovery in v49", async () => {
