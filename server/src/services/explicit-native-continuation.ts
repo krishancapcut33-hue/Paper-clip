@@ -1,3 +1,6 @@
+import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
+import { hasVerifiedWorkspaceRepair } from "./workspace-recovery-receipt.js";
+import { createHash } from "node:crypto";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { canContinueCancelledRun } from "./run-cancellation.js";
 import { readQueuedInteractionResponse } from "./queued-interaction-response.js";
@@ -16,6 +19,7 @@ import { executionBlockerPredicate, getExecutionBlocker } from "./execution-bloc
 import { buildExecutionContinuation } from "./execution-continuation.js";
 import { adapterExecutionControls } from "./adapter-execution-control.js";
 import { persistActivity } from "./activity-log.js";
+import { activeIssueInteractionCondition } from "./issue-question-context.js";
 
 import { historicalAdapterType, isConversationAdapter } from "./conversation-continuation.js";
 import { queuedCommentIdsFromWakePayload } from "./issue-queued-comment-queue.js";
@@ -136,14 +140,23 @@ export async function admitExplicitNativeContinuation(input: {
   if (queuedInterrupt && !isConversationAdapter(agent.adapterType) && !response?.source.requiresFreshSession) return null;
   const actions = await db.select().from(issueRecoveryActions).where(and(
     eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-    executionBlockerPredicate(),
+    or(executionBlockerPredicate(), and(
+      inArray(issueRecoveryActions.cause, ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"]),
+      sql`${issueRecoveryActions.evidence}#>>'{workspaceRecovery,status}' = 'recovered'`,
+      sql`${issueRecoveryActions.evidence}->'executionReconciliation' is null`,
+      sql`${issueRecoveryActions.evidence}->'explicitUserContinuation' is null`,
+    )),
   )).for("update");
   if (!actions.length) return null;
   const blocker = await getExecutionBlocker(db, companyId, issueId);
   if (blocker && blocker.recoveryActionId === null) return null;
+  if (blocker?.workspaceRepairRequired && ["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(blocker.cause)) {
+    return blocked("workspace_reconstruction_required", "Recover the saved files or record reconstruction before continuing. Your message is saved.");
+  }
   const [pendingInteraction] = await db.select({ id: issueThreadInteractions.id }).from(issueThreadInteractions).where(and(
     eq(issueThreadInteractions.companyId, companyId), eq(issueThreadInteractions.issueId, issueId),
     eq(issueThreadInteractions.status, "pending"),
+    activeIssueInteractionCondition({ responsibleUserId: actorId }),
   )).limit(1);
   const [pendingApproval] = await db.select({ id: approvals.id }).from(issueApprovals).innerJoin(approvals, and(
     eq(approvals.id, issueApprovals.approvalId), eq(approvals.companyId, companyId),
@@ -171,7 +184,8 @@ export async function admitExplicitNativeContinuation(input: {
       !run.processPid && !run.processGroupId && !run.nativeSessionId;
     const legacyUserTurn = run.runtimeMode === "legacy" &&
       action.cause === "legacy_execution_requires_reconciliation" &&
-      isConversationAdapter(agent.adapterType);
+      (isConversationAdapter(agent.adapterType) ||
+        (agent.adapterType === "paperclip_runner" && await hasVerifiedWorkspaceRepair(db, run)));
     // Saved input is a request for a new turn, never permission to undo an
     // operator Stop or redeliver a message already consumed by this run.
     if (queuedRequest && !queuedInterrupt && (run.contextSnapshot?.wakeCommentId === commentId ||
@@ -181,6 +195,7 @@ export async function admitExplicitNativeContinuation(input: {
       // A settings change never converts a known process/webhook execution into
       // a conversation. Those adapters retain their reconciliation contract.
       if (historicalAdapter && !isConversationAdapter(historicalAdapter)) return null;
+      if (!historicalAdapter && agent.adapterType === "paperclip_runner") return null;
     }
     // For pre-upgrade rows without adapter evidence, only a new explicit user
     // turn is allowed, after the termination proofs below. This does not infer
@@ -196,8 +211,14 @@ export async function admitExplicitNativeContinuation(input: {
     if (!lockedRun || lockedRun.status !== run.status || lockedRun.agentId !== run.agentId ||
         lockedRun.finishedAt?.getTime() !== run.finishedAt.getTime()) return null;
     run = lockedRun;
-    if (run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive") {
-      return blocked("workspace_repair_required", "Verify safe workspace staging or repair before continuing. Your message is saved.");
+    // A repaired export no longer blocks execution. Its machine receipt still
+    // binds the saved user turn; finalized file state alone is insufficient.
+    if (["native_workspace_sync_out_unrecoverable", "native_workspace_sync_out_retry_exhausted"].includes(action.cause)
+      && !await hasVerifiedWorkspaceRepair(db, run)) return blocked("workspace_repair_required",
+      "Paperclip is recovering saved work before continuing. Your message is saved.");
+    if ((run.resultJson?.workspaceRestoreFailure === "restore_unsafe_archive" || hasRequiredWorkspaceRecovery(run.resultJson))
+      && !await hasVerifiedWorkspaceRepair(db, run)) {
+      return blocked("workspace_repair_required", "Paperclip is recovering saved work before continuing. Your message is saved.");
     }
     const cancelledStartup = await isCancelledNativeStartup(db, run, coordinator);
     if (partiallyDeliveredQueue && run.runtimeMode !== "native" && !unusedAdmission && !cancelledStartup) return null;
@@ -206,8 +227,11 @@ export async function admitExplicitNativeContinuation(input: {
           (run.status !== "cancelled" || authorizedAt > run.finishedAt!)) &&
         !(queuedRequest && cancelledStartup && authorizedAt > run.finishedAt!) &&
         !(queuedInterrupt && response?.source.requiresFreshSession && run.runtimeMode === "native")) return null;
+    // A saved native message sent after Stop is a new user direction. Older
+    // input cannot restart a cancelled run merely because it is still queued.
     if (queuedRequest && !queuedInterrupt && run.status === "cancelled" && !unusedAdmission &&
-        !canContinueCancelledRun(run) && !(cancelledStartup && authorizedAt > run.finishedAt!)) return null;
+        !canContinueCancelledRun(run) && !(run.runtimeMode === "native" && authorizedAt > run.finishedAt!) &&
+        !(cancelledStartup && authorizedAt > run.finishedAt!)) return null;
     if (retry && run.status === "cancelled" && !canContinueCancelledRun(run) && !cancelledStartup)
       return blocked("cancelled_by_operator", "Inspect the stopped run and send a new message to continue.");
     if (cancelledStartup) cancelledStartupIds.add(run.id);
@@ -292,6 +316,8 @@ export async function admitExplicitNativeContinuation(input: {
     });
   }
   const authorization = { actorId, commentId, ...(response ? { interactionId: response.source.interactionId } : {}), ...(retry ? { failedRunId: input.failedRunId } : {}),
+    ...(comment ? { commentUpdatedAt: comment.updatedAt.toISOString(),
+      commentBodyHash: createHash("sha256").update(comment.body).digest("hex") } : {}),
     ...(queuedInterrupt ? { queuedCommentInterruptId: input.queuedCommentInterruptId } : {}),
     ...(queuedRequest ? { queuedCommentRequestId: input.queuedCommentRequestId } : {}), runId: input.successorRunId,
     previousRunId: previous.id, recordedAt: new Date().toISOString() };
@@ -328,4 +354,92 @@ export async function admitExplicitNativeContinuation(input: {
       recoveryActionIds: actions.map(action => action.id), previousRunIds: sources.map(run => run.id) },
   });
   return { previousRunId: previous.id, commentId, ...(retry ? { failedRunId: input.failedRunId! } : {}) };
+}
+
+/** Re-admit a bounded automatic retry without lending it its parent's receipt.
+ * The caller holds the task lock and creates the successor in this transaction.
+ * Only unchanged user messages are renewable; Retry/Interrupt intents keep their
+ * separate one-run contracts. The scheduler still owns retry and cleanup policy.
+ */
+export async function admitExplicitContinuationRetry(input: {
+  db: Db; companyId: string; issueId: string; agentId: string;
+  parentRunId: string; successorRunId: string; now: Date;
+}): Promise<{ previousRunId: string; commentId: string } | null> {
+  const { db, companyId, issueId, agentId } = input;
+  const [task] = await db.select().from(issues).where(and(
+    eq(issues.companyId, companyId), eq(issues.id, issueId),
+  )).for("update");
+  const [parent] = await db.select().from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId), eq(heartbeatRuns.id, input.parentRunId),
+    eq(heartbeatRuns.agentId, agentId),
+  )).for("update");
+  if (!task || task.assigneeAgentId !== agentId || task.executionRunId !== input.parentRunId ||
+      ["done", "cancelled"].includes(task.status) || !parent ||
+      !["failed", "timed_out"].includes(parent.status) || !parent.finishedAt ||
+      parent.runtimeMode !== "legacy" || parent.contextSnapshot?.issueId !== issueId ||
+      (parent.nativeIssueId !== null && parent.nativeIssueId !== issueId) ||
+      adapterExecutionControls.has(parent.id) ||
+      await getExecutionBlocker(db, companyId, issueId)) return null;
+  const context = parent.contextSnapshot;
+  const explicit = context.explicitUserContinuation as Record<string, unknown> | undefined;
+  if (!explicit || !z.string().guid().safeParse(explicit.previousRunId).success ||
+      !z.string().guid().safeParse(explicit.commentId).success || explicit.failedRunId) return null;
+  const commentId = explicit.commentId as string;
+  const [comment] = await db.select().from(issueComments).where(and(
+    eq(issueComments.companyId, companyId), eq(issueComments.issueId, issueId),
+    eq(issueComments.id, commentId), eq(issueComments.authorType, "user"),
+    isNull(issueComments.createdByRunId), isNull(issueComments.deletedAt),
+  ));
+  if (!comment?.authorUserId || !comment.body.trim()) return null;
+  const receipts = await db.select().from(issueRecoveryActions).where(and(
+    eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+    eq(issueRecoveryActions.status, "resolved"),
+    sql`${issueRecoveryActions.evidence}->'explicitUserContinuation'->>'runId' = ${parent.id}`,
+  ));
+  const receipt = receipts.find(row => {
+    const auth = row.evidence.explicitUserContinuation as Record<string, unknown> | undefined;
+    return auth && auth.previousRunId === explicit.previousRunId && auth.commentId === commentId &&
+      auth.actorId === comment.authorUserId && !auth.failedRunId && !auth.queuedCommentInterruptId &&
+      auth.commentUpdatedAt === comment.updatedAt.toISOString() &&
+      auth.commentBodyHash === createHash("sha256").update(comment.body).digest("hex");
+  });
+  if (!receipt) return null;
+  const [superseding] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, companyId),
+    or(eq(heartbeatRuns.nativeIssueId, issueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueId}`),
+    ne(heartbeatRuns.id, parent.id), ne(heartbeatRuns.id, input.successorRunId),
+    or(eq(heartbeatRuns.retryOfRunId, parent.id),
+      // Keep PostgreSQL's timestamp precision: Date would round the parent
+      // down and mistake an older run in the same millisecond for a successor.
+      sql`${heartbeatRuns.createdAt} > (select source.created_at from heartbeat_runs source
+        where source.company_id = ${companyId} and source.id = ${parent.id})`,
+      inArray(heartbeatRuns.status, ["queued", "running", "scheduled_retry"])),
+  )).limit(1);
+  if (superseding) return null;
+  // Reuse dispatch's complete source/actor/receipt validation on the parent.
+  // It proves only the parent; the new receipt below authorizes the successor.
+  try {
+    await buildExecutionContinuation({ db, companyId, issueId, agentId, runId: parent.id,
+      context, summary: null, exposeLowTrustRaw: false });
+  } catch (error) {
+    if (error instanceof Error && ["continuation_user_authorization_missing",
+      "continuation_source_context_missing", "continuation_task_ownership_changed"].includes(error.message)) return null;
+    throw error;
+  }
+  const continuation = { previousRunId: parent.id, commentId };
+  await db.insert(issueRecoveryActions).values({
+    companyId, sourceIssueId: issueId, kind: "active_run_watchdog",
+    cause: "explicit_user_continuation_retry", fingerprint: input.successorRunId,
+    status: "resolved", outcome: "retry_authorized", resolvedAt: input.now,
+    nextAction: "The bounded retry has its own authorization for the unchanged user message.",
+    evidence: { explicitUserContinuation: {
+      ...continuation, actorId: comment.authorUserId, runId: input.successorRunId,
+      commentUpdatedAt: comment.updatedAt.toISOString(),
+      commentBodyHash: createHash("sha256").update(comment.body).digest("hex"),
+      recordedAt: input.now.toISOString(), automaticRetry: {
+        sourceRunId: parent.id, sourceAuthorizationId: receipt.id,
+      },
+    } },
+  });
+  return continuation;
 }
