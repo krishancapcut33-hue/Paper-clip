@@ -174,7 +174,7 @@ API: `present` — POST /api/companies/{companyId}/case-handoffs; GET /api/cases
 
 Agent access: `available` — live native `handoff_case`, native API discovery/call_api, and authenticated agent REST. Initial kickoff creates or explicitly binds an ordinary task; subsequent calls reuse it.
 
-Terminal destination: `to: "done"` records closure intent for an existing primary task, using case read/mutation and normal task mutation authority. It does not assign, wake, yield, or satisfy completion evidence. Normal accepted task completion atomically closes the case; Stop/cancel/reassignment invalidate the intent. Waiting on review or user input preserves it. Ordinary completion without a terminal intent leaves case status unchanged.
+Terminal destination: `to: "done"` records closure intent for an existing primary task, using case read/mutation and normal task mutation authority. It does not assign, wake, yield, or satisfy completion evidence. Normal accepted task completion atomically closes the case; a current execution's Stop, task cancellation, or reassignment invalidates the intent. Run-scoped Stop preserves newer work; cancelling terminal intent without a source run requires fenced current task ownership. Waiting on review or user input preserves it. Ordinary completion without a terminal intent leaves case status unchanged.
 
 Retention: whole-company deletion removes case history before dependent tasks/agents. Individual agent purge returns `409 agent_case_history_retained` when handoffs reference the agent; termination preserves its attribution.
 

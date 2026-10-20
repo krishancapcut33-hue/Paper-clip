@@ -68,6 +68,14 @@ Automated: shared schema tests, case route privacy tests, case handoff service/d
 
 Manual: hand the task through implementation, verification, and correction. Its ID, workspace, thread, and review gates must remain stable. Repeat a request and restart delivery; neither may duplicate work. Try private cases with an unauthorized actor and verify documents, assets, activity, and handoff history remain inaccessible.
 
+Force local scratch preparation to fail, then let the source adapter exit while
+a child with closed output streams continues writing. The recipient must remain
+pending until the owned process group stops; a fresh delivery worker must then
+recover the same intent without repeating the source run. Create terminal intent
+from the board and stop the current execution, including a pending native retry:
+later task completion must leave the case open. Repeating Stop for an older run
+must preserve a newer execution's terminal intent.
+
 While a transfer awaits source release, change its recipient's assignment policy
 or revoke the caller's assignment grant. The worker must retain the pending
 handoff without changing the task owner or phase or waking the recipient. Restore

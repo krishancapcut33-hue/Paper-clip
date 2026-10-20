@@ -1,6 +1,7 @@
 import { createHeartbeatAgentStatus } from "./heartbeat/agent-status.js";
 import { heartbeatExternalProvider, nativeRuntimeHasInstructionFilesystem } from "./heartbeat/external-provider.js";
 import { pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "./heartbeat/case-handoff-lifecycle.js";
+import { hasStoppedLocalProcessTree, legacyAdapterNeedsLocalProcessSettlement } from "./heartbeat/process-settlement.js";
 import { dotRunnerBroker } from "./dot-runner-broker.js";
 import { withRunExecutionTiming, measureRunPhase, measureWorkspaceSyncPhase, isWorkspaceSyncDetailPhase } from "./execution-preparation-timing.js";
 import { createHeartbeatPreparationTiming } from "./heartbeat/preparation-timing.js";
@@ -1753,6 +1754,7 @@ export function heartbeatService(
     }
 
     let legacyAdapterEntered = false;
+    let legacyLocalAdapterEntered = false;
     let persistUsageCaptureFailure: (() => Promise<void>) | undefined;
     let run = await getRun(runId);
     if (!run) return;
@@ -3400,7 +3402,12 @@ export function heartbeatService(
           effects: {
             onUsageCaptureReady: (value) => { persistUsageCaptureFailure = value; },
             onNativeDispatchStarted: () => { nativeDispatchStarted = true; },
-            onLegacyAdapterEntered: () => { legacyAdapterEntered = true; },
+            onLegacyAdapterEntered: () => {
+              legacyAdapterEntered = true;
+              legacyLocalAdapterEntered = legacyAdapterNeedsLocalProcessSettlement({
+                adapterType: adapter.type, executionTargetKind: executionTarget?.kind,
+              });
+            },
             onNativeWorkspaceFinalizeScheduled: () => { nativeWorkspaceFinalizeScheduled = true; },
             onNativeSessionResumeScheduled: () => { nativeSessionResumeScheduled = true; },
             onNativeOwnershipHeld: () => { nativeOwnershipHeld = true; },
@@ -3854,6 +3861,11 @@ export function heartbeatService(
         }
       }
       if (latestRun) await reconcileMuseNativeTerminalRun(db, latestRun);
+      // Scratch preparation is optional. Its removal cannot be the only proof
+      // that a local legacy adapter's closed-stdio descendants stopped.
+      if (caseHandoffCleanupSettled && latestRun?.runtimeMode === "legacy" && legacyLocalAdapterEntered) {
+        caseHandoffCleanupSettled = hasStoppedLocalProcessTree(latestRun);
+      }
       if (caseHandoffCleanupSettled && latestRun && !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled &&
           !nativeOwnershipHeld && isHeartbeatRunTerminalStatus(latestRun.status)) {
         const handoff = await pendingCaseHandoffForRun(db, run.id);

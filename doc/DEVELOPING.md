@@ -9,6 +9,12 @@ The application service owns transaction/idempotency and assignment policy;
 `case-handoff-delivery.ts` owns durable retry/lease and wake admission;
 `heartbeat/case-handoff-lifecycle.ts` owns execution release proof and stale-run
 mutation fencing. Keep network/process work outside the acceptance transaction.
+`heartbeat/process-settlement.ts` checks local process-tree absence independently
+of scratch-directory preparation. A local process handoff stays pending while
+the owned PID or process group is alive, or termination evidence is missing.
+HTTP adapters use their awaited nonprocess invocation contract instead of host
+PID probes. Stopping a run cancels its own intents; cancelling an unbound
+terminal intent additionally requires fenced, current task ownership.
 `case-context.ts` builds the bounded authorized case snapshot shared by native
 and legacy task preparation, including resumed sessions.
 
