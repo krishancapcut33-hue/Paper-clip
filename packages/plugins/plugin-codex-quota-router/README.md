@@ -20,9 +20,10 @@ the host. The plugin never reads credentials or Codex login files.
   at the five-hour boundary or reset.
 - Existing task pins remain on their original account. A new run for a pinned
   task waits when that account is low; other tasks can use the second account.
-  The host probes only the pinned account for a pinned task. That account may
-  use the five-hour exception based on its own confirmed, positive allowance;
-  the task never switches identity.
+  The host probes only the pinned account for a pinned task, so it cannot verify
+  the other account's quota. The five-hour exception is therefore unavailable
+  to pinned tasks; they wait for their account's reset. The task never switches
+  identity.
   Recovery of the *same* persisted run deliberately retains its original
   credential. Moving an existing task to another account requires a separately
   reviewed session migration; do not reset sessions automatically.

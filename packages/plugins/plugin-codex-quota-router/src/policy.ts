@@ -114,7 +114,7 @@ export function routeCodexConnection(request: AiConnectionRouterRequest): AiConn
   // A task pin can outlive a member's removal from the current pool config.
   // The host still authorizes that member, but memberOrder no longer lists it.
   const pinned = request.pinnedMemberId ? assessed[0] : undefined;
-  if (pinned && pinned.tier !== "wait") {
+  if (pinned?.tier === "normal") {
     return { kind: "selected", memberId: pinned.candidate.member.id };
   }
   const normal = inRotationOrder(request, assessed.filter((entry) => entry.tier === "normal"));
@@ -128,7 +128,10 @@ export function routeCodexConnection(request: AiConnectionRouterRequest): AiConn
     return { kind: "selected", memberId: nearReset[0].candidate.member.id };
   }
 
-  const skipped = Object.fromEntries(assessed.map((entry) => [entry.candidate.member.id, entry.reason]));
+  const skipped = Object.fromEntries(assessed.map((entry) => [
+    entry.candidate.member.id,
+    entry.tier === "near_reset" ? "Cannot verify every pool account is at or below 10%" : entry.reason,
+  ]));
   const next = Math.min(...assessed.map((entry) => entry.retryAt));
   return { kind: "exhausted", retryAt: new Date(Math.max(now + 1_000, next)).toISOString(), skipped };
 }

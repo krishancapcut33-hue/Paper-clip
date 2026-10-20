@@ -122,10 +122,18 @@ describe("Codex quota router", () => {
     });
   });
 
-  it("uses a pinned account's own admitted near-reset quota without switching identities", () => {
-    const input = request([{ remaining: 8, resetHours: 4 }, { remaining: 9, resetHours: 4 }],
+  it.each([
+    { peer: { remaining: 70 }, description: "a healthy peer" },
+    { peer: { remaining: null }, description: "unknown peer quota" },
+    { peer: { remaining: 9, resetHours: 4 }, description: "a low peer hidden by the host" },
+  ])("holds a low pinned account with $description", ({ peer }) => {
+    const input = request([{ remaining: 8, resetHours: 4 }, peer],
       "20000000-0000-4000-8000-000000000001");
-    expect(routeCodexConnection(input)).toMatchObject({ kind: "selected", memberId: input.memberOrder[0] });
+    input.candidates = [input.candidates[0]!];
+    expect(routeCodexConnection(input)).toMatchObject({
+      kind: "exhausted",
+      skipped: { [input.memberOrder[0]!]: "Cannot verify every pool account is at or below 10%" },
+    });
   });
 
   it("can use the near-reset account when its peer has known low quota but denies admission", () => {
