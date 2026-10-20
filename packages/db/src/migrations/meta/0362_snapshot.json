@@ -1,5 +1,5 @@
 {
-  "id": "aa1f855e-1250-43ef-8f63-d9fa742e25f7",
+  "id": "88cdd7d7-31b2-4d0a-ab55-b7a4af19beb0",
   "prevId": "d34e0f36-d7d1-409e-b868-6e4262e8adca",
   "version": "7",
   "dialect": "postgresql",
@@ -4387,7 +4387,7 @@
       "checkConstraints": {
         "ai_connection_defaults_provider_check": {
           "name": "ai_connection_defaults_provider_check",
-          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','github','google','opencode')"
+          "value": "\"ai_connection_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','opencode','github')"
         },
         "ai_connection_defaults_method_check": {
           "name": "ai_connection_defaults_method_check",
@@ -4860,7 +4860,7 @@
       "checkConstraints": {
         "ai_provider_defaults_provider_check": {
           "name": "ai_provider_defaults_provider_check",
-          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','github','google','opencode')"
+          "value": "\"ai_provider_defaults\".\"provider\" in ('anthropic','openai','openrouter','xai','google','opencode','github')"
         }
       },
       "isRLSEnabled": false
