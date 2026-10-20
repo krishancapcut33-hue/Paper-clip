@@ -24,11 +24,14 @@ export async function recordNativeWorkAssessment(input: {
   workspaceFinalizeStatus?: "succeeded" | "failed";
   /** Timer delivery can settle an old wait without changing the work evidence. */
   monitorDelivery?: NativeMonitorDelivery | null;
+  /** A persisted schedule can regain settlement authority after a policy repair. */
+  monitorWaitAt?: string | null;
   supersedesAssessmentId?: string | null;
 }) {
   const assessmentJson = {
     ...input.assessment,
     ...(input.monitorDelivery ? { monitorDelivery: input.monitorDelivery } : {}),
+    ...(input.monitorWaitAt ? { monitorWaitAt: input.monitorWaitAt } : {}),
   } as unknown as Record<string, unknown>;
   const inputDigest = nativeSha256({
     contractId: input.contractId,

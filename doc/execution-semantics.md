@@ -461,6 +461,10 @@ durable wake and an admitted successor run. The old run must no longer own the
 task's checkout or execution. This settlement preserves the task and successor
 ownership, and neither re-arms the timer nor starts another provider turn.
 Workspace persistence must still succeed first.
+If a saved monitor expires during workspace recovery, settlement releases the
+old run into the still-persisted schedule. The scheduler then applies its timeout
+or attempt-limit recovery policy. Expiration still rejects new monitor-wait
+results; finalizing accepted work neither renews the deadline nor starts a turn.
 
 Native `set_task_monitor` arguments put scheduling fields inside `monitor`:
 `{ "idempotencyKey": "check-ci", "monitor": { "nextCheckAt": "<future UTC timestamp>", "notes": "Check pending CI." } }`.

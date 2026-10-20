@@ -1,4 +1,4 @@
-import { eligibleIssueMonitorWait } from "../issue-monitors.js";
+import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { readNativeMonitorDelivery, type NativeMonitorDelivery } from "./native-monitor-delivery.js";
 import { readNativePlanWait, type NativePlanWaitSource } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
@@ -1653,7 +1653,7 @@ export async function commitNativeStatusDecision(input: {
       if (!expected || issue.workMode !== "standard" || issue.executionRunId !== input.runId ||
           input.decision.statusAction !== "preserve" || input.decision.effects.length !== 1 ||
           input.decision.effects[0]?.kind !== "release_checkout" ||
-          eligibleIssueMonitorWait(issue, expected.agentId) !== expected.nextCheckAt) {
+          scheduledIssueMonitorWait(issue, expected.agentId) !== expected.nextCheckAt) {
         throw new NativeStatusRaceError();
       }
     }

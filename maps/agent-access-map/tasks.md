@@ -154,6 +154,9 @@ provider run. Recovery may use that run's scheduling receipt and the matching
 admitted successor as historical delivery evidence. It does not grant new
 execution authority or clear a successor's ownership. Missing receipts,
 unadmitted wakes, and unfinished workspace persistence remain held.
+An accepted result may settle into a schedule that expired during recovery;
+the scheduler applies its existing expiry policy afterward. This does not
+authorize a new provider result to wait on an expired or exhausted monitor.
 
 Gaps: Dedicated tools differ in scope and fields. Generic `call_api` forwards
 status, assignment and dependency fields to existing route authorization.

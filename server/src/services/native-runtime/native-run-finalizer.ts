@@ -1,5 +1,5 @@
 import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
-import { eligibleIssueMonitorWait } from "../issue-monitors.js";
+import { scheduledIssueMonitorWait } from "../issue-monitors.js";
 import { readNativeMonitorDelivery } from "./native-monitor-delivery.js";
 import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
@@ -1367,7 +1367,7 @@ export async function finalizeNativeRun(input: {
     };
     const hasPendingChildCompletion = !reviewContext &&
       await hasPendingNativeChildCompletion(input.db, childCompletionRecipient);
-    const monitorWaitAt = eligibleIssueMonitorWait(authoritativeIssue, run.agentId);
+    const monitorWaitAt = scheduledIssueMonitorWait(authoritativeIssue, run.agentId);
     const monitorDelivery = assessment.reportedDisposition === "yielded" &&
       assessment.continuation?.kind === "monitor" &&
       authoritativeIssue.executionRunId !== run.id && authoritativeIssue.checkoutRunId !== run.id
@@ -1431,6 +1431,7 @@ export async function finalizeNativeRun(input: {
       supersedesAssessmentId,
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
       monitorDelivery,
+      monitorWaitAt: assessment.continuation?.kind === "monitor" ? monitorWaitAt : null,
     });
     await input.db
       .update(nativeRunFinalizations)

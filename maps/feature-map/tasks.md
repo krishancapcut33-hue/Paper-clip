@@ -80,7 +80,9 @@ and task activity explains the deferral. Repeated checks must not replay the hel
 work. Resolve the hold through its existing recovery action, then verify one wake.
 Hold native finalization after the provider has stopped, and verify that both
 scheduled and manual checks retain the due monitor. After settlement, verify one
-wake. For a timer already dispatched before recovery, verify that the saved
+wake. If its timeout passes during workspace recovery, verify settlement followed
+by the configured expiry recovery, with no ordinary monitor wake or duplicate
+escalation. For a timer already dispatched before recovery, verify that the saved
 result settles without changing the task, removing a successor's checkout, or
 creating another wake. The [monitor regression](../../server/src/services/native-runtime/task-monitor.integration.test.ts)
 and [scheduler regression](../../server/src/services/heartbeat/scheduling.test.ts)
