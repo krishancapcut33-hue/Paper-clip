@@ -149,6 +149,7 @@ import {
   type WorkspaceDiffReprojectionSkipReason,
 } from "../services/provider-trace-workspace-diff-reprojection.js";
 import {
+  declaredModelsForAdapter,
   detectAdapterModel,
   findActiveServerAdapter,
   findServerAdapter,
@@ -3061,6 +3062,15 @@ export function agentRoutes(
       return;
     }
     if (type === "opencode_local" && provider === "opencode") {
+      // A declared list is the operator's allowlist for this adapter. It wins
+      // over the public catalog: otherwise a model configured through
+      // PAPERCLIP_ADAPTER_MODELS that the gateway does not advertise cannot be
+      // selected, and onboarding cannot be completed with it.
+      const declaredModels = declaredModelsForAdapter(type);
+      if (declaredModels) {
+        res.json(declaredModels);
+        return;
+      }
       // OpenCode Go's catalog is read from the gateway's own public endpoint,
       // not from the host, so the answer does not depend on which environment
       // the harness runs in.

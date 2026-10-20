@@ -178,6 +178,14 @@ const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
  */
 const ONBOARDING_MORE_ADAPTER_TYPES = new Set(["opencode_local", "grok_local", "gemini_local"]);
 
+/**
+ * Sources with no subscription path. Their tile must say "API key" before it is
+ * picked: the row is labelled from the current source's credential mode, which
+ * defaults to subscription, and a tile that promises a subscription it cannot
+ * deliver is worse than a tile that says nothing.
+ */
+const API_ONLY_SOURCE_TYPES = new Set(["opencode_local", "gemini_local"]);
+
 const copilotOnboardingQualified = PAPERCLIP_RUNNER_ACPX_PROFILES.some(
   (profile) => profile.value === "copilot" && profile.qualified,
 );
@@ -768,7 +776,7 @@ function OnboardingWizardInner({
   // Gemini and OpenCode have no subscription path, so a saved preference can
   // never move them to the subscription form: the API-key field would vanish.
   // Copilot has no subscription path either.
-  const credentialMode = isCopilot || adapterType === "opencode_local" || adapterType === "gemini_local"
+  const credentialMode = isCopilot || API_ONLY_SOURCE_TYPES.has(adapterType)
     ? "api"
     : credentialModeChoice ?? (
       (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
@@ -3046,6 +3054,7 @@ function OnboardingWizardInner({
                                 id: opt.type,
                                 label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
                                 icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                                ...(API_ONLY_SOURCE_TYPES.has(opt.type) ? { credentialMode: "api" as const } : {}),
                               }))}
                               mode={credentialMode}
                               selectedId={moreSourceSelected ? adapterType : null}

@@ -1,4 +1,5 @@
 export {
+  declaredModelsForAdapter,
   getServerAdapter,
   listAdapterModels,
   refreshAdapterModels,

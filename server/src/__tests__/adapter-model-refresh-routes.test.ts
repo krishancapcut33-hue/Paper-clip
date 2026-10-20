@@ -300,6 +300,36 @@ describe("adapter model refresh route", () => {
     );
   });
 
+  it("honors a declared OpenCode model list over the public Go catalog", async () => {
+    // PAPERCLIP_ADAPTER_MODELS is an operator allowlist. A model declared there
+    // that the gateway does not advertise still has to be selectable, otherwise
+    // onboarding cannot be completed with the model the operator configured.
+    const previous = process.env.PAPERCLIP_ADAPTER_MODELS;
+    process.env.PAPERCLIP_ADAPTER_MODELS = JSON.stringify({
+      opencode_local: [{ id: "opencode-go/private-model", label: "Private Go model" }],
+    });
+    const goModelsFetch = vi.fn();
+    vi.stubGlobal("fetch", goModelsFetch);
+
+    try {
+      const app = await createApp();
+      const res = await requestApp(app, (baseUrl) =>
+        request(baseUrl).get(
+          "/api/companies/company-1/adapters/opencode_local/models?provider=opencode",
+        ),
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(res.body).toEqual([
+        { id: "opencode-go/private-model", label: "Private Go model" },
+      ]);
+      expect(goModelsFetch).not.toHaveBeenCalled();
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_ADAPTER_MODELS;
+      else process.env.PAPERCLIP_ADAPTER_MODELS = previous;
+    }
+  });
+
   it("surfaces a retryable error when the OpenCode Go catalog cannot be read", async () => {
     vi.stubGlobal("fetch", vi.fn().mockResolvedValue({ ok: false }));
 

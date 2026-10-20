@@ -2577,6 +2577,7 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       mockAdapterRegistry.list = [
         { type: "claude_local" },
         { type: "codex_local" },
+        { type: "opencode_local" },
         { type: "grok_local" },
         { type: "gemini_local" },
       ];
@@ -2602,6 +2603,18 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       // the registry type id.
       expect(labels.join(" ")).not.toContain("grok_local");
       expect(labels.join(" ")).not.toContain("gemini_local");
+
+      // OpenCode and Gemini have no subscription path. Their tag is composed
+      // from the row's mode, which starts on subscription because that is what
+      // the recommended sources use, so the tile has to override it before it
+      // is picked — a tile that promises a subscription is a lie the very next
+      // screen exposes.
+      const gemini = labels.find((label) => label.startsWith("Gemini")) ?? "";
+      const opencode = labels.find((label) => label.startsWith("OpenCode")) ?? "";
+      expect(gemini).toContain("API key");
+      expect(gemini).not.toContain("Subscription");
+      expect(opencode).toContain("API key");
+      expect(opencode).not.toContain("Subscription");
 
       await act(async () => root.unmount());
     });
