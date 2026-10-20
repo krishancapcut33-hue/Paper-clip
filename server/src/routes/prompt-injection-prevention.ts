@@ -14,21 +14,20 @@ import { listOpenRouterModels } from "../services/openrouter-models.js";
 export function promptInjectionPreventionRoutes(db: Db) {
   const router = Router();
   const service = promptInjectionPreventionService(db, { budgetHooks: { cancelWorkForScope: heartbeatService(db).cancelBudgetScopeWork } });
-  const base = "/companies/:companyId/prompt-injection-prevention";
-  router.get(base, async (req, res) => {
+  router.get("/companies/:companyId/prompt-injection-prevention", async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId); assertBoard(req);
     const canManage = await canManageAiConnections(db, req, companyId);
     res.json(canManage ? { canManage, settings: await service.settings(companyId), choices: await service.choices(companyId, getActorInfo(req).actorId) }
       : { canManage, settings: null, choices: [] });
   });
-  router.put(base, validate(updatePromptInjectionPreventionSchema), async (req, res) => {
+  router.put("/companies/:companyId/prompt-injection-prevention", validate(updatePromptInjectionPreventionSchema), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId); assertBoard(req);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden();
     res.json(await service.configure(companyId, getActorInfo(req).actorId, req.body));
   });
-  router.get(`${base}/models`, async (req, res) => {
+  router.get("/companies/:companyId/prompt-injection-prevention/models", async (req, res) => {
     const companyId = req.params.companyId as string, userId = getActorInfo(req).actorId;
     assertCompanyAccess(req, companyId); assertBoard(req);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden();
@@ -37,7 +36,7 @@ export function promptInjectionPreventionRoutes(db: Db) {
     await aiConnectionService(db).selectPromptInjectionPrevention({ companyId, userId, connectionId: choice.id, grantId: choice.grantId });
     res.json((await listOpenRouterModels()).map(m => ({ ...m, id: m.id.replace(/^openrouter\//, "") })));
   });
-  router.post(`${base}/test`, validate(z.object({}).strict()), async (req, res) => {
+  router.post("/companies/:companyId/prompt-injection-prevention/test", validate(z.object({}).strict()), async (req, res) => {
     const companyId = req.params.companyId as string;
     assertCompanyAccess(req, companyId); assertBoard(req);
     if (!(await canManageAiConnections(db, req, companyId))) throw forbidden();
