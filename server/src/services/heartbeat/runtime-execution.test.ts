@@ -149,10 +149,12 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
     await executeHeartbeatRuntime(db, input);
     expect(adapter.execute.mock.calls[0]?.[0].issueId).toBe(input.run.issueId);
 
-    const mismatched = await fixture();
-    mismatched.input.run.issueId = randomUUID();
-    await executeHeartbeatRuntime(db, mismatched.input);
-    expect(mismatched.adapter.execute.mock.calls[0]?.[0].issueId).toBeNull();
+    for (const field of ["issueId", "agentId", "companyId"] as const) {
+      const mismatched = await fixture();
+      mismatched.input.run[field] = randomUUID();
+      await executeHeartbeatRuntime(db, mismatched.input);
+      expect(mismatched.adapter.execute.mock.calls[0]?.[0].issueId).toBeNull();
+    }
   });
 
   it("preserves Stop metadata and marks no-work accounting without manufacturing a receipt", async () => {
