@@ -106,7 +106,10 @@ export async function createPluginWorkspaceFixture(
     loseRemovalResponse = false,
     workspaceRefSuffix = "";
   const workers = {
-    getWorker: () => ({ supportedMethods: ["workspaceOperation"] }),
+    getWorker: (id: string) =>
+      id === pluginId
+        ? { supportedMethods: ["workspaceOperation"] }
+        : undefined,
     call: async (_id: string, method: string, params: any) => {
       expect(method).toBe("workspaceOperation");
       expect(params).not.toHaveProperty("lease");

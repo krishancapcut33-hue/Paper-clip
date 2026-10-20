@@ -701,6 +701,103 @@ const support = await getEmbeddedPostgresTestSupport();
         await svc.reopenClosedIsolatedExecutionWorkspaceForIssue(request),
       ).toMatchObject({ ok: true, generation: 1 });
     });
+    it("reconciles a remotely completed restoration before reaping and never reuses an older removal receipt", async () => {
+      const f = await fixture();
+      const call = f.workers.call.bind(f.workers),
+        cache = new Map<string, unknown>();
+      let loseRestoreReply = false;
+      f.workers.call = async (...args) => {
+        const params = args[2] as any;
+        if (params.operation.kind === "inspect") return call(...args);
+        if (cache.has(params.operationId))
+          return cache.get(params.operationId) as any;
+        const result = await call(...args);
+        cache.set(params.operationId, result);
+        if (
+          loseRestoreReply &&
+          params.operation.kind === "prepare" &&
+          params.operation.existing
+        ) {
+          loseRestoreReply = false;
+          throw new Error("lost completed restoration reply");
+        }
+        return result;
+      };
+      const workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, f.runId));
+      await db
+        .update(issues)
+        .set({ status: "done", completedAt: new Date() })
+        .where(eq(issues.id, f.issueId));
+      const svc = executionWorkspaceService(db, {
+        pluginWorkerManager: f.workers,
+        workspaceReaperCooldownDays: 0,
+      });
+      await svc.archiveWorkspaceUnderLifecycleLock({
+        id: workspace!.id,
+        patch: {},
+        closedAt: new Date(),
+      });
+      const read = () =>
+        db
+          .select()
+          .from(executionWorkspaces)
+          .where(eq(executionWorkspaces.id, workspace!.id))
+          .then((rows) => rows[0]!);
+      await removePluginWorkspace(db, f.workers, await read(), "a".repeat(40));
+      const firstRemoval = f.calls.find(
+        (call) => call.operation.kind === "remove",
+      );
+      loseRestoreReply = true;
+      expect(
+        await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+          workspaceId: workspace!.id,
+          issue: {
+            id: f.issueId,
+            companyId: f.companyId,
+            projectId: f.input.projectId,
+          },
+          actor: { actorType: "user", agentId: null },
+          authorizationActor: {
+            type: "board",
+            source: "local_implicit",
+            isInstanceAdmin: true,
+          },
+        }),
+      ).toMatchObject({ ok: false, code: "rebuild_failed" });
+      const pending = await read();
+      expect(pending.metadata?.workspaceProviderRestoration).toMatchObject({
+        generation: firstRemoval.generation + 1,
+      });
+      await expect(
+        removePluginWorkspace(db, f.workers, pending, "a".repeat(40)),
+      ).rejects.toThrow("restoration");
+      await svc.sweepTerminalWorkspaces(100);
+      const recovered = await read();
+      expect(recovered.metadata).toMatchObject({
+        workspaceProviderRemoved: false,
+        workspaceProviderRestoration: null,
+        lifecycleGeneration: firstRemoval.generation + 1,
+      });
+      await expect(
+        projectService(db).updateWorkspace(
+          f.input.projectId,
+          f.input.projectWorkspaceId,
+          { repoRef: "after-recovery" },
+        ),
+      ).rejects.toThrow("storage owner");
+      await svc.sweepTerminalWorkspaces(100);
+      expect((await read()).metadata?.workspaceProviderRemoved).toBe(true);
+      const removals = f.calls.filter(
+        (call) => call.operation.kind === "remove",
+      );
+      expect(removals).toHaveLength(2);
+      expect(removals[1].generation).toBe(firstRemoval.generation + 1);
+      expect(removals[1].operationId).not.toBe(firstRemoval.operationId);
+    });
     it("rejects unsupported provider modes before making a reservation", async () => {
       const f = await fixture();
       await expect(

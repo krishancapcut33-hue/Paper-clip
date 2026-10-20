@@ -1361,8 +1361,12 @@ workspaces. The plugin must prevent project storage retirement while its task
 workspaces still contain local data. Repository source and storage owner changes
 are blocked while live managed workspaces depend on them. An authorized storage
 owner or source edit retires closed workspaces whose provider removal is confirmed;
-retired records cannot reopen. Pending deletion is replayed before inspection,
-including after a lost removal result. File browsing and
+retired records cannot reopen. Inspection reconciles a pending restoration with
+its recorded request, advances its generation, and keeps the Core row closed.
+Cleanup must then inspect that generation afresh; it cannot reuse an earlier
+removal receipt. Direct removal refuses unresolved restoration intent.
+Pending deletion is replayed before inspection, including after a lost removal
+result. File browsing and
 other Core-host filesystem operations are unavailable for managed storage.
 
 Use `createWorkspaceProviderHarness` from `@paperclipai/plugin-sdk/testing` to

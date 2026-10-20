@@ -585,6 +585,8 @@ export async function inspectPluginWorkspace(
       workers,
       workspace,
     );
+    if (workspace.metadata?.workspaceProviderRestoration)
+      workspace = await finishPendingRestoration(db, workers, workspace);
     if (workspace.metadata?.workspaceProviderRemoval)
       workspace = await finishPendingRemoval(db, workers, workspace);
     if (workspace.metadata?.workspaceProviderRemoved === true)
@@ -603,6 +605,66 @@ const removedInspection = () => ({
   isMergedIntoBase: null,
   remotelyRecoverable: true,
 });
+
+async function finishPendingRestoration(
+  db: Db,
+  workers: WorkspaceWorkers | undefined,
+  workspace: Workspace,
+): Promise<Workspace> {
+  const pending = workspace.metadata?.workspaceProviderRestoration as {
+    generation?: unknown;
+    operation?: unknown;
+  };
+  const operation = workspaceProviderOperationSchema.safeParse(
+    pending?.operation,
+  );
+  const generation =
+    (workspace.metadata?.lifecycleGeneration as number | undefined) ?? 0;
+  if (
+    !operation.success ||
+    operation.data.kind !== "prepare" ||
+    pending.generation !== generation + 1 ||
+    JSON.stringify(operation.data.existing) !==
+      JSON.stringify(readWorkspaceProviderBinding(workspace.metadata)) ||
+    !["archived", "cleanup_failed"].includes(workspace.status)
+  )
+    throw conflict("Workspace restoration intent is unavailable or stale");
+  const result = await callWorkspaceProvider(db, workers, {
+    workspace,
+    operation: operation.data,
+    advanceGeneration: true,
+  });
+  if (result.kind !== "prepared")
+    throw conflict("Workspace restoration is incomplete");
+  const [updated] = await db
+    .update(executionWorkspaces)
+    .set({
+      providerRef: result.binding.workspaceRef,
+      branchName: result.branchName,
+      updatedAt: new Date(),
+      metadata: {
+        ...workspace.metadata,
+        lifecycleGeneration: generation + 1,
+        workspaceProvider: result.binding,
+        workspaceProviderBaseSha: result.baseSha,
+        workspaceProviderRemoved: false,
+        workspaceProviderRestoration: null,
+      },
+    })
+    .where(
+      and(
+        eq(executionWorkspaces.id, workspace.id),
+        eq(executionWorkspaces.companyId, workspace.companyId),
+        eq(executionWorkspaces.status, workspace.status),
+        sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}`,
+        sql`${executionWorkspaces.metadata}->'workspaceProviderRestoration' = ${JSON.stringify(pending)}::jsonb`,
+      ),
+    )
+    .returning();
+  if (!updated)
+    throw conflict("Workspace changed during restoration reconciliation");
+  return updated;
+}
 
 /** Replay the recorded delete before trying to inspect a checkout that may already be gone. */
 async function finishPendingRemoval(
@@ -662,6 +724,8 @@ export async function removePluginWorkspace(
   expectedHeadSha: string | null,
 ) {
   workspace = await reconcilePluginWorkspaceReservation(db, workers, workspace);
+  if (workspace.metadata?.workspaceProviderRestoration)
+    throw conflict("Workspace restoration must be reconciled before removal");
   if (workspace.metadata?.workspaceProviderRemoved === true) return;
   if (workspace.metadata?.workspaceProviderRemoval) {
     await finishPendingRemoval(db, workers, workspace);
@@ -738,6 +802,7 @@ export async function retireRemovedPluginWorkspaceDependents(
     if (!row || row.metadata?.workspaceProviderRetired === true) continue;
     if (
       row.metadata?.workspaceProviderRemoved !== true ||
+      row.metadata?.workspaceProviderRestoration ||
       !["archived", "cleanup_failed"].includes(row.status)
     ) {
       throw conflict(
