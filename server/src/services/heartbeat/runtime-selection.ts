@@ -778,19 +778,20 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 if (!previousNativeRun || nativeReviewRequest) return null;
                 try {
                   const previousTask = parseNativeExecutionInput(parseObject(previousNativeRun.runnerProfileJson).nativeExecutionInput).task;
-                  if (paperclipWakePayload?.externalChatProvider) {
+                  const previousWake = normalizePaperclipWakePayload(parseObject(previousNativeRun.contextSnapshot).paperclipWake);
+                  const githubReviewConfigurationKeys = previousWake?.githubReviewConfigurations.map((config) => config.key);
+                  if (paperclipWakePayload?.externalChatProvider || previousWake?.externalChatProvider) {
                     // External native inputs use a neutral task title. Compare
                     // the saved canonical brief so old provider text is not
                     // repeated as a change, while genuine edits still arrive.
                     const savedIssue = parseObject(parseObject(previousNativeRun.contextSnapshot).paperclipIssue);
                     if (savedIssue.id !== issueRef.id || typeof savedIssue.title !== "string" ||
                       (savedIssue.description !== null && typeof savedIssue.description !== "string")) return null;
-                    const previousWake = normalizePaperclipWakePayload(parseObject(previousNativeRun.contextSnapshot).paperclipWake);
                     return { runId: previousNativeRun.id, task: { title: savedIssue.title, description: savedIssue.description },
-                      githubReviewConfigurationKeys: previousWake?.githubReviewConfigurations.map((config) => config.key),
+                      githubReviewConfigurationKeys,
                     };
                   }
-                  return { runId: previousNativeRun.id, task: previousTask };
+                  return { runId: previousNativeRun.id, task: previousTask, githubReviewConfigurationKeys };
                 } catch {
                   // An invalid prior snapshot must use the fresh bootstrap.
                   return null;

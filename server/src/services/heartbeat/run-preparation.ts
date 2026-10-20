@@ -2257,6 +2257,7 @@ export async function buildPaperclipWakePayload(input: {
     priority: string;
     workMode: string;
     projectId?: string | null;
+    originKind?: string | null;
     executionPolicy?: unknown;
   } | null;
   exposeLowTrustRaw?: boolean;
@@ -2288,6 +2289,7 @@ export async function buildPaperclipWakePayload(input: {
             status: issues.status,
             priority: issues.priority,
             workMode: issues.workMode,
+            originKind: issues.originKind,
           })
           .from(issues)
           .where(
@@ -2659,8 +2661,9 @@ export async function buildPaperclipWakePayload(input: {
     chatCompletionUpdates: input.contextSnapshot.chatCompletionUpdates ?? null,
     attachmentOmissions,
     externalChatProvider,
-    githubReviewConfigurations: externalChatProvider === "github" && issueId && input.agentId
-      ? await resolveGitHubReviewInstructions({ db: input.db, companyId: input.companyId, agentId: input.agentId, issueId, commentIds })
+    githubReviewConfigurations: (externalChatProvider === "github" || issueSummary?.originKind === "chat_channel") && issueId && input.agentId
+      ? await resolveGitHubReviewInstructions({ db: input.db, companyId: input.companyId, agentId: input.agentId, issueId,
+          commentIds: externalChatProvider === "github" ? commentIds : [] })
       : [],
     recovery:
       recoveryStillActive

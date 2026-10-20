@@ -5696,7 +5696,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         payload: { ...payload, action: "synchronize", before: payload.pull_request.head.sha,
           pull_request: { ...payload.pull_request, head: { sha: "c".repeat(40) } } },
       }));
-      await expect.poll(async () => (await readIssueCommentsByIssueId(task.id)).length, { timeout: 10000 }).toBe(2);
+      await expect.poll(async () => {
+        await f.service.processPendingDeliveries();
+        return (await readIssueCommentsByIssueId(task.id)).length;
+      }, { timeout: 10000 }).toBe(2);
       const updatedComments = await readIssueCommentsByIssueId(task.id);
       const newComment = updatedComments.find((row) => row.id !== comments[0].id)!;
       await expect.poll(async () => (await resolveGitHubReviewInstructions({ ...configArgs, commentIds: [newComment.id] })).length).toBe(1);
@@ -5705,6 +5708,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(updatedConfigs[0].instructions).toContain("UPDATED_REVIEW_POLICY");
       expect(updatedConfigs[0].key).not.toBe(configs[0].key);
       expect(await resolveGitHubReviewInstructions({ ...configArgs, commentIds: [comments[0].id] })).toEqual(configs);
+      expect(await resolveGitHubReviewInstructions({ ...configArgs, commentIds: [comments[0].id, newComment.id] })).toEqual(updatedConfigs);
+      expect(await resolveGitHubReviewInstructions({ ...configArgs, commentIds: [newComment.id, comments[0].id] })).toEqual(configs);
+      const manualMarker = "Explain this review without starting a new assessment";
+      const manualThread = makeThread({ channelId: "paperclipai/paperclip", id: "github:paperclipai/paperclip:81" }).thread;
+      await deliverMessage({ callbacks: f.callbacks, endpointId: f.endpoint.id, provider: "github", thread: manualThread,
+        trigger: "mention", message: makeMessage({ id: "81001", text: `@${f.endpoint.botUsername} ${manualMarker}`,
+          userId: "42", userName: "octocat", mentioned: true }) });
+      const manualComment = (await readIssueCommentsByIssueId(task.id)).find((row) => row.body.includes(manualMarker))!;
+      // A discussion between automatic reviews must not reset the retained key.
+      expect(await resolveGitHubReviewInstructions({ ...configArgs, commentIds: [manualComment.id] })).toEqual(updatedConfigs);
+      expect(await resolveGitHubReviewInstructions({ ...configArgs, commentIds: [newComment.id] })).toEqual(updatedConfigs);
       expect(await resolveRunScopedMentionedSkillKeys({ db, companyId: f.companyId, issueId: task.id, commentIds: [comments[0].id] })).toEqual([skill.key]);
       expect(comments[0].body).toContain("untrusted provider data");
       expect(comments[0].authorUserId).toBe("owner-user");
@@ -5716,7 +5730,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         contextSnapshot: { issueId: task.id, wakeCommentId: comments[0].id },
       }).returning();
       const wakeArgs = { db, companyId: f.companyId, agentId: f.assignedAgentId, runId: run.id,
-        contextSnapshot: { issueId: task.id, wakeCommentId: comments[0].id, source: "chat:github",
+        contextSnapshot: { issueId: task.id, wakeCommentId: comments[0].id, wakeCommentIds: [comments[0].id], source: "chat:github",
           wakeReason: "External chat message received", paperclipHarnessCheckedOut: true } };
       const wake = await buildPaperclipWakePayload(wakeArgs);
       expect(wake?.githubReviewConfigurations).toEqual(configs);
@@ -5725,7 +5739,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(prompt.split(instruction)).toHaveLength(2);
       expect(prompt).not.toContain("Untrusted PR body");
       const unbound = await buildPaperclipWakePayload({ ...wakeArgs, contextSnapshot: { ...wakeArgs.contextSnapshot, paperclipHarnessCheckedOut: false } });
-      expect(unbound?.githubReviewConfigurations).toEqual([]);
+      expect(unbound?.externalChatProvider).toBeNull();
+      expect(renderPaperclipWakePrompt(unbound)).not.toContain("## External chat response contract");
+      const [boardComment] = await db.insert(issueComments).values({ companyId: f.companyId, issueId: task.id,
+        authorUserId: "owner-user", authorType: "user", body: "Continue the review" }).returning();
+      const boardFollowup = await buildPaperclipWakePayload({ ...wakeArgs,
+        contextSnapshot: { issueId: task.id, wakeCommentIds: [boardComment.id], wakeReason: "issue_commented" } });
+      expect(boardFollowup?.externalChatProvider).toBeNull();
+      expect(boardFollowup?.githubReviewConfigurations).toEqual(updatedConfigs);
+      expect(renderPaperclipWakePrompt(boardFollowup)).toContain("UPDATED_REVIEW_POLICY");
       f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/pulls/81")
         ? Response.json({ ...payload.pull_request, head: { sha: "c".repeat(40) } })
         : undefined);

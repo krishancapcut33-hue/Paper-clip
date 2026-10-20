@@ -63,7 +63,7 @@ export function buildNativeContinuationPrompt(input: {
   // Do not substitute an unverified interaction outcome for an authorized answer.
   if (wake.interactionId && humanResponses.length === 0) return null;
   const events = {
-    ...(externalChat && wake.githubReviewConfigurations.some((config) => !input.previousGitHubReviewConfigurationKeys?.includes(config.key))
+    ...(wake.githubReviewConfigurations.some((config) => !input.previousGitHubReviewConfigurationKeys?.includes(config.key))
       ? { reviewConfigurations: wake.githubReviewConfigurations.filter((config) => !input.previousGitHubReviewConfigurationKeys?.includes(config.key)) }
       : {}),
     // Only the current authenticated chat delivery belongs to this turn.

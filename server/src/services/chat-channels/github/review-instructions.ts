@@ -4,11 +4,12 @@ import { chatConversations, chatDeliveries, chatEndpoints, chatMessageLinks, typ
 import { githubReviewConfigurationPrompt } from "../../chat-github-review-policy.js";
 import type { GitHubReviewPolicy } from "@paperclipai/shared";
 
-/** Only processed, task-bound automatic deliveries can supply review instructions. */
+/** Only processed, task-bound deliveries can supply review instructions. */
 export async function resolveGitHubReviewInstructions(input: {
   db: Db; companyId: string; agentId: string; issueId: string; commentIds: string[];
 }): Promise<Array<{ key: string; instructions: string }>> {
-  const rows = await input.db.select({ endpointId: chatEndpoints.id, event: chatDeliveries.normalizedEvent })
+  const rows = await input.db.select({ endpointId: chatEndpoints.id, conversationId: chatConversations.id,
+      commentId: chatMessageLinks.commentId, event: chatDeliveries.normalizedEvent })
     .from(chatMessageLinks)
     .innerJoin(chatDeliveries, and(
       eq(chatDeliveries.companyId, chatMessageLinks.companyId),
@@ -30,15 +31,20 @@ export async function resolveGitHubReviewInstructions(input: {
     ))
     .orderBy(desc(chatDeliveries.createdAt), desc(chatDeliveries.id))
     .limit(input.commentIds.length || 1);
-  const configurations = new Map<string, { key: string; instructions: string }>();
-  for (const row of rows) {
-    const automatic = row.event.githubAutomatic as {
-      policy?: GitHubReviewPolicy; revision?: number; context?: { repositoryId?: string };
+  // A coalesced run is bound to its latest accepted request. Earlier messages
+  // remain history; do not append their policies after the current policy.
+  const row = input.commentIds.length
+    ? rows.sort((a, b) => input.commentIds.indexOf(b.commentId!) - input.commentIds.indexOf(a.commentId!))[0]
+    : rows[0];
+  if (row) {
+    const admitted = (row.event.githubAutomatic ?? row.event.githubManual) as {
+      policy?: GitHubReviewPolicy; revision?: number;
     } | undefined;
-    if (!automatic?.policy || !Number.isInteger(automatic.revision) || !automatic.context?.repositoryId) continue;
-    const instructions = githubReviewConfigurationPrompt(automatic.policy, automatic.revision!);
-    const key = createHash("sha256").update(JSON.stringify([row.endpointId, automatic.context.repositoryId, automatic.revision, instructions])).digest("hex");
-    configurations.set(key, { key, instructions });
+    if (admitted?.policy && Number.isInteger(admitted.revision)) {
+      const instructions = githubReviewConfigurationPrompt(admitted.policy, admitted.revision!);
+      const key = createHash("sha256").update(JSON.stringify([row.endpointId, row.conversationId, admitted.revision, instructions])).digest("hex");
+      return [{ key, instructions }];
+    }
   }
-  return [...configurations.values()];
+  return [];
 }

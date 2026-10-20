@@ -2179,7 +2179,7 @@ describe("buildNativeExecutionInput wake projection", () => {
     expect(input.task.prompt).toContain(message.body);
   });
 
-  it("restores full GitHub configuration on fresh fallback and sends configuration changes on resume", () => {
+  it.each(["github", null])("restores GitHub configuration on fresh fallback and sends changes on %s resume", (externalChatProvider) => {
     const base = execution(currentRunId);
     const issue = { id: issueId, identifier: "REVIEW-1", title: "PR #1", description: null, workMode: "standard" };
     const config = { key: "a".repeat(64), instructions: "STABLE_REVIEW_POLICY" };
@@ -2187,7 +2187,7 @@ describe("buildNativeExecutionInput wake projection", () => {
     const args = {
       companyId, runId: currentRunId, agentId, issue, taskPrompt: "Canonical task",
       resumedSession: true, previousTurn: { runId: previousRunId, task: issue, githubReviewConfigurationKeys: [config.key] },
-      wakePayload: { reason: "External chat message received", issue, externalChatProvider: "github", checkedOutByHarness: true,
+      wakePayload: { reason: externalChatProvider ? "External chat message received" : "issue_commented", issue, externalChatProvider, checkedOutByHarness: true,
         githubReviewConfigurations: [config],
         comments: [{ ...message, author: { type: "user", id: "board" } }], commentIds: [message.id], latestCommentId: message.id,
         commentWindow: { requestedCount: 1, includedCount: 1, missingCount: 0 },

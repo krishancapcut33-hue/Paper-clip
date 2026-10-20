@@ -1674,11 +1674,15 @@ not repeated review policy or the full PR description. The harness loads review
 instructions from the processed, company/task-bound delivery snapshot. Native
 GitHub sessions with a verified checkpoint and a complete inline comment batch
 receive only that batch and configuration not present in the previous turn.
-Configuration identity includes the endpoint, repository, revision, and rendered
+Configuration identity includes the endpoint, PR conversation, revision, and rendered
 instructions. A fresh session or failed resume receives the full bootstrap;
 incomplete batches, attachments, recovery, and interactions retain their existing
 framing. This prompt optimization does not change tool authorization or review
 publication checks. PR descriptions remain available through the metadata tool.
+Coalesced requests use the last accepted request's policy. Discussion turns retain
+the admitted configuration identity for the next automatic review.
+Board follow-ups with no new provider message restore the latest admitted review
+configuration from the same company, task, and bot binding.
 
 An active remote runner's health probe is an observation, not an exit receipt.
 Timed-out or rejected read-only probes retry within the existing 30-second
