@@ -103,6 +103,7 @@ after switching company/account to verify suppression and isolation.
 
 ## Gotchas
 
+- [Command-palette and keyboard entry points](./navigation-preferences.md#palette-shortcuts) also reach search. Verify quick-filter/query handoff separately from opening the full search route.
 - Notifications do not grant task access or change Mine membership.
 - A feature-map recipe and mocked UI tests do not prove live multiplayer behavior.
 

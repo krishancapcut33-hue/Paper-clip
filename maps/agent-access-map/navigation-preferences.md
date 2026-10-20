@@ -148,3 +148,21 @@ evidence.
 
 Gaps: Record lookup exists. Route redirects/fallback presentation do not need a separate
 domain API.
+
+## `command-palette`
+
+Capability ID: `navigation-preferences/command-palette`.
+
+Review: `baseline`.
+
+API: `present` — GET /api/companies/{companyId}/issues for quick task matches; GET /api/companies/{companyId}/projects, GET /api/companies/{companyId}/agents, and GET /api/companies/{companyId}/labels for context; GET /api/companies/{companyId}/search for full search. Opening the palette or handling a keyboard shortcut is browser presentation, not a new mutation API.
+
+Agent access: `partial` — actual resource/search reads use REST or admitted native `search_tasks`/`call_api` with their actor-specific fields and scope. Palette open state, focus, and key chords are browser-only; they do not require an agent keyboard API.
+
+Policy: Underlying company/task/project read authorization and private-result filters apply. Full search requires company_scope:read; a human-only filter such as assigneeUserId=me is not valid board identity for an agent. A local create/navigation action still uses the destination feature’s normal permissions. Keyboard handling respects focused inputs and modal ownership.
+
+Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Command palette](../../ui/src/components/CommandPalette.tsx), [shortcut hook](../../ui/src/hooks/useKeyboardShortcuts.ts), [query parser](../../ui/src/lib/search-query-parser.ts), and [search routes](../../server/src/routes/issues.ts).
+
+Verification: `not-run` — Drive palette and shortcut entry points in the browser, preserve filter/query intent into full search, and check denied private/foreign results. Separately call the read/search path with the actual permitted agent and reject unsupported human-only filters; a board palette result is not agent authorization evidence.
+
+Gaps: The map records transient palette state, not a promise that its open state or draft input survives reload. Every shell, keyboard layout, file-viewer gate, and creation action is not qualified by one palette test.

@@ -19,6 +19,7 @@ Agent access: [companion](../agent-access-map/chat-channels.md).
 - `conversation`: `chat-channels/conversation` — route inbound messages to the selected agent and send replies to the correct thread.
 - `attachments`: `chat-channels/attachments` — transfer supported files with inspectable delivery and failure states.
 - `lifecycle`: `chat-channels/lifecycle` — inspect endpoint activity, repair auth, and disable delivery when required.
+- `outbound-email`: `chat-channels/outbound-email` — start a task-bound AgentMail conversation, reply to its exact message, and inspect deduplicated publication and provider delivery.
 
 ## How to get to it (user POV)
 
@@ -29,6 +30,10 @@ Message the configured bot/address from its external provider and follow the cor
 ### `endpoint-management`
 
 Open `/apps/chat/:endpointId/settings` and the endpoint’s other available tabs; identity confirmation uses `/chat-identity/confirm`.
+
+### `outbound-agentmail`
+
+Use `paperclipai email inboxes --company-id <company-id>`, then `email send --company-id <company-id> --file <new-email.json>` or `email reply --company-id <company-id> --file <reply.json>`. Inspect `email thread <email-task-id> --company-id <company-id>` and `email delivery <publication-id> --company-id <company-id>`. Agent mutations must provide --run-id or the active PAPERCLIP_RUN_ID.
 
 ## Driving it with Playwright and provider clients
 
@@ -163,7 +168,17 @@ The [voice components](../../ui/src/components/voice/TaskVoiceLauncher.tsx)
 and fixture tests cover presentation; they do not establish live answer retrieval
 or telephone playback. Those provider outcomes remain explicit release gates.
 
+### `outbound-agentmail`
+
+Automated: [Email channel integration](../../server/src/__tests__/email-channels.integration.test.ts) uses controlled providers to test durable child tasks/intents, deduplication, reply binding, attachments, delivery, revocation, budgets, run authority, and company boundaries. No dedicated end-to-end CLI email test was identified; these fixtures do not establish actual recipient delivery.
+
+Manual: Use a disposable parent task, authorized AgentMail inbox, and recipient you own. Put endpointId, a stable UUID idempotencyKey, text, parentIssueId, to, and subject in the new-message JSON; supply eligible attachmentIds only if needed. Send, inspect the child conversation/publication, and verify actual received mail. Repeat the identical request/key and confirm one child and provider send; changed content with that key must conflict. Reply with endpointId, conversationId, exact replyToMessageId, text, and a fresh stable idempotencyKey; inspect the actual recipients and received reply. Replies must reject caller-supplied recipient/subject/parent overrides. Test wrong inbox/task/company/run, a canceled task, revoked access/credentials, and an inaccessible attachment. Inspect uncertain provider outcomes before using the administrative resolution path.
+
+Sources: [Email CLI](../../cli/src/commands/client/email.ts), [request schema](../../packages/shared/src/validators/email.ts), [email routes](../../server/src/routes/email.ts), and [email authority/publication](../../server/src/services/email-channels.ts).
+
 ## Gotchas
+
+- New outbound email requires a parent task. A reply binds to its stored conversation/message and cannot replace recipients or subject; a queued 202 is not a delivered message.
 
 - Visibility flags do not pause existing delivery. Disable the disposable
   endpoint itself to test stopped traffic.

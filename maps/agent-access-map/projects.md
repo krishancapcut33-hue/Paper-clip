@@ -130,3 +130,21 @@ project skill access. Verify automatic import and denial with the actual agent i
 Workspace creation, update and deletion require project:write_workspace through
 the shared authorization evaluator in addition to project read access. Repository
 attachment does not bypass skill-import policy for its background discovery.
+
+## `privacy`
+
+Capability ID: `projects/privacy`.
+
+Review: `baseline`.
+
+API: `present` — POST /api/companies/{companyId}/projects; PATCH /api/projects/{id}; GET and POST /api/projects/{id}/access-members; DELETE /api/projects/{id}/access-members/{memberId}. Creation and authorized updates accept visibility; use stable UUID paths for evidence.
+
+Agent access: `partial` — authorized agent REST or admitted native `call_api` can create a private project, and eligible project/member reads retain their normal API paths. Existing project visibility and audience mutations require board authority; no dedicated agent audience-management tool is established.
+
+Policy: Company access and project:read apply; inaccessible projects return not found. Listing members requires project read, unlike task-grant listing. Visibility/member mutations require a board privacy/personal owner, active company owner/admin, instance admin, or local implicit board. The server derives the creation owner from the board person or agent’s onBehalfOfUserId. Targets must be company agents or active company users; the owner cannot be removed. Agent access intersects agent and responsible-user access. Opening a project does not publish its protected tasks.
+
+Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Project properties](../../ui/src/components/ProjectProperties.tsx), [access members](../../ui/src/components/ProjectAccessMembers.tsx), [project routes](../../server/src/routes/projects.ts), and [authorization](../../server/src/services/authorization.ts).
+
+Verification: `not-run` — Verify allowed creation and reads as the actual operator/agent, then compare project and task access after adding/removing a person. Reject ordinary members’ audience changes, agent member/visibility mutations, foreign-company targets, and owner removal. After opening the project, inspect protected tasks and independent direct grants rather than inferring task publication from project discovery.
+
+Gaps: The dedicated create_project tool does not advertise a visibility field; explicit private selection uses REST or admitted call_api. Private-project creation through each client, inherited task audiences, and responsible-user combinations need separate live evidence. The map does not infer filesystem isolation from these app-record permissions.

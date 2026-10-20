@@ -144,3 +144,21 @@ authority as company-agent API access.
 
 Gaps: Local checkout and pre-start provisioning use local tools, not company REST
 authorization. No new runtime is needed.
+
+## `feedback-export`
+
+Capability ID: `cli-operations/feedback-export`.
+
+Review: `baseline`.
+
+API: `present` — GET /api/companies/{companyId}/feedback-traces; GET /api/feedback-traces/{traceId}; GET /api/feedback-traces/{traceId}/bundle. Export writes local files after those authorized reads.
+
+Agent access: `restricted` — company report and trace/bundle reads require board identity and company access. CLI availability and an active agent run do not bypass the route’s board check. Filesystem export is an additional local operator operation.
+
+Policy: Company trace list/detail/bundle checks are company-scoped and board-only; inaccessible trace companies return not found. Issue-scoped feedback routes additionally load the accessible issue. Do not infer task-private filtering for company trace endpoints from those different issue routes. Payload handling uses the existing feedback redaction contract, and local export does not alter sharing consent.
+
+Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Feedback CLI](../../cli/src/commands/client/feedback.ts), [company trace list](../../server/src/routes/companies.ts), [trace detail/bundle routes](../../server/src/routes/issues.ts), and [feedback service](../../server/src/services/feedback.ts).
+
+Verification: `not-run` — Compare filtered board report, detail, bundle, and exported IDs/content; verify ZIP and local paths. Reject an ordinary agent and another company’s trace. Test issue-scoped authorization separately from company-wide trace access. Confirm --shared-only filters records but performs no sharing mutation.
+
+Gaps: Company-level trace policy and issue-level privacy are distinct source contracts; this baseline does not claim a narrower permission than the routes enforce. Full trace-provider formats and live exports remain unverified.

@@ -224,3 +224,21 @@ remaining operations before qualifying the whole capability.
 
 Gaps: The server governs whether a reported result becomes done/review/blocked.
 Generic lifecycle PATCH uses existing REST authorization, checkout and approval rules.
+
+## `privacy`
+
+Capability ID: `tasks/privacy`.
+
+Review: `baseline`.
+
+API: `present` — POST /api/companies/{companyId}/issues and PATCH /api/issues/{id} accept permitted visibility changes; GET /api/issues/{id}/privacy-constraints; GET and POST /api/issues/{id}/access-grants; POST /api/issues/{id}/access-grants/{grantId}/revoke.
+
+Agent access: `partial` — eligible task reads and a permitted restriction to private are available through agent REST/native `call_api`, subject to current mutation and run authority. Grant inspection/management and widening task access require the authorized board identity; catalog actor labels do not override those route checks.
+
+Policy: Company access and issue:read precede management checks; inaccessible tasks return not found. Grant/privacy management requires the responsible user, creator, human assignee, active company owner/admin, instance admin, or local implicit board. Grant targets must be active company users or company agents. A shared reader is not a grant manager. Private inheritance flows down descendants, not upward or across siblings. Agent access intersects the responsible user’s authority. Publishing obeys parent/project constraints; a private standalone task needs a responsible user. Mutations retain activity and task lifecycle checks.
+
+Evidence: `source-only` — reviewed at `9ef434fe79c57d976b8b03b14c5242db270b8320`. [Privacy actions](../../ui/src/components/IssuePrivacyActions.tsx), [share sheet](../../ui/src/components/IssueShareSheet.tsx), [issue routes](../../server/src/routes/issues.ts), and [authorization](../../server/src/services/authorization.ts).
+
+Verification: `not-run` — Create private fixtures as ordinary authenticated people, then compare discovery, direct reads, inherited child access, and inaccessible metadata before sharing and after revocation. Reject a shared reader’s grant management, cross-company or invalid targets, grants on open tasks, and agent publishing/sharing. Assert the permitted agent restriction using its actual current run and responsible-user context.
+
+Gaps: The native API fallback must be admitted in the tested run and mode. Full descendant, personal-project, race, and responsible-user combinations need live acceptance; source-reviewed permission branches do not establish all variants.

@@ -48,7 +48,7 @@ Use this index to open a recipe or copy its feature and full capability IDs.
 
 | Feature ID | Recipe | Capability IDs |
 | --- | --- | --- |
-| `tasks` | [Task creation and lifecycle](tasks.md) | `tasks/create`, `tasks/organize`, `tasks/properties`, `tasks/discussion`, `tasks/completion` |
+| `tasks` | [Task creation and lifecycle](tasks.md) | `tasks/create`, `tasks/organize`, `tasks/properties`, `tasks/discussion`, `tasks/completion`, `tasks/privacy` |
 | `task-coordination` | [Delegation, dependencies, and signoff](task-coordination.md) | `task-coordination/delegation`, `task-coordination/dependencies`, `task-coordination/signoff`, `task-coordination/tree-control` |
 | `inbox-search` | [Inbox, decisions, and search](inbox-search.md) | `inbox-search/views`, `inbox-search/triage`, `inbox-search/decisions`, `inbox-search/search`, `inbox-search/toasts` |
 | `agent-chat` | [Agent conversations and project handoff](agent-chat.md) | `agent-chat/discovery`, `agent-chat/history`, `agent-chat/handoff`, `agent-chat/conference-room` |
@@ -60,7 +60,7 @@ Use this index to open a recipe or copy its feature and full capability IDs.
 
 | Feature ID | Recipe | Capability IDs |
 | --- | --- | --- |
-| `agents` | [Hiring, configuration, and organization](agents.md) | `agents/hire`, `agents/grok-bot`, `agents/instructions`, `agents/organization`, `agents/primary-agent`, `agents/lifecycle`, `agents/built-in` |
+| `agents` | [Hiring, configuration, and organization](agents.md) | `agents/hire`, `agents/grok-bot`, `agents/instructions`, `agents/organization`, `agents/primary-agent`, `agents/lifecycle`, `agents/built-in`, `agents/api-keys`, `agents/managed-agent-setup` |
 | `runs-adapters` | [Runs, harnesses, and model accounts](runs-adapters.md) | `runs-adapters/availability`, `runs-adapters/validation`, `runs-adapters/runs`, `runs-adapters/session` |
 | `skills` | [Skills and Skill Studio](skills.md) | `skills/discovery`, `skills/authoring`, `skills/versions`, `skills/policy`, `skills/testing` |
 | `teams` | [Team packages and installation](teams.md) | `teams/discovery`, `teams/preview`, `teams/install`, `teams/configuration` |
@@ -69,7 +69,7 @@ Use this index to open a recipe or copy its feature and full capability IDs.
 
 | Feature ID | Recipe | Capability IDs |
 | --- | --- | --- |
-| `projects` | [Projects and repositories](projects.md) | `projects/lifecycle`, `projects/task-context`, `projects/repositories`, `projects/defaults` |
+| `projects` | [Projects and repositories](projects.md) | `projects/lifecycle`, `projects/task-context`, `projects/repositories`, `projects/defaults`, `projects/privacy` |
 | `goals` | [Goals and work alignment](goals.md) | `goals/hierarchy`, `goals/alignment`, `goals/navigation` |
 | `workspaces` | [Workspaces, services, and files](workspaces.md) | `workspaces/binding`, `workspaces/provisioning`, `workspaces/services`, `workspaces/files-git`, `workspaces/closure` |
 | `execution-environments` | [Execution environments](execution-environments.md) | `execution-environments/configuration`, `execution-environments/capabilities`, `execution-environments/probe`, `execution-environments/assignment`, `execution-environments/images` |
@@ -80,8 +80,9 @@ Use this index to open a recipe or copy its feature and full capability IDs.
 | Feature ID | Recipe | Capability IDs |
 | --- | --- | --- |
 | `connection-setup` | [Connection setup](connection-setup.md) | `connection-setup/catalog`, `connection-setup/identity-and-access`, `connection-setup/credentials`, `connection-setup/handoff`, `connection-setup/draft-recovery`, `connection-setup/task-request`, `connection-setup/channel-setup`, `connection-setup/failure` |
+| `assistant-connections` | [Assistant connections (MCP)](assistant-connections.md) | `assistant-connections/setup`, `assistant-connections/consent`, `assistant-connections/device-login`, `assistant-connections/client-use`, `assistant-connections/revocation` |
 | `app-permissions` | [App access and action permissions](app-permissions.md) | `app-permissions/agent-access`, `app-permissions/action-policy`, `app-permissions/catalog-change`, `app-permissions/test-action`, `app-permissions/account-maintenance` |
-| `chat-channels` | [External chat and email](chat-channels.md) | `chat-channels/providers`, `chat-channels/identity`, `chat-channels/conversation`, `chat-channels/attachments`, `chat-channels/lifecycle` |
+| `chat-channels` | [External chat and email](chat-channels.md) | `chat-channels/providers`, `chat-channels/identity`, `chat-channels/conversation`, `chat-channels/attachments`, `chat-channels/lifecycle`, `chat-channels/outbound-email` |
 | `gateways-profiles` | [Tool gateways and access profiles](gateways-profiles.md) | `gateways-profiles/gateway`, `gateways-profiles/profiles`, `gateways-profiles/client-connect`, `gateways-profiles/tokens`, `gateways-profiles/activity` |
 | `secrets` | [Secrets and proposals](secrets.md) | `secrets/company-secrets`, `secrets/user-secrets`, `secrets/proposals`, `secrets/vault-import`, `secrets/runtime-delivery` |
 | `plugins` | [Plugins](plugins.md) | `plugins/installation`, `plugins/configuration`, `plugins/contributions`, `plugins/lifecycle` |
@@ -98,11 +99,11 @@ Use this index to open a recipe or copy its feature and full capability IDs.
 
 | Feature ID | Recipe | Capability IDs |
 | --- | --- | --- |
-| `budgets-costs` | [Costs and budgets](budgets-costs.md) | `budgets-costs/cost-reporting`, `budgets-costs/budgets`, `budgets-costs/incidents`, `budgets-costs/resolution` |
+| `budgets-costs` | [Costs and budgets](budgets-costs.md) | `budgets-costs/cost-reporting`, `budgets-costs/budgets`, `budgets-costs/incidents`, `budgets-costs/resolution`, `budgets-costs/subscriptions`, `budgets-costs/accounting-recovery` |
 | `activity` | [Dashboards and audit trails](activity.md) | `activity/overview`, `activity/activity`, `activity/runs`, `activity/routine-audit`, `activity/timeline`, `activity/agent-commentary` |
-| `navigation-preferences` | [Navigation, profile, and announcements](navigation-preferences.md) | `navigation-preferences/navigation`, `navigation-preferences/preferences`, `navigation-preferences/profile`, `navigation-preferences/announcements`, `navigation-preferences/fallbacks` |
-| `instance-operations` | [Instance operations](instance-operations.md) | `instance-operations/install-update`, `instance-operations/server-service`, `instance-operations/configuration`, `instance-operations/diagnostics`, `instance-operations/backup` |
-| `cli-operations` | [CLI/API and local worktrees](cli-operations.md) | `cli-operations/context`, `cli-operations/domain-commands`, `cli-operations/outputs`, `cli-operations/run-controls`, `cli-operations/worktree-instances` |
+| `navigation-preferences` | [Navigation, profile, and announcements](navigation-preferences.md) | `navigation-preferences/navigation`, `navigation-preferences/preferences`, `navigation-preferences/profile`, `navigation-preferences/announcements`, `navigation-preferences/fallbacks`, `navigation-preferences/command-palette` |
+| `instance-operations` | [Instance operations](instance-operations.md) | `instance-operations/install-update`, `instance-operations/server-service`, `instance-operations/configuration`, `instance-operations/diagnostics`, `instance-operations/backup`, `instance-operations/runtime-setup` |
+| `cli-operations` | [CLI/API and local worktrees](cli-operations.md) | `cli-operations/context`, `cli-operations/domain-commands`, `cli-operations/outputs`, `cli-operations/run-controls`, `cli-operations/worktree-instances`, `cli-operations/feedback-export` |
 
 ### Contributor surfaces
 

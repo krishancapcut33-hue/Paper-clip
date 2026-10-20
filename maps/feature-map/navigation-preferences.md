@@ -19,6 +19,7 @@ Agent access: [companion](../agent-access-map/navigation-preferences.md).
 - `profile`: `navigation-preferences/profile` — edit personal identity and inspect public profile links.
 - `announcements`: `navigation-preferences/announcements` — inspect and dismiss an announcement with its intended instance-wide user scope.
 - `fallbacks`: `navigation-preferences/fallbacks` — handle missing resources and old deep links without presenting another resource as the target.
+- `command-palette`: `navigation-preferences/command-palette` — open quick search and creation actions with keyboard shortcuts, then carry query/filter intent into full search.
 
 ## How to get to it (user POV)
 
@@ -29,6 +30,10 @@ Use starred/recent/sidebar links and direct company-prefixed URLs.
 ### `profile-announcements`
 
 Use Settings → Profile, `/u/:userSlug`, and the announcement well when a publication is available.
+
+### `palette-shortcuts`
+
+Press Cmd/Ctrl+K to open the command palette. `/` focuses the current page search or opens quick search; `?` opens shortcut help. Outside an input or modal, `c` starts New task and `g` then `i` opens Inbox/My work. In the palette, use **Search all** or Cmd/Ctrl+Enter for the full results page.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -51,7 +56,17 @@ Automated: [profile page](../../ui/src/pages/ProfileSettings.test.tsx), [announc
 
 Manual: Change a disposable user’s display details, reload, and inspect an attributed profile link. Dismiss a fixture announcement, switch companies, and verify it remains dismissed for that user; check another user still has their own dismissal state.
 
+### `palette-shortcuts`
+
+Automated: [Command palette](../../ui/src/components/CommandPalette.test.tsx), [shortcut hook](../../ui/src/hooks/useKeyboardShortcuts.test.tsx), [shortcut rules](../../ui/src/lib/keyboardShortcuts.test.ts), and [cheatsheet](../../ui/src/components/KeyboardShortcutsCheatsheet.test.tsx) test components and keyboard rules. [Company search](../../server/src/__tests__/company-search-service.test.ts) covers search contracts; browser focus and identity transitions still need a live check.
+
+Manual: Use uniquely named visible and private task/project fixtures. Open the palette, find a permitted result, follow it, and reload the destination. Enter text with quick-filter chips such as `assignee:me`, `is:open`, and `updated:>7d`; use Search all and Cmd/Ctrl+Enter in separate attempts and verify the resulting query and filters. Switch person/company and confirm private results do not leak. Test `/` on a page with search and a page without it; inspect `?`, `c`, and `g i`. Type those keys inside an editor and a modal: they must not unexpectedly navigate or create work. Test a create action through its normal dialog and inspect the actual saved resource separately.
+
+Sources: [Command palette](../../ui/src/components/CommandPalette.tsx), [shortcut hook](../../ui/src/hooks/useKeyboardShortcuts.ts), [query parser](../../ui/src/lib/search-query-parser.ts), and [search routes](../../server/src/routes/issues.ts).
+
 ## Gotchas
+
+- Cmd/Ctrl+B is not a supported global sidebar shortcut. Use the current shortcut help and verify that typing and modal focus suppress navigation chords.
 
 - Announcement dismissals are intentionally instance-wide user preferences, unlike company-scoped domain data.
 - Legacy/production shells need their own navigation check when affected.
