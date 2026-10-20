@@ -1143,6 +1143,38 @@ describe("TaskChatThread runtime transcript selection", () => {
     },
   );
 
+  it.each(["summary", "provider", "empty"])("keeps empty terminal history pending before resolving its %s response", (response) => {
+    const run = nativeRunningRun();
+    const summary = "The accepted report is ready.";
+    const finalText = "The provider's actual final reply.";
+    const props = { comments: [], onAdd: async () => {}, issueStatus: "in_progress" };
+    nativeTranscriptState.terminalHydratedRunIds = new Set();
+    nativeTranscriptState.transcriptByRun.set(run.id, []);
+    renderThread({ ...props, activeRun: run });
+    const linkedRun = {
+      ...run, runId: run.id, status: "succeeded", finishedAt: "2026-08-25T18:00:10.000Z",
+      resultJson: response === "empty" ? null : {
+        nativeResult: { schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary },
+      },
+    };
+    renderThread({ ...props, linkedRuns: [linkedRun] });
+    expect(container.textContent).not.toContain(summary);
+    expect(container.textContent).not.toContain("The runner returned no user-facing response.");
+
+    if (response === "provider") {
+      nativeTranscriptState.transcriptByRun.set(run.id, [assistantEntry("2026-08-25T18:00:05.000Z", finalText, "final")]);
+    }
+    nativeTranscriptState.terminalHydratedRunIds = new Set([run.id]);
+    renderThread({ ...props, linkedRuns: [linkedRun] });
+    if (response === "empty") {
+      expect(container.textContent).toContain("The runner returned no user-facing response.");
+    } else {
+      expect(container.textContent?.split(response === "summary" ? summary : finalText)).toHaveLength(2);
+      expect(container.textContent).not.toContain("The runner returned no user-facing response.");
+      if (response === "provider") expect(container.textContent).not.toContain(summary);
+    }
+  });
+
   it("keeps runner layout during admission and native transcripts scoped to native runs", () => {
     nativeTranscriptState.transcriptByRun.set("native-run", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Checking the task.", "progress"),

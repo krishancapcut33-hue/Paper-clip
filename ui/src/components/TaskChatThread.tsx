@@ -1796,6 +1796,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           settledRunIds.add(source.id);
           continue;
         }
+        if (sourceIsPaperclipRunner && !sourceAllowSummaryFallback) continue;
         if (
           isNativePaperclipRunnerRun(source) &&
           sourceAllowSummaryFallback &&
@@ -1873,6 +1874,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : undefined;
       if (
         source.status === "succeeded" &&
+        sourceAllowSummaryFallback &&
         !sourceHasPresentationComment &&
         resolvedWithoutUserFacingResponse(meta?.resultJson) &&
         !sourceHasNativeResponse
