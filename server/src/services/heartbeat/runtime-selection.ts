@@ -79,7 +79,7 @@ import { NATIVE_PREPARATION_FENCING_VERSION } from "../native-runtime/native-act
 import type { issueService } from "../issues.js";
 import { buildPlanReviewContext } from "../plan-review-context.js";
 import { resolvePaperclipRunnerIdleTimeoutMs } from "@paperclipai/adapter-utils";
-import { selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
+import { normalizePaperclipWakePayload, selectPaperclipTaskMarkdown } from "@paperclipai/adapter-utils/server-utils";
 import type { ProviderResourceDisposition } from "../environment-runtime.js";
 
 type Run = typeof heartbeatRuns.$inferSelect;
@@ -781,16 +781,20 @@ export async function selectHeartbeatRuntime(db: Db, input: HeartbeatRuntimeSele
                 try {
                   const previousInput = parseNativeExecutionInput(parseObject(previousNativeRun.runnerProfileJson).nativeExecutionInput);
                   const previousTask = previousInput.task;
-                  if (paperclipWakePayload?.externalChatProvider) {
+                  const previousWake = normalizePaperclipWakePayload(parseObject(previousNativeRun.contextSnapshot).paperclipWake);
+                  const githubReviewConfigurationKeys = previousWake?.githubReviewConfigurations.map((config) => config.key);
+                  if (paperclipWakePayload?.externalChatProvider || previousWake?.externalChatProvider) {
                     // External native inputs use a neutral task title. Compare
                     // the saved canonical brief so old provider text is not
                     // repeated as a change, while genuine edits still arrive.
                     const savedIssue = parseObject(parseObject(previousNativeRun.contextSnapshot).paperclipIssue);
                     if (savedIssue.id !== issueRef.id || typeof savedIssue.title !== "string" ||
                       (savedIssue.description !== null && typeof savedIssue.description !== "string")) return null;
-                    return { runId: previousNativeRun.id, task: { title: savedIssue.title, description: savedIssue.description }, nativeExecutionInput: previousInput };
+                    return { runId: previousNativeRun.id, task: { title: savedIssue.title, description: savedIssue.description },
+                      githubReviewConfigurationKeys, nativeExecutionInput: previousInput,
+                    };
                   }
-                  return { runId: previousNativeRun.id, task: previousTask, nativeExecutionInput: previousInput };
+                  return { runId: previousNativeRun.id, task: previousTask, githubReviewConfigurationKeys, nativeExecutionInput: previousInput };
                 } catch {
                   // An invalid prior snapshot must use the fresh bootstrap.
                   return null;

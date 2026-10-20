@@ -74,6 +74,7 @@ export interface BuildNativeExecutionInput {
   previousTurn?: {
     runId: string;
     task: { title: string; description: string | null };
+    githubReviewConfigurationKeys?: string[];
     nativeExecutionInput?: {
       binding: { companyId: string; runId: string; issueId: string; agentId: string };
       session: { normalizedSessionId: string | null };
@@ -263,6 +264,7 @@ export function buildNativeExecutionInput(input: BuildNativeExecutionInput): Nat
         wakePayload: input.wakePayload,
         previousRunId: input.previousTurn.runId,
         previousIssue: input.previousTurn.task,
+        previousGitHubReviewConfigurationKeys: input.previousTurn.githubReviewConfigurationKeys,
         allowExternalChat: true,
         issue: input.issue,
         // A stored paperclipCase alone does not prove that the provider ever
