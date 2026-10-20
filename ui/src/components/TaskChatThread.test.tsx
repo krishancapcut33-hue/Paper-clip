@@ -3242,7 +3242,7 @@ describe("TaskChatThread no-live-execution-path recovery", () => {
     updatedAt: new Date("2026-08-26T12:00:00.000Z"),
   };
 
-  it.each(["native", "legacy"].flatMap(runtimeMode => [true, false].flatMap(streamlined => [true, false].map(recoveryIsLatest => ({ runtimeMode, streamlined, recoveryIsLatest })))))
+  it.each((["native", "legacy"] as const).flatMap(runtimeMode => [true, false].flatMap(streamlined => [true, false].map(recoveryIsLatest => ({ runtimeMode, streamlined, recoveryIsLatest })))))
     ("keeps the last adjacent error for $runtimeMode (streamlined=$streamlined, recoveryIsLatest=$recoveryIsLatest)", ({ runtimeMode, streamlined, recoveryIsLatest }) => {
       streamlinedState.enabled = streamlined;
       render(<TaskChatThread

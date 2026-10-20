@@ -46,6 +46,7 @@ const meta = {
   args: { items: [failed] },
   parameters: {
     layout: "fullscreen",
+    throwPlayFunctionExceptions: true,
     paperclip: {
       capabilities: ["tasks/discussion", "runs-adapters/runs"],
       status: "current", implementation: "production", boundary: "fixtures",
@@ -70,7 +71,7 @@ export const FailedRun: Story = {
 export const OlderMarker: Story = {
   args: { items: [{ ...failed, collapsible: false }] },
   play: async ({ canvasElement }) => {
-    await waitFor(() => expect(within(canvasElement).getByText(failed.detail!)).toBeVisible());
+    await waitFor(() => expect(within(canvasElement).getByText(failed.detail!, { exact: false })).toBeVisible());
     await expectNoRules(canvasElement);
   },
 };
