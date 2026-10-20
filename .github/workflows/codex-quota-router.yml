@@ -26,6 +26,7 @@ jobs:
         with:
           node-version: 24
           cache: pnpm
+      - run: pnpm install --resolution-only --ignore-scripts --no-frozen-lockfile --filter @paperclipai/plugin-codex-quota-router...
       - run: pnpm install --frozen-lockfile --ignore-scripts --filter @paperclipai/plugin-codex-quota-router...
       - run: pnpm --filter @paperclipai/plugin-codex-quota-router typecheck
       - run: pnpm --filter @paperclipai/plugin-codex-quota-router test
