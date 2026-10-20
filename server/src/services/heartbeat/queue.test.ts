@@ -58,6 +58,7 @@ function callbacks(db: Db) {
     cancelRunInternal: vi.fn(async () => undefined),
     cancelActiveForAgentInternal: vi.fn(async () => undefined),
     resumeExecutionWaitComments: vi.fn(async () => undefined),
+    resumeExecutionOwnershipWaits: vi.fn(async () => undefined),
     resumeQueuedCommentInterrupt: vi.fn(async () => undefined),
     resumeSavedLegacyComments: vi.fn(async () => undefined),
     formatIssueIdentifierLink: (_identifier: string | null, fallback: string) => fallback,
@@ -89,6 +90,7 @@ describe("heartbeat queue module boundary", () => {
     expect(database.access).not.toHaveBeenCalled();
     expect(deps.getAgent).not.toHaveBeenCalled();
     expect(deps.resumeExecutionWaitComments).not.toHaveBeenCalled();
+    expect(deps.resumeExecutionOwnershipWaits).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 

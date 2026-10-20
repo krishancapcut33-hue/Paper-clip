@@ -1237,6 +1237,7 @@ export function heartbeatService(
     liveRunExecutions,
     getSchedulingSuppression,
     resumeExecutionWaitComments,
+    resumeExecutionOwnershipWaits,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments,
@@ -1417,6 +1418,10 @@ export function heartbeatService(
 
   function resumeExecutionWaitComments(...args: Parameters<typeof runControl.resumeExecutionWaitComments>) {
     return runControl.resumeExecutionWaitComments(...args);
+  }
+
+  function resumeExecutionOwnershipWaits(...args: Parameters<typeof runControl.resumeExecutionOwnershipWaits>) {
+    return runControl.resumeExecutionOwnershipWaits(...args);
   }
 
   function resumeQueuedCommentInterrupt(...args: Parameters<typeof runControl.resumeQueuedCommentInterrupt>) {
@@ -3857,6 +3862,16 @@ export function heartbeatService(
         if (latestRun) await resumeRemoteStopComments(latestRun).catch(err => {
           logger.warn({ err, runId: run.id }, "failed to resume user messages after remote Stop");
         });
+        // The lease this executor held was the only gate for a handoff wake
+        // parked behind it. Its release is observed nowhere else.
+        const ownershipWaitIssueId = latestRun && isHeartbeatRunTerminalStatus(latestRun.status)
+          ? readNonEmptyString(latestRun.contextSnapshot?.issueId) ?? latestRun.nativeIssueId
+          : null;
+        if (ownershipWaitIssueId) {
+          await resumeExecutionOwnershipWaits({ companyId: run.companyId, issueId: ownershipWaitIssueId }).catch(err => {
+            logger.warn({ err, runId: run.id }, "failed to resume wakes parked behind the released execution hold");
+          });
+        }
         if (latestRun && isHeartbeatRunTerminalStatus(latestRun.status)) {
           await toolActionDeliveryService(db, { wakeup: trackWakeup })
             .deliverForRun({ companyId: run.companyId, runId: run.id })
@@ -4034,6 +4049,7 @@ export function heartbeatService(
     resumeRemoteStopComments,
     resumeQueuedCommentInterrupt,
     resumeExecutionWaitComments,
+    resumeExecutionOwnershipWaits,
 
     sweepStaleIssueLocks,
 

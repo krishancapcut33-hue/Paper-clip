@@ -827,6 +827,8 @@ export interface WakeupOptions {
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
   queuedCommentRequestId?: string;
+  /** Internal resume of a wake parked behind a released execution ownership hold. */
+  executionWaitResumeId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
   failedRunId?: string | null;
   durableChatRequest?: DurableChatWakeupRequest;
