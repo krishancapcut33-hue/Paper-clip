@@ -1051,6 +1051,9 @@ describe("AgentConfigForm environment selector", () => {
       await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith("company-1", "opencode_local", {
         environmentId: null,
         provider: "opencode",
+        acpxAgent: undefined,
+        aiConnection: { mode: "responsible_user", provider: "opencode", method: "api_key" },
+        agentId: "agent-1",
       }));
 
       const modelButton = [...result.container.querySelectorAll("button")]
@@ -1097,6 +1100,33 @@ describe("AgentConfigForm environment selector", () => {
 
     expect(result.container.textContent).not.toContain("Environment override");
     expect(result.container.querySelector('[aria-label="Environment override"]')).toBeNull();
+  });
+
+  it("refreshes Copilot models after reconnecting the same responsible-user account", async () => {
+    const binding = { mode: "responsible_user", provider: "github", method: "api_key" } as const;
+    const account = { id: "copilot-account", grantId: "copilot-grant", companyId: "company-1", provider: "github", method: "api_key", name: "My Copilot", ownership: "personal", ownerUserId: "you", isDefault: true, status: "needs_attention" } as const;
+    const accountList = vi.spyOn(aiConnectionsApi, "list").mockResolvedValue({ currentUserId: "you", canManageConnections: true, connections: [account] });
+    const reconnect = vi.spyOn(aiConnectionsApi, "create").mockResolvedValue({ connectionId: account.id, grantId: account.grantId });
+    mockAgentsApi.adapterModels.mockResolvedValueOnce([{ id: "old-model", label: "Old token model" }])
+      .mockResolvedValue([{ id: "gpt-5.6-luna", label: "New token model" }]);
+    try {
+      const result = await renderForm([makeEnvironment({ id: "local-1", name: "Local", driver: "local" })], {
+        adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "copilot", model: "gpt-5.6-luna" }, runtimeConfig: { aiConnection: binding },
+      });
+      roots.push(result.root);
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(1));
+      await clickByText(result.container, "Reconnect account");
+      const token = document.querySelector<HTMLInputElement>('input[placeholder="github_pat_..."]');
+      expect(token).not.toBeNull();
+      await act(async () => setInputValue(token!, "github_pat_test_reconnect"));
+      await flushReact();
+      await clickByText(document.body, "Connect");
+      await vi.waitFor(() => expect(reconnect).toHaveBeenCalledWith("company-1", expect.objectContaining({ provider: "github", connectionId: account.id, apiKey: "github_pat_test_reconnect" })));
+      await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledTimes(2));
+      expect(mockAgentsApi.adapterModels).toHaveBeenLastCalledWith("company-1", "paperclip_runner", expect.objectContaining({ provider: "acpx", acpxAgent: "copilot", aiConnection: binding }));
+      await flushReact();
+      expect(result.container.textContent).toContain("New token model");
+    } finally { accountList.mockRestore(); reconnect.mockRestore(); }
   });
 
   it("renders GPT-6 Astra and its model-specific reasoning efforts", async () => {
