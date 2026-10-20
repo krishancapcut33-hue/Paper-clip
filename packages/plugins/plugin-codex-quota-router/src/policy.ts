@@ -35,7 +35,7 @@ function isCodexLimit(limit: { id: string; scope: string | null }): boolean {
     (limit.id === "codex" || limit.id.startsWith("codex.") || limit.id.startsWith("codex_"));
 }
 
-function assess(candidate: Candidate, now: number): Assessment {
+function assess(candidate: Candidate, now: number, pinned = false): Assessment {
   const waiting = (reason: string, retryAt = now + RECHECK_MS, knownLow = false): Assessment => ({
     candidate, tier: "wait", remaining: 0, knownLow, retryAt, reason,
   });
@@ -79,15 +79,21 @@ function assess(candidate: Candidate, now: number): Assessment {
       reset !== null && reset - now < NEAR_RESET_MS;
   });
   if (mayUseNearReset) {
+    if (pinned) {
+      const reset = Math.max(...limiting.map(({ limit }) => futureReset(limit.resetsAt, now)!));
+      return waiting("Pinned account at or below 10% reserve", reset, true);
+    }
     return { candidate, tier: "near_reset", remaining, knownLow: true, retryAt, reason: "" };
   }
   const nextEligibility = limiting.map(({ limit, remaining: left }) => {
     const reset = futureReset(limit.resetsAt, now);
     if (reset === null) return now + RECHECK_MS;
-    return left! > 0 && reset - now >= NEAR_RESET_MS
+    return !pinned && left! > 0 && reset - now >= NEAR_RESET_MS
       ? reset - NEAR_RESET_MS + 1_000 : reset;
   });
-  return waiting("At or below 10% reserve", Math.min(...nextEligibility), true);
+  return waiting("At or below 10% reserve",
+    pinned && nextEligibility.every((time) => time > now + RECHECK_MS)
+      ? Math.max(...nextEligibility) : Math.min(...nextEligibility), true);
 }
 
 function inRotationOrder(request: AiConnectionRouterRequest, entries: Assessment[]): Assessment[] {
@@ -110,7 +116,7 @@ export function routeCodexConnection(request: AiConnectionRouterRequest): AiConn
     : request.candidates;
   if (candidates.length === 0) return { kind: "unavailable", skipped: {} };
 
-  const assessed = candidates.map((candidate) => assess(candidate, now));
+  const assessed = candidates.map((candidate) => assess(candidate, now, Boolean(request.pinnedMemberId)));
   // A task pin can outlive a member's removal from the current pool config.
   // The host still authorizes that member, but memberOrder no longer lists it.
   const pinned = request.pinnedMemberId ? assessed[0] : undefined;

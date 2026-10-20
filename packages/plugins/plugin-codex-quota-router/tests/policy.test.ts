@@ -111,7 +111,19 @@ describe("Codex quota router", () => {
     const result = routeCodexConnection(request([
       { remaining: 2, resetHours: 8 }, { remaining: 70 },
     ], "20000000-0000-4000-8000-000000000001"));
-    expect(result.kind).toBe("exhausted");
+    expect(result).toMatchObject({ kind: "exhausted", retryAt: iso(NOW + 8 * 3_600_000) });
+  });
+
+  it("waits for the latest limiting reset on a pinned account", () => {
+    const input = request([{ remaining: 9, resetHours: 2 }],
+      "20000000-0000-4000-8000-000000000001");
+    input.candidates[0]!.usage!.limits.push({
+      ...input.candidates[0]!.usage!.limits[0]!, id: "codex.secondary_window",
+      remainingPercent: 8, usedPercent: 92, resetsAt: iso(NOW + 8 * 3_600_000),
+    });
+    expect(routeCodexConnection(input)).toMatchObject({
+      kind: "exhausted", retryAt: iso(NOW + 8 * 3_600_000),
+    });
   });
 
   it("keeps a healthy pinned account after its member leaves the current pool order", () => {
@@ -132,7 +144,7 @@ describe("Codex quota router", () => {
     input.candidates = [input.candidates[0]!];
     expect(routeCodexConnection(input)).toMatchObject({
       kind: "exhausted",
-      skipped: { [input.memberOrder[0]!]: "Cannot verify every pool account is at or below 10%" },
+      skipped: { [input.memberOrder[0]!]: "Pinned account at or below 10% reserve" },
     });
   });
 
