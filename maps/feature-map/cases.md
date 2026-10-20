@@ -76,6 +76,13 @@ from the board and stop the current execution, including a pending native retry:
 later task completion must leave the case open. Repeating Stop for an older run
 must preserve a newer execution's terminal intent.
 
+With generic API tools disabled, use native `read_case` to open a historical
+case document and a linked task document using `section: "document"`,
+`documentKey`, and the linked task's `documentIssueId` where applicable. Recover
+the full body through bounded JSON pages. Edit the document between pages and
+verify a snapshot conflict; unlink the task or revoke source access and verify
+further reads fail. System and quarantined documents must remain inaccessible.
+
 While a transfer awaits source release, change its recipient's assignment policy
 or revoke the caller's assignment grant. The worker must retain the pending
 handoff without changing the task owner or phase or waking the recipient. Restore

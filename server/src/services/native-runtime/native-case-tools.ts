@@ -8,7 +8,7 @@ import { badRequest, forbidden, notFound } from "../../errors.js";
 import { assertActorCanReadCase } from "../case-access.js";
 import type { AuthorizationActor } from "../authorization.js";
 import { instanceSettingsService } from "../instance-settings.js";
-import { caseReadPageShape } from "../case-agent-read.js";
+import { caseReadPageShape, refineCaseReadPage } from "../case-agent-read.js";
 import type { RunnerApiCall } from "./runner-api-client.js";
 
 export const NATIVE_CASE_OPERATIONS = new Set([
@@ -39,8 +39,7 @@ export const createNativeCaseSchema = z.object({
 }).strict();
 
 const schemas = {
-  read_case: identity.extend(caseReadPageShape).refine(input => !input.offsetBytes || !!input.snapshot,
-    "A continuation offset requires the snapshot returned by the previous read"),
+  read_case: identity.extend(caseReadPageShape).superRefine(refineCaseReadPage),
   update_case: patchCaseSchema.pick({ title: true, summary: true, fields: true })
     .extend({ caseId: z.string().guid().optional(), idempotencyKey: retryKey })
     .strict().refine(input => ["title", "summary", "fields"].some(key => Object.hasOwn(input, key)),

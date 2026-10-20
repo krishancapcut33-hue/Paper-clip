@@ -38,6 +38,25 @@ describe("production case data contracts", () => {
     }
   });
 
+  it("opens only explicitly selected case or linked-task documents through the bounded read contract", () => {
+    for (const schema of [readCaseAction.live.descriptor.inputSchema, paperclipSemanticAction("read_case")!.inputSchema]) {
+      const validate = ajv.compile(schema);
+      expect(validate({ section: "document", documentKey: "Research:v1.notes" }), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ section: "document", documentKey: "workflow", documentIssueId: caseId }), JSON.stringify(validate.errors)).toBe(true);
+      expect(validate({ section: "document", documentKey: "WORKFLOW", documentIssueId: caseId, offsetBytes: 8192,
+        snapshot: "a".repeat(64) }), JSON.stringify(validate.errors)).toBe(true);
+      for (const input of [{ section: "document" }, { documentKey: "workflow" }, { documentIssueId: caseId },
+        { section: "case", documentKey: "workflow" }, { section: "fields", documentIssueId: caseId },
+        { section: "document", documentKey: "../escape" }, { section: "document", documentKey: "workflow", documentIssueId: "foreign" },
+        { section: "document", documentKey: "Research:v1", documentIssueId: caseId },
+        { section: "document", documentKey: "a".repeat(65), documentIssueId: caseId },
+        { section: "document", documentKey: "workflow", offsetBytes: 1 },
+        { section: "document", documentKey: "workflow", url: "/api/issues/arbitrary/documents/secret" }]) {
+        expect(validate(input), JSON.stringify(input)).toBe(false);
+      }
+    }
+  });
+
   it("requires a nonempty, idempotent facts update and excludes workflow and access mutations", () => {
     const validate = ajv.compile(updateCaseAction.live.descriptor.inputSchema);
     expect(validate({ idempotencyKey: "save-facts" })).toBe(false);

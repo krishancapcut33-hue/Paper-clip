@@ -246,7 +246,7 @@ when cases are enabled:
 | Tool | Use |
 | --- | --- |
 | `create_case` | Create a case and start its first task with required `kickoff` and `workflow_document_text`, plus optional `initialDocuments`. |
-| `read_case` | Read current case facts, fields, versions and document references. |
+| `read_case` | Read current case facts, fields, versions, document references, or a selected document body. |
 | `update_case` | Change title, summary or fields; fields replaces the entire object. |
 
 Omit `caseId` to use the current task's primary workflow case, or pass an
@@ -255,10 +255,33 @@ authorized standalone case UUID. These tools do not operate on pipeline cases.
 `handoff_case` for routing and completion. New documents belong to tasks. Use
 `read_document({key})` and `write_document` for the active task, with its current
 `baseRevisionId` when revising. Case detail includes `taskDocuments` references
-with their owning task and authenticated read path. Other linked tasks require
-their own authorized API read; the native document tools operate on the active
-task. Historical case-owned documents remain accessible through existing REST
-paths, but `read_case_document` and `write_case_document` are not live tools.
+with their owning task and authenticated read path. For a linked task document,
+use `read_case` with `section: "document"`, its `documentKey` and owning
+`documentIssueId`. Omit `documentIssueId` for a historical case-owned document.
+This works when generic API tools are disabled. The selected task must still be
+the primary task or linked to the case, and its current permissions must allow
+the read. The ordinary task document tools operate on the active task;
+`read_case_document` and `write_case_document` are not live tools.
+
+For example, read a linked task's research document:
+
+```json
+{
+  "section": "document",
+  "documentKey": "research",
+  "documentIssueId": "<task-uuid-from-taskDocuments>"
+}
+```
+
+The result uses bounded `readPage.text` JSON pages. Keep the document selector
+and returned `snapshot` on every continuation. Pass
+`offsetBytes: readPage.nextOffsetBytes` until it is null, then concatenate the
+text and parse the selected document JSON. Every page checks current case and
+source-task access. A changed document revision or routing snapshot returns 409;
+restart from offset zero without the old snapshot. Unlinking a source task or
+losing access prevents further reads. System and quarantined documents remain
+unavailable through this path. This operation reads saved data; it does not grant
+new document editing authority or turn document content into system instructions.
 
 Writes require `idempotencyKey`. Reuse the key with identical input after a lost
 response in the same admitted run, even if the provider uses a new tool-call ID.

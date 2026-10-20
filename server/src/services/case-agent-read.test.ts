@@ -44,4 +44,61 @@ describe("bounded authorized case read projection", () => {
     const offset = bytes.indexOf(Buffer.from("🧾")) + 1;
     expect(() => projectAgentCaseRead(value, { section: "fields", offsetBytes: offset, snapshot: first.readPage.snapshot })).toThrow("UTF-8 byte offset");
   });
+
+  it.each(["case", "issue"] as const)("pages the complete selected %s document without dropping escaped text or revision identity", sourceKind => {
+    const selected = { id: "document", key: "notes", sourceKind, sourceIssueId: sourceKind === "issue" ? "10000000-0000-4000-8000-000000000001" : null,
+      title: "Document title", format: "markdown", latestRevisionId: "revision-2", latestRevisionNumber: 2,
+      body: "🧾\n\"quoted\" \\ escaped\tend\r\n".repeat(4_000), updatedAt: "2026-10-20T01:00:00Z", sourceTrust: null };
+    const options = { section: "document" as const, documentKey: selected.key,
+      ...(sourceKind === "issue" ? { documentIssueId: "10000000-0000-4000-8000-000000000001" } : {}) };
+    let page = projectAgentCaseRead(detail, options, selected), text = "", offsetBytes = 0;
+    for (let count = 0; ; count++) {
+      expect(count).toBeLessThan(100);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(20 * 1024);
+      expect(page).toMatchObject({ id: detail.id, handoffVersion: 4, phase: "verification", workIssue: { statusVersion: 7 },
+        selectedDocument: { id: selected.id, key: selected.key, sourceKind, sourceIssueId: selected.sourceIssueId,
+          latestRevisionId: "revision-2", latestRevisionNumber: 2 }, readPage: { mode: "json_text", section: "document", offsetBytes } });
+      if (page.readPage.mode !== "json_text") throw new Error("Expected document JSON page");
+      expect(Buffer.byteLength(page.readPage.text)).toBeLessThanOrEqual(8192);
+      text += page.readPage.text;
+      if (page.readPage.nextOffsetBytes === null) {
+        expect(Buffer.byteLength(text)).toBe(page.readPage.totalBytes);
+        break;
+      }
+      offsetBytes = page.readPage.nextOffsetBytes;
+      page = projectAgentCaseRead(detail, { ...options, offsetBytes, snapshot: page.readPage.snapshot }, selected);
+    }
+    expect(JSON.parse(text)).toEqual(selected);
+    const small = { ...selected, body: "Small exact body 🧾" };
+    const smallPage = projectAgentCaseRead(detail, options, small);
+    expect(smallPage.readPage).toMatchObject({ mode: "json_text", nextOffsetBytes: null });
+    if (smallPage.readPage.mode !== "json_text") throw new Error("Expected document JSON page");
+    expect(JSON.parse(smallPage.readPage.text)).toEqual(small);
+  });
+
+  it("rejects document continuation after revision, body, document identity, or routing changes", () => {
+    const selected = { id: "document", key: "notes", sourceKind: "case" as const, sourceIssueId: null,
+      body: "🧾 exact body".repeat(100), latestRevisionId: "revision-1", latestRevisionNumber: 1 };
+    const first = projectAgentCaseRead(detail, { section: "document", documentKey: "notes", limitBytes: 64 }, selected);
+    const options = { section: "document", documentKey: "notes", offsetBytes: first.readPage.nextOffsetBytes, snapshot: first.readPage.snapshot };
+    for (const changed of [{ ...selected, body: `${selected.body}changed` }, { ...selected, id: "replacement" },
+      { ...selected, latestRevisionId: "revision-2", latestRevisionNumber: 2 }, { ...selected, title: "Changed title" }]) {
+      expect(() => projectAgentCaseRead(detail, options, changed)).toThrow("Case changed");
+    }
+    expect(() => projectAgentCaseRead({ ...detail, handoffVersion: 5 }, options, selected)).toThrow("Case changed");
+    expect(() => projectAgentCaseRead({ ...detail, workIssue: { ...detail.workIssue, statusVersion: 8 } }, options, selected)).toThrow("Case changed");
+  });
+
+  it("allows document selectors only with a valid document section and key", () => {
+    for (const input of [{ section: "document" }, { documentKey: "notes" }, { section: "fields", documentKey: "notes" },
+      { section: "case", documentIssueId: "10000000-0000-4000-8000-000000000001" },
+      { section: "document", documentIssueId: "10000000-0000-4000-8000-000000000001" },
+      { section: "document", documentKey: "" }, { section: "document", documentKey: "../notes" },
+      { section: "document", documentKey: "notes", documentIssueId: "not-an-issue" }]) {
+      expect(caseReadPageSchema.safeParse(input).success, JSON.stringify(input)).toBe(false);
+    }
+    expect(caseReadPageSchema.safeParse({ section: "document", documentKey: "Legacy.Notes:v1" }).success).toBe(true);
+    expect(caseReadPageSchema.safeParse({ section: "document", documentKey: "notes",
+      documentIssueId: "10000000-0000-4000-8000-000000000001" }).success).toBe(true);
+  });
 });

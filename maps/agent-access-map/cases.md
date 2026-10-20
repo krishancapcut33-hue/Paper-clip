@@ -33,6 +33,11 @@ case GET (`agentRead=true`). Small cases remain structured; large cases and
 `offsetBytes` and the returned `snapshot`; a changed case/task version or selected
 projection returns 409. Every successful page retains handoff/task versions.
 Generic `call_api` remains optional and is not needed to recover large fields.
+`section: "document"` with `documentKey` reads a historical case-owned document;
+adding `documentIssueId` selects a current primary or linked task document.
+Bodies use the same bounded JSON pages without generic API tools. Each page
+rechecks source-task access and linkage, excludes system/quarantined documents,
+and binds the snapshot to the selected document identity, revision and body.
 
 
 Policy: enableCases gate; company/case/task boundaries, active run where required,
@@ -70,7 +75,8 @@ agents, human waits and correction/escalation rules. Diagram labels are advisory
 `update_case` changes title, summary and whole-object fields. Reads/updates
 default to the primary workflow case and retain REST authorization. Standard
 `read_document` / `write_document` operate on the active task; rollup references
-identify other accessible tasks and their authenticated REST read paths.
+identify other accessible tasks and their authenticated REST read paths. Native
+`read_case` document selection can open those references without `call_api`.
 
 Policy: enableCases gate; company/case/task boundaries, active run where required,
 source trust, and checked-out mutation ownership.

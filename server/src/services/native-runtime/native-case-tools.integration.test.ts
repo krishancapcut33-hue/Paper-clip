@@ -1,11 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, agentWakeupRequests, caseAccessSources, caseDocuments, caseEvents, caseHandoffs, cases, heartbeatRuns, issues, pipelineCases, pipelines, pipelineStages } from "@paperclipai/db";
+import { agents, agentWakeupRequests, caseAccessSources, caseDocuments, caseEvents, caseHandoffs, caseIssueLinks, cases, documents, heartbeatRuns, issues, pipelineCases, pipelines, pipelineStages } from "@paperclipai/db";
+import { SYSTEM_ISSUE_DOCUMENT_KEYS } from "@paperclipai/shared";
 import { startRunnerApiTestServer } from "../../__tests__/helpers/runner-api-server.js";
 import { instanceSettingsService } from "../instance-settings.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { createLocalAgentJwt } from "../../agent-auth-jwt.js";
+import { documentService } from "../documents.js";
 
 describe("native case tools through authenticated production routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
@@ -29,6 +31,57 @@ describe("native case tools through authenticated production routes", () => {
     const authority = new PaperclipRunnerToolAuthority(server.db, { ...f, casesEnabled: true, workMode: mode });
     const call = (tool: string, input: Record<string, unknown> = {}, callId = randomUUID()) => authority.execute({ tool, callId, arguments: input });
     return { ...f, record: record!, authority, call };
+  }
+  type CaseFixture = Awaited<ReturnType<typeof fixture>>;
+  type CaseDocument = { id: string; key: string; body: string; latestRevisionId: string; latestRevisionNumber: number };
+  type DocumentPage = { ok: boolean; status: number; data: { id: string; handoffVersion: number; phase: string | null;
+    workIssue: { statusVersion: number }; readPage: { mode: "json_text"; section: "document"; text: string;
+      snapshot: string; offsetBytes: number; nextOffsetBytes: number | null; totalBytes: number } } };
+  const documentBody = "Exact receipt 🧾\n\"quoted\" \\ escaped\tend\r\n".repeat(1_500);
+
+  async function saveCaseDocument(f: CaseFixture, key: string, body: string, baseRevisionId?: string) {
+    const response = await fetch(`${server.apiUrl}/api/cases/${f.record.id}/documents/${key}`, {
+      method: "PUT", headers: { Authorization: `Bearer ${createLocalAgentJwt(f.agentId, f.companyId, "paperclip_runner", f.runId)}`,
+        "Content-Type": "application/json" }, body: JSON.stringify({ title: `Case ${key}`, format: "markdown", body, baseRevisionId }),
+    });
+    expect(response.status).toBe(200);
+    return await response.json() as { document: { id: string; latestRevisionId: string; latestRevisionNumber: number } };
+  }
+
+  async function documentFixture(kind: "case" | "primary" | "linked", body: string) {
+    const f = await fixture(), key = "reference-notes";
+    if (kind === "linked") await server.db.insert(caseIssueLinks).values({ companyId: f.companyId, caseId: f.record.id,
+      issueId: f.blockerId, role: "reference" });
+    const issueId = kind === "primary" ? f.issueId : kind === "linked" ? f.blockerId : undefined;
+    const saved = kind === "case" ? await saveCaseDocument(f, key, body) : await documentService(server.db).upsertIssueDocument({
+      issueId: issueId!, key, title: `Task ${key}`, format: "markdown", body, createdByAgentId: f.agentId,
+    });
+    return { ...f, key, kind, saved, selector: { section: "document", documentKey: key, ...(issueId ? { documentIssueId: issueId } : {}) } };
+  }
+
+  async function readCompleteDocument(f: CaseFixture, selector: Record<string, unknown>, first?: DocumentPage) {
+    let page = first ?? await f.call("read_case", selector) as DocumentPage;
+    let text = "", offsetBytes = 0;
+    const initial = page;
+    const snapshot = page.data.readPage.snapshot;
+    const routing = { phase: page.data.phase, handoffVersion: page.data.handoffVersion, workIssue: page.data.workIssue };
+    for (let count = 0; ; count++) {
+      expect(count).toBeLessThan(100);
+      expect(page).toMatchObject({ ok: true, status: 200, data: { id: f.record.id, ...routing,
+        readPage: { mode: "json_text", section: "document", snapshot, offsetBytes } } });
+      expect(page).not.toHaveProperty("artifact");
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(24 * 1024);
+      expect(Buffer.byteLength(page.data.readPage.text)).toBeLessThanOrEqual(8 * 1024);
+      text += page.data.readPage.text;
+      const next = page.data.readPage.nextOffsetBytes;
+      if (next === null) {
+        expect(Buffer.byteLength(text)).toBe(page.data.readPage.totalBytes);
+        return { document: JSON.parse(text) as CaseDocument, first: initial, pages: count + 1 };
+      }
+      expect(next).toBeGreaterThan(offsetBytes);
+      offsetBytes = next;
+      page = await f.call("read_case", { ...selector, offsetBytes, snapshot }) as DocumentPage;
+    }
   }
   it("exposes case facts and creation without a second document tool surface", async () => {
     const f = await fixture();
@@ -212,6 +265,106 @@ describe("native case tools through authenticated production routes", () => {
     await server.db.insert(caseAccessSources).values({ companyId: f.companyId, caseId: f.record.id, sourceKind: "issue", sourceId: f.blockerId });
     await server.db.update(issues).set({ visibility: "private", assigneeAgentId: null }).where(eq(issues.id, f.blockerId));
     await expect(f.call("read_case", { section: "case", offsetBytes: first.data.readPage.nextOffsetBytes, snapshot })).rejects.toThrow("Case not found");
+  });
+
+  it.each(["case", "primary", "linked"] as const)("reads small and paged %s document bodies with generic API disabled", async kind => {
+    const f = await documentFixture(kind, "Small exact body 🧾\n\"quoted\" \\tail");
+    expect(f.authority.definitions().map(tool => tool.name)).not.toContain("call_api");
+    const before = await f.snapshot();
+    const small = await readCompleteDocument(f, f.selector);
+    expect(small.document).toMatchObject({ id: f.saved.document.id, body: "Small exact body 🧾\n\"quoted\" \\tail",
+      latestRevisionId: f.saved.document.latestRevisionId, latestRevisionNumber: 1 });
+    expect(small.pages).toBe(1);
+    const saved = kind === "case" ? await saveCaseDocument(f, f.key, documentBody, f.saved.document.latestRevisionId)
+      : await documentService(server.db).upsertIssueDocument({ issueId: f.selector.documentIssueId!, key: f.key,
+        title: `Task ${f.key}`, format: "markdown", body: documentBody, baseRevisionId: f.saved.document.latestRevisionId });
+    await server.db.update(cases).set({ phase: "verification", handoffVersion: 7 }).where(eq(cases.id, f.record.id));
+    await server.db.update(issues).set({ statusVersion: 12 }).where(eq(issues.id, f.issueId));
+    const first = await f.call("read_case", f.selector) as DocumentPage;
+    expect(first).toMatchObject({ data: { phase: "verification", handoffVersion: 7, workIssue: { statusVersion: 12 } } });
+    const large = await readCompleteDocument(f, f.selector, first);
+    expect(large.pages).toBeGreaterThan(1);
+    expect(large.document).toMatchObject({ id: saved.document.id, body: documentBody,
+      latestRevisionId: saved.document.latestRevisionId, latestRevisionNumber: 2 });
+    expect((await f.snapshot()).assets).toEqual(before.assets);
+    // The established active-task document tool remains independently usable.
+    expect(await f.call("read_document", { key: "notes" })).toMatchObject({ document: { key: "notes" } });
+  });
+
+  it("keeps same-key case and task documents distinct and rejects unrelated, foreign, or inaccessible task sources", async () => {
+    const f = await documentFixture("case", "Legacy case notes");
+    const primary = await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key: f.key,
+      title: "Primary notes", format: "markdown", body: "Current task notes" });
+    expect((await readCompleteDocument(f, f.selector)).document).toMatchObject({ id: f.saved.document.id, body: "Legacy case notes" });
+    expect((await readCompleteDocument(f, { ...f.selector, documentIssueId: f.issueId })).document)
+      .toMatchObject({ id: primary.document.id, body: "Current task notes" });
+    const [unlinked] = await server.db.insert(issues).values({ companyId: f.companyId, title: "Unlinked source" }).returning();
+    const [foreign] = await server.db.insert(issues).values({ companyId: f.foreignCompanyId, title: "Foreign source" }).returning();
+    await server.db.insert(caseIssueLinks).values({ companyId: f.companyId, caseId: f.record.id, issueId: f.blockerId, role: "reference" });
+    await server.db.update(issues).set({ visibility: "private", assigneeAgentId: null }).where(eq(issues.id, f.blockerId));
+    for (const issueId of [unlinked!.id, foreign!.id, f.blockerId]) {
+      await documentService(server.db).upsertIssueDocument({ issueId, key: f.key, format: "markdown", body: "HIDDEN_DOCUMENT_BODY_CANARY" });
+      const denied = await f.call("read_case", { ...f.selector, documentIssueId: issueId });
+      expect(denied).toMatchObject({ ok: false, status: 404 });
+      expect(JSON.stringify(denied)).not.toContain("HIDDEN_DOCUMENT_BODY_CANARY");
+    }
+  });
+
+  it.each(["revoke", "unlink"] as const)("rechecks linked document authority after %s between pages", async change => {
+    const f = await documentFixture("linked", documentBody);
+    const first = await f.call("read_case", f.selector) as DocumentPage;
+    expect(first).toMatchObject({ ok: true, status: 200 });
+    expect(first.data.readPage.nextOffsetBytes).not.toBeNull();
+    if (change === "revoke") await server.db.update(issues).set({ visibility: "private", assigneeAgentId: null }).where(eq(issues.id, f.blockerId));
+    else await server.db.delete(caseIssueLinks).where(and(eq(caseIssueLinks.caseId, f.record.id), eq(caseIssueLinks.issueId, f.blockerId)));
+    const denied = await f.call("read_case", { ...f.selector, offsetBytes: first.data.readPage.nextOffsetBytes, snapshot: first.data.readPage.snapshot });
+    expect(denied).toMatchObject({ ok: false, status: 404 });
+    expect(JSON.stringify(denied)).not.toContain("Exact receipt");
+  });
+
+  it("does not expose system task documents or quarantined case and task bodies", async () => {
+    const f = await documentFixture("case", "QUARANTINED_LEGACY_BODY_CANARY");
+    await server.db.update(documents).set({ sourceTrust: { preset: "low_trust_review", disposition: "quarantined" } })
+      .where(eq(documents.id, f.saved.document.id));
+    const task = await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key: f.key, format: "markdown",
+      body: "QUARANTINED_TASK_BODY_CANARY", sourceTrust: { preset: "low_trust_review", disposition: "quarantined" } });
+    expect(task.document.id).not.toBe(f.saved.document.id);
+    for (const selector of [f.selector, { ...f.selector, documentIssueId: f.issueId }]) {
+      const denied = await f.call("read_case", selector);
+      expect(denied).toMatchObject({ ok: false, status: 404 });
+      expect(JSON.stringify(denied)).not.toMatch(/QUARANTINED_(LEGACY|TASK)_BODY_CANARY/);
+    }
+    for (const key of SYSTEM_ISSUE_DOCUMENT_KEYS) {
+      await documentService(server.db).upsertIssueDocument({ issueId: f.issueId, key, format: "markdown", body: "SYSTEM_BODY_CANARY" });
+      const denied = await f.call("read_case", { ...f.selector, documentKey: key, documentIssueId: f.issueId });
+      expect(denied).toMatchObject({ ok: false, status: 404 });
+      expect(JSON.stringify(denied)).not.toContain("SYSTEM_BODY_CANARY");
+    }
+  });
+
+  it("reauthorizes the case itself on a document continuation", async () => {
+    const f = await documentFixture("primary", documentBody);
+    await server.db.insert(caseAccessSources).values({ companyId: f.companyId, caseId: f.record.id, sourceKind: "issue", sourceId: f.blockerId });
+    const first = await f.call("read_case", f.selector) as DocumentPage;
+    expect(first).toMatchObject({ ok: true, status: 200 });
+    await server.db.update(issues).set({ visibility: "private", assigneeAgentId: null }).where(eq(issues.id, f.blockerId));
+    await expect(f.call("read_case", { ...f.selector, offsetBytes: first.data.readPage.nextOffsetBytes, snapshot: first.data.readPage.snapshot }))
+      .rejects.toThrow("Case not found");
+  });
+
+  it.each(["case", "linked"] as const)("rejects a changed %s document snapshot and restarts at its current revision", async kind => {
+    const f = await documentFixture(kind, documentBody);
+    const first = await f.call("read_case", f.selector) as DocumentPage;
+    expect(first.data.readPage.nextOffsetBytes).not.toBeNull();
+    const body = `${documentBody}New revision 🧾`;
+    const updated = kind === "case" ? await saveCaseDocument(f, f.key, body, f.saved.document.latestRevisionId)
+      : await documentService(server.db).upsertIssueDocument({ issueId: f.blockerId, key: f.key, format: "markdown",
+        body, baseRevisionId: f.saved.document.latestRevisionId });
+    expect(await f.call("read_case", { ...f.selector, offsetBytes: first.data.readPage.nextOffsetBytes, snapshot: first.data.readPage.snapshot }))
+      .toMatchObject({ ok: false, status: 409 });
+    const current = await readCompleteDocument(f, f.selector);
+    expect(current.document).toMatchObject({ id: updated.document.id, body,
+      latestRevisionId: updated.document.latestRevisionId, latestRevisionNumber: 2 });
   });
 
   it("retains case privacy on spilled response assets after source access is revoked", async () => {

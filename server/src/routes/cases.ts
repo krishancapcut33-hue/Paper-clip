@@ -19,7 +19,7 @@ import {
   caseAgentReadQuerySchema,
 } from "./cases-schemas.js";
 import { Router, type Request, type Response } from "express";
-import { projectAgentCaseRead } from "../services/case-agent-read.js";
+import { loadAgentCaseDocument, projectAgentCaseRead } from "../services/case-agent-read.js";
 import multer from "multer";
 import { z } from "zod";
 import { and, asc, desc, eq, getTableColumns, ilike, inArray, isNull, or, sql } from "drizzle-orm";
@@ -1555,7 +1555,10 @@ export function caseRoutes(db: Db, storage: StorageService) {
     if (req.query.agentRead !== undefined) {
       const { agentRead: _agentRead, includeDocumentBodies: _includeDocumentBodies, ...page } = caseAgentReadQuerySchema.parse(req.query);
       const detail = await loadCaseDetail(db, row, req.actor, { includeDocumentBodies: false });
-      res.json(projectAgentCaseRead(detail, page));
+      const document = page.section === "document" ? await loadAgentCaseDocument(db, {
+        caseRow: row, actor: req.actor, documentKey: page.documentKey!, documentIssueId: page.documentIssueId,
+      }) : undefined;
+      res.json(projectAgentCaseRead(detail, page, document));
       return;
     }
     const query = caseDetailQuerySchema.parse(req.query);

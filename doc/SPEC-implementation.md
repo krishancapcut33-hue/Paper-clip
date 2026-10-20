@@ -190,6 +190,13 @@ restart at offset zero without the old snapshot. Each page reauthorizes current 
 `GET /api/cases/:id?agentRead=true`; no generic API tool or asset grant is needed.
 `limitBytes` is 4–8192 UTF-8 bytes. Ordinary REST reads retain their existing full
 response, and ordinary `update_case` mutation receipts remain unchanged.
+For `section: "document"`, require `documentKey` and optionally
+`documentIssueId`. Omit the task ID for historical case-owned documents; a
+supplied ID must identify the case's primary or currently linked task. Return
+the selected document as bounded JSON pages. Recheck source access, linkage,
+and document trust on every page, and reject system or quarantined documents.
+Document identity, revision and body participate in the snapshot. These reads
+work without generic API tools and confer no additional mutation authority.
 
 Case context is authorized on each admission. Fresh sessions receive a bounded
 snapshot; verified native continuations send current routing metadata and new

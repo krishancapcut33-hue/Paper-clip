@@ -49,6 +49,15 @@ restart at offset zero without the old snapshot. Each page reauthorizes current 
 `GET /api/cases/:id?agentRead=true`; no generic API tool or asset grant is needed.
 `limitBytes` is 4–8192 UTF-8 bytes. Ordinary REST reads retain their existing full
 response, and ordinary `update_case` mutation receipts remain unchanged.
+Use `section: "document"` and `documentKey` for a historical case-owned body;
+add `documentIssueId` for a primary or currently linked task document. This
+selection retains the same bounded JSON paging and does not enable generic API
+tools. Each page checks current case access, task access, linkage, and document
+trust. System and quarantined documents are excluded. Document edits and routing
+changes invalidate the snapshot; restart from zero after a 409.
+Each page reloads case metadata and the complete selected body to check access
+and compute its snapshot. These limits bound the response, not total database
+work; the read cost grows with source size and the number of pages.
 
 Keep native schemas aligned with their services/routes. Transactional source
 run checks must precede case writes, so Stop or an accepted handoff cannot race
