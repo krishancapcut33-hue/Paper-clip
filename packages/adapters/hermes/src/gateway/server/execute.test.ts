@@ -578,6 +578,106 @@ describe("execute", () => {
     expect(fetchMock.mock.calls.some(([input]) => String(input).endsWith("/v1/runs/run-hermes-1"))).toBe(true);
   });
 
+  it("answers approval requests so a gated run reaches a terminal status", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/approval")) {
+        return new Response(JSON.stringify({ ok: true }), { status: 200 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: approval.request",
+              "data: {\"request_id\":\"appr-1\",\"pattern_key\":\"access to secrets\"}",
+              "",
+              "event: approval.request",
+              "data: {\"request_id\":\"appr-2\",\"pattern_key\":\"access to secrets\"}",
+              "",
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      pollIntervalMs: 10_000,
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.timedOut).toBe(false);
+    expect(result.summary).toBe("done");
+
+    const approvals = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .filter(([input]) => String(input).endsWith("/v1/runs/run-hermes-1/approval"));
+    expect(approvals).toHaveLength(2);
+    expect(approvals.map(([, init]) => JSON.parse(String(init?.body)))).toEqual([
+      { choice: "once", request_id: "appr-1" },
+      { choice: "once", request_id: "appr-2" },
+    ]);
+    expect(approvals[0]?.[1]?.method).toBe("POST");
+    expect(approvals[0]?.[1]?.headers).toMatchObject({
+      Authorization: "Bearer secret-key",
+      Accept: "application/json",
+      "Content-Type": "application/json",
+    });
+  });
+
+  it("keeps consuming events when an approval response is rejected", async () => {
+    const fetchMock = vi.fn(async (input: RequestInfo | URL) => {
+      const url = String(input);
+      if (url.endsWith("/v1/runs")) {
+        return new Response(JSON.stringify({ run_id: "run-hermes-1", status: "started" }), { status: 200 });
+      }
+      if (url.endsWith("/approval")) {
+        return new Response(JSON.stringify({ error: "no pending approval" }), { status: 409 });
+      }
+      if (url.endsWith("/events")) {
+        return new Response(
+          sseStream(
+            [
+              "event: approval.request",
+              "data: {\"pattern_key\":\"access to secrets\"}",
+              "",
+              "event: run.completed",
+              "data: {\"status\":\"completed\",\"output\":\"done\"}",
+              "",
+            ].join("\n"),
+          ),
+          { status: 200, headers: { "content-type": "text/event-stream" } },
+        );
+      }
+      return new Response(JSON.stringify({ status: "completed", output: "done" }), { status: 200 });
+    });
+    vi.stubGlobal("fetch", fetchMock);
+
+    const result = await execute(makeCtx({
+      apiBaseUrl: "http://127.0.0.1:8642",
+      apiKey: "secret-key",
+      timeoutSec: 5,
+      pollIntervalMs: 10_000,
+    }));
+
+    expect(result.exitCode).toBe(0);
+    expect(result.summary).toBe("done");
+
+    const approval = (fetchMock.mock.calls as Array<[RequestInfo | URL, RequestInit?]>)
+      .find(([input]) => String(input).endsWith("/approval"));
+    expect(JSON.parse(String(approval?.[1]?.body))).toEqual({ choice: "once" });
+  });
+
   it("maps HTTP auth failures", async () => {
     vi.stubGlobal("fetch", vi.fn(async () => new Response(JSON.stringify({ error: "bad key" }), { status: 401 })));
     const result = await execute(makeCtx({

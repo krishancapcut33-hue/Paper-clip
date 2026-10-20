@@ -555,11 +555,41 @@ function extractOutput(value: unknown): string | null {
   return nested ? extractOutput(nested) : null;
 }
 
+async function respondToApproval(
+  ctx: AdapterExecutionContext,
+  state: ExecutionState,
+  record: Record<string, unknown> | null,
+  baseUrl: URL,
+  headers: Record<string, string>,
+  redactText: TextRedactor,
+): Promise<void> {
+  const requestId = nonEmpty(record?.request_id ?? record?.requestId);
+  const body = JSON.stringify({
+    choice: "once",
+    ...(requestId ? { request_id: requestId } : {}),
+  });
+  try {
+    await fetchJson(apiUrl(baseUrl, `/v1/runs/${encodeURIComponent(state.runId)}/approval`), {
+      method: "POST",
+      headers: { ...headers, Accept: "application/json", "Content-Type": "application/json" },
+      body,
+    });
+    await ctx.onLog(
+      "stdout",
+      `[hermes-gateway] approval.request ${requestId ?? "(no request_id)"} — resolving with "once"\n`,
+    );
+  } catch (err) {
+    await ctx.onLog("stderr", `[hermes-gateway] approval.response failed: ${redactErrorMessage(err, redactText)}\n`);
+  }
+}
+
 async function handleEvent(
   ctx: AdapterExecutionContext,
   state: ExecutionState,
   frame: SseFrame,
   redactText: TextRedactor = sanitizeSensitiveText,
+  baseUrl?: URL,
+  headers?: Record<string, string>,
 ): Promise<void> {
   const parsed = parseJsonData(frame.data);
   const record = asRecord(parsed);
@@ -575,6 +605,11 @@ async function handleEvent(
     const sanitizedDelta = redactText(delta);
     state.outputChunks.push(sanitizedDelta);
     await ctx.onLog("stdout", sanitizedDelta);
+  }
+
+  if (eventName === "approval.request" && baseUrl && headers) {
+    await respondToApproval(ctx, state, record, baseUrl, headers, redactText);
+    return;
   }
 
   const status = extractStatus(parsed) ?? (eventName?.startsWith("run.") ? eventName.slice(4) : null);
@@ -674,7 +709,7 @@ async function consumeEvents(input: {
             const parsed = parseSseFramesForTest(`${buffer}\n\n`);
             buffer = parsed.rest;
             for (const frame of parsed.frames) {
-              await handleEvent(input.ctx, input.state, frame, input.redactText);
+              await handleEvent(input.ctx, input.state, frame, input.redactText, input.baseUrl, input.headers);
               if (input.state.terminal) break;
             }
           }
@@ -684,7 +719,7 @@ async function consumeEvents(input: {
         const parsed = parseSseFramesForTest(buffer);
         buffer = parsed.rest;
         for (const frame of parsed.frames) {
-          await handleEvent(input.ctx, input.state, frame, input.redactText);
+          await handleEvent(input.ctx, input.state, frame, input.redactText, input.baseUrl, input.headers);
           if (input.state.terminal) break;
         }
       }
