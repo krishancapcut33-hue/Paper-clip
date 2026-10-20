@@ -4,6 +4,7 @@ import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import type { AdapterExecutionContext } from "../types.js";
 import { execute } from "./execute.js";
 import { testEnvironment } from "./test.js";
@@ -144,7 +145,7 @@ describe("HTTP run attestation", () => {
     const fifoPath = join(root, "key-pipe.pem");
     const created = spawnSync("mkfifo", [fifoPath]);
     expect(created.status).toBe(0);
-    const loader = new URL("../../../node_modules/tsx/dist/loader.mjs", import.meta.url).pathname;
+    const loader = fileURLToPath(new URL("../../../node_modules/tsx/dist/loader.mjs", import.meta.url));
     const moduleUrl = new URL("./run-attestation.ts", import.meta.url).href;
     const checked = spawnSync(process.execPath, [
       "--import", loader, "--input-type=module", "-e",
