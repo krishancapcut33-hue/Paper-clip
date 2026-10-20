@@ -726,9 +726,11 @@ export async function retireRemovedPluginWorkspaceDependents(
       ),
     );
   for (const { id } of rows.sort((a, b) => a.id.localeCompare(b.id))) {
-    await db.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${id}`}, 0))`,
+    const acquired = await db.execute(
+      sql`select pg_try_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${id}`}, 0)) as acquired`,
     );
+    if (!acquired[0]?.acquired)
+      throw conflict("Workspace lifecycle is busy; retry the source edit");
     const [row] = await db
       .select()
       .from(executionWorkspaces)

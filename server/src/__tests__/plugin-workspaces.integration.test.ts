@@ -60,6 +60,13 @@ const support = await getEmbeddedPostgresTestSupport();
       const preparing = preparePluginWorkspace(db, f.workers, f.input);
       await started;
       try {
+        await expect(
+          projectService(db).updateWorkspace(
+            f.input.projectId,
+            f.input.projectWorkspaceId,
+            { repoRef: "next" },
+          ),
+        ).rejects.toThrow("Workspace lifecycle is busy");
         expect(await db.execute(sql`select 1 as usable`)).toMatchObject([
           { usable: 1 },
         ]);
@@ -116,7 +123,7 @@ const support = await getEmbeddedPostgresTestSupport();
         kind: "applied",
       });
     });
-    it("does not retire reusable storage when a source edit is rejected", async () => {
+    it("does not retire reusable storage for rejected or normalized unchanged source edits", async () => {
       const f = await fixture(),
         workspace = await preparePluginWorkspace(db, f.workers, f.input);
       await db
@@ -124,6 +131,13 @@ const support = await getEmbeddedPostgresTestSupport();
         .set({ status: "archived", closedAt: new Date() })
         .where(eq(executionWorkspaces.id, workspace!.id));
       await removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40));
+      expect(
+        await projectService(db).updateWorkspace(
+          f.input.projectId,
+          f.input.projectWorkspaceId,
+          { repoRef: "   " },
+        ),
+      ).toMatchObject({ repoRef: null });
       expect(
         await projectService(db).updateWorkspace(
           f.input.projectId,

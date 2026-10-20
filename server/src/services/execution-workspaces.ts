@@ -3530,8 +3530,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // checks and the archive write. The archive statement re-checks the
         // status, the terminal predicates, and the reopen-pending flag under the
         // lock, so it never archives a workspace that a reopen just restored.
-        const archived = await db.transaction(async (tx) => {
-          await acquireExecutionWorkspaceLifecycleLock(tx, workspace.id);
+        const archived = await withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
           return tx
             .update(executionWorkspaces)
             .set({
@@ -4265,8 +4264,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       const [identity] = await db.select({ companyId: executionWorkspaces.companyId }).from(executionWorkspaces)
         .where(eq(executionWorkspaces.id, input.id));
       if (!identity) return null;
-      return db.transaction(async (tx) => {
-        await acquireExecutionWorkspaceLifecycleLock(tx, input.id);
+      return withExecutionWorkspaceLifecycleLock(db, input.id, async (tx) => {
         const fresh = await measureRunPhase("workspace.row_lock", () => tx
           .select()
           .from(executionWorkspaces)
