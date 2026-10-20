@@ -19,12 +19,12 @@ export interface HttpRunAttestationInput {
 function privateKeyFromEnvironment() {
   const path = process.env[KEY_FILE_ENV];
   if (!path) throw new Error(`${KEY_FILE_ENV} is required for HTTP run attestation`);
-  if (!constants.O_NOFOLLOW) {
-    throw new Error("HTTP run attestation requires no-follow file opening support");
+  if (!constants.O_NOFOLLOW || !constants.O_NONBLOCK) {
+    throw new Error("HTTP run attestation requires safe nonblocking file opening support");
   }
   let fd: number;
   try {
-    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW);
+    fd = openSync(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
   } catch {
     throw new Error("HTTP run attestation key must be a private regular file");
   }

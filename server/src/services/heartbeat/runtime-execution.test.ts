@@ -45,6 +45,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   let home: string;
+  let fixtureSequence = 0;
   beforeAll(async () => {
     home = await mkdtemp(join(tmpdir(), "paperclip-runtime-execution-"));
     vi.stubEnv("PAPERCLIP_HOME", home);
@@ -60,7 +61,7 @@ describe.skipIf(!support.supported)("heartbeat runtime execution boundary", () =
   });
 
   async function fixture(native = false, provider: "codex" | "grok_bot" | "openai_dot" = "codex") {
-    const [company] = await db.insert(companies).values({ name: "Runtime execution", issuePrefix: "EXE" }).returning();
+    const [company] = await db.insert(companies).values({ name: "Runtime execution", issuePrefix: `EXE${++fixtureSequence}` }).returning();
     const [agent] = await db.insert(agents).values({ companyId: company.id, name: "Executing agent", status: "running", adapterType: native ? "paperclip_runner" : "process", adapterConfig: provider === "codex" ? { provider } : { provider, lifecycleMode: "per_turn", allowUnmeteredProvider: true, [provider === "grok_bot" ? "externalBindingId" : "dotBindingId"]: randomUUID() } }).returning();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Complete this task", assigneeAgentId: agent.id }).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id, scopeKind: "issue", status: "running", runtimeMode: native ? "native" : "legacy" }).returning();

@@ -1,5 +1,6 @@
 import { afterAll, afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { generateKeyPairSync, verify } from "node:crypto";
+import { spawnSync } from "node:child_process";
 import { chmodSync, mkdtempSync, rmSync, symlinkSync, unlinkSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -137,6 +138,21 @@ describe("HTTP run attestation", () => {
     await expect(execute(context())).rejects.toThrow("private regular file");
     unlinkSync(linkPath);
     expect(guardedFetchMock).not.toHaveBeenCalled();
+  });
+
+  it.skipIf(process.platform === "win32")("rejects a key FIFO without blocking the server process", () => {
+    const fifoPath = join(root, "key-pipe.pem");
+    const created = spawnSync("mkfifo", [fifoPath]);
+    expect(created.status).toBe(0);
+    const loader = new URL("../../../node_modules/tsx/dist/loader.mjs", import.meta.url).pathname;
+    const moduleUrl = new URL("./run-attestation.ts", import.meta.url).href;
+    const checked = spawnSync(process.execPath, [
+      "--import", loader, "--input-type=module", "-e",
+      `import { validateHttpRunAttestationKey } from ${JSON.stringify(moduleUrl)}; validateHttpRunAttestationKey();`,
+    ], { env: { ...process.env, [keyEnv]: fifoPath }, timeout: 5000, encoding: "utf8" });
+    expect(checked.error).toBeUndefined();
+    expect(checked.status).toBe(1);
+    expect(checked.stderr).toContain("private regular file");
   });
 
   it("uses the same canonical endpoint for the guarded transport and audience", async () => {
