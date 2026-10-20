@@ -1667,6 +1667,18 @@ const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
 const executingNativeOwnerScopes = new Map<string, symbol>();
 
+export function nativeSessionScopeDigestIsBusy(digest: string): boolean {
+  const scopes = [
+    ...executingRunnerdSessionScopes.keys(),
+    ...initializingSessionToolAuthorities,
+    ...warmNativeSessions.keys(),
+    ...closingWarmNativeSessions.keys(),
+  ];
+  return scopes.some(
+    (scope) => createHash("sha256").update(scope).digest("hex") === digest,
+  );
+}
+
 function nativeSessionKey(execution: NativeExecutionInput): string {
   return (
     execution.session.normalizedSessionId ??
