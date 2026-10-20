@@ -624,7 +624,9 @@ export async function createApp(
   app.use(cloudWarmStandbyMiddleware(isWarmStandby, health, staticUi));
   app.use("/api/customer-success/v1", customerSuccessRoutes(db, opts.storageService));
   app.use(museTransportRoutes(db, opts.authPublicBaseUrl));
-  const stopMuseMaintenance = startMuseMaintenance(db);
+  const stopMuseMaintenance = startMuseMaintenance(db, {
+    isBackgroundWorkEnabled: () => !isWarmStandby(),
+  });
   app.use(publicMcpIngress);
   // Connection-intent tools carry their own short-lived, run-bound bearer and
   // must be reachable by remote adapters that intentionally do not receive an
