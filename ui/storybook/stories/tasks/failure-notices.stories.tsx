@@ -50,7 +50,7 @@ const meta = {
     paperclip: {
       capabilities: ["tasks/discussion", "runs-adapters/runs"],
       status: "current", implementation: "production", boundary: "fixtures",
-      notes: "Uses the shared production thread and failure markers. Covers older and current markers, either order of adjacent run/recovery errors, intervening messages and unrelated system notices with quoted error text, both presentation modes, permitted legacy run retries, light and mobile. Retry callbacks record a local receipt; no agent runs or API changes occur.",
+      notes: "Uses the shared production thread and failure markers. Covers older and current markers, either order of adjacent run/recovery errors, intervening messages and unrelated system notices with quoted error text, saved Automatic recovery blocked metadata, both presentation modes, permitted legacy run retries, light and mobile. Retry callbacks record a local receipt; no agent runs or API changes occur.",
     },
   },
 } satisfies Meta<typeof FailureNotices>;
@@ -153,3 +153,26 @@ export const LegacyRunRetry: Story = {
   },
 };
 export const LegacyProductionRetry: Story = { ...LegacyRunRetry, args: { ...LegacyRunRetry.args, mode: "production" } };
+
+export const AutomaticRecoveryBlocked: Story = {
+  args: { items: [failed, {
+    ...recovery,
+    text: "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+    presentation: { ...recovery.presentation!, title: "Automatic recovery blocked" },
+    metadata: { version: 1, sourceRunId: "failed-run", sections: [{ title: "Recovery", rows: [
+      { type: "key_value", label: "Recovery action", value: "recovery-action-1" },
+      { type: "key_value", label: "Recovery owner", value: "Board decision required" },
+    ] }] },
+  }] },
+  play: async ({ canvasElement }) => {
+    const canvas = within(canvasElement);
+    await expect(canvas.queryByText("Run failed")).toBeNull();
+    await userEvent.click(canvas.getByRole("button", { name: /Automatic recovery blocked/ }));
+    await waitFor(() => expect(canvas.getByText("recovery-action-1")).toBeVisible());
+    await expect(canvas.getByText(/retry made progress/)).toBeVisible();
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(canvas.getByRole("status")).toHaveTextContent("Recovery retry requested");
+    await expectNoRules(canvasElement);
+  },
+};
+export const ProductionAutomaticRecoveryBlocked: Story = { ...AutomaticRecoveryBlocked, args: { ...AutomaticRecoveryBlocked.args, mode: "production" } };

@@ -47,9 +47,36 @@ describe("compactAdjacentErrors", () => {
     expect(compactAdjacentErrors([failed, legacy]).items).toEqual([legacy]);
   });
 
+  it.each(["Automatic recovery blocked", "Error: usage limit reached"])(
+    "recognizes a saved stranded-recovery notice with the producer title %s", (title) => {
+      // buildStrandedRecoveryEscalationNotice saves this metadata even when
+      // its default or source-run title replaces the recovery-family title.
+      const notice: TaskChatMessageItem = {
+        ...recovery,
+        text: "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry made progress, but it still has no live execution path. Moving it to `blocked` so it is visible for intervention.",
+        presentation: { ...recovery.presentation!, title },
+        metadata: { version: 1, sourceRunId: "run-1", sections: [{ title: "Recovery", rows: [
+          { type: "key_value", label: "Recovery action", value: "recovery-action-1" },
+          { type: "key_value", label: "Recovery owner", value: "Board decision required" },
+        ] }] },
+      };
+      const compacted = compactAdjacentErrors([failed, notice]);
+      expect(compacted.items).toEqual([notice]);
+      expect(compacted.retryMarkers.get(notice.id)).toBe(failed);
+      expect(compactAdjacentErrors([notice, failed]).items).toEqual([failed]);
+    },
+  );
+
   it.each([
     { ...recovery, presentation: { ...recovery.presentation!, title: "Child task blocked" } },
     { ...recovery, presentation: { ...recovery.presentation!, title: "" } },
+    { ...recovery, presentation: { ...recovery.presentation!, title: "Automatic recovery blocked" } },
+    { ...recovery, presentation: { ...recovery.presentation!, title: "Automatic recovery blocked" }, metadata: {
+      version: 1 as const, sections: [{ title: "Recovery", rows: [{ type: "key_value" as const, label: "Recovery action", value: "" }] }],
+    } },
+    { ...recovery, text: "Child task has no live execution path.", metadata: {
+      version: 1 as const, sections: [{ title: "Recovery", rows: [{ type: "key_value" as const, label: "Recovery action", value: "child-action" }] }],
+    }, presentation: { ...recovery.presentation!, title: "Child task blocked" } },
     { ...recovery, presentation: null, text: "Child task has no live execution path. Parent must review its result." },
     { ...recovery, presentation: null, text: "Child task report: Paperclip retried continuation, but it still has no live execution path." },
   ])("preserves unrelated notices and their retry boundaries: $text ($presentation.title)", (boundary) => {

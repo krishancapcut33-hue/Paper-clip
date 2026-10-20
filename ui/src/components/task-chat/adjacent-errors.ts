@@ -2,14 +2,22 @@ import type { TaskChatItem, TaskChatMarkerItem, TaskChatMessageItem } from "./ta
 
 export function isNoLiveExecutionPathNotice(item: TaskChatMessageItem): boolean {
   if (item.author !== "system") return false;
-  // Structured notices identify their own purpose; quoted error text must not
-  // turn another system update into a suppressible recovery row.
+  const recoveryStatement = /^Paperclip (?:automatically )?retried (?:dispatch|continuation|this issue's run)\b[^\r\n]*\bit still has no live execution path\b/i.test(item.text.trim());
   if (item.presentation) {
-    return item.presentation.title?.trim().toLowerCase() === "no live execution path";
+    if (item.presentation.title?.trim().toLowerCase() === "no live execution path") return true;
+    // The stranded-recovery producer can replace the family title with
+    // "Automatic recovery blocked" or a classified source-run failure.
+    // Require both its recovery statement and saved action metadata so an
+    // unrelated notice quoting that statement remains a group boundary.
+    return recoveryStatement && !!item.metadata?.sections.some((section) =>
+      section.title === "Recovery" && section.rows.some((row) =>
+        row.type === "key_value" && row.label === "Recovery action" && row.value.trim().length > 0,
+      ),
+    );
   }
   // Older recovery comments lack presentation metadata. Recognize their own
   // recovery statement rather than any mention of the error phrase.
-  return /^Paperclip (?:automatically )?retried (?:dispatch|continuation|this issue's run)\b[^\r\n]*\bit still has no live execution path\b/i.test(item.text.trim());
+  return recoveryStatement;
 }
 
 function errorKind(item: TaskChatItem): "run" | "recovery" | null {

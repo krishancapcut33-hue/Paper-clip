@@ -5,6 +5,7 @@ const stories = [
   "failure-is-latest", "expanded-recovery-and-retry", "expanded-failure-and-retry",
   "message-between-errors", "system-notice-between-errors", "production-system-notice-between-errors",
   "light", "mobile", "legacy-run-retry", "legacy-production-retry",
+  "automatic-recovery-blocked", "production-automatic-recovery-blocked",
 ];
 
 for (const theme of ["dark", "light"]) {
@@ -32,7 +33,7 @@ for (const theme of ["dark", "light"]) {
         await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(1);
         await expect(page.getByText(story === "failure-is-latest" ? "No live execution path" : "Run failed", { exact: true })).toHaveCount(0);
       }
-      if (story === "expanded-recovery-and-retry") {
+      if (["expanded-recovery-and-retry", "automatic-recovery-blocked", "production-automatic-recovery-blocked"].includes(story)) {
         await expect(page.getByRole("status")).toHaveText("Recovery retry requested");
       }
       if (["legacy-run-retry", "legacy-production-retry"].includes(story)) {
