@@ -259,7 +259,7 @@ Iterate on the public history and individual campaign reports with retained real
 data, without starting Paperclip, loading credentials, or calling providers:
 
 ```sh
-pnpm test:e2e:runner:preview
+node --watch --import ./cli/node_modules/tsx/dist/loader.mjs tests/runner-e2e/preview.ts
 ```
 
 Open `http://127.0.0.1:4317/runner-e2e/`. The preview uses the production
