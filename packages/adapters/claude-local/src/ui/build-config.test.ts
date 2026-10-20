@@ -51,6 +51,21 @@ describe("buildClaudeLocalConfig", () => {
   it.each(["approve-all", "approve-reads", "deny-all"])("carries the selected native %s permission to creation", acpxPermissionMode => {
     expect(buildClaudeLocalConfig(makeValues({ resolvedRunner: "paperclip", adapterSchemaValues: { acpxPermissionMode } })).acpxPermissionMode).toBe(acpxPermissionMode);
   });
+  it.each([
+    ["paperclip", undefined],
+    ["auto", "paperclip"],
+  ] as const)("omits the legacy permission flag for native runs (%s/%s)", (runner, resolvedRunner) => {
+    for (const dangerouslySkipPermissions of [true, false]) {
+      const config = buildClaudeLocalConfig(makeValues({ runner, resolvedRunner, dangerouslySkipPermissions }));
+      expect(config).not.toHaveProperty("dangerouslySkipPermissions");
+    }
+  });
+  it.each([undefined, "legacy"] as const)("persists the permission flag for legacy runs resolved to %s", resolvedRunner => {
+    expect(buildClaudeLocalConfig(makeValues({ runner: "auto", resolvedRunner, dangerouslySkipPermissions: false })))
+      .toMatchObject({ dangerouslySkipPermissions: false });
+    expect(buildClaudeLocalConfig(makeValues({ runner: "legacy", resolvedRunner, dangerouslySkipPermissions: true })))
+      .toMatchObject({ dangerouslySkipPermissions: true });
+  });
   it("omits engine for the auto default so runtime fallback remains available", () => {
     const config = buildClaudeLocalConfig(makeValues({ claudeEngine: "auto" }));
 
