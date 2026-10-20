@@ -209,7 +209,7 @@ test("suite links reveal filtered sections and scroll on repeated clicks", async
 
   const core = page.locator("#suite-core-compatibility");
   const coreHeading = core.getByRole("heading", { name: "Core Runner Compatibility", exact: true });
-  const coreLink = page.getByRole("link", { name: "Core Runner Compatibility", exact: true });
+  const coreLink = page.locator('[data-nav-suite-link="core-compatibility"]');
   const backToTop = page.getByRole("link", { name: "Back to top", exact: true });
   await expect(backToTop).toBeHidden();
   const feature = page.locator("select[data-report-feature]");
@@ -238,7 +238,7 @@ test("suite links reveal filtered sections and scroll on repeated clicks", async
   await expect(page.locator("select[data-report-profile]")).toHaveValue("legacy-codex");
   await coreLink.click();
 
-  await page.getByRole("link", { name: "Local Session Integrity", exact: true }).click();
+  await page.locator('[data-nav-suite-link="local-session-integrity"]').click();
   await expect(page.locator("#suite-local-session-integrity")).toBeVisible();
   await feature.selectOption("questions-and-approvals");
   await page.goBack();
