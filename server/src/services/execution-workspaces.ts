@@ -1682,9 +1682,13 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       ...(selectedWorkspace ? { projectWorkspaceId: selectedWorkspace.projectWorkspaceId } : {}) };
   }
 
-  const inspectDisplay = opts.inspectGitCloseReadiness
+  const inspectLocalDisplay = opts.inspectGitCloseReadiness
     ? createWorkspaceGitInspectionCache(opts.inspectGitCloseReadiness)
     : inspectGitForDisplay;
+  const inspectProviderDisplay = createWorkspaceGitInspectionCache(inspectWorkspace);
+  const inspectDisplay = (workspace: ExecutionWorkspace) => workspace.providerType === "plugin"
+    ? inspectProviderDisplay(workspace)
+    : inspectLocalDisplay(workspace);
   const recoveryActionsSvc = issueRecoveryActionService(db);
   const resolvePullRequestDetails = opts.resolvePullRequestDetails ?? createPullRequestMergeDetailsResolver(db);
   const now = opts.now ?? (() => new Date());
@@ -3773,6 +3777,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           try {
             const metadata = await restorePluginWorkspace(db, opts.pluginWorkerManager, row);
             const [active] = await tx.update(executionWorkspaces).set({ status: "active", closedAt: null,
+              providerRef: metadata.workspaceProvider.workspaceRef,
               cleanupReason: null, cleanupEligibleAt: null, lastUsedAt: now(), updatedAt: now(),
               metadata: setMetadataReopenPendingConsumption(bumpExecutionWorkspaceLifecycleGeneration(metadata), now()),
             }).where(eq(executionWorkspaces.id, row.id)).returning();

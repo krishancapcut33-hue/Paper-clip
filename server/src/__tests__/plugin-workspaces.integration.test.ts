@@ -129,7 +129,8 @@ const support = await getEmbeddedPostgresTestSupport();
       let loseResponse = false,
         dirty = false,
         removed = false,
-        loseRemovalResponse = false;
+        loseRemovalResponse = false,
+        workspaceRefSuffix = "";
       const workers = {
         getWorker: () => ({ supportedMethods: ["workspaceOperation"] }),
         call: async (_id: string, method: string, params: any) => {
@@ -150,7 +151,7 @@ const support = await getEmbeddedPostgresTestSupport();
                 executionWorkspaceId: params.executionWorkspaceId,
                 projectWorkspaceId: sourceId,
                 sourceRevision: params.operation.source.revision,
-                workspaceRef: `checkout:${params.executionWorkspaceId}`,
+                workspaceRef: `checkout:${params.executionWorkspaceId}${workspaceRefSuffix}`,
               },
               branchName: params.operation.branchName,
               baseSha: "a".repeat(40),
@@ -200,6 +201,9 @@ const support = await getEmbeddedPostgresTestSupport();
         input,
         calls,
         workers,
+        relocate: () => {
+          workspaceRefSuffix = ":restored";
+        },
         loseRemoval: () => {
           loseRemovalResponse = true;
         },
@@ -401,6 +405,74 @@ const support = await getEmbeddedPostgresTestSupport();
       expect(f.calls.at(-1).operation.existing.workspaceRef).toBe(
         workspace!.providerRef,
       );
+    });
+    it("keeps a relocated restoration reference consistent through subsequent removal", async () => {
+      const f = await fixture();
+      const workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, f.runId));
+      await db
+        .update(executionWorkspaces)
+        .set({ status: "archived", closedAt: new Date() })
+        .where(eq(executionWorkspaces.id, workspace!.id));
+      await removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40));
+      f.relocate();
+      const svc = executionWorkspaceService(db, {
+        pluginWorkerManager: f.workers,
+      });
+      const result = await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+        workspaceId: workspace!.id,
+        issue: {
+          id: f.issueId,
+          companyId: f.companyId,
+          projectId: f.input.projectId,
+        },
+        actor: { actorType: "user", agentId: null },
+        authorizationActor: {
+          type: "board",
+          source: "local_implicit",
+          isInstanceAdmin: true,
+        },
+      });
+      expect(result).toMatchObject({ ok: true, reopened: true });
+      const [restored] = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspace!.id));
+      expect(restored.providerRef).toBe(`${workspace!.providerRef}:restored`);
+      expect(restored.metadata?.workspaceProvider).toMatchObject({
+        workspaceRef: restored.providerRef,
+      });
+      await removePluginWorkspace(db, f.workers, restored, "a".repeat(40));
+      expect(f.calls.at(-1).operation).toMatchObject({
+        kind: "remove",
+        binding: { workspaceRef: restored.providerRef },
+      });
+    });
+    it("uses provider inspection for remote workspace display and shares repeated reads", async () => {
+      const f = await fixture();
+      const workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      await db
+        .update(issues)
+        .set({ status: "done" })
+        .where(eq(issues.id, f.issueId));
+      const svc = executionWorkspaceService(db, {
+        pluginWorkerManager: f.workers,
+        inspectGitCloseReadiness: async () => {
+          throw new Error("Host inspection must not run for provider storage");
+        },
+      });
+      expect(await svc.getById(workspace!.id)).toMatchObject({
+        deliveryState: "merged_by_ancestry",
+      });
+      expect(await svc.getById(workspace!.id)).toMatchObject({
+        deliveryState: "merged_by_ancestry",
+      });
+      expect(
+        f.calls.filter((call) => call.operation.kind === "inspect"),
+      ).toHaveLength(1);
     });
     it("replays a durable removal after a lost result without inspecting the missing checkout", async () => {
       const f = await fixture();
