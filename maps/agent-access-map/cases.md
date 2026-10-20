@@ -2,6 +2,8 @@
 
 Product map: [Cases and structured work records](../feature-map/cases.md).
 
+Feature ID: `cases`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -11,6 +13,8 @@ qualify every operation in the baseline tables. Follow the [map contract](../REA
 for format, permission checks, evidence and maintenance.
 
 ## `browse`
+
+Capability ID: `cases/browse`.
 
 Review: `baseline`.
 
@@ -55,6 +59,8 @@ Gaps: No dedicated production list_cases binding is required because the REST fa
 exists. Case pages are read-only; this does not remove agent mutation APIs.
 
 ## `structure`
+
+Capability ID: `cases/structure`.
 
 Review: `baseline`.
 
@@ -124,6 +130,8 @@ the earlier live campaign predates this requirement and is not requalified.
 
 ## `history`
 
+Capability ID: `cases/history`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -149,6 +157,8 @@ Gaps: Source-backed access only; case visibility and document locks still apply.
 
 ## `task-links`
 
+Capability ID: `cases/task-links`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -173,6 +183,8 @@ Gaps: Case/task association exists; source trust and issue visibility must be te
 with agent credentials.
 
 ## `handoffs`
+
+Capability ID: `cases/handoffs`.
 
 Review: `baseline`.
 

@@ -2,6 +2,8 @@
 
 Product map: [Costs, budgets, and spending controls](../feature-map/budgets-costs.md).
 
+Feature ID: `budgets-costs`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -15,6 +17,8 @@ billing retains its reservation until correction; agent deletion cannot erase
 that hold. See [accounting behavior](../../doc/prompt-injection-prevention.md).
 
 ## `cost-reporting`
+
+Capability ID: `budgets-costs/cost-reporting`.
 
 Review: `baseline`.
 
@@ -41,6 +45,8 @@ have additional board gates.
 
 ## `budgets`
 
+Capability ID: `budgets-costs/budgets`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -66,6 +72,8 @@ ordinary company access.
 
 ## `incidents`
 
+Capability ID: `budgets-costs/incidents`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -89,6 +97,8 @@ Gaps: Inspection is supported; hard-stop or pause relief does not follow from se
 incident.
 
 ## `resolution`
+
+Capability ID: `budgets-costs/resolution`.
 
 Review: `baseline`.
 

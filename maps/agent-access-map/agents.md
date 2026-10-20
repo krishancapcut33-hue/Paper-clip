@@ -2,6 +2,8 @@
 
 Product map: [Hiring, agent configuration, and organization](../feature-map/agents.md).
 
+Feature ID: `agents`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -18,6 +20,8 @@ below. The original baseline commit above still governs unrelated entries; this
 update does not claim operation-complete review or live agent verification.
 
 ## `hire`
+
+Capability ID: `agents/hire`.
 
 Review: `baseline`.
 
@@ -81,6 +85,8 @@ qualification remains not run.
 
 ## `instructions`
 
+Capability ID: `agents/instructions`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -107,6 +113,8 @@ policy apply.
 
 ## `organization`
 
+Capability ID: `agents/organization`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -132,6 +140,8 @@ Gaps: Reporting-line changes need configuration authorization; a title alone giv
 authority.
 
 ## `lifecycle`
+
+Capability ID: `agents/lifecycle`.
 
 Review: `baseline`.
 
@@ -165,6 +175,8 @@ enforced actor restrictions.
 
 ## `built-in`
 
+Capability ID: `agents/built-in`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -196,6 +208,8 @@ saved settings; the general creation/access policy above still applies. This is
 source-only evidence at the scoped commit, not a live provisioning result.
 
 ## `primary-agent`
+
+Capability ID: `agents/primary-agent`.
 
 Review: `baseline`.
 
@@ -229,6 +243,8 @@ access is unverified; UI fixture callbacks do not establish persistence or task
 and Chat default resolution.
 
 ## `grok-bot`
+
+Capability ID: `agents/grok-bot`.
 
 Review: `baseline`.
 

@@ -18,17 +18,19 @@ rules, without server transition parsing.
 
 The cases experiment exposes structured records with types, fields, parent/child relationships, revisions, and related task work. Work appears above Details in one column. Details use a compact monospace key/value table: nested objects become dotted leaf paths, singleton object arrays omit the redundant index (`items.quantity`), and multiple object-array entries retain their indices (`items[0].quantity`). Primitive arrays remain inline JSON; scalar task/case/URL references remain links. Case changes live in Audit, accessible through a case-scoped link and the Cases action/Case entity filters.
 
+Feature ID: `cases`.
+
 Implementation: [case list](../../ui/src/pages/Cases.tsx), [case detail](../../ui/src/pages/CaseDetail.tsx).
 
 Agent access: [companion](../agent-access-map/cases.md).
 
 ## Sub-features
 
-- `browse`: search, choose visible columns, filter by status/type/project, sort/group, and navigate read-only case records.
-- `structure`: read saved fields, documents, attachments, and parent/child relationships.
-- `history`: inspect document revisions and case changes in the shared Audit view, with actor avatars and case/action filters.
-- `task-links`: follow work associated with a case in both directions.
-- `handoffs`: move the same primary task between agents and inspect its phase and handoff history.
+- `browse`: `cases/browse` — search, choose visible columns, filter by status/type/project, sort/group, and navigate read-only case records.
+- `structure`: `cases/structure` — read saved fields, documents, attachments, and parent/child relationships.
+- `history`: `cases/history` — inspect document revisions and case changes in the shared Audit view, with actor avatars and case/action filters.
+- `task-links`: `cases/task-links` — follow work associated with a case in both directions.
+- `handoffs`: `cases/handoffs` — move the same primary task between agents and inspect its phase and handoff history.
 
 ## How to get to it (user POV)
 
@@ -115,12 +117,16 @@ See [fixture and limits](../../tests/runner-e2e/README.md#persistent-case-handof
 
 #### `browse`
 
+Capability ID: `cases/browse`.
+
 Scope: ui
 Storybook: Mount the production Cases page in its real shell: Columns/Filter/Sort/Group header controls, URL view state, search/status/type/project filters, No project, result paging, list-to-detail return, keyboard navigation and empty/loading/error recovery. The ListControls story changes columns, title sorting and type grouping using fixture query responses.
 Production: GET /companies/{id}/cases and /cases/types scope/filter behavior and ordering before pagination require production evidence; rendered fixtures establish presentation only. Mutation/permission scenarios need real API checks separately.
 Sources: Source: [Cases.tsx](../../ui/src/pages/Cases.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [Cases.test.tsx](../../ui/src/pages/Cases.test.tsx), [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts)
 
 #### `structure`
+
+Capability ID: `cases/structure`.
 
 Scope: ui
 Storybook: Mount read-only CaseDetail and CaseFieldsTable with nested objects, singleton/multiple object arrays and scalar reference links in a compact monospace key/value table, alongside documents, attachments, parent/children and unavailable references. Dotted leaf paths omit the index for a singleton object array and retain it for multiple entries. CaseDetail shows Work above Details in one column. The older CaseFieldsPanel arbitrary/empty examples retain their generic component scope. Do not invent a general field editor or typed field validation.
@@ -129,6 +135,8 @@ Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [CaseField
 
 #### `history`
 
+Capability ID: `cases/history`.
+
 Scope: ui
 Storybook: Mount CaseDetail's View in Audit link with the case UUID query scope, and document revisions. Preserve the historical ActivityHistory export/ID for its Audit-navigation example. The destination Audit feed is a separate production surface, not reproduced in the case fixture shell.
 Production: The case-scoped Audit query must include retained historical case events, enforce the same case access boundary, and deduplicate events also recorded in the activity log. Case/Case action filters and configured agent avatars need real Audit/browser checks. GET /cases/{id}/events and /cases/{id}/documents/{key}/revisions still require company/access filtering; fixtures do not establish durable creation, privacy or restoration.
@@ -136,12 +144,16 @@ Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [cases.ts]
 
 #### `task-links`
 
+Capability ID: `cases/task-links`.
+
 Scope: ui
 Storybook: Mount CaseDetail and IssueCasesPanel related-task/case links in both directions, missing links and unavailable targets.
 Production: GET /issues/{id}/cases and /cases/{id}/issue-links must enforce permitted task/case relationships; production browser cold links verify destination and company context.
 Sources: Source: [CaseDetail.tsx](../../ui/src/pages/CaseDetail.tsx), [IssueCasesPanel.tsx](../../ui/src/components/IssueCasesPanel.tsx), [cases.ts](../../server/src/routes/cases.ts). Tests: [IssueCasesPanel.test.tsx](../../ui/src/components/IssueCasesPanel.test.tsx), [CaseDetail.test.tsx](../../ui/src/pages/CaseDetail.test.tsx), [cases-routes.test.ts](../../server/src/__tests__/cases-routes.test.ts)
 
 #### `handoffs`
+
+Capability ID: `cases/handoffs`.
 
 Scope: ui
 Storybook: Read-only pages and CaseWorkSummary mount production task/phase/history with waiting and paused-recipient API fixtures. No handoff mutation controls are exposed on these pages.
