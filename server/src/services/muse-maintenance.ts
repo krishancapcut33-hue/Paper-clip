@@ -13,11 +13,15 @@ export function startMuseMaintenance(
   const broker = museRunnerBroker(db);
   const receiver = museReceiver(db);
   let startupMarked = false;
+  let requestedSweep = 0;
+  let completedSweep = -1;
   let nextDeadline: number | null = null;
   const worker = coordinator.register(DELIVERY_QUEUES.museMaintenance, {
     retryMs: 5_000,
     pausePassiveMaintenance: true,
+    onSettled: () => { requestedSweep++; },
     async run(signal) {
+      const sweep = requestedSweep;
       if (!startupMarked) {
         await db.update(bindings).set({ cadenceEvidenceIncompleteAt: new Date() })
           .where(and(isNull(bindings.revokedAt), gt(bindings.qualificationExpiresAt, new Date())));
@@ -76,6 +80,7 @@ export function startMuseMaintenance(
         .where(isNull(bindings.revokedAt))
         .orderBy(asc(bindings.qualificationExpiresAt)).limit(1);
       nextDeadline = next?.at?.getTime() ?? null;
+      completedSweep = sweep;
     },
     async hasPending() {
       const [pending] = await db.select({ id: assignments.id }).from(assignments)
@@ -87,7 +92,7 @@ export function startMuseMaintenance(
         .limit(1);
       return !!pending;
     },
-    nextRunAt: () => nextDeadline,
+    nextRunAt: () => completedSweep !== requestedSweep ? Date.now() + 5_000 : nextDeadline,
   });
   receiver.start();
   return Object.assign(() => receiver.stop(), { ready: worker.ready });

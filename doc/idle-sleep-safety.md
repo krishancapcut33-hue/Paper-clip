@@ -401,7 +401,9 @@ assignment history does not keep that cadence running. Direct SQL or independent
 process writers require explicit integration; startup still reconstructs state.
 
 Warm standby prevents maintenance SQL. An idle drain pauses ordinary dispatch
-and passive deadlines through the shared coordinator. Producer uncertainty and
+and passive deadlines through the shared coordinator. Startup and notifications
+received during drain retain a memory-only wake until a sweep can run. The wait
+does not query the database. Producer uncertainty and
 outstanding assignment recovery retain its existing admission rules. Shutdown
 awaits the worker before flushing the receiver. The receiver's separate batching
 timer remains; an empty buffer performs no database work. Existing Muse durable

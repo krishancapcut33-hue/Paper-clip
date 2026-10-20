@@ -192,6 +192,47 @@ describeDatabase("Muse commit and deadline maintenance", () => {
     await vi.advanceTimersByTimeAsync(5000); await settle();
     expect(effects.endQualification).toHaveBeenCalledTimes(1);
   });
+  it("retains a first qualification committed during drain until dispatch resumes", async () => {
+    const binding = await fixture(); await start();
+    expect(coordinator.nextWakeAt()).toBeNull();
+    draining = true;
+    await signalWrite(binding.id, new Date(Date.now() + 1000)); await settle();
+    expect(coordinator.nextWakeAt()).not.toBeNull();
+    const baseline = [...calls];
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls).toEqual(baseline);
+    expect(effects.endQualification).not.toHaveBeenCalled();
+    draining = false;
+    await vi.advanceTimersByTimeAsync(5000); await settle();
+    expect(effects.endQualification).toHaveBeenCalledTimes(1);
+    expect(coordinator.nextWakeAt()).toBeNull();
+  });
+  it("retains startup recovery when the worker starts during drain", async () => {
+    await fixture(new Date(Date.now() - 1000));
+    draining = true; await start();
+    expect(coordinator.nextWakeAt()).not.toBeNull();
+    const baseline = [...calls];
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls).toEqual(baseline);
+    draining = false;
+    await vi.advanceTimersByTimeAsync(5000); await settle();
+    expect(effects.endQualification).toHaveBeenCalledTimes(1);
+    expect(coordinator.nextWakeAt()).toBeNull();
+  });
+  it("preserves a failed sweep retry across drain", async () => {
+    await fixture(); await start(true);
+    expect(errors).toHaveLength(1);
+    draining = true;
+    await vi.advanceTimersByTimeAsync(5000); await settle();
+    expect(coordinator.nextWakeAt()).not.toBeNull();
+    const baseline = [...calls];
+    await vi.advanceTimersByTimeAsync(20_000);
+    expect(calls).toEqual(baseline);
+    draining = false;
+    await vi.advanceTimersByTimeAsync(5000); await settle();
+    expect(effects.reconcileTerminalAssignments).toHaveBeenCalledTimes(1);
+    expect(coordinator.nextWakeAt()).toBeNull();
+  });
   it("retries startup evidence marking before reconciliation", async () => {
     await fixture(); await start(true);
     expect(effects.reconcileTerminalAssignments).not.toHaveBeenCalled();
