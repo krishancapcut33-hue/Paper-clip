@@ -1,6 +1,6 @@
 import { useState } from "react";
 import type { Meta, StoryObj } from "@storybook/react-vite";
-import { expect, userEvent, within } from "storybook/test";
+import { expect, userEvent, waitFor, within } from "storybook/test";
 import { TaskChatThreadView } from "@/components/task-chat/TaskChatThreadView";
 import { TaskChatPresentationProvider, type TaskChatPresentationMode } from "@/components/task-chat/presentation-mode";
 import type { TaskChatItem, TaskChatMarkerItem, TaskChatMessageItem } from "@/components/task-chat/task-chat-model";
@@ -70,7 +70,7 @@ export const FailedRun: Story = {
 export const OlderMarker: Story = {
   args: { items: [{ ...failed, collapsible: false }] },
   play: async ({ canvasElement }) => {
-    await expect(within(canvasElement).getByText(failed.detail!)).toBeVisible();
+    await waitFor(() => expect(within(canvasElement).getByText(failed.detail!)).toBeVisible());
     await expectNoRules(canvasElement);
   },
 };
@@ -97,7 +97,7 @@ export const ExpandedRecoveryAndRetry: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: /No live execution path/ }));
-    await expect(canvas.getByText(/Your message is preserved/)).toBeVisible();
+    await waitFor(() => expect(canvas.getByText(/Your message is preserved/)).toBeVisible());
     await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
     await expect(canvas.getByRole("status")).toHaveTextContent("Recovery retry requested");
   },
@@ -106,8 +106,8 @@ export const ExpandedFailureAndRetry: Story = {
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
     await userEvent.click(canvas.getByRole("button", { name: /Run failed/ }));
-    await expect(canvas.getByText(failed.detail!)).toBeVisible();
-    await expect(canvas.getByRole("link", { name: "View run" })).toHaveAttribute("href", /\/agents\/coder\/runs\/failed-run$/);
+    await waitFor(() => expect(canvas.getByText(failed.detail!)).toBeVisible());
+    await expect(canvas.getByRole("link", { name: "View run" }).getAttribute("href")).toMatch(/\/agents\/coder\/runs\/failed-run$/);
     await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
     await expect(canvas.getByRole("status")).toHaveTextContent("Retry requested for failed-run");
   },
@@ -116,8 +116,8 @@ export const MessageBetweenErrors: Story = {
   args: { items: [failed, { ...request, id: "followup", text: "Please try again." }, recovery] },
   play: async ({ canvasElement }) => {
     const canvas = within(canvasElement);
-    await expect(canvas.getByText("Run failed")).toBeVisible();
-    await expect(canvas.getByText("No live execution path")).toBeVisible();
+    await waitFor(() => expect(canvas.getByText("Run failed")).toBeVisible());
+    await waitFor(() => expect(canvas.getByText("No live execution path")).toBeVisible());
   },
 };
 export const Light: Story = { ...RecoveryIsLatest, globals: { theme: "light" } };
