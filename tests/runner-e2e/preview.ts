@@ -1,7 +1,3 @@
-/**
- * Render the public history with local production templates and retained data.
- * No instance, provider credentials, evaluation, or publisher is started.
- */
 import { createServer } from "node:http";
 import { mkdir, readFile, rename, writeFile } from "node:fs/promises";
 import path from "node:path";
@@ -105,7 +101,6 @@ async function campaignHtml(campaignId: string) {
     generatedAt: campaign.generatedAt,
     expected: campaign.expected,
     catalog: runnerMatrix,
-    // Keep the original grades, counts, billing, timestamps, and provenance.
     campaign,
     history: localHistory,
     entries: campaign.results.map((result) => {

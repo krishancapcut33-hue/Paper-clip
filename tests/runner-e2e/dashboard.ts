@@ -1412,7 +1412,6 @@ export function renderRunnerE2EDashboard(input: RunnerDashboardInput) {
           clearFilters();
           apply();
         }
-        // Filter changes alter the page length; avoid overlapping smooth jumps.
         requestAnimationFrame(() => {
           target.scrollIntoView({ block: "start", behavior: "instant" });
         });

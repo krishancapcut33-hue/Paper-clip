@@ -227,7 +227,6 @@ test("suite links reveal filtered sections and scroll on repeated clicks", async
     await expect(page.locator("[data-report-result]")).toHaveText("4 of 4 tests shown");
   }
 
-  // Keep filters that already allow the destination to be seen.
   await page.locator("select[data-report-profile]").selectOption("legacy-codex");
   await coreLink.click();
   await expect(coreHeading).toBeInViewport();
@@ -242,7 +241,6 @@ test("suite links reveal filtered sections and scroll on repeated clicks", async
   await expect(page.locator("select[data-report-profile]")).toHaveValue("legacy-codex");
   await coreLink.click();
 
-  // Browser history must reveal a destination hidden by the current selection, too.
   await page.getByRole("link", { name: "Local Session Integrity", exact: true }).click();
   await expect(page.locator("#suite-local-session-integrity")).toBeVisible();
   await feature.selectOption("questions-and-approvals");

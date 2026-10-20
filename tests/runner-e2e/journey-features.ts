@@ -2,7 +2,6 @@ import { fileURLToPath } from "node:url";
 import { featureIndex } from "../../scripts/feature-map.mjs";
 import type { ReportExecution } from "./report-catalog.js";
 
-/** Display associations only: prompts, grading, and historical results are unchanged. */
 export const journeyFeatureMap = featureIndex(fileURLToPath(new URL("../../", import.meta.url)));
 export const journeyFeatures = journeyFeatureMap.sections.flatMap((section) =>
   section.features.map((feature) => ({ ...feature, section: section.title })),
@@ -19,8 +18,6 @@ function associate(suites: readonly string[], cases: Record<string, readonly str
   }
 }
 
-// Map only named scenarios whose existing oracle checks the referenced behavior.
-// New suites/cases stay unmapped until their assertions have been inspected.
 associate(["core-compatibility", "openrouter-model-breadth", "extended-harnesses", "grok-qualification", "grok-subscription-qualification"], {
   "message-marker": ["runs-adapters/runs"],
   "hello-complete": ["runs-adapters/runs"],
