@@ -5,7 +5,10 @@ import { afterEach, describe, expect, it } from "vitest";
 import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
-const migrationNames = ["0362_gray_venus.sql", "0363_clear_maria_hill.sql", "0364_naive_shatterstar.sql", "0365_superb_adam_warlock.sql", "0366_noisy_lilandra.sql"];
+const migrationNames = [
+  "0362_gray_venus.sql", "0363_clear_maria_hill.sql", "0364_naive_shatterstar.sql",
+  "0365_superb_adam_warlock.sql", "0366_noisy_lilandra.sql", "0367_abandoned_bucky.sql",
+];
 const migrations = await Promise.all(migrationNames.map(async name => {
   const body = await readFile(new URL(`./migrations/${name}`, import.meta.url), "utf8");
   return { name, body, hash: createHash("sha256").update(body).digest("hex") };
@@ -68,6 +71,12 @@ async function guards(sql: postgres.Sql) {
   };
 }
 
+async function expectActorContextColumn(sql: postgres.Sql) {
+  expect(await sql`SELECT data_type, is_nullable, column_default FROM information_schema.columns
+    WHERE table_schema = 'public' AND table_name = 'case_handoffs' AND column_name = 'actor_context'`)
+    .toEqual([{ data_type: "jsonb", is_nullable: "YES", column_default: null }]);
+}
+
 describePostgres("case handoff migration upgrades", () => {
   it("preserves passive case data and backfills every retained source on a first upgrade", async () => {
     const { sql, connectionString } = await database();
@@ -83,6 +92,31 @@ describePostgres("case handoff migration upgrades", () => {
     expect(await sql`SELECT source_kind, source_id FROM case_access_sources WHERE case_id = ${row.caseId} ORDER BY source_kind`)
       .toEqual([{ source_kind: "issue", source_id: row.issueId }, { source_kind: "project", source_id: row.projectId }]);
     expect(await sql`SELECT count(*)::int AS count FROM case_handoffs`).toEqual([{ count: 0 }]);
+    await expectActorContextColumn(sql);
+    expect(await inspectMigrations(connectionString)).toMatchObject({ status: "upToDate" });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("adds nullable actor context without inventing authority for existing handoffs", async () => {
+    const { sql, connectionString } = await database();
+    const actorContextMigration = migrations.find(migration => migration.name === "0367_abandoned_bucky.sql")!;
+    await sql`ALTER TABLE case_handoffs DROP COLUMN actor_context`;
+    await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${actorContextMigration.hash}`;
+    const row = await seed(sql);
+    await sql`UPDATE cases SET work_issue_id = ${row.issueId}, phase = 'verification', handoff_version = 1 WHERE id = ${row.caseId}`;
+    const handoffId = randomUUID();
+    await sql`INSERT INTO case_handoffs (id, company_id, case_id, issue_id, version, from_agent_id, destination_kind,
+      to_agent_id, phase, instructions, actor_type, actor_id, wakeup_request_id, idempotency_key, input_fingerprint, state) VALUES
+      (${handoffId}, ${row.companyId}, ${row.caseId}, ${row.issueId}, 1, ${row.agentId}, 'agent', ${row.agentId},
+      'verification', 'Preserve legacy intent', 'agent', ${row.agentId}, ${randomUUID()}, 'legacy-context', 'fingerprint', 'pending_dispatch')`;
+    const [before] = await sql`SELECT * FROM case_handoffs WHERE id = ${handoffId}`;
+    expect(await sql`SELECT column_name FROM information_schema.columns
+      WHERE table_schema = 'public' AND table_name = 'case_handoffs' AND column_name = 'actor_context'`).toEqual([]);
+    expect(await inspectMigrations(connectionString)).toMatchObject({ status: "needsMigrations", pendingMigrations: [actorContextMigration.name] });
+
+    await applyPendingMigrations(connectionString);
+
+    await expectActorContextColumn(sql);
+    expect(await sql`SELECT * FROM case_handoffs WHERE id = ${handoffId}`).toEqual([{ ...before, actor_context: null }]);
     expect(await inspectMigrations(connectionString)).toMatchObject({ status: "upToDate" });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
@@ -108,6 +142,7 @@ describePostgres("case handoff migration upgrades", () => {
     await applyPendingMigrations(connectionString);
     expect(await contents(sql)).toEqual(before);
     expect(await guards(sql)).toEqual(beforeGuards);
+    await expectActorContextColumn(sql);
     const afterHistory = await sql`SELECT * FROM drizzle.__drizzle_migrations ORDER BY id`;
     expect(afterHistory).toEqual(expect.arrayContaining(beforeHistory));
     expect(afterHistory).toHaveLength(beforeHistory.length + migrations.length);
