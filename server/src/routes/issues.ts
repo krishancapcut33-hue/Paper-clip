@@ -9850,12 +9850,13 @@ export function issueRoutes(
           }
         }
 
+        let ownerHandoff: { sourceAgentId: string; destinationAgentId: string } | undefined;
         if (
           sourceIssueStatus === "todo" &&
           requiresExecutionReconciliation(activeRecoveryAction.cause)
         ) {
           assertBoard(req);
-          await validateExecutionReconciliation({
+          const sourceRun = await validateExecutionReconciliation({
             db: tx as unknown as Db,
             companyId: lockedIssue.companyId,
             issueId: lockedIssue.id,
@@ -9864,7 +9865,35 @@ export function issueRoutes(
               activeRecoveryAction.evidence.runId ??
               activeRecoveryAction.evidence.sourceRunId,
             decision: executionReconciliation,
+            allowOwnerHandoff: true,
           });
+          if (sourceRun.agentId !== lockedIssue.assigneeAgentId) {
+            const automatic = activeRecoveryAction.evidence.automaticRecovery as { replay?: string } | undefined;
+            if (activeRecoveryAction.kind !== "active_run_watchdog" || automatic?.replay !== "blocked" ||
+                activeRecoveryAction.returnOwnerAgentId !== sourceRun.agentId ||
+                lockedIssue.status !== "blocked" || !lockedIssue.assigneeAgentId ||
+                lockedIssue.checkoutRunId || lockedIssue.executionRunId) {
+              throw conflict("The stopped source or current task owner changed. Inspect the recovery before handing it off.");
+            }
+            const target = await agentsSvc.getById(lockedIssue.assigneeAgentId);
+            if (!target || target.companyId !== lockedIssue.companyId ||
+                target.status === "paused" || target.status === "terminated") {
+              throw conflict("The new task owner is unavailable for recovery.");
+            }
+            const readiness = await svc.getDependencyReadiness(lockedIssue.id, tx);
+            if (readiness.unresolvedBlockerCount > 0) {
+              throw conflict("Resolve the task's blockers before continuing with the new owner.");
+            }
+            const [pendingInteraction] = await tx.select({ id: issueThreadInteractions.id })
+              .from(issueThreadInteractions).where(and(
+                eq(issueThreadInteractions.companyId, lockedIssue.companyId),
+                eq(issueThreadInteractions.issueId, lockedIssue.id),
+                eq(issueThreadInteractions.status, "pending"),
+                activeIssueInteractionCondition(),
+              )).limit(1);
+            if (pendingInteraction) throw conflict("Resolve the pending interaction before continuing with the new owner.");
+            ownerHandoff = { sourceAgentId: sourceRun.agentId, destinationAgentId: lockedIssue.assigneeAgentId };
+          }
         } else if (executionReconciliation) {
           throw conflict(
             "An execution reconciliation must target the current execution recovery action and continue the task.",
@@ -9886,6 +9915,7 @@ export function issueRoutes(
             )
             .limit(1);
           if (chatBinding) {
+            if (ownerHandoff) throw conflict("Use the current chat request to recover a reassigned conversation.");
             // Admit the exact server-owned recovery evidence before resolving
             // either record. The durable worker, not a best-effort generic wake,
             // owns execution after commit and rechecks current chat access.
@@ -9927,6 +9957,7 @@ export function issueRoutes(
             chatRetry
               ? { kind: "chat_failed_run_retry", actionId: chatRetry.actionId }
               : undefined,
+            ownerHandoff ? { ownerHandoff } : undefined,
           );
         }
         let issue = lockedIssue;
@@ -9956,14 +9987,15 @@ export function issueRoutes(
           const safeHandBack =
             outcome === "restored" &&
             sourceIssueStatus === "todo" &&
-            activeRecoveryAction.returnOwnerAgentId != null &&
-            lockedIssue.assigneeAgentId ===
-              activeRecoveryAction.returnOwnerAgentId;
+            (ownerHandoff != null || (activeRecoveryAction.returnOwnerAgentId != null &&
+              lockedIssue.assigneeAgentId === activeRecoveryAction.returnOwnerAgentId));
           if (safeHandBack) {
             await assertSafeRecoveryHandBackGates({
               req,
               issue: lockedIssue,
-              recoveryAction: activeRecoveryAction,
+              recoveryAction: ownerHandoff
+                ? { ...activeRecoveryAction, returnOwnerAgentId: ownerHandoff.destinationAgentId }
+                : activeRecoveryAction,
             });
           } else {
             await requireRecoverySourceMutationAuthority(req, lockedIssue);
@@ -10077,8 +10109,8 @@ export function issueRoutes(
         const recordedOutcome =
           outcome === "restored" &&
           issue.status === "todo" &&
-          activeRecoveryAction.returnOwnerAgentId != null &&
-          issue.assigneeAgentId === activeRecoveryAction.returnOwnerAgentId
+          (ownerHandoff != null || (activeRecoveryAction.returnOwnerAgentId != null &&
+            issue.assigneeAgentId === activeRecoveryAction.returnOwnerAgentId))
             ? "handed_back"
             : outcome === "restored" && issue.status === "done"
               ? "owner_completed"
