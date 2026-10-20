@@ -519,6 +519,7 @@ const support = await getEmbeddedPostgresTestSupport();
   });
 
   it.each(["binding", "configured_source"] as const)("preserves selected app configuration privacy on legacy PATCH %s", async kind => {
+    vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
     const f = await fixture(), userId = randomUUID(), settings = instanceSettingsService(db), previous = await settings.getExperimental();
     await settings.updateExperimental({ enableIsolatedWorkspaces: true });
     try {
@@ -531,12 +532,15 @@ const support = await getEmbeddedPostgresTestSupport();
       const app = express(); app.use(express.json()); app.use((req, _res, next) => { req.actor = actor; next(); });
       app.use("/api", issueRoutes(db, {} as never)); app.use(errorHandler);
       const patch = kind === "binding" ? { executionWorkspaceId: f.workspaceId } : { projectWorkspaceId: source.id };
-      await request(app).patch(`/api/issues/${f.issueId}`).send(patch).expect(kind === "binding" ? 403 : 404);
+      await request(app).patch(`/api/issues/${f.issueId}`).send(patch).expect(403);
       expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ executionWorkspaceId: null, projectWorkspaceId: null });
       await db.insert(projectAccessMembers).values({ companyId: f.companyId, projectId: project.id, subjectType: "user", subjectId: userId });
       await request(app).patch(`/api/issues/${f.issueId}`).send(patch).expect(200);
       expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0]).toMatchObject({ projectWorkspaceId: source.id, workspaceBindingRevision: 1 });
-    } finally { await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces }); }
+    } finally {
+      await settings.updateExperimental({ enableIsolatedWorkspaces: previous.enableIsolatedWorkspaces });
+      vi.unstubAllEnvs();
+    }
   });
 
   it.each(["create", "patch", "selection"] as const)("allows either assigned agent source strategy for %s when the selected config is readable", async operation => {
