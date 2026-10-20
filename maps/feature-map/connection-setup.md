@@ -171,6 +171,7 @@ Slack setup does not qualify Discord, Telegram, GitHub, email, or iMessage.
 
 ## Gotchas
 
+- For connecting an assistant to Paperclip itself, use [Assistant connections (MCP)](./assistant-connections.md). This recipe's MCP-link journey connects Paperclip to an external app server.
 - Private endpoint rejection depends on deployment: owned loopback MCP servers
   are supported in local-trusted/private instances. Public authenticated
   deployments apply the private-network restriction.

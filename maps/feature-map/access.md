@@ -65,6 +65,7 @@ logout alone does not establish that server revocation succeeded.
 
 ## Gotchas
 
+- External assistants use their own [browser/device consent and personal MCP grants](./assistant-connections.md). Human CLI tokens and agent bearer keys have separate authorization paths.
 - Settings visibility is not authorization; direct requests still need permission checks.
 - An agent bearer key must not gain another company’s access.
 - Never put invite tokens, session cookies, or API keys in verification evidence.
