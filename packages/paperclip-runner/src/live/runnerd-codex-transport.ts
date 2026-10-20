@@ -1,9 +1,13 @@
+import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
 import { resolvePinnedOpenCodeCommand } from "../drivers/opencode/opencode-server-driver.js";
 import { ACPX_CAPABILITY_PROFILES } from "../drivers/acpx/capability-profiles.js";
+import { resolveClaudeEffort, admittedClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import { admittedPiThinkingLevel, resolvePiThinkingLevel } from "../drivers/acpx/pi-thinking.js";
 import { configuredEnvironment } from "../configured-environment.js";
+import { githubCredentialEnvironment } from "../github-credential-environment.js";
 import { resolveAcpxProviderMode } from "../drivers/acpx/provider-mode.js";
+import { preconfiguredHomeEnvironment, preconfiguredCodexHome, usesPreconfiguredHome } from "../drivers/preconfigured-home.js";
 import { isAcpxCanonicalInputMethod } from "../drivers/acpx/profile-extensions.js";
 import { RunnerdTraceFrameIndex } from "./runnerd-trace-frame-index.js";
 import { waitForWarmAttachmentReadiness } from "./warm-attachment-readiness.js";
@@ -27,7 +31,7 @@ import {
   writeFileSync,
 } from "node:fs";
 import { tmpdir } from "node:os";
-import { basename, dirname, resolve } from "node:path";
+import { basename, dirname, posix, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 import type {
@@ -76,7 +80,7 @@ import {
   createSanitizedAwsAgentCoreEnvironment,
   createSanitizedClaudeManagedEnvironment,
 } from "../drivers/claude-managed/environment.js";
-import { composeNativeSystemInstructions, type NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
+import { composeNativeSystemInstructions, type NativeRunRuntimeGrant, type NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type {
   NativeAcpxPermissionMode,
   NativeOpenCodePermissionMode,
@@ -423,6 +427,22 @@ async function rotateExternalAuthorityEpoch(
   });
   assertSuspendedRunnerState(archivedRunnerState, priorIdentity);
   return controlPlaneState;
+}
+
+function projectCopilotRunGrant(
+  grant: NativeRunRuntimeGrant,
+  runnerFilesystemRoot?: string,
+): NativeRunRuntimeGrant {
+  const projected = structuredClone(grant);
+  const context = projected.runtimeContext;
+  if (!runnerFilesystemRoot || !context) return projected;
+  const sourceInstructionRoot = context.instructions.bundle.rootPath;
+  context.instructions.bundle.rootPath = posix.join(runnerFilesystemRoot, "context", "instructions");
+  context.skills.forEach((skill, index) => {
+    skill.bundle.rootPath = posix.join(runnerFilesystemRoot, "context", "skills", `${index}-${skill.bundle.digest.slice(0, 12)}`);
+  });
+  projected.instructions = projected.instructions.replaceAll(sourceInstructionRoot, context.instructions.bundle.rootPath);
+  return projected;
 }
 
 function rotatedRunAttachPayload(
@@ -968,7 +988,12 @@ export function bridgedAcpxPermissionParams(
 
 function acpxPermissionRequestParams(request: Record<string, unknown>, threadId: string, turnId: string): Record<string, unknown> | null {
   if (request.type !== "permission" || request.requestKind !== "permission_approval"
-    || record(request.origin).method !== "session/request_permission") return null;
+    || !["session/request_permission", "mcpServer/elicitation/request"].includes(String(record(request.origin).method))) return null;
+  if (record(request.origin).method === "mcpServer/elicitation/request") {
+    const details = record(request.details);
+    return { threadId, turnId, message: request.prompt, choices: request.choices,
+      serverName: details.serverName, mode: details.mode, _meta: details._meta, requestedSchema: details.requestedSchema, origin: request.origin };
+  }
   const toolCallId = record(request.details).toolCallId;
   // Match the permission adapter's 240-character bound. Never truncate, trim,
   // hash, or substitute itemId: any of those would change the correlation key.
@@ -1213,6 +1238,7 @@ export interface CapabilityRunnerdProcessEvidence {
   providerDriver: string | null;
   /** Effective native mode, populated only from the admitted Pi identity. */
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   providerVersion: string | null;
   acpxAgent: QualifiedAcpxAgent | null;
   agentServerVersion: string | null;
@@ -1229,7 +1255,11 @@ export interface CapabilityRunnerdProcessEvidence {
 }
 
 export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionDriver {
+  observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
+  homeMode?: "isolated" | "preconfigured";
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
+  observeCredentials?: boolean;
+  onCredentialsUpdated?: (event: PrpEvent) => Promise<void>;
   opencodePermissionMode?: NativeOpenCodePermissionMode;
   acpxAgent?: QualifiedAcpxAgent;
   /** Explicit evaluation-only candidate selection, never derived from persisted session input. */
@@ -1237,6 +1267,7 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   acpxPermissionMode?: NativeAcpxPermissionMode;
   acpxMode?: string;
   piThinkingLevel?: "off" | "low" | "high" | "max";
+  claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   acpxPermissionModePinned?: boolean;
   acpxSidecarPath?: string;
   /** SHA-256 verified by the provider-pack authority before runner startup. */
@@ -1449,6 +1480,17 @@ export function expandRunnerdCanonicalNotifications(
       params,
     };
   });
+}
+
+/** Keep durable expiry visible to the facade before its terminal notification. */
+export function runnerdRuntimeRequestExpiryNotification(
+  eventType: string, payload: Record<string, unknown>, threadId: string | null, turnId: string | null,
+): CodexRpcNotification | null {
+  if (eventType !== "runtime_request.expired") return null;
+  return { method: "paperclip/runtimeRequestExpired", params: {
+    ...(threadId ? { threadId } : {}), ...(turnId ? { turnId } : {}),
+    payload, itemId: payload.itemId,
+  } };
 }
 
 export function runnerdCanonicalNotificationMethod(
@@ -2468,19 +2510,21 @@ async function settleRetainedRunnerdSessionOwned(
     if (Date.now() >= deadline) throw maintenanceDenied();
   };
   await authorize();
-  await bounded(
-    releaseMaterializedNativeRuntimeSkills(resolve(codexHome, "skills")),
-  );
-  await bounded(
-    prepareIsolatedCodexHome({
-      context: null,
-      codexHome,
-      sourceCodexHome:
-        input.sourceCodexHome ?? resolveSourceCodexHome(input.environment),
-      apiKey:
-        input.environment?.CODEX_API_KEY ?? input.environment?.OPENAI_API_KEY,
-    }),
-  );
+  if (!usesPreconfiguredHome(input.environment)) {
+    await bounded(
+      releaseMaterializedNativeRuntimeSkills(resolve(codexHome, "skills")),
+    );
+    await bounded(
+      prepareIsolatedCodexHome({
+        context: null,
+        codexHome,
+        sourceCodexHome:
+          input.sourceCodexHome ?? resolveSourceCodexHome(input.environment),
+        apiKey:
+          input.environment?.CODEX_API_KEY ?? input.environment?.OPENAI_API_KEY,
+      }),
+    );
+  }
   // A previously journaled suspend must be honored before a later drain.
   // A second exact-authority connection can then drain the retained provider
   // prefix; no old command is removed, reordered, or treated as completed.
@@ -2996,6 +3040,7 @@ function resolveBuildOwnedCliArtifact(
 function acpxProviderPackageAuthority(
   sidecarScript: string,
   ownerPackageRoot = packageRoot,
+  agent?: QualifiedAcpxAgent,
 ): {
   root: string;
   manifest: string;
@@ -3034,6 +3079,15 @@ function acpxProviderPackageAuthority(
     );
   }
   const sidecarPackageRoot = resolve(cliDirectory, "../..");
+  // Copilot's native closure belongs to the runner package itself. Its asset
+  // guard requires the bound manifest directly inside that same package root;
+  // the workspace dependency root used by JS providers is a different owner.
+  if (agent === "copilot") {
+    return {
+      root: sidecarPackageRoot,
+      manifest: resolve(sidecarPackageRoot, "package.json"),
+    };
+  }
   // A local source build lives at <workspace>/packages/paperclip-runner and
   // resolves dependencies from <workspace>/node_modules. `pnpm deploy` makes
   // the package itself the deployment root and owns <deploy>/node_modules/.pnpm.
@@ -3244,13 +3298,15 @@ function withRunnerdProviderTrace(
   for (const key of [
     "PAPERCLIP_PROVIDER_TRACE_PATH",
     "PAPERCLIP_PROVIDER_TRACE_MAX_BYTES",
+    "PAPERCLIP_NATIVE_MCP_STDIO",
+    "PAPERCLIP_NATIVE_MCP_PROXY",
   ] as const) {
     const value = source?.[key];
     if (value !== undefined) result[key] = value;
   }
   return result;
 }
-export function createCapabilityRunnerdProviderEnvironment(input: {
+function createCapabilityRunnerdProviderEnvironmentBase(input: {
   provider: NonNullable<CapabilityRunnerdCodexTransportOptions["provider"]>;
   options: CapabilityRunnerdCodexTransportOptions;
   identity: DurableRecoveryIdentity;
@@ -3283,7 +3339,9 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
       input.acpxSidecarPath ??
       input.options.acpxSidecarPath ??
       resolve(packageRoot, "dist", "cli", "acpx-runtime-sidecar.cjs");
-    const providerPackageAuthority = acpxProviderPackageAuthority(sidecarPath);
+    const providerPackageAuthority = acpxProviderPackageAuthority(
+      sidecarPath, packageRoot, input.options.acpxAgent,
+    );
     // This is the trusted runner/sidecar boundary. The provider sandbox still
     // uses createSanitizedAcpxSpawnInput and does not inherit gateway tokens.
     const assignedGateway = nativeMcpLaunchBinding(input.options.environment ?? {});
@@ -3335,14 +3393,19 @@ export function createCapabilityRunnerdProviderEnvironment(input: {
   }
   const environment = createSanitizedCodexEnvironment({
     ...input.options.environment,
-    HOME: input.codexHome,
+    HOME: input.options.homeMode === "preconfigured" ? input.options.environment?.HOME : input.codexHome,
     CODEX_HOME: input.codexHome,
   });
+  if (input.options.homeMode === "preconfigured") environment.PAPERCLIP_RUNNER_HOME_MODE = "preconfigured";
   for (const key of ["OPENAI_API_KEY", "CODEX_API_KEY"] as const) {
     const apiKey = input.options.environment?.[key];
     if (apiKey?.trim()) environment[key] = apiKey;
   }
   return environment;
+}
+
+export function createCapabilityRunnerdProviderEnvironment(input: Parameters<typeof createCapabilityRunnerdProviderEnvironmentBase>[0]): NodeJS.ProcessEnv {
+  return applyProviderObservabilityEnvironment(createCapabilityRunnerdProviderEnvironmentBase(input), input.options.observability, input.provider === "acpx");
 }
 
 export function resolveRunnerdAcpxPermissionMode(
@@ -3393,7 +3456,7 @@ function createSanitizedOpenCodeRunnerEnvironment(
     delete candidate[key];
     if (source?.[key] !== undefined) candidate[key] = source[key];
   }
-  return { ...configuredEnvironment(source), ...Object.fromEntries(
+  return { ...configuredEnvironment(source), ...githubCredentialEnvironment(source ?? {}), ...Object.fromEntries(
     Object.entries(candidate).filter(
       ([key, value]) =>
         typeof value === "string" &&
@@ -3435,6 +3498,8 @@ export function createRunnerdCodexAppServerArgs(input: {
   environment: NodeJS.ProcessEnv | undefined;
   codexHome: string;
   codexCommand?: string;
+  workingDirectory?: string;
+  runtimeStateRoot?: string;
   readOnlyRoots?: string[];
   instructionWorkingCopyRoot?: string;
   disableProjectInstructions?: boolean;
@@ -3443,18 +3508,23 @@ export function createRunnerdCodexAppServerArgs(input: {
   // runner state outside provider reach. Always bind those names to the actual
   // isolated runner home; a stale controller environment must never cause the
   // execution workspace itself to become an explicit deny root.
-  return [
+  const args = [
     ...(input.disableProjectInstructions ? ["-c", "project_doc_max_bytes=0"] : []),
     ...createIsolatedCodexAppServerArgs(
       {
         ...input.environment,
-        HOME: input.codexHome,
+        HOME: usesPreconfiguredHome(input.environment) ? input.environment?.HOME : input.codexHome,
         CODEX_HOME: input.codexHome,
       },
       [...(input.readOnlyRoots ?? []), ...codexExecutableReadOnlyRoots(input.environment ?? {}, input.codexCommand)],
       input.instructionWorkingCopyRoot,
+      usesPreconfiguredHome(input.environment) && input.runtimeStateRoot ? [input.runtimeStateRoot] : [],
     ),
   ];
+  if (usesPreconfiguredHome(input.environment) && input.workingDirectory) {
+    args.unshift("-c", `projects={${JSON.stringify(input.workingDirectory)}={trust_level="trusted"}}`);
+  }
+  return args;
 }
 
 export function unwrapToolResponse(response: Record<string, unknown>, preserveEnvelope = false): {
@@ -3601,11 +3671,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   readonly #bridgedRuntimeInputs = new Map<string, { durableTurnId: string; permission?: boolean }>();
 
   constructor(readonly options: CapabilityRunnerdCodexTransportOptions) {
+    resolveClaudeEffort(options.provider === "acpx" ? options.acpxAgent ?? "codex" : "", options.claudeEffort);
     resolvePiThinkingLevel(options.provider === "acpx" ? options.acpxAgent ?? "codex" : "", options.piThinkingLevel);
     if (options.acpxMode !== undefined && options.provider !== "acpx") {
       throw new Error("acpxMode requires the ACPX provider");
     }
     if (options.provider === "acpx") resolveAcpxProviderMode(options.acpxAgent ?? "codex", options.acpxMode);
+    if (options.homeMode === "preconfigured") {
+      if ((options.provider ?? "codex") !== "codex" && !(options.provider === "acpx" && ["claude", "codex"].includes(options.acpxAgent ?? "codex"))) {
+        throw new Error("preconfigured_home_unsupported_provider");
+      }
+      const source = options.environment ?? process.env;
+      const homes = options.runnerFilesystemRoot ? Object.fromEntries(
+        ["HOME", "CODEX_HOME", "CLAUDE_CONFIG_DIR", "XDG_CONFIG_HOME", "XDG_DATA_HOME", "XDG_CACHE_HOME"]
+          .flatMap(key => source[key] === undefined ? [] : [[key, source[key]!]]),
+      ) : preconfiguredHomeEnvironment(source);
+      if (!homes.HOME) throw new Error("preconfigured_home_unavailable");
+      this.options = { ...options, environment: { ...source, ...homes,
+        PAPERCLIP_RUNNER_HOME_MODE: "preconfigured",
+        ...(options.acpxAgent === "claude" ? { ACPX_CLAUDE_INCLUDE_USER_SETTINGS: "1" } : {}),
+      } };
+    }
+    if (options.homeMode !== "preconfigured" && options.environment?.PAPERCLIP_RUNNER_HOME_MODE !== undefined) {
+      const environment = { ...options.environment };
+      delete environment.PAPERCLIP_RUNNER_HOME_MODE;
+      this.options = { ...options, environment };
+    }
     if (options.adoptExistingRunner && !options.stateDirectory?.trim()) {
       throw new Error("native_adopted_runner_state_directory_required");
     }
@@ -4050,6 +4141,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     runId: string;
     turnId: string;
     itemId: string;
+    currentRunGrant?: NativeRunRuntimeGrant;
   }): Promise<void> {
     if (this.#pendingWarmRecoveryCompletion !== null) {
       throw new Error("native_runner_warm_transition_completion_pending");
@@ -4059,6 +4151,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error("native_runner_prp_run_rotation_unavailable");
     }
     await this.#awaitWarmRunAttachmentReady();
+    const currentRunGrant = input.currentRunGrant
+      ? projectCopilotRunGrant(input.currentRunGrant, this.options.runnerFilesystemRoot)
+      : undefined;
+    if (this.options.provider === "acpx" && this.options.acpxAgent === "copilot" && !currentRunGrant) {
+      throw new Error("native_runner_current_instruction_grant_unavailable");
+    }
     const prior = core.store.state.identity;
     const desired: DurableRecoveryIdentity = {
       ...prior,
@@ -4088,12 +4186,16 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
             desired,
             this.#authorizedTools,
             this.options.resumeCompletionContract,
+            currentRunGrant?.runtimeContext,
+            currentRunGrant ? { text: currentRunGrant.instructions, context: currentRunGrant.runtimeContext } : undefined,
           )
         : rotatedRunAttachPayload(
             core.store.state,
             desired,
             this.#authorizedTools,
             this.options.resumeCompletionContract,
+            currentRunGrant?.runtimeContext,
+            currentRunGrant ? { text: currentRunGrant.instructions, context: currentRunGrant.runtimeContext } : undefined,
           );
       this.#runAttachTemplate = structuredClone(runAttachTemplate);
       const payload = {
@@ -4186,6 +4288,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       throw new Error(
         `PRP runtime request ${input.requestId} is no longer pending`,
       );
+    if (input.turnId !== this.#turnId) throw new Error("native_runner_runtime_response_stale_turn");
     if (!pending.permission && !("response" in input.resolution) && input.resolution.action !== "cancel" && input.resolution.action !== "decline") {
       throw new Error(
         "runnerd-native runtime requests require a canonical question response",
@@ -4722,6 +4825,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
+      onCommittedEvent: async (event) => {
+        if (event.eventType === "auth.credentials.updated") {
+          await this.options.onCredentialsUpdated?.(event);
+        }
+      },
       connectionLeaseTtlMs: 60 * 60 * 1_000,
     });
     this.#core = core;
@@ -4754,16 +4862,19 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       );
     }
     const localCodexHome = resolve(this.#root, "codex-home");
-    const codexHome = this.options.runnerFilesystemRoot
-      ? resolve(this.options.runnerFilesystemRoot, "codex-home")
-      : localCodexHome;
+    const codexHome = this.options.homeMode === "preconfigured"
+      ? preconfiguredCodexHome(this.options.environment)
+      : this.options.runnerFilesystemRoot
+        ? resolve(this.options.runnerFilesystemRoot, "codex-home")
+        : localCodexHome;
     if (provider === "aws_agentcore") {
       mkdirSync(codexHome, { recursive: true, mode: 0o700 });
     }
-    if (provider === "codex") {
+    if (provider === "codex" && this.options.homeMode !== "preconfigured") {
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
+        observability: this.options.observability,
         sourceCodexHome:
           this.options.sourceCodexHome ??
           resolveSourceCodexHome(this.options.environment),
@@ -4904,6 +5015,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? resolveAcpxProviderMode(acpxProfile!.agent, this.options.acpxMode) : undefined;
     const completionContract = record(params.completionContract);
     const runAttachTemplate = {
+      observeCredentials: this.options.observeCredentials !== false,
       authorizedTools: this.#authorizedTools,
       ...(completionContract.revision &&
       Array.isArray(completionContract.criterionIds)
@@ -4936,6 +5048,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               providerPolicy: { readOnly: params.permissions === "paperclip-runner-workspace-read-only" },
               ...(selectedAcpxMode === undefined ? {} : { mode: selectedAcpxMode }),
               ...(acpxProfile!.agent === "pi" ? { piThinkingLevel: this.options.piThinkingLevel } : {}),
+              ...(acpxProfile!.agent === "claude" && this.options.claudeEffort ? { claudeEffort: this.options.claudeEffort } : {}),
               permissionMode: resolveRunnerdAcpxPermissionMode(
                 this.options.acpxPermissionMode,
               ),
@@ -4988,6 +5101,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
               : {
                   kind: provider,
                   provider,
+                  ...(this.options.homeMode === "preconfigured" ? { preconfiguredHome: { HOME: this.options.environment!.HOME, CODEX_HOME: codexHome } } : {}),
                   driver:
                     provider === "opencode"
                       ? "opencode_server"
@@ -5005,6 +5119,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
                         createRunnerdCodexAppServerArgs({
                           environment: this.options.environment,
                           codexHome,
+                          workingDirectory: String(params.cwd ?? tmpdir()),
+                          runtimeStateRoot: this.options.runnerFilesystemRoot ?? this.#root,
                           codexCommand: effectiveCodexCommand,
                           instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
                           disableProjectInstructions: this.options.disableCodexProjectInstructions,
@@ -5404,6 +5520,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#durableTurnId = identity.turnId;
     this.#eventIdentity = structuredClone(identity);
     const provider = this.options.provider ?? "codex";
+    if (provider === "codex" && (this.options.homeMode === "preconfigured" || record(record(controlPlaneState!.runAttachTemplate).provider).preconfiguredHome !== undefined)) {
+      const seed = rotatedRunAttachPayload(controlPlaneState!, desiredIdentity, this.#authorizedTools, this.options.resumeCompletionContract);
+      const priorHome = record(seed.provider).preconfiguredHome;
+      const expectedHome = this.options.homeMode === "preconfigured"
+        ? { HOME: this.options.environment!.HOME, CODEX_HOME: preconfiguredCodexHome(this.options.environment) } : undefined;
+      if (JSON.stringify(priorHome) !== JSON.stringify(expectedHome)) throw new Error("runner_preconfigured_home_binding_changed");
+    }
     const sourceRuntimeContext = this.options.runtimeContext ?? null;
     const runtimeContext =
       this.options.runnerRuntimeContext ?? sourceRuntimeContext;
@@ -5412,9 +5535,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       ? resolve(this.options.runnerFilesystemRoot, "runtime-context.json")
       : localRuntimeContextPath;
     const localCodexHome = resolve(this.#root, "codex-home");
-    const codexHome = this.options.runnerFilesystemRoot
-      ? resolve(this.options.runnerFilesystemRoot, "codex-home")
-      : localCodexHome;
+    const codexHome = this.options.homeMode === "preconfigured"
+      ? preconfiguredCodexHome(this.options.environment)
+      : this.options.runnerFilesystemRoot
+        ? resolve(this.options.runnerFilesystemRoot, "codex-home")
+        : localCodexHome;
     const opencodeProxyPath =
       this.options.opencodeProxyPath ??
       (provider === "opencode" && !this.options.runnerFilesystemRoot
@@ -5459,6 +5584,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       expectedRunnerDigest: runnerArtifact.digest,
       onProtocolIntegrityError: (error) => this.#failTransport(error),
       onSemanticToolInput: (call) => this.#handleSemanticToolInput(call),
+      onCommittedEvent: async (event) => {
+        if (event.eventType === "auth.credentials.updated") {
+          await this.options.onCredentialsUpdated?.(event);
+        }
+      },
       ...(warmRecovery
         ? {
             beforeAuthenticatedConnection: async (admission) => {
@@ -5482,6 +5612,10 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     });
     this.#core = core;
     if (rotatedAuthority) {
+      if (provider === "acpx" && this.options.acpxAgent === "copilot"
+        && typeof this.options.baseInstructions !== "string") {
+        throw new Error("native_runner_current_instruction_grant_unavailable");
+      }
       const runAttachTemplate = rotatedRunAttachPayload(
         controlPlaneState,
         desiredIdentity,
@@ -5501,6 +5635,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           createRunnerdCodexAppServerArgs({
             environment: this.options.environment,
             codexHome,
+            workingDirectory: this.options.resumeWorkingDirectory,
+            runtimeStateRoot: this.options.runnerFilesystemRoot ?? this.#root,
             codexCommand: typeof recordedCommand === "string" ? recordedCommand : this.options.codexCommand,
             instructionWorkingCopyRoot: runtimeContext?.instructions.workingCopy?.rootPath,
             disableProjectInstructions: this.options.disableCodexProjectInstructions,
@@ -5680,7 +5816,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     if (provider === "aws_agentcore")
       mkdirSync(codexHome, { recursive: true, mode: 0o700 });
-    if (provider === "codex") {
+    if (provider === "codex" && this.options.homeMode !== "preconfigured") {
       await releaseMaterializedNativeRuntimeSkills(
         resolve(localCodexHome, "skills"),
       );
@@ -5688,6 +5824,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       await prepareIsolatedCodexHome({
         context: sourceRuntimeContext,
         codexHome: localCodexHome,
+        observability: this.options.observability,
         sourceCodexHome:
           this.options.sourceCodexHome ??
           resolveSourceCodexHome(this.options.environment),
@@ -5977,7 +6114,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const skills = resolveRunnerdCodexSkillInputs(
       input.filter((item) => item.type === "skill"),
       this.options.runtimeContext ?? null,
-      resolve(this.options.runnerFilesystemRoot ?? this.#root, "codex-home"),
+      this.options.homeMode === "preconfigured" ? preconfiguredCodexHome(this.options.environment) : resolve(this.options.runnerFilesystemRoot ?? this.#root, "codex-home"),
     );
     if (skills.length && (this.options.provider ?? "codex") !== "codex") {
       throw new Error("Explicit skill inputs are supported only by Codex");
@@ -6339,6 +6476,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       // full, new events replace its prefix without increasing its length.
       if (fromDeferredQueue) this.#deferredTurnStartEvents.shift();
       else this.#eventSourceSeq = event.sourceSeq;
+      if (event.eventType === "auth.credentials.updated" && this.options.onCredentialsUpdated) continue;
       if (
         event.eventType === "harness.ready" ||
         event.eventType === "session.started" ||
@@ -6377,7 +6515,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         const origin = record(normalizedRequest.origin);
         const method = typeof origin.method === "string" ? origin.method : "";
         const permission = normalizedRequest.type === "permission" && normalizedRequest.requestKind === "permission_approval"
-          && method === "session/request_permission";
+          && ["session/request_permission", "mcpServer/elicitation/request"].includes(method);
         const params = permission ? bridgedAcpxPermissionParams(
           event,
           this.#threadId,
@@ -6442,6 +6580,13 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         ).requestId;
         if (typeof requestId === "string")
           this.#bridgedRuntimeInputs.delete(requestId);
+        // Operator resolution/Stop keep their existing acknowledgement path.
+        const expiry = runnerdRuntimeRequestExpiryNotification(event.eventType, record(eventPayload), this.#threadId, this.#turnId);
+        if (expiry) this.#queue.push({ ...expiry,
+          ...(this.options.environment?.PAPERCLIP_PROVIDER_TRACE_PATH ? { paperclipTrace: {
+            sourceEventId: event.sourceEventId, sourceEventType: event.eventType,
+          } } : {}),
+        });
         continue;
       }
       const sessionUpdatePayload = record(eventPayload);
@@ -6650,6 +6795,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       if (descriptor.turnControls !== undefined && descriptor.agent !== (this.options.acpxAgent ?? "codex")) {
         throw new Error("ACPX capability identity differs from the admitted profile");
       }
+      const claudeEffort = admittedClaudeEffort(this.options.acpxAgent ?? "codex", this.options.claudeEffort, descriptor, providerIdentity);
+      if (claudeEffort !== undefined) this.#evidence.claudeEffort = claudeEffort;
       const piThinkingLevel = admittedPiThinkingLevel(this.options.acpxAgent ?? "codex", this.options.piThinkingLevel, descriptor, providerIdentity);
       if (piThinkingLevel !== undefined) this.#evidence.piThinkingLevel = piThinkingLevel;
       this.#turnControls = parseAcpxTurnControlCapabilities(descriptor.turnControls, descriptor.agent);
@@ -6793,7 +6940,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   async #runnerHasExited(): Promise<boolean> {
-    if (this.#handle) return this.#handle.child.exitCode !== null;
+    if (this.#handle) return this.#handle.isExitConfirmed?.() ?? this.#handle.child.exitCode !== null;
     const adoptedRunner = this.options.adoptExistingRunner;
     if (!adoptedRunner) return true;
     try {
@@ -6877,7 +7024,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #watchRunner(handle: RunnerProcessHandle): void {
     void handle.completion.then(
       (result) => {
-        this.#evidence.runnerExited = true;
+        const exitConfirmed = handle.isExitConfirmed?.() ?? true;
+        this.#evidence.runnerExited = exitConfirmed;
         this.#evidence.runnerExitCode = result.code;
         this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
         const detail = result.stderr.trim() || result.stdout.trim();
@@ -6890,6 +7038,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // process completion; clean terminal exit is the expected lifecycle.
         this.#pumpEventsSafely();
         const expectedPerTurnExit =
+          exitConfirmed &&
           result.code === 0 &&
           (this.options.lifecyclePolicy?.mode ?? "per_turn") === "per_turn" &&
           (this.#core?.store.state.committedEvents.some(
@@ -6897,19 +7046,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ) ??
             false);
         if (expectedPerTurnExit) return;
-        const code = /provider_frame_too_large|stdout frame exceeded/i.test(
-          detail,
-        )
-          ? "provider_frame_too_large"
-          : /runner_ingress_bind_conflict/i.test(detail)
-            ? "runner_ingress_bind_conflict"
-            : /transport_reconnect_grace_exceeded/i.test(detail)
-              ? "transport_reconnect_grace_exceeded"
-              : this.#startupComplete
-                ? "native_runner_process_exited"
-                : this.#startupFailureCode;
+        const code = !exitConfirmed
+          ? "runner_process_termination_unconfirmed"
+          : /provider_frame_too_large|stdout frame exceeded/i.test(detail)
+            ? "provider_frame_too_large"
+            : /runner_ingress_bind_conflict/i.test(detail)
+              ? "runner_ingress_bind_conflict"
+              : /transport_reconnect_grace_exceeded/i.test(detail)
+                ? "transport_reconnect_grace_exceeded"
+                : this.#startupComplete
+                  ? "native_runner_process_exited"
+                  : this.#startupFailureCode;
         if (
           code === "native_runner_process_exited" &&
+          exitConfirmed &&
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
@@ -6918,7 +7068,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         }
         this.#failTransport(
           new Error(
-            `${code}: runnerd exited unexpectedly${result.code === null ? "" : ` with code ${result.code}`}${detail ? `: ${detail.slice(-1_000)}` : ""}`,
+            `${code}: runnerd ${exitConfirmed ? "exited unexpectedly" : "process supervision ended"}${result.code === null ? "" : ` with code ${result.code}`}${detail ? `: ${detail.slice(-1_000)}` : ""}`,
           ),
         );
       },
@@ -6927,6 +7077,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           return;
         if (
           this.#startupComplete &&
+          handle.isExitConfirmed?.() !== false &&
           this.options.runnerReconnectGraceMs !== undefined &&
           handle.restart
         ) {
@@ -6936,9 +7087,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           );
           return;
         }
+        const code = handle.isExitConfirmed?.() === false
+          ? "runner_process_termination_unconfirmed"
+          : this.#startupComplete
+            ? "native_runner_process_exited"
+            : this.#startupFailureCode;
         this.#failTransport(
           new Error(
-            `${this.#startupComplete ? "native_runner_process_exited" : this.#startupFailureCode}: runnerd process failed: ${error instanceof Error ? error.message : String(error)}`,
+            `${code}: runnerd ${handle.isExitConfirmed?.() === false ? "process supervision" : "process"} failed: ${error instanceof Error ? error.message : String(error)}`,
+            { cause: error },
           ),
         );
       },
@@ -7002,15 +7159,20 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#publish();
 
         let processSettled = false;
+        let observationError: unknown;
+        let observationDetail = "";
         const completion = recoveredHandle.completion.then(
           (result) => {
             processSettled = true;
-            lastDetail = result.stderr.trim() || result.stdout.trim();
+            observationDetail = result.stderr.trim() || result.stdout.trim();
+            lastDetail = observationDetail;
             return false;
           },
           (error) => {
             processSettled = true;
-            lastDetail = error instanceof Error ? error.message : String(error);
+            observationError = error;
+            observationDetail = error instanceof Error ? error.message : String(error);
+            lastDetail = observationDetail;
             return false;
           },
         );
@@ -7034,6 +7196,15 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         if (await Promise.race([completion, authenticated])) {
           this.#diagnostic("runner process restored its durable PRP session");
           this.#watchRunner(recoveredHandle);
+          return;
+        }
+        if (recoveredHandle.isExitConfirmed?.() === false) {
+          this.#failTransport(
+            new Error(
+              `runner_process_termination_unconfirmed: replacement runner health could not be verified${observationDetail ? `: ${observationDetail.slice(-1_000)}` : ""}`,
+              { cause: observationError },
+            ),
+          );
           return;
         }
         attempt += 1;
@@ -7086,6 +7257,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   }
 
   #diagnostic(message: string): void {
+    message = redactObservabilityDiagnostic(message, this.options.environment, this.options.observability?.otelConfig);
     this.#evidence.diagnostics.push(message);
     if (this.#evidence.diagnostics.length > 64)
       this.#evidence.diagnostics.shift();
@@ -7348,6 +7520,7 @@ export const runnerdLaunchProfileInternals = Object.freeze({
 });
 
 export const runnerdRecoveryInternals = Object.freeze({
+  projectCopilotRunGrant,
   completedMaintenanceTerminalReceipt,
   completedMaintenanceTerminalReplayMatches,
   readControlPlaneState,

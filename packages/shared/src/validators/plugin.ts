@@ -177,6 +177,7 @@ export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCap
 // validation error, not a silently dropped field. A misspelled capability name
 // (for example `supportsLoginPTY`) fails validation instead of dropping.
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
+  supportsTasks: z.boolean().optional(),
   driverKey: z.string().min(1).regex(
     /^[a-z0-9][a-z0-9._-]*$/,
     "Environment driver key must start with a lowercase alphanumeric and contain only lowercase letters, digits, dots, hyphens, or underscores",
@@ -783,7 +784,7 @@ export const pluginManifestV1Schema = z.object({
   ).optional(),
   capabilities: z.array(z.enum(PLUGIN_CAPABILITIES)).min(1),
   agentLifecycle: z.literal(true).optional(),
-  resourceLifecycle: z.array(z.enum(["agent", "project"])).min(1).max(2).optional(),
+  resourceLifecycle: z.array(z.enum(["agent", "project", "agent_runtime"])).min(1).max(3).optional(),
   aiConnectionRouter: z.object({ name: z.string().trim().min(1).max(100), description: z.string().trim().min(1).max(500) }).strict().optional(),
   entrypoints: z.object({
     worker: z.string().min(1),

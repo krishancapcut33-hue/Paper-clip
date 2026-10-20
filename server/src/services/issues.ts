@@ -1,15 +1,15 @@
 import { measureRunTransaction } from "./execution-transaction-timing.js";
+import { assertNoCaseHandoffMutation, cancelCaseHandoffsForIssue, completeTerminalCaseHandoffsForIssue } from "./heartbeat/case-handoff-lifecycle.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
-import { automaticReadRecoveryCleanupCondition, touchedByUserCondition } from "./issue-participation.js";
-import { HUMAN_TASK_ORIGIN_KINDS } from "@paperclipai/shared";
-import { directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition } from "./issue-participation.js";
+import { automaticReadRecoveryCleanupCondition, directHumanCommentCondition, humanCreatedIssueCondition, pendingUserRequestCondition, touchedByUserCondition } from "./issue-participation.js";
 import { resolveProjectDefaultWorkspaceId } from "./project-default-workspace.js";
 import { type AuthorizationActor, executionWorkspaceReadSqlCondition, projectReadSqlCondition } from "./authorization.js";
-import { assertTaskWorkspaceAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-source-access.js";
+import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { type TaskWorkspaceSelection, type TaskWorkspaceIntent } from "@paperclipai/shared";
 import { executionWorkspaceService } from "./execution-workspaces.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { recordChatHandoff, recordChatCompletion, existingChatCompletionReply, acknowledgeChatCompletionReply } from "./chat-completion-delivery.js";
 import { mirrorSlackBoardComment, slackBoardReplyBindings } from "./slack-board-messages.js";
 import { assertAgentRunWriteAllowed } from "../agent-run-cancellation.js";
@@ -157,6 +157,7 @@ import {
   retryNativeChatReviewPresentation,
 } from "./native-runtime/native-chat-review-presentation.js";
 import {
+  applyIssueExecutionPolicyTransition,
   buildInitialIssueMonitorFields,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
@@ -9417,11 +9418,12 @@ export function issueService(db: Db) {
           and(
             eq(issues.companyId, parent.companyId),
             eq(issues.parentId, parent.id),
+            notInArray(issues.status, ["done", "cancelled"]),
           ),
         );
       if (childCount >= MAX_CHILD_ISSUES_CREATED_BY_HELPER) {
         throw unprocessable(
-          `Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} child issues for this helper`,
+          `Parent issue already has the maximum ${MAX_CHILD_ISSUES_CREATED_BY_HELPER} active child issues for this helper`,
         );
       }
 
@@ -10228,20 +10230,17 @@ export function issueService(db: Db) {
             .innerJoin(projects, eq(projects.id, projectWorkspaces.projectId))
             .where(and(eq(projectWorkspaces.id, projectWorkspaceId), eq(projectWorkspaces.companyId, companyId), await projectReadSqlCondition(tx, workspaceActor)));
           if (!readableSource) throw notFound("Workspace source is unavailable or inaccessible");
-          const sourceStrategy = await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
+          await executionWorkspaceService(db).resolveSourceWorkspaceStrategy({ companyId,
             assigneeAgentId: issueData.assigneeAgentId, assigneeAdapterOverrides: issueData.assigneeAdapterOverrides,
             executionWorkspaceSettings, executionWorkspacePolicy: readableSource.executionWorkspacePolicy,
             typedSelection: Boolean(workspaceIntent), projectId: issueData.projectId, executionPolicy: issueData.executionPolicy }, tx);
-          await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId, {
-            parentIssueId: issueData.parentId, assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId,
-            write: !executionWorkspaceId && sourceStrategy !== "git_worktree",
-          });
+          await assertTaskWorkspaceSourceProjectAccess(tx, workspaceActor, companyId, readableSource.projectId);
         }
         if (executionWorkspaceId && workspaceSelectionActor) {
           const [readableWorkspace] = await tx.select({ id: executionWorkspaces.id, projectId: executionWorkspaces.projectId }).from(executionWorkspaces)
             .where(and(eq(executionWorkspaces.id, executionWorkspaceId), eq(executionWorkspaces.companyId, companyId), await executionWorkspaceReadSqlCondition(tx, workspaceActor)));
           if (!readableWorkspace) throw notFound("Workspace is unavailable or inaccessible");
-          await assertTaskWorkspaceAccess(tx, workspaceActor, companyId, readableWorkspace.id, { write: true, parentIssueId: issueData.parentId, assigneeAgentId: issueData.assigneeAgentId, assigneeUserId: issueData.assigneeUserId });
+          await assertExecutionWorkspaceRecordAccess(tx, workspaceActor, companyId, readableWorkspace.id);
         }
         if (projectWorkspaceId) {
           await assertValidProjectWorkspace(
@@ -10405,6 +10404,7 @@ export function issueService(db: Db) {
           await notifyTerminalWorkspaceWork(tx, values.executionWorkspaceId ? `workspace:${values.executionWorkspaceId}`
             : values.parentId ? `issue:${values.parentId}` : undefined);
         }
+        if (values.monitorNextCheckAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
         const [issue] = await tx.insert(issues).values(values).returning();
         await attachOwnedDraftImages(tx, issue, issue.description, { userId: issueData.createdByUserId, agentId: issueData.createdByAgentId });
         if (issue.visibility === "private" && !inheritedPrivateSubtree && issueData.createdByAgentId) {
@@ -10808,11 +10808,14 @@ export function issueService(db: Db) {
         blockedByIssueIds?: string[];
         actorAgentId?: string | null;
         actorRunId?: string | null;
+        /** Server-owned transfer being applied; never accepted from HTTP input. */
+        caseHandoffId?: string;
         actorRunStopId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
+        expectedStatusVersion?: number;
       },
       dbOrTx: any = db,
       postCommitActivityPublications?: ActivityPublication[],
@@ -10857,13 +10860,21 @@ export function issueService(db: Db) {
         blockedByIssueIds,
         actorAgentId,
         actorRunId,
+        caseHandoffId,
         actorRunStopId,
         actorUserId,
         companyGuard,
         workspaceSelectionActor,
         expectedExecutionPolicy,
+        expectedStatusVersion,
         ...issueData
       } = data;
+      if (expectedStatusVersion !== undefined && (
+        issueData.status !== "todo" || Object.keys(issueData).some(key => key !== "status") ||
+        nextLabelIds !== undefined || blockedByIssueIds !== undefined || expectedExecutionPolicy !== undefined
+      )) {
+        throw unprocessable("expectedStatusVersion requires a status-only backlog-to-todo promotion");
+      }
       // An explicit edit claims the title, even if it keeps the same text.
       if (issueData.title !== undefined) issueData.titleNeedsGeneration = false;
       if (
@@ -11116,6 +11127,33 @@ export function issueService(db: Db) {
           .for("update")
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
+        if (actorRunId) await assertNoCaseHandoffMutation(tx, actorRunId, id);
+        if (expectedStatusVersion !== undefined && (
+          receiptExisting.statusVersion !== expectedStatusVersion || receiptExisting.status !== "backlog"
+        )) {
+          throw conflict("The task status or assignment changed. Read the task again before starting work.", {
+            code: "issue_status_version_changed",
+          });
+        }
+        if (expectedStatusVersion !== undefined) {
+          const policy = normalizeIssueExecutionPolicy(receiptExisting.executionPolicy ?? null);
+          const transition = applyIssueExecutionPolicyTransition({
+            issue: receiptExisting,
+            policy,
+            previousPolicy: policy,
+            requestedStatus: "todo",
+            requestedAssigneePatch: {},
+            actor: { agentId: actorAgentId ?? null, userId: actorUserId ?? null },
+            allowBoardOverride: workspaceSelectionActor?.type === "board" && workspaceSelectionActor.source !== "mcp_oauth",
+          });
+          if (transition.decision ||
+            (transition.patch.status !== undefined && transition.patch.status !== "todo") ||
+            (transition.patch.assigneeAgentId !== undefined && transition.patch.assigneeAgentId !== receiptExisting.assigneeAgentId) ||
+            (transition.patch.assigneeUserId !== undefined && transition.patch.assigneeUserId !== receiptExisting.assigneeUserId)) {
+            throw unprocessable("expectedStatusVersion requires a status-only backlog-to-todo promotion");
+          }
+          Object.assign(patch, transition.patch);
+        }
         if (issueData.executionWorkspaceId !== undefined || issueData.projectWorkspaceId !== undefined ||
             issueData.executionWorkspacePreference !== undefined || issueData.executionWorkspaceSettings !== undefined) {
           Object.assign(patch, await executionWorkspaceService(db).prepareTaskWorkspaceUpdate({
@@ -11200,8 +11238,14 @@ export function issueService(db: Db) {
         });
         // Ownership changes invalidate observed handoff versions even if status
         // stays the same, including an A -> B -> A assignment race.
+        if (issueData.status === "done" || issueData.status === "cancelled") {
+          await cancelCaseHandoffsForIssue(tx, { companyId: receiptExisting.companyId, issueId: id,
+            reason: `Task was marked ${issueData.status}`, agentTransfersOnly: issueData.status === "done", publications: activityPublications });
+        }
         if ((issueData.assigneeAgentId !== undefined && issueData.assigneeAgentId !== receiptExisting.assigneeAgentId)
           || (issueData.assigneeUserId !== undefined && issueData.assigneeUserId !== receiptExisting.assigneeUserId)) {
+          await cancelCaseHandoffsForIssue(tx, { companyId: receiptExisting.companyId, issueId: id,
+            reason: "Task assignment changed", exceptId: caseHandoffId, publications: activityPublications });
           patch.statusVersion = sql`${issues.statusVersion} + 1` as unknown as number;
           // Invalidate human direction at the common assignment boundary, including
           // plugin/service writes that do not go through HTTP run cancellation.
@@ -11227,6 +11271,10 @@ export function issueService(db: Db) {
           || issueData.parentId !== undefined || issueData.executionWorkspaceId !== undefined) {
           await notifyTerminalWorkspaceWork(tx, `issue:${id}`);
         }
+        if (patch.monitorNextCheckAt !== undefined || (receiptExisting.monitorNextCheckAt &&
+          (patch.status !== undefined || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined))) {
+          await notifyDeliveryWork(tx, DELIVERY_QUEUES.issueMonitors);
+        }
         const updated = await tx
           .update(issues)
           .set(patch)
@@ -11234,6 +11282,10 @@ export function issueService(db: Db) {
           .returning()
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!updated) return null;
+        if (updated.status === "done") {
+          await completeTerminalCaseHandoffsForIssue(tx, { companyId: updated.companyId, issueId: updated.id,
+            publications: activityPublications });
+        }
         if (workspaceSelectionActor && updated.workspaceBindingRevision !== receiptExisting.workspaceBindingRevision) {
           await executionWorkspaceService(db).assertTaskWorkspaceUpdateAccess({
             task: updated, actor: workspaceSelectionActor,
@@ -11321,7 +11373,7 @@ export function issueService(db: Db) {
           if (updated.status === "done" || updated.status === "cancelled") {
             await finalizeSummarySlotsForTerminalIssue(tx, updated);
             // Every terminal transition funnels through here, including direct
-            // service callers (tree control, recovery, pipelines, status cards)
+            // service callers (tree control, recovery, status cards)
             // that never touch the HTTP routes. Governed cards expire; ordinary
             // historical questions remain answerable after completion.
             // Dynamic import breaks the module

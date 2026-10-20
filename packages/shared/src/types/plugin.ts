@@ -191,6 +191,8 @@ export interface SandboxProviderCapabilities {
 }
 
 export interface PluginEnvironmentDriverDeclaration {
+  /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
+  supportsTasks?: boolean;
   /** Stable driver key, unique within the plugin. Namespaced by plugin ID at runtime. */
   driverKey: string;
   /**
@@ -690,7 +692,7 @@ export interface PaperclipPluginManifestV1 {
   /** Required participant in agent preparation, stop, resume, and cleanup. */
   agentLifecycle?: true;
   /** Durable, acknowledged resource events delivered to onResourceLifecycle. Requires events.subscribe. */
-  resourceLifecycle?: Array<"agent" | "project">;
+  resourceLifecycle?: Array<"agent" | "project" | "agent_runtime">;
   /** Opt into the native pooled-connection catalog, setup, and management UI. */
   aiConnectionRouter?: { name: string; description: string };
   /** Entrypoint paths relative to the package root. */

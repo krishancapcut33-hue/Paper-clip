@@ -6,17 +6,20 @@ navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":10}
 
 People create, assign, organize, discuss, and finish tasks. A task retains its owner, project, priority, history, and outputs as it moves through the work lifecycle.
 
+Feature ID: `tasks`.
+
 Implementation: [new task](../../ui/src/components/NewIssueDialog.tsx), [task list](../../ui/src/pages/Issues.tsx), [task detail](../../ui/src/pages/IssueDetail.tsx).
 
 Agent access: [companion](../agent-access-map/tasks.md).
 
 ## Sub-features
 
-- `create`: capture a title/request with the intended agent, project, and attachments.
-- `organize`: filter, sort, group, and navigate tasks without losing the selected context.
-- `properties`: change status, priority, assignee, project, and relationships where authorized.
-- `discussion`: persist comments, references, and files on the task.
-- `completion`: distinguish backlog, active work, review, blocked, done, and cancelled outcomes.
+- `create`: `tasks/create` — capture a title/request with the intended agent, project, and attachments.
+- `organize`: `tasks/organize` — filter, sort, group, and navigate tasks without losing the selected context.
+- `properties`: `tasks/properties` — change status, priority, assignee, project, and relationships where authorized.
+- `discussion`: `tasks/discussion` — persist comments, references, and files on the task.
+- `completion`: `tasks/completion` — distinguish backlog, active work, review, blocked, done, and cancelled outcomes.
+- `privacy`: `tasks/privacy` — create private tasks, share or revoke access, and inspect parent/project inheritance before changing visibility.
 
 ## How to get to it (user POV)
 
@@ -31,6 +34,10 @@ Open `/issues` or a project’s Issues view; legacy `/tasks` links redirect.
 ### `task-detail`
 
 Open `/issues/:issueId` from a row, mention, or direct link.
+
+### `task-sharing`
+
+Use the privacy control in New task, or open an existing task’s menu and choose **Make private**, **Share…**, or **Make public** where allowed. The share sheet lists direct grants and inherited access from private ancestors or project membership. Inherited rows have no local revoke action; manage that access at its source.
 
 ## Driving it with Playwright and the Paperclip CLI
 
@@ -61,6 +68,11 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 
 Automated: [task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
 
+Automated: [paused assignee relevance](../../tests/e2e/completed-task-paused-assignee.spec.ts)
+uses a real disposable server and paused process agent, with no inference, to
+check both task interfaces. Done and cancelled tasks hide the paused-agent
+warning; reopening restores it. The agent stays paused and no run starts.
+
 Manual: For a disposable task owned by a legacy agent, have its current run
 assign the task to a human with status In review. Verify that assignment and
 status persist, that the current run finishes without `issue_reassigned`, and
@@ -70,7 +82,43 @@ reassignment and confirm that the outgoing run still stops.
 
 Manual: Add a comment and edit authorized properties. Reload and verify history, actor, and values. Complete a disposable task and inspect its deliverable; reopen through an available action and confirm the next execution follows current policy.
 
+Manual: Ask a standard native agent to schedule a future check on its current
+task. Reload and confirm the persisted monitor. After the agent yields, verify
+one later wake and a consumed schedule. For malformed-call recovery, use the
+[agent access recipe](../agent-access-map/tasks.md#properties) and verify that
+schema feedback supports a corrected call before a wait is claimed.
+For a due monitor held by execution recovery, confirm that the schedule remains
+and task activity explains the deferral. Repeated checks must not replay the held
+work. Resolve the hold through its existing recovery action, then verify one wake.
+Hold native finalization after the provider has stopped, and verify that both
+scheduled and manual checks retain the due monitor. After settlement, verify one
+wake. If its timeout passes during workspace recovery, verify settlement followed
+by the configured expiry recovery, with no ordinary monitor wake or duplicate
+escalation. For a timer already dispatched before recovery, verify that the saved
+result settles without changing the task, removing a successor's checkout, or
+creating another wake. The [monitor regression](../../server/src/services/native-runtime/task-monitor.integration.test.ts)
+and [scheduler regression](../../server/src/services/heartbeat/scheduling.test.ts)
+cover these boundaries with PostgreSQL.
+
+Manual: Add an ordinary Board comment while a task retry is queued or running.
+Confirm that the same execution keeps working and receives the saved message,
+without a second executor or an implicit move to Todo. Repeat with a parked retry
+and verify that fresh instructions can supersede it. Explicit Stop must still
+cancel active work. The [comment route regressions](../../server/src/__tests__/issue-comment-reopen-routes.test.ts)
+and [HTTP/process and interrupted-cancellation tests](../../server/src/__tests__/issue-scheduled-retry-routes.test.ts)
+cover these boundaries locally; deployed runner acceptance remains separate.
+
+### `task-sharing`
+
+Automated: [Share sheet](../../ui/src/components/IssueShareSheet.test.tsx), [privacy controls](../../ui/src/components/PrivateTaskPrivacyControls.test.tsx), [grant routes](../../server/src/__tests__/issue-access-grants-routes.test.ts), and [privacy production review](../../server/src/__tests__/privacy-production-review.test.ts) cover component actions, persisted grants, inheritance, and actor/resource denials. They do not establish a live two-person browser journey.
+
+Manual: Use authenticated mode with two ordinary operators, an eligible agent, and disposable parent/child/sibling tasks. Create private work as the first person; confirm the second person cannot discover or cold-open it. Share only the child, reload both sessions, and verify child/descendant access without exposing the private parent, sibling, or unreadable project metadata. Inspect direct and inherited rows in Share; inherited rows must identify access managed at its source and offer no local revoke action. Confirm a shared reader cannot manage the task’s grants. Revoke the direct grant as its manager, reload, and retry list and direct reads; change inherited access at its ancestor or project source separately. Inspect blocked Make public actions under a private parent or nonpersonal private project; separately confirm the offered personal-project publish action removes that project binding while private descendants remain private. With an actual granted agent, test the responsible user’s access intersection and the allowed restriction to private; agent access must not permit sharing or publishing.
+
+Sources: [Privacy actions](../../ui/src/components/IssuePrivacyActions.tsx), [share sheet](../../ui/src/components/IssueShareSheet.tsx), [issue routes](../../server/src/routes/issues.ts), and [authorization](../../server/src/services/authorization.ts).
+
 ## Gotchas
+
+- Private task sharing and private project membership are distinct read sources. Revoking a direct task grant does not revoke an independent ancestor/project grant; inspect the actual access source.
 
 - Priority remains an API field, but ordinary priority UI editing is hidden.
 
