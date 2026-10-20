@@ -88,7 +88,9 @@ child-task relays and other unrelated system updates stay visible.
 
 Interrupted runs use compact rows without divider rules, including
 older saved markers. When a run error and a no-live-execution-path notice are
-adjacent, show only the last error row. Keep its details and retry action. A
+adjacent, show only the last error row. Keep its details and retry action. If a
+legacy run has a permitted retry, keep that action on the surviving notice,
+including its pending state. A
 message, input, session boundary or credential-access denial separates errors;
 it must not disappear as part of this grouping. Run details retain full history.
 

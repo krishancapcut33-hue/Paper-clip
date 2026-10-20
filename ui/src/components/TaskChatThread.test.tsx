@@ -2804,12 +2804,21 @@ describe("TaskChatThread runtime transcript selection", () => {
       cause: "uncertain_provider_action", canRetry: false },
     { adapterType: "claude_local", status: "cancelled", runtimeMode: "legacy" as const,
       cause: "legacy_execution_requires_reconciliation", canRetry: false },
-  ])("offers only explicit conversation retries: $runtimeMode/$adapterType/$status/$cause", (testCase) => {
+  ].flatMap(testCase => [false, true].map(withRecoveryNotice => ({ ...testCase, withRecoveryNotice }))))("offers only explicit conversation retries: $runtimeMode/$adapterType/$status/$cause (recovery notice=$withRecoveryNotice)", async (testCase) => {
+    const retry = vi.fn();
+    const recoveryRetry = vi.fn();
     renderThread({
-      comments: [],
+      comments: testCase.withRecoveryNotice ? [{
+        id: "recovery-after-stop", companyId: "company", issueId: "issue", metadata: null,
+        authorType: "system", authorAgentId: null, authorUserId: null,
+        body: "Paperclip retried continuation, but it still has no live execution path.",
+        presentation: { kind: "system_notice", title: "No live execution path", tone: "danger", detailsDefaultOpen: false },
+        createdAt: new Date("2026-08-25T18:00:03.000Z"), updatedAt: new Date("2026-08-25T18:00:03.000Z"),
+      }] : [],
       onAdd: async () => {},
       issueStatus: "blocked",
-      onRetryFailedRun: vi.fn(),
+      onRetryFailedRun: retry,
+      onTryAgainNoLiveExecutionPath: recoveryRetry,
       linkedRuns: [{
         runId: "stopped-run",
         runtimeMode: testCase.runtimeMode,
@@ -2828,10 +2837,21 @@ describe("TaskChatThread runtime transcript selection", () => {
         },
       }],
     });
-    expect(Boolean(container.querySelector('[data-testid="task-chat-run-failed-try-again"]')))
-      .toBe(testCase.canRetry);
-    if (testCase.canRetry) expect(container.textContent).toContain("You can retry this message now.");
+    const button = container.querySelector<HTMLButtonElement>(testCase.withRecoveryNotice
+      ? '[data-testid="task-chat-no-live-path-try-again"]'
+      : '[data-testid="task-chat-run-failed-try-again"]');
+    expect(Boolean(button)).toBe(testCase.canRetry);
+    if (testCase.withRecoveryNotice) {
+      expect(container.textContent).toContain("No live execution path");
+      expect(container.textContent).not.toContain("Run failed");
+    } else if (testCase.canRetry) expect(container.textContent).toContain("You can retry this message now.");
     else expect(container.textContent).not.toContain("You can retry this message now.");
+    if (button) {
+      flushSync(() => button.click());
+      await Promise.resolve();
+      expect(retry).toHaveBeenCalledExactlyOnceWith("stopped-run");
+    }
+    expect(recoveryRetry).not.toHaveBeenCalled();
   });
 
   it.each(DIRECT_ADAPTER_TYPES)(

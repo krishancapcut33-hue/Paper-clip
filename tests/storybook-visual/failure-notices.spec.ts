@@ -3,7 +3,7 @@ import { expect, test } from "@playwright/test";
 const stories = [
   "failed-run", "older-marker", "production-mode", "recovery-is-latest",
   "failure-is-latest", "expanded-recovery-and-retry", "expanded-failure-and-retry",
-  "message-between-errors", "light", "mobile",
+  "message-between-errors", "light", "mobile", "legacy-run-retry", "legacy-production-retry",
 ];
 
 for (const theme of ["dark", "light"]) {
@@ -33,6 +33,11 @@ for (const theme of ["dark", "light"]) {
       }
       if (story === "expanded-recovery-and-retry") {
         await expect(page.getByRole("status")).toHaveText("Recovery retry requested");
+      }
+      if (["legacy-run-retry", "legacy-production-retry"].includes(story)) {
+        await expect(page.getByRole("status")).toHaveText("Retry requested for failed-run");
+        await expect(page.getByText("Run failed", { exact: true })).toHaveCount(0);
+        await expect(page.getByRole("button", { name: "Try again" })).toHaveCount(1);
       }
       if (story === "expanded-failure-and-retry") {
         await expect(page.getByRole("status")).toHaveText("Retry requested for failed-run");

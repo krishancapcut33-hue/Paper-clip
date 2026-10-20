@@ -65,6 +65,34 @@ describe("TaskChatMarker", () => {
     expect(retry).toHaveBeenCalledWith("latest");
   });
 
+  it.each(["production", "streamlined"] as const)("keeps the permitted run retry and its pending state on a later recovery notice in %s mode", async (mode) => {
+    const retry = vi.fn();
+    const renderNotice = (pending: boolean) => flushSync(() => root!.render(
+      <ThemeProvider>
+        <TaskChatPresentationProvider mode={mode}>
+          <TaskChatThreadView scroll={false} onRetryFailedRun={retry} retryFailedRunId={pending ? "latest" : null} items={[
+            { id: "failed", kind: "marker", variant: "interrupted", label: "Run failed", collapsible: true, runId: "latest" },
+            { id: "notice", kind: "message", author: "system", text: "There is no live execution path." },
+          ]} />
+        </TaskChatPresentationProvider>
+      </ThemeProvider>,
+    ));
+    renderNotice(true);
+    expect(container.textContent).not.toContain("Run failed");
+    let button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-no-live-path-try-again"]')!;
+    expect(button.disabled).toBe(true);
+    expect(button.textContent).toBe("Trying again...");
+    flushSync(() => button.click());
+    expect(retry).not.toHaveBeenCalled();
+    renderNotice(false);
+    flushSync(() => container.querySelector<HTMLButtonElement>('button[aria-expanded]')!.click());
+    button = container.querySelector<HTMLButtonElement>('[data-testid="task-chat-no-live-path-try-again"]')!;
+    expect(button.disabled).toBe(false);
+    flushSync(() => button.click());
+    await Promise.resolve();
+    expect(retry).toHaveBeenCalledExactlyOnceWith("latest");
+  });
+
   it("renders a failed run as a timestamped disclosure without divider rules", () => {
     flushSync(() =>
       root!.render(

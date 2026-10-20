@@ -22,7 +22,7 @@ const request: TaskChatMessageItem = {
   text: "Please update the task summary.", timestamp: "12:00 PM",
 };
 
-function FailureNotices({ items, mode = "streamlined" }: { items: TaskChatItem[]; mode?: TaskChatPresentationMode }) {
+function FailureNotices({ items, mode = "streamlined", recoveryRetryEnabled = true }: { items: TaskChatItem[]; mode?: TaskChatPresentationMode; recoveryRetryEnabled?: boolean }) {
   const [retry, setRetry] = useState<string | null>(null);
   return (
     <main className="min-h-screen bg-background p-4 text-foreground md:p-8">
@@ -31,7 +31,7 @@ function FailureNotices({ items, mode = "streamlined" }: { items: TaskChatItem[]
         <TaskChatPresentationProvider mode={mode}>
           <TaskChatThreadView items={[request, ...items]} scroll={false}
             onRetryFailedRun={(runId) => setRetry(`Retry requested for ${runId}`)}
-            onTryAgainNoLiveExecutionPath={() => setRetry("Recovery retry requested")} />
+            onTryAgainNoLiveExecutionPath={recoveryRetryEnabled ? () => setRetry("Recovery retry requested") : undefined} />
         </TaskChatPresentationProvider>
         {retry ? <p role="status" className="text-sm text-muted-foreground">{retry}</p> : null}
       </div>
@@ -50,7 +50,7 @@ const meta = {
     paperclip: {
       capabilities: ["tasks/discussion", "runs-adapters/runs"],
       status: "current", implementation: "production", boundary: "fixtures",
-      notes: "Uses the shared production thread and failure markers. Covers older and current markers, either order of adjacent run/recovery errors, intervening messages, both presentation modes, light and mobile. Retry callbacks record a local receipt; no agent runs or API changes occur.",
+      notes: "Uses the shared production thread and failure markers. Covers older and current markers, either order of adjacent run/recovery errors, intervening messages, both presentation modes, permitted legacy run retries, light and mobile. Retry callbacks record a local receipt; no agent runs or API changes occur.",
     },
   },
 } satisfies Meta<typeof FailureNotices>;
@@ -123,3 +123,14 @@ export const MessageBetweenErrors: Story = {
 };
 export const Light: Story = { ...RecoveryIsLatest, globals: { theme: "light" } };
 export const Mobile: Story = { ...RecoveryIsLatest, globals: { viewport: { value: "mobile1", isRotated: false } } };
+
+export const LegacyRunRetry: Story = {
+  args: { items: [failed, recovery], recoveryRetryEnabled: false },
+  play: async (context) => {
+    await RecoveryIsLatest.play?.(context);
+    const canvas = within(context.canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: "Try again" }));
+    await expect(canvas.getByRole("status")).toHaveTextContent("Retry requested for failed-run");
+  },
+};
+export const LegacyProductionRetry: Story = { ...LegacyRunRetry, args: { ...LegacyRunRetry.args, mode: "production" } };

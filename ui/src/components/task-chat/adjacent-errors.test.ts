@@ -16,19 +16,29 @@ describe("compactAdjacentErrors", () => {
     [recovery, failed],
   ])("keeps the later row and all of its details in either order", (first, last) => {
     const items = [first, last];
-    expect(compactAdjacentErrors(items)).toEqual([last]);
+    expect(compactAdjacentErrors(items).items).toEqual([last]);
     expect(items).toEqual([first, last]);
   });
 
   it("compacts a contiguous group only when both error sources are present", () => {
     const latest = { ...failed, id: "latest", detail: "Newest error", runId: "run-2" };
-    expect(compactAdjacentErrors([failed, recovery, latest])).toEqual([latest]);
-    expect(compactAdjacentErrors([failed, latest])).toEqual([failed, latest]);
-    expect(compactAdjacentErrors([recovery, { ...recovery, id: "other" }])).toHaveLength(2);
+    expect(compactAdjacentErrors([failed, recovery, latest]).items).toEqual([latest]);
+    expect(compactAdjacentErrors([failed, latest]).items).toEqual([failed, latest]);
+    expect(compactAdjacentErrors([recovery, { ...recovery, id: "other" }]).items).toHaveLength(2);
+  });
+
+  it("preserves the latest suppressed run retry without changing saved rows", () => {
+    const latestFailure = { ...failed, id: "last-failure", runId: "last-run", retryable: false };
+    const items = [failed, latestFailure, recovery];
+    const compacted = compactAdjacentErrors(items);
+    expect(compacted.items).toEqual([recovery]);
+    expect(compacted.retryMarkers.get(recovery.id)).toBe(latestFailure);
+    expect(items).toEqual([failed, latestFailure, recovery]);
+    expect(compactAdjacentErrors([failed, { id: "human", kind: "message", author: "human", text: "Retry?" }, recovery]).retryMarkers.size).toBe(0);
   });
 
   it("recognizes old unstructured recovery comments", () => {
-    expect(compactAdjacentErrors([failed, { ...recovery, presentation: null }])).toEqual([{ ...recovery, presentation: null }]);
+    expect(compactAdjacentErrors([failed, { ...recovery, presentation: null }]).items).toEqual([{ ...recovery, presentation: null }]);
   });
 
   const boundaries: TaskChatItem[] = [
@@ -43,7 +53,7 @@ describe("compactAdjacentErrors", () => {
   it.each(boundaries.map((boundary) => [boundary.id, boundary] as const))(
     "keeps both errors across a %s row", (_, boundary) => {
       const items = [failed, boundary, recovery];
-      expect(compactAdjacentErrors(items)).toEqual(items);
+      expect(compactAdjacentErrors(items).items).toEqual(items);
     },
   );
 });

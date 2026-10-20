@@ -1,4 +1,4 @@
-import type { TaskChatItem } from "./task-chat-model";
+import type { TaskChatItem, TaskChatMarkerItem } from "./task-chat-model";
 
 function errorKind(item: TaskChatItem): "run" | "recovery" | null {
   if (item.kind === "marker" && item.variant === "interrupted"
@@ -13,8 +13,12 @@ function errorKind(item: TaskChatItem): "run" | "recovery" | null {
  * The caller supplies conversation order; saved comments and run history stay intact.
  * Messages, inputs, session boundaries and actionable credential denials break a group.
  */
-export function compactAdjacentErrors(items: readonly TaskChatItem[]): TaskChatItem[] {
+export function compactAdjacentErrors(items: readonly TaskChatItem[]): {
+  items: TaskChatItem[];
+  retryMarkers: Map<string, TaskChatMarkerItem>;
+} {
   const result: TaskChatItem[] = [];
+  const retryMarkers = new Map<string, TaskChatMarkerItem>();
   for (let start = 0; start < items.length;) {
     const kind = errorKind(items[start]);
     if (!kind) {
@@ -29,8 +33,18 @@ export function compactAdjacentErrors(items: readonly TaskChatItem[]): TaskChatI
       if (next !== kind) mixed = true;
       end++;
     }
-    result.push(...(mixed ? [items[end - 1]] : items.slice(start, end)));
+    const latest = items[end - 1];
+    if (mixed && errorKind(latest) === "recovery") {
+      const marker = items.slice(start, end).reverse().find(
+        (item): item is TaskChatMarkerItem => item.kind === "marker"
+          && (item.label === "Run failed" || item.label === "Usage limit reached"),
+      );
+      // Preserve the retry target separately from the surviving error's text.
+      // The renderer still applies the parent's permission and pending state.
+      if (marker) retryMarkers.set(latest.id, marker);
+    }
+    result.push(...(mixed ? [latest] : items.slice(start, end)));
     start = end;
   }
-  return result;
+  return { items: result, retryMarkers };
 }

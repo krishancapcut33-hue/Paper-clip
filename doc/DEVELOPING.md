@@ -186,7 +186,8 @@ These run the `@paperclipai/ui` Storybook on port `6006` and build the static ou
 
 **Task chat → Failure notices** covers compact run errors and adjacent recovery
 notices in both presentation modes, with expanded details, fixture retry
-callbacks, light mode and mobile. Run the focused browser checks against an
+callbacks (including the legacy run retry when recovery retry is unavailable),
+light mode and mobile. Run the focused browser checks against an
 owned Storybook server:
 
 ```sh
