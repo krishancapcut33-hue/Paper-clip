@@ -241,13 +241,13 @@ describe("isCodexTransientUpstreamError", () => {
   });
 
   it.each([
-    ["Oct 32nd, 2026 5:51 PM", null],
-    ["Oct 19th, 2026 5:51 PM", null],
+    ["Nov 32nd, 2026 5:51 PM", null],
+    ["Sep 1st, 2026 5:51 PM", null],
     ["Nov 20th, 2026 5:51 PM", new Date(2026, 10, 20, 17, 51).getTime()],
     ["Nov 20th, 2026 5:52 PM", null],
   ])("accepts only valid usage-limit calendar resets within 31 days: %s", (reset, expected) => {
     const errorMessage = `You've hit your usage limit. Try again at ${reset}.`;
-    const now = new Date(2026, 9, 20, 17, 51);
+    const now = new Date(new Date(2026, 10, 20, 17, 51).getTime() - 31 * 24 * 60 * 60 * 1000);
 
     expect(extractCodexRetryNotBefore({ errorMessage }, now)?.getTime() ?? null).toBe(expected);
   });
