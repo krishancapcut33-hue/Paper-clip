@@ -89,6 +89,11 @@ describe("Codex quota router", () => {
     expect(result).toMatchObject({ kind: "selected", memberId: request([{ remaining: 5 }, { remaining: 9 }]).memberOrder[1] });
   });
 
+  it("waits for a stale peer before using the near-reset exception", () => {
+    const input = request([{ remaining: 8, resetHours: 4 }, { remaining: 9, resetHours: 4, stale: true }]);
+    expect(routeCodexConnection(input)).toMatchObject({ kind: "exhausted", retryAt: iso(NOW + 60_000) });
+  });
+
   it("stops at zero, on explicit denial, and when the usage observation is unknown", () => {
     const result = routeCodexConnection(request([
       { remaining: 0, resetHours: 2 },
@@ -107,6 +112,30 @@ describe("Codex quota router", () => {
       { remaining: 2, resetHours: 8 }, { remaining: 70 },
     ], "20000000-0000-4000-8000-000000000001"));
     expect(result.kind).toBe("exhausted");
+  });
+
+  it("keeps a healthy pinned account after its member leaves the current pool order", () => {
+    const input = request([{ remaining: 65 }, { remaining: 80 }], "20000000-0000-4000-8000-000000000001");
+    input.memberOrder = [input.memberOrder[1]!];
+    expect(routeCodexConnection(input)).toMatchObject({
+      kind: "selected", memberId: "20000000-0000-4000-8000-000000000001",
+    });
+  });
+
+  it("does not use a pinned reserve when the other configured account is unobserved", () => {
+    const input = request([{ remaining: 8, resetHours: 4 }, { remaining: 9, resetHours: 4 }],
+      "20000000-0000-4000-8000-000000000001");
+    expect(routeCodexConnection(input).kind).toBe("exhausted");
+  });
+
+  it("ignores exhausted feature limits unrelated to ordinary Codex runs", () => {
+    const input = request([{ remaining: 70 }]);
+    input.candidates[0]!.usage!.limits.push({
+      ...input.candidates[0]!.usage!.limits[0]!, id: "code_review.primary_window",
+      scope: "code_review", remainingPercent: 0, usedPercent: 100,
+      allowed: false, limitReached: true,
+    });
+    expect(routeCodexConnection(input)).toMatchObject({ kind: "selected", memberId: input.memberOrder[0] });
   });
 
   it("rejects stale probes and spend-control blocks", () => {

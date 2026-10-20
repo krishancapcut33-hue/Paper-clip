@@ -13,6 +13,7 @@ type Assessment = {
   candidate: Candidate;
   tier: "normal" | "near_reset" | "wait";
   remaining: number;
+  knownLow: boolean;
   retryAt: number;
   reason: string;
 };
@@ -29,13 +30,14 @@ function remainingPercent(limit: { remainingPercent: number | null; usedPercent:
     ? remaining : null;
 }
 
-function isCodexLimit(id: string): boolean {
-  return id === "codex" || id.startsWith("codex.") || id.startsWith("codex_");
+function isCodexLimit(limit: { id: string; scope: string | null }): boolean {
+  return limit.scope === null &&
+    (limit.id === "codex" || limit.id.startsWith("codex.") || limit.id.startsWith("codex_"));
 }
 
 function assess(candidate: Candidate, now: number): Assessment {
-  const waiting = (reason: string, retryAt = now + RECHECK_MS): Assessment => ({
-    candidate, tier: "wait", remaining: 0, retryAt, reason,
+  const waiting = (reason: string, retryAt = now + RECHECK_MS, knownLow = false): Assessment => ({
+    candidate, tier: "wait", remaining: 0, knownLow, retryAt, reason,
   });
   const usage = candidate.usage;
   if (candidate.member.binding.provider !== "openai" ||
@@ -50,7 +52,7 @@ function assess(candidate: Candidate, now: number): Assessment {
   if (!Number.isFinite(checkedAt) || checkedAt > now + 30_000 ||
       now - checkedAt > MAX_OBSERVATION_AGE_MS) return waiting("Quota observation stale");
 
-  const codex = usage.limits.filter((limit) => isCodexLimit(limit.id));
+  const codex = usage.limits.filter(isCodexLimit);
   if (codex.length === 0) return waiting("Codex quota window missing");
   const windows = codex.map((limit) => ({ limit, remaining: remainingPercent(limit) }));
   if (windows.some((window) => window.remaining == null)) return waiting("Codex quota percentage unknown");
@@ -60,11 +62,13 @@ function assess(candidate: Candidate, now: number): Assessment {
   const earliestReset = Math.min(...resetTimes.filter((reset): reset is number => reset != null));
   const retryAt = Number.isFinite(earliestReset) ? earliestReset : now + RECHECK_MS;
 
-  if (usage.limits.some((limit) => limit.limitReached === true || limit.allowed === false)) {
-    return waiting("Provider admission denied", retryAt);
+  if (usage.limits.some((limit) =>
+    (isCodexLimit(limit) || (limit.id === "spend_control" && limit.scope === null)) &&
+    (limit.limitReached === true || limit.allowed === false))) {
+    return waiting("Provider admission denied", retryAt, remaining <= RESERVE_PERCENT);
   }
   if (remaining > RESERVE_PERCENT) {
-    return { candidate, tier: "normal", remaining, retryAt, reason: "" };
+    return { candidate, tier: "normal", remaining, knownLow: false, retryAt, reason: "" };
   }
   const limiting = windows.filter((window) => window.remaining! <= RESERVE_PERCENT);
   const mayUseNearReset = limiting.every(({ limit, remaining: left }) => {
@@ -73,7 +77,7 @@ function assess(candidate: Candidate, now: number): Assessment {
       reset !== null && reset - now < NEAR_RESET_MS;
   });
   if (mayUseNearReset) {
-    return { candidate, tier: "near_reset", remaining, retryAt, reason: "" };
+    return { candidate, tier: "near_reset", remaining, knownLow: true, retryAt, reason: "" };
   }
   const nextEligibility = limiting.map(({ limit, remaining: left }) => {
     const reset = futureReset(limit.resetsAt, now);
@@ -81,7 +85,7 @@ function assess(candidate: Candidate, now: number): Assessment {
     return left! > 0 && reset - now >= NEAR_RESET_MS
       ? reset - NEAR_RESET_MS + 1_000 : reset;
   });
-  return waiting("At or below 10% reserve", Math.min(...nextEligibility));
+  return waiting("At or below 10% reserve", Math.min(...nextEligibility), true);
 }
 
 function inRotationOrder(request: AiConnectionRouterRequest, entries: Assessment[]): Assessment[] {
@@ -105,11 +109,24 @@ export function routeCodexConnection(request: AiConnectionRouterRequest): AiConn
   if (candidates.length === 0) return { kind: "unavailable", skipped: {} };
 
   const assessed = candidates.map((candidate) => assess(candidate, now));
+  // A task pin can outlive a member's removal from the current pool config.
+  // The host still authorizes that member, but memberOrder no longer lists it.
+  const pinned = request.pinnedMemberId ? assessed[0] : undefined;
+  if (pinned && (pinned.tier === "normal" ||
+      (pinned.tier === "near_reset" && request.memberOrder.length === 1 &&
+       request.memberOrder[0] === pinned.candidate.member.id))) {
+    return { kind: "selected", memberId: pinned.candidate.member.id };
+  }
   const normal = inRotationOrder(request, assessed.filter((entry) => entry.tier === "normal"));
   if (normal[0]) return { kind: "selected", memberId: normal[0].candidate.member.id };
   const nearReset = inRotationOrder(request, assessed.filter((entry) => entry.tier === "near_reset"))
     .sort((a, b) => b.remaining - a.remaining);
-  if (nearReset[0]) return { kind: "selected", memberId: nearReset[0].candidate.member.id };
+  // The exception applies only after every configured account is observed at
+  // or below the threshold. A stale or unauthorized peer cannot prove that.
+  if (!request.pinnedMemberId && nearReset[0] &&
+      assessed.length === request.memberOrder.length && assessed.every((entry) => entry.knownLow)) {
+    return { kind: "selected", memberId: nearReset[0].candidate.member.id };
+  }
 
   const skipped = Object.fromEntries(assessed.map((entry) => [entry.candidate.member.id, entry.reason]));
   const next = Math.min(...assessed.map((entry) => entry.retryAt));

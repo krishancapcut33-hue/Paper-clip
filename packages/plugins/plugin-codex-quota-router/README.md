@@ -10,15 +10,19 @@ the host. The plugin never reads credentials or Codex login files.
 - For each new task, select the next account in pool order with **more than
   10%** remaining in every reported Codex window.
 - When neither account meets that threshold, select an account at or below
-  10% only if every limiting window has positive quota, explicitly allows
-  admission, and resets in **less than five hours**. Among those accounts,
-  select the one with the most quota remaining.
+  10% only after fresh observations confirm every configured account is also
+  at or below 10%. Every limiting window on the selected account must have
+  positive quota, explicitly allow admission, and reset in **less than five
+  hours**. Among those accounts, select the one with the most quota remaining.
 - At zero remaining, an explicit provider denial, unknown or stale telemetry,
   or a spend-control block, wait. The host schedules the retry. A missing
   observation is checked again after one minute; a known low window is checked
   at the five-hour boundary or reset.
 - Existing task pins remain on their original account. A new run for a pinned
   task waits when that account is low; other tasks can use the second account.
+  The host probes only the pinned account for a pinned task, so the five-hour
+  exception cannot establish that both accounts are low in a two-account pool.
+  Such tasks wait for their own account to recover.
   Recovery of the *same* persisted run deliberately retains its original
   credential. Moving an existing task to another account requires a separately
   reviewed session migration; do not reset sessions automatically.
