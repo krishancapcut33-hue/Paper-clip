@@ -1,7 +1,7 @@
 import { lstat } from "node:fs/promises";
 import { hostname, tmpdir } from "node:os";
 import path from "node:path";
-import { and, desc, eq, inArray, isNull, sql } from "drizzle-orm";
+import { and, desc, eq, inArray, isNull, or, sql } from "drizzle-orm";
 import { caseEvents, caseHandoffs, cases, environmentLeases, heartbeatRunEvents, heartbeatRuns, issues, type Db } from "@paperclipai/db";
 import { persistActivity, type ActivityPublication } from "../activity-log.js";
 import { conflict } from "../../errors.js";
@@ -135,13 +135,18 @@ export async function cancelCaseHandoffsForIssue(db: Db, input: {
   companyId: string; issueId: string; reason: string; exceptId?: string; publications?: ActivityPublication[];
   /** Run-scoped Stop must not supersede a later phase on the same task. */
   sourceRunId?: string;
+  /** Only a Stop that has fenced the task's current execution may revoke a
+   * terminal intent accepted without a source run, including an idle board request. */
+  includeUnboundTerminalIntent?: boolean;
   /** Accepted completion settles its terminal intent instead of superseding it. */
   agentTransfersOnly?: boolean;
 }) {
   const rows = await db.update(caseHandoffs).set({ state: "cancelled", cancelledAt: new Date(), updatedAt: new Date(),
     leaseExpiresAt: null, lastErrorCode: "superseded", lastError: input.reason }).where(and(
     eq(caseHandoffs.companyId, input.companyId), eq(caseHandoffs.issueId, input.issueId),
-    input.sourceRunId !== undefined ? eq(caseHandoffs.sourceRunId, input.sourceRunId) : undefined,
+    input.sourceRunId !== undefined ? or(eq(caseHandoffs.sourceRunId, input.sourceRunId),
+      input.includeUnboundTerminalIntent ? and(isNull(caseHandoffs.sourceRunId), eq(caseHandoffs.destinationKind, "done"),
+        eq(caseHandoffs.state, "awaiting_completion")) : undefined) : undefined,
     inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch", "awaiting_completion"]),
     input.agentTransfersOnly ? eq(caseHandoffs.destinationKind, "agent") : undefined,
     input.exceptId ? sql`${caseHandoffs.id} <> ${input.exceptId}` : undefined,

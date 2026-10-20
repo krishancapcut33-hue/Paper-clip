@@ -13,7 +13,9 @@ import { readNativeWorkspaceSyncReference } from "../native-runtime/native-works
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
 import {
   nativeRetryCancellationCommitCondition,
+  nativeRetryCancellationEligible,
   claimCancellationRequest,
+  rethrowNativeCancellationLockConflict,
 } from "../native-runtime/native-cancellation-request.js";
 import {
   canContinueCancelledRun,
@@ -913,10 +915,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const handoffIssueId = run.nativeIssueId ?? run.issueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     const supersedesCaseHandoff = options.resultJson?.cancelledByActorType === "user" || options.errorCode === "issue_reassigned";
     let cancellationClaimed = false;
+    let caseHandoffRetryClaimed = false;
     if (handoffIssueId && supersedesCaseHandoff && options.resultJson?.caseHandoffYieldStop !== true) {
       const publications: ActivityPublication[] = [];
       const supersessionApplied = await db.transaction(async tx => {
-        await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, run!.companyId), eq(issues.id, handoffIssueId))).for("update");
+        const [issue] = await tx.select({ id: issues.id, executionRunId: issues.executionRunId, checkoutRunId: issues.checkoutRunId,
+          assigneeAgentId: issues.assigneeAgentId, assigneeUserId: issues.assigneeUserId }).from(issues)
+          .where(and(eq(issues.companyId, run!.companyId), eq(issues.id, handoffIssueId))).for("update");
         const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
           eq(heartbeatRuns.companyId, run!.companyId))).for("update");
         if (!current || (options.expectedStatus && current.status !== options.expectedStatus)) return false;
@@ -931,6 +936,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         // before waiting for process/native Stop. Otherwise a handoff can be
         // accepted in the gap after this cancellation sweep.
         const currentRun = run!;
+        const cancellableStatuses: string[] = options.expectedStatus ? [options.expectedStatus] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES];
+        if (!options.expectedStatus && currentRun.runtimeMode === "native" && currentRun.status === "failed" && currentRun.nativeIssueId) {
+          // Failed native runs may still own a retry. As in correlated Stop,
+          // lock the coordinator NOWAIT so a coordinator-only writer wins
+          // safely instead of deadlocking with its run-row claim.
+          const [coordinator] = await tx.select().from(nativeRunFinalizations).where(and(
+            eq(nativeRunFinalizations.runId, runId), eq(nativeRunFinalizations.companyId, currentRun.companyId),
+            eq(nativeRunFinalizations.issueId, currentRun.nativeIssueId))).for("update", { noWait: true }).limit(1);
+          caseHandoffRetryClaimed = nativeRetryCancellationEligible({ runId, companyId: currentRun.companyId,
+            issueId: currentRun.nativeIssueId, resultJson: currentRun.resultJson, requestId: options.cancellationRequestId }, coordinator);
+          if (caseHandoffRetryClaimed) cancellableStatuses.push("failed");
+        }
         const requestedAt = new Date().toISOString();
         const guardedCancellation = options.expectedStatus ? {
           cancellation: (currentRun.resultJson?.startupCancellation ? readRunCancellation(currentRun.resultJson) : null)
@@ -945,13 +962,18 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
             executionCancellation: { state: "requested", requestedAt }, ...guardedCancellation,
           })}::jsonb`,
         }).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, run!.companyId),
-          inArray(heartbeatRuns.status, options.expectedStatus ? [options.expectedStatus] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]))).returning();
+          inArray(heartbeatRuns.status, cancellableStatuses))).returning();
         if (options.expectedStatus && !fenced) return false;
         if (fenced) run = fenced;
+        // A board terminal request deliberately has no source run. It belongs
+        // to the current task execution, not whichever historical run is stopped.
+        // Queue admission may bind execution before adopting an old checkout.
+        const ownsTask = issue && issue.assigneeAgentId === currentRun.agentId && !issue.assigneeUserId &&
+          (issue.executionRunId ? issue.executionRunId === runId : issue.checkoutRunId === runId);
         await cancelCaseHandoffsForIssue(tx as unknown as Db, { companyId: run!.companyId, issueId: handoffIssueId,
-          sourceRunId: runId, reason, publications });
+          sourceRunId: runId, includeUnboundTerminalIntent: Boolean(fenced && ownsTask), reason, publications });
         return true;
-      });
+      }).catch(rethrowNativeCancellationLockConflict);
       publications.forEach(publishActivity);
       if (!supersessionApplied) return null;
     }
@@ -964,7 +986,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     // retry fence. Re-reading only retryable_failure here would strand replay.
     const pendingNativeRetry =
       run.runtimeMode === "native" && run.status === "failed" && (
-        Boolean(options.cancellationRequestId) || await db
+        caseHandoffRetryClaimed || Boolean(options.cancellationRequestId) || await db
           .select({ runId: nativeRunFinalizations.runId })
           .from(nativeRunFinalizations)
           .where(

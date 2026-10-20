@@ -23,6 +23,7 @@ import { preserveCancelledNativeWorkspaces } from "../native-runtime/native-fail
 import { createPostgresRunDispatchAdapter } from "../../modules/run-dispatch/adapters/postgres.js";
 import { caseHandoffService } from "../case-handoffs.js";
 import { instanceSettingsService } from "../instance-settings.js";
+import { issueService } from "../issues.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 vi.mock("../adapter-execution-control.js", async (importOriginal) => {
@@ -392,6 +393,111 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
       .toEqual(["delivered", "cancelled"]);
     expect((await db.select().from(caseEvents)).filter(event => event.kind === "handoff_cancelled"))
       .toHaveLength(1);
+  });
+
+  async function boardTerminalFixture(requestedWhile: "idle" | "running", runtime: "legacy" | "native" = "legacy",
+    options: { staleCheckout?: boolean } = {}) {
+    const { company, agent } = await fixture();
+    const [oldRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      status: "succeeded", runtimeMode: "legacy", runtimeModeResolvedAt: new Date(), finishedAt: new Date() }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Board completion intent", status: "in_progress",
+      assigneeAgentId: agent.id }).returning();
+    const [caseRow] = await db.insert(cases).values({ companyId: company.id, caseNumber: 1, identifier: `CASE-${randomUUID()}`,
+      caseType: "work", title: issue.title, workIssueId: issue.id, status: "in_progress", phase: "verification" }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } }).where(eq(heartbeatRuns.id, oldRun.id));
+    await instanceSettingsService(db).updateExperimental({ enableCases: true });
+    const startRun = async () => {
+      const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id, issueId: issue.id,
+        nativeIssueId: runtime === "native" ? issue.id : null, contextSnapshot: { issueId: issue.id },
+        status: runtime === "native" ? "failed" : "running", runtimeMode: runtime, runtimeModeResolvedAt: new Date(),
+        ...(options.staleCheckout ? { executionStage: "preparing" } : {}) }).returning();
+      await db.update(issues).set({ executionRunId: run.id, checkoutRunId: options.staleCheckout ? oldRun.id : run.id }).where(eq(issues.id, issue.id));
+      if (runtime === "native") await db.insert(nativeRunFinalizations).values({ runId: run.id, companyId: company.id,
+        issueId: issue.id, phase: "retryable_failure", nextAttemptAt: new Date(Date.now() + 30_000) });
+      return run;
+    };
+    let run = requestedWhile === "running" ? await startRun() : null;
+    // Exercise the actual board operation: its sourceRunId is deliberately NULL,
+    // including when an agent execution already owns the primary task.
+    const receipt = await caseHandoffService(db).handoff(company.id, { type: "board", source: "local_implicit" }, {
+      idempotencyKey: randomUUID(), case: { id: caseRow.id }, to: "done", instructions: "Close the case after accepted task completion",
+      expectedHandoffVersion: 0, expectedIssueStatusVersion: issue.statusVersion,
+    });
+    run ??= await startRun();
+    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, receipt.handoffId)))[0])
+      .toMatchObject({ sourceRunId: null, destinationKind: "done", state: "awaiting_completion" });
+    return { company, agent, issue, caseRow, oldRun, run, receipt };
+  }
+
+  it.each(["idle", "running"] as const)("only current Stop cancels board terminal intent accepted while %s", async requestedWhile => {
+    const f = await boardTerminalFixture(requestedWhile);
+    const snapshot = async () => ({
+      handoffs: await db.select().from(caseHandoffs), tasks: await db.select().from(issues), cases: await db.select().from(cases),
+      currentRun: await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)),
+      events: await db.select().from(caseEvents).orderBy(caseEvents.id), activity: await db.select().from(activityLog).orderBy(activityLog.id),
+    });
+    const before = await snapshot(), control = createHeartbeatRunControl(db, callbacks(db));
+    const stop = { resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" } };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await control.cancelRunInternal(f.oldRun.id, "Delayed old Stop", stop)).toMatchObject({ status: "succeeded" });
+      expect(await snapshot()).toEqual(before);
+    }
+    expect(await control.cancelRunInternal(f.run.id, "Current Stop", stop)).toMatchObject({ status: "cancelled" });
+    expect((await snapshot()).handoffs[0]).toMatchObject({ state: "cancelled", completedAt: null });
+    await issueService(db).update(f.issue.id, { status: "done" });
+    expect((await snapshot()).cases[0]).toMatchObject({ status: "in_progress", phase: "verification", completedAt: null });
+    expect((await snapshot()).events.filter(event => event.kind === "handoff_cancelled")).toHaveLength(1);
+    expect((await snapshot()).events.filter(event => event.kind === "handoff_completed")).toHaveLength(0);
+  });
+
+  it.each([false, true])("cancels board terminal intent with current failed native retry Stop (correlated=%s)", async correlated => {
+    const f = await boardTerminalFixture("running", "native"), control = createHeartbeatRunControl(db, callbacks(db));
+    const stop = { resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+      ...(correlated ? { cancellationRequestId: randomUUID(), cancellationRequestedByUserId: "operator" } : {}) };
+    expect(await control.cancelRunInternal(f.run.id, "Stop the current native retry", stop)).toMatchObject({ status: "cancelled" });
+    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0])
+      .toMatchObject({ state: "cancelled", completedAt: null });
+    expect((await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, f.run.id)))[0])
+      .toMatchObject({ phase: "terminal_failure", failureCode: "native_retry_cancelled", nextAttemptAt: null });
+    await issueService(db).update(f.issue.id, { status: "done" });
+    expect((await db.select().from(cases).where(eq(cases.id, f.caseRow.id)))[0])
+      .toMatchObject({ status: "in_progress", phase: "verification", completedAt: null });
+  });
+
+  it("stops current preparing execution despite a prior terminal checkout when cancelling board intent", async () => {
+    // Queue admission binds the new execution before preparation adopts its
+    // predecessor's checkout. The execution owner is authoritative in this gap.
+    const f = await boardTerminalFixture("running", "legacy", { staleCheckout: true });
+    const control = createHeartbeatRunControl(db, callbacks(db));
+    const stop = { resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" } };
+    expect(await control.cancelRunInternal(f.oldRun.id, "Stop the previous checkout", stop)).toMatchObject({ status: "succeeded" });
+    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0])
+      .toMatchObject({ state: "awaiting_completion", cancelledAt: null });
+    expect(await control.cancelRunInternal(f.run.id, "Stop current preparation", stop)).toMatchObject({ status: "cancelled" });
+    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0])
+      .toMatchObject({ state: "cancelled", completedAt: null });
+    await issueService(db).update(f.issue.id, { status: "done" });
+    expect((await db.select().from(cases).where(eq(cases.id, f.caseRow.id)))[0])
+      .toMatchObject({ status: "in_progress", phase: "verification", completedAt: null });
+  });
+
+  it.each(["legacy", "native"] as const)("does not let an older cancellable %s execution cancel the current board terminal intent", async runtime => {
+    const f = await boardTerminalFixture("running");
+    await db.update(heartbeatRuns).set({ status: runtime === "native" ? "failed" : "running", runtimeMode: runtime,
+      nativeIssueId: runtime === "native" ? f.issue.id : null, finishedAt: null }).where(eq(heartbeatRuns.id, f.oldRun.id));
+    if (runtime === "native") await db.insert(nativeRunFinalizations).values({ runId: f.oldRun.id, companyId: f.company.id,
+      issueId: f.issue.id, phase: "retryable_failure", nextAttemptAt: new Date(Date.now() + 30_000) });
+    const control = createHeartbeatRunControl(db, callbacks(db));
+    expect(await control.cancelRunInternal(f.oldRun.id, "Stop the superseded execution", {
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+    })).toMatchObject({ id: f.oldRun.id, status: "cancelled" });
+    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0])
+      .toMatchObject({ sourceRunId: null, state: "awaiting_completion", cancelledAt: null });
+    expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.run.id)))[0])
+      .toMatchObject({ status: "running", resultJson: null });
+    await issueService(db).update(f.issue.id, { status: "done" });
+    expect((await db.select().from(cases).where(eq(cases.id, f.caseRow.id)))[0])
+      .toMatchObject({ status: "done", phase: "done", completedAt: expect.any(Date) });
   });
 
   it.each(["ephemeral", "reuse_by_environment"] as const)("keeps %s cancellation eligible for retention when teardown loses the task lock", async leasePolicy => {
