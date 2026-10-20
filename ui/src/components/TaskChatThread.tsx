@@ -3094,7 +3094,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             <>
                               {tailRunId || optimisticRunnerStartup ? (
                                 <div data-testid="task-chat-live-transcript">
-                                  {paperclipRunnerTail ||
+                                  {tailRunSource?.adapterType === "paperclip_runner" ||
                                   optimisticRunnerStartup ? (
                                     <TaskChatRunnerTurn
                                       runId={tailRunId}
@@ -3105,7 +3105,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       }
                                       agentName={visibleTailAgentName}
                                       agentIcon={visibleTailAgentIcon}
-                                agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
+                                      agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
                                       items={tailItems}
                                       status={
                                         optimisticRunnerStartup

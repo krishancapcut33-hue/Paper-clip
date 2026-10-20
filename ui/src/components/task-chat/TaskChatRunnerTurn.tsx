@@ -210,10 +210,7 @@ export function TaskChatRunnerTurn({
       data-phase={status === "queued" ? "startup" : undefined}
     >
       <div
-        className={cn(
-          "flex min-h-8 min-w-0 items-center gap-2",
-          status === "queued" ? "pb-1" : "pb-1 pt-2",
-        )}
+        className="flex min-h-8 min-w-0 items-center gap-2 pb-1 pt-2"
         data-testid="task-chat-runner-identity-row"
       >
         {agentName ? (

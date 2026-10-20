@@ -76,6 +76,11 @@ that relayed a message from another channel.
 
 ## Contextual feedback
 
+Keep the runner turn's avatar, name, Working header and current-activity slot
+in place from message submission through queued admission and native startup.
+Runtime discovery must not replace the turn with a generic spinner or a
+"run started" receipt. Queued and running headers use the same spacing.
+
 Task chat shows execution errors and waits only while they remain relevant.
 Completing or cancelling a task hides its old execution notices. A newer attempt by
 the same agent or an explicit successor supersedes earlier run notices; an

@@ -1020,7 +1020,53 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(nativeRuns.map((run) => run.id)).toEqual(["native-run"]);
   });
 
-  it("uses runner-only controls only for an actual native Paperclip Runner run", () => {
+  it.each([false, true])("keeps the runner identity and activity mounted through startup (mobile=%s)", (mobile) => {
+    sidebarState.isMobile = mobile;
+    const run = nativeRunningRun();
+    const comment = {
+      id: "startup-message", companyId: "company", issueId: "issue",
+      authorType: "user" as const, authorUserId: "board", authorAgentId: null,
+      body: "Check the sandbox configuration.",
+      presentation: null, metadata: null,
+      createdAt: new Date(), updatedAt: new Date(),
+    };
+    const props = {
+      comments: [comment], onAdd: async () => {}, issueStatus: "in_progress",
+      currentUserId: "board", issueAssigneeAgentId: "agent-1",
+      agentMap: new Map([["agent-1", { id: "agent-1", name: "Runner", adapterType: "paperclip_runner", icon: "code" } as Agent]]),
+    };
+    renderThread({ ...props, comments: [{ ...comment, clientStatus: "pending" }] });
+    const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+    const header = container.querySelector('[data-testid="task-chat-runner-identity-row"]');
+    const activity = container.querySelector('[data-testid="task-chat-current-activity-label"]');
+    expect(identity?.textContent).toBe("Runner");
+    expect(identity?.querySelector("svg, img")).not.toBeNull();
+    expect(activity?.textContent).toBe("Thinking");
+
+    for (const startup of [
+      { ...run, runtimeMode: undefined, status: "queued", startedAt: null },
+      { ...run, runtimeMode: "legacy" as const, currentStatusMessage: "run started" },
+      run,
+    ]) {
+      renderThread({ ...props, activeRun: startup });
+      expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+      expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
+      expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
+      expect(activity?.textContent).toBe("Thinking");
+      expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();
+      expect(container.textContent).not.toContain("run started");
+    }
+
+    nativeTranscriptState.transcriptByRun.set(run.id, [
+      { kind: "thinking", ts: "2026-08-25T18:00:01.000Z", text: "", lifecycle: "started", itemId: "reasoning-1" },
+    ]);
+    renderThread({ ...props, activeRun: run });
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+    expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
+    expect(container.textContent).toContain("Thinking");
+  });
+
+  it("keeps runner layout during admission and native transcripts scoped to native runs", () => {
     nativeTranscriptState.transcriptByRun.set("native-run", [
       assistantEntry("2026-08-25T18:00:01.000Z", "Checking the task.", "progress"),
       assistantEntry("2026-08-25T18:00:02.000Z", "The task is ready.", "final"),
@@ -1050,7 +1096,8 @@ describe("TaskChatThread runtime transcript selection", () => {
 
     expect(
       container.querySelector('[data-testid="task-chat-runner-turn"]'),
-    ).toBeNull();
+    ).not.toBeNull();
+    expect(transcriptHookRuns.native.at(-1)).toEqual([]);
 
     renderThread({
       comments: [],
