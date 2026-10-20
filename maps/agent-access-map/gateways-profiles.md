@@ -99,6 +99,10 @@ stays untrusted. The
 [response integration tests](../../server/src/services/native-runtime/runner-api.integration.test.ts)
 cover full Unicode reconstruction after controller recreation, low-trust access,
 foreign assets, paused agents, and one upstream execution. The
+[native PRP regression](../../server/src/services/native-runtime/runner-tool-results-prp.integration.test.ts)
+also verifies complete delivery of escape-heavy pages through native Runner,
+including a text wrapper larger than the PRP command limit that is decoded before
+command serialization. The
 [opt-in live probe](../../server/src/__tests__/helpers/verify-assigned-tool-results-live.ts)
 uses real Codex and Runner with a synthetic large upstream response; it does not
 publish to an external service.
