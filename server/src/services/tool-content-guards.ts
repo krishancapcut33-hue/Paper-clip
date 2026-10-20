@@ -1,3 +1,4 @@
+import type { PromptInjectionModelOutcome, PromptInjectionDetectorMetadata } from "@paperclipai/shared";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 
@@ -6,6 +7,7 @@ export class ToolContentValidationError extends Error {
     message: string,
     public readonly reasonCode: string,
     public readonly findings: string[],
+    public readonly detectorMetadata?: PromptInjectionDetectorMetadata,
   ) {
     super(message);
   }
@@ -219,11 +221,12 @@ export function summarizeToolValue(value: unknown) {
   };
 }
 
-export function validateToolContent(input: {
+export async function validateToolContent(input: {
   value: unknown;
   direction: "arguments" | "result";
   sensitiveMode?: "redact" | "block";
   promptInjectionMode?: "redact" | "block" | "ignore";
+  classifier?: (content: string) => Promise<PromptInjectionModelOutcome>;
 }) {
   const sensitiveMode = input.sensitiveMode ?? "redact";
   const promptInjectionMode = input.promptInjectionMode ?? (input.direction === "result" ? "block" : "ignore");
@@ -238,7 +241,21 @@ export function validateToolContent(input: {
     }
   }
 
-  const promptFindings = promptInjectionMode === "ignore" ? [] : scanPromptInjection(input.value);
+  let promptFindings: string[] = [];
+  let detectorMetadata: PromptInjectionDetectorMetadata | undefined;
+  if (promptInjectionMode !== "ignore") {
+    // Wrapping allows the existing recursive redactor to handle root arrays and
+    // strings, without changing the tool return value or its historical hash.
+    const outbound = redactSensitiveText(stableSerialize(redactEventPayload({ value: input.value })?.value));
+    const outcome = input.classifier ? await input.classifier(outbound) : undefined;
+    if (outcome?.status === "classified") {
+      promptFindings = outcome.findings;
+      detectorMetadata = { detector: "model", model: outcome.model, invocationId: outcome.invocationId, policyVersion: outcome.policyVersion };
+    } else {
+      promptFindings = scanPromptInjection(input.value);
+      detectorMetadata = { detector: "regex", ...(outcome ? { fallbackReason: outcome.reason, model: outcome.model, invocationId: outcome.invocationId } : {}) };
+    }
+  }
   if (promptFindings.length > 0) {
     findings.push(...promptFindings);
     if (promptInjectionMode === "block") {
@@ -246,6 +263,7 @@ export function validateToolContent(input: {
         "Tool result contained prompt-injection instructions and was blocked",
         "prompt_injection_blocked",
         promptFindings,
+        detectorMetadata,
       );
     }
   }
@@ -254,5 +272,6 @@ export function validateToolContent(input: {
     value: redactedValue,
     summary: redactedSummary,
     findings,
+    detectorMetadata,
   };
 }

@@ -11,6 +11,11 @@ Chat channels additionally require an endpoint and linked sender identity.
 
 Agent access: [companion](../agent-access-map/connection-setup.md).
 
+Prompt Injection Prevention reuses shared OpenRouter API-key setup directly from
+Settings → Connections. It adds no Apps provider or transport. Credential ownership
+and audience rules are the existing connection rules; saving a connection alone
+does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
+
 ## Sub-features
 
 - `catalog`: find a provider, inspect its available methods, and open setup;

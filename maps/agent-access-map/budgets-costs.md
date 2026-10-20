@@ -9,6 +9,11 @@ Each capability needs operation-level review before its entire scope can be
 qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
 for format, permission checks, evidence and maintenance.
 
+Prompt injection classification is a separate `prompt_injection` service charge,
+with user/agent/task/project attribution and no heartbeat receipt linkage. Unknown
+billing retains its reservation until correction; agent deletion cannot erase
+that hold. See [accounting behavior](../../doc/prompt-injection-prevention.md).
+
 ## `cost-reporting`
 
 Review: `baseline`.

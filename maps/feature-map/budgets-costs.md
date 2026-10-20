@@ -10,6 +10,11 @@ Implementation: [costs and budget host](../../ui/src/pages/Costs.tsx), [audit hu
 
 Agent access: [companion](../agent-access-map/budgets-costs.md).
 
+Prompt injection classification is a separate `prompt_injection` service charge,
+with user/agent/task/project attribution and no heartbeat receipt linkage. Unknown
+billing retains its reservation until correction; agent deletion cannot erase
+that hold. See [accounting behavior](../../doc/prompt-injection-prevention.md).
+
 ## Sub-features
 
 - `cost-reporting`: inspect spend by the offered time range and resource dimensions.

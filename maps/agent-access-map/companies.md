@@ -205,3 +205,30 @@ Evidence: `source-only` — [routes](../../server/src/routes/agent-observability
 Verification: `not-run` — exercise board management, restricted board, agent denial, and cross-company denial.
 
 Gaps: Direct agent management and independent personal harness enrollment are outside v1.
+
+## `prompt-injection-prevention`
+
+Review: `baseline`.
+
+API: `present` — GET/PUT /api/companies/{companyId}/prompt-injection-prevention,
+GET /api/companies/{companyId}/prompt-injection-prevention/models, and
+POST /api/companies/{companyId}/prompt-injection-prevention/test.
+
+Agent access: `restricted` — management is board-only. Admitted gateway tool
+results use saved configuration through an internal service, not an agent API.
+
+Policy: Company access, connection-management permission, shared OpenRouter API
+keys, credential audience, installation, and budgets remain enforced. Identified
+users cannot become sponsored callers after a denial. See
+[routes](../../server/src/routes/prompt-injection-prevention.ts) and
+[service](../../server/src/services/prompt-injection-prevention.ts).
+
+Evidence: `source-only` — [service tests](../../server/src/__tests__/prompt-injection-prevention.test.ts)
+and [gateway tests](../../server/src/__tests__/prompt-injection-gateway.test.ts)
+exercise permissions, billing, fallback, and persisted evidence; execution results
+belong in the change's PR.
+
+Verification: `not-run` — Reject agent management and foreign-company requests. Assert model
+verdicts at admitted result boundaries and the original regex on dependency failure.
+
+Gaps: No agent-facing mechanism to request a board configuration change is added.
