@@ -14,6 +14,7 @@ import { createCostEventInTransaction } from "./costs.js";
 import { logActivity } from "./activity-log.js";
 import { runPromptInjectionProvider, promptInjectionInput, promptInjectionRequestFits, type PromptInjectionProviderOutcome } from "./prompt-injection-provider.js";
 import { providerUsageReceipt } from "./provider-usage.js";
+import { isSecretProviderClientError } from "../secrets/types.js";
 
 /** Construct only after the gateway has admitted an operation, or from the board settings route.
  * No caller-supplied tool arguments or model output may populate this context. */
@@ -38,6 +39,7 @@ class PromptInjectionUnavailable extends Error {
 }
 function unavailableReason(error: unknown): PromptInjectionFallbackReason | null {
   if (error instanceof PromptInjectionUnavailable) return error.reason;
+  if (isSecretProviderClientError(error)) return "connection_unavailable";
   if (error instanceof HttpError) {
     if (error.status === 403 || error.status === 404) return "access_denied";
     if (error.status === 422) return (error.details as { code?: string } | undefined)?.code === "incompatible_connection" ? "incompatible_connection" : "connection_unavailable";
