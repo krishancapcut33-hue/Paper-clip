@@ -61,6 +61,17 @@ Manual: Filter by status and assignee, change grouping/sort, open a task, and re
 
 Automated: [task detail](../../ui/src/pages/IssueDetail.test.tsx) covers component behavior, while [issue service](../../server/src/__tests__/issues-service.test.ts) covers server contracts.
 
+Failure markers have no dashed divider rules. An adjacent run error and
+no-live-execution-path notice show only the last error, with its details and
+retry action. Intervening messages and credential-access denials stay visible.
+[Grouping tests](../../ui/src/components/task-chat/adjacent-errors.test.ts) and
+[marker tests](../../ui/src/components/task-chat/TaskChatMarker.test.tsx) cover
+the presentation. The [Failure notices stories](../../ui/storybook/stories/tasks/failure-notices.stories.tsx)
+mount the production thread view with fixture data. The focused
+[browser suite](../../tests/storybook-visual/failure-notices.spec.ts) checks
+play assertions, disclosure, retry callbacks, themes and phone width. These
+checks do not dispatch a real retry or change stored run history.
+
 Manual: For a disposable task owned by a legacy agent, have its current run
 assign the task to a human with status In review. Verify that assignment and
 status persist, that the current run finishes without `issue_reassigned`, and

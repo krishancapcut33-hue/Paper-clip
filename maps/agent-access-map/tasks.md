@@ -182,6 +182,11 @@ checks; it cannot impersonate a user.
 
 ## `completion`
 
+Task chat may group adjacent run and recovery errors for display. The API
+retains all run and comment records. This presentation does not change retry,
+approval, checkout or company access. See the
+[presentation coverage](../feature-map/tasks.md#task-detail).
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:

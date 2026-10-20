@@ -25,6 +25,7 @@ import { TaskMessageScroller } from "./TaskMessageScroller";
 import { TaskChatProtocolCard } from "./TaskChatProtocolCard";
 import { TaskChatProtocolActivityRow } from "./TaskChatProtocolActivityRow";
 import { TaskChatPlanPreviewCard } from "./TaskChatPlanPreviewCard";
+import { compactAdjacentErrors } from "./adjacent-errors";
 
 const EMPTY_ATTACHMENTS: IssueAttachment[] = [];
 
@@ -317,9 +318,10 @@ export function TaskChatThreadView({
   onOpenBrowser,
 }: TaskChatThreadViewProps) {
   const streamlined = useStreamlinedTaskChatPresentation();
+  const visibleItems = useMemo(() => compactAdjacentErrors(items), [items]);
   const retryableMarkerId =
     onRetryFailedRun || onTryAgainNoLiveExecutionPath
-      ? [...items]
+      ? [...visibleItems]
           .reverse()
           .find(
             (item) =>
@@ -332,7 +334,7 @@ export function TaskChatThreadView({
   // Streaming tail and header updates must not rebuild settled markdown/tool trees.
   const history = useMemo(() => {
     const renderedItems = streamlined
-      ? items
+      ? visibleItems
           .map((item) => ({
             item,
             content: renderItem(
@@ -380,7 +382,7 @@ export function TaskChatThreadView({
                 {content}
               </div>
             ))
-          : items.map((item, index) => (
+          : visibleItems.map((item, index) => (
               <div
                 key={
                   item.kind === "message" ? (item.renderKey ?? item.id) : item.id
@@ -420,7 +422,7 @@ export function TaskChatThreadView({
       </>
     );
   }, [
-    items, streamlined, onApprovalDecision, onRuntimeRequestDecision,
+    visibleItems, streamlined, onApprovalDecision, onRuntimeRequestDecision,
     renderInteraction, renderBrief, renderMessageActions, renderQueuedAction,
     onTryAgainNoLiveExecutionPath, tryAgainNoLiveExecutionPathPending,
     retryableMarkerId, onRetryFailedRun, retryFailedRunId, attachments, onOpenSkill, onOpenBrowser,
