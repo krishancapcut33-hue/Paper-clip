@@ -8032,6 +8032,7 @@ registry.registerPath({
   path: "/api/issues/{id}/interactions/{interactionId}/accept",
   tags: ["issues"],
   summary: "Accept an issue thread interaction",
+  description: "Ordinary confirmation decisions may atomically persist a board-user bindingComment and deliver both records in one assignee continuation.",
   request: {
     params: z.object({ id: z.string(), interactionId: z.string() }),
     body: jsonBody(acceptIssueThreadInteractionSchema),
@@ -8049,6 +8050,7 @@ registry.registerPath({
   path: "/api/issues/{id}/interactions/{interactionId}/reject",
   tags: ["issues"],
   summary: "Reject an issue thread interaction",
+  description: "Ordinary confirmation decisions may atomically persist a board-user bindingComment and deliver both records in one assignee continuation.",
   request: {
     params: z.object({ id: z.string(), interactionId: z.string() }),
     body: jsonBody(rejectIssueThreadInteractionSchema),
