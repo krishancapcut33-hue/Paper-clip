@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
-import { agents, agentWakeupRequests, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, projects } from "@paperclipai/db";
-import { eq, sql } from "drizzle-orm";
+import { activityLog, agents, agentWakeupRequests, caseEvents, caseHandoffs, cases, companies, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, heartbeatRuns, issues, nativeRunFinalizations, projects } from "@paperclipai/db";
+import { eq, inArray, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { runningProcesses } from "../../adapters/index.js";
@@ -340,6 +340,58 @@ describe.skipIf(!support.supported)("heartbeat run-control database wiring", () 
       expect(await db.select().from(caseHandoffs).where(eq(caseHandoffs.caseId, caseRow.id))).toHaveLength(0);
     } finally { release(); await stopping; }
     expect((await state.getRun(run.id))?.status).toBe("cancelled");
+  });
+
+  it.each(["agent", "done"] as const)("does not let a repeated Stop for an old run cancel a newer %s handoff", async destination => {
+    const { company, agent } = await fixture();
+    const [successor] = await db.insert(agents).values({ companyId: company.id, name: "Successor", role: "ceo", status: "running" }).returning();
+    const [oldRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      status: "succeeded", runtimeMode: "legacy", runtimeModeResolvedAt: new Date(), finishedAt: new Date() }).returning();
+    const [currentRun] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: successor.id,
+      status: "running", runtimeMode: "legacy", runtimeModeResolvedAt: new Date() }).returning();
+    const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Same-task later phase", status: "in_progress",
+      assigneeAgentId: successor.id, executionRunId: currentRun.id, checkoutRunId: currentRun.id }).returning();
+    await db.update(heartbeatRuns).set({ issueId: issue.id, contextSnapshot: { issueId: issue.id } })
+      .where(inArray(heartbeatRuns.id, [oldRun.id, currentRun.id]));
+    const [caseRow] = await db.insert(cases).values({ companyId: company.id, caseNumber: 1, identifier: `CASE-${randomUUID()}`,
+      caseType: "work", title: issue.title, workIssueId: issue.id, handoffVersion: 1, phase: "implementation" }).returning();
+    await db.insert(caseHandoffs).values({ companyId: company.id, caseId: caseRow.id, issueId: issue.id, version: 1,
+      sourceRunId: oldRun.id, fromAgentId: agent.id, toAgentId: successor.id, phase: "implementation", instructions: "Continue on the same task",
+      actorType: "user", actorId: "operator", state: "delivered", wakeupRequestId: randomUUID(),
+      idempotencyKey: randomUUID(), inputFingerprint: "fixture" });
+    await instanceSettingsService(db).updateExperimental({ enableCases: true });
+    const routing = { idempotencyKey: randomUUID(), case: { id: caseRow.id }, instructions: "The later phase owns this intent",
+      expectedHandoffVersion: 1, expectedIssueStatusVersion: issue.statusVersion };
+    const receipt = await caseHandoffService(db).handoff(company.id,
+      { type: "agent", companyId: company.id, agentId: successor.id, runId: currentRun.id, source: "agent_jwt" },
+      destination === "done" ? { ...routing, to: "done" } : { ...routing, toAgentId: agent.id, phase: "verification" });
+    const snapshot = async () => ({
+      handoffs: await db.select().from(caseHandoffs).orderBy(caseHandoffs.version),
+      tasks: await db.select().from(issues), cases: await db.select().from(cases),
+      currentRun: await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, currentRun.id)),
+      events: await db.select().from(caseEvents).orderBy(caseEvents.id),
+      activity: await db.select().from(activityLog).orderBy(activityLog.id),
+    });
+    const before = await snapshot();
+    expect(before.handoffs.find(row => row.id === receipt.handoffId)).toMatchObject({
+      sourceRunId: currentRun.id, state: destination === "done" ? "awaiting_completion" : "awaiting_release",
+    });
+    const deps = callbacks(db), control = createHeartbeatRunControl(db, deps);
+    for (let attempt = 0; attempt < 2; attempt++) {
+      expect(await control.cancelRunInternal(oldRun.id, "Delayed operator Stop", {
+        resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+      })).toMatchObject({ id: oldRun.id, status: "succeeded" });
+      expect(await snapshot()).toEqual(before);
+    }
+    expect(deps.getAgent).not.toHaveBeenCalled();
+    expect(deps.envOrchestrator.releaseForRun).not.toHaveBeenCalled();
+    expect(await control.cancelRunInternal(currentRun.id, "Stop the current phase", {
+      resultJson: { cancelledByActorType: "user", cancelledByUserId: "operator" },
+    })).toMatchObject({ id: currentRun.id, status: "cancelled" });
+    expect((await db.select().from(caseHandoffs).orderBy(caseHandoffs.version)).map(row => row.state))
+      .toEqual(["delivered", "cancelled"]);
+    expect((await db.select().from(caseEvents)).filter(event => event.kind === "handoff_cancelled"))
+      .toHaveLength(1);
   });
 
   it.each(["ephemeral", "reuse_by_environment"] as const)("keeps %s cancellation eligible for retention when teardown loses the task lock", async leasePolicy => {

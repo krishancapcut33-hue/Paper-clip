@@ -917,12 +917,10 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       const publications: ActivityPublication[] = [];
       const supersessionApplied = await db.transaction(async tx => {
         await tx.select({ id: issues.id }).from(issues).where(and(eq(issues.companyId, run!.companyId), eq(issues.id, handoffIssueId))).for("update");
-        if (options.expectedStatus) {
-          const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
-            eq(heartbeatRuns.companyId, run!.companyId))).for("update");
-          if (!current || current.status !== options.expectedStatus) return false;
-          run = current;
-        }
+        const [current] = await tx.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId),
+          eq(heartbeatRuns.companyId, run!.companyId))).for("update");
+        if (!current || (options.expectedStatus && current.status !== options.expectedStatus)) return false;
+        run = current;
         if (options.cancellationRequestId) {
           run = await claimCancellationRequest(tx as unknown as Db, runId, run!.companyId, options.cancellationRequestId,
             options.cancellationRequestedByUserId ?? null);
@@ -950,7 +948,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           inArray(heartbeatRuns.status, options.expectedStatus ? [options.expectedStatus] : [...CANCELLABLE_HEARTBEAT_RUN_STATUSES]))).returning();
         if (options.expectedStatus && !fenced) return false;
         if (fenced) run = fenced;
-        await cancelCaseHandoffsForIssue(tx as unknown as Db, { companyId: run!.companyId, issueId: handoffIssueId, reason, publications });
+        await cancelCaseHandoffsForIssue(tx as unknown as Db, { companyId: run!.companyId, issueId: handoffIssueId,
+          sourceRunId: runId, reason, publications });
         return true;
       });
       publications.forEach(publishActivity);

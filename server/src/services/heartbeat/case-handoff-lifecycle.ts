@@ -133,12 +133,15 @@ export async function assertNoCaseHandoffMutation(db: Db, runId: string, issueId
 /** Called under the task lock by superseding mutations. No issueService dependency. */
 export async function cancelCaseHandoffsForIssue(db: Db, input: {
   companyId: string; issueId: string; reason: string; exceptId?: string; publications?: ActivityPublication[];
+  /** Run-scoped Stop must not supersede a later phase on the same task. */
+  sourceRunId?: string;
   /** Accepted completion settles its terminal intent instead of superseding it. */
   agentTransfersOnly?: boolean;
 }) {
   const rows = await db.update(caseHandoffs).set({ state: "cancelled", cancelledAt: new Date(), updatedAt: new Date(),
     leaseExpiresAt: null, lastErrorCode: "superseded", lastError: input.reason }).where(and(
     eq(caseHandoffs.companyId, input.companyId), eq(caseHandoffs.issueId, input.issueId),
+    input.sourceRunId !== undefined ? eq(caseHandoffs.sourceRunId, input.sourceRunId) : undefined,
     inArray(caseHandoffs.state, ["awaiting_release", "pending_dispatch", "awaiting_completion"]),
     input.agentTransfersOnly ? eq(caseHandoffs.destinationKind, "agent") : undefined,
     input.exceptId ? sql`${caseHandoffs.id} <> ${input.exceptId}` : undefined,
