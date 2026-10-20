@@ -106,11 +106,17 @@ export async function collectAttemptFeedback(input: {
   api: Pick<RunnerApi, "get">;
   companyId: string;
   persist: (evidence: FeedbackEvidence, signal: AbortSignal) => Promise<void>;
+  onCheckpoint?: (summary: FeedbackSummary) => void;
   deadlineAt?: number;
 }): Promise<FeedbackSummary> {
   const deadlineAt = input.deadlineAt ?? Date.now() + 30_000;
   const readDeadlineAt = deadlineAt - Math.min(5_000, Math.max(0, Math.floor((deadlineAt - Date.now()) / 5)));
   const summary = emptyFeedbackSummary();
+  let checkpointSummary = emptyFeedbackSummary();
+  const retainedSummary = () => ({ ...structuredClone(checkpointSummary),
+    ...(summary.collection !== "complete" ? { collection: summary.collection } : {}),
+    ...(summary.invocationCollection !== "complete" ? { invocationCollection: summary.invocationCollection } : {}),
+  });
   const evidence: FeedbackEvidence = { version: 1, companyId: input.companyId, entries: [], invocations: [], diagnostics: [], summary };
   let retainedBytes = 0, checkpointBytes = 0, eventBytes = 0, eventCount = 0;
   const diagnose = (code: FeedbackEvidence["diagnostics"][number]) => { if (!evidence.diagnostics.includes(code)) evidence.diagnostics.push(code); };
@@ -140,6 +146,8 @@ export async function collectAttemptFeedback(input: {
       ]);
       if (Date.now() >= deadlineAt) { abort.abort(); diagnose("deadline_reached"); return false; }
       checkpointBytes = retainedBytes;
+      checkpointSummary = structuredClone(summary);
+      input.onCheckpoint?.(structuredClone(checkpointSummary));
     } finally { clearTimeout(timer); }
     return true;
   };
@@ -200,7 +208,7 @@ export async function collectAttemptFeedback(input: {
     summary.invocationCollection = "unavailable";
     diagnose("run_read_failed");
     await persist(true);
-    return summary;
+    return retainedSummary();
   }
   summary.invocationCollection = runs.length < 1000 ? "complete" : "partial";
   if (runs.length >= 1000) diagnose("run_limit_reached");
@@ -256,5 +264,5 @@ export async function collectAttemptFeedback(input: {
     }
   }
   if (!await persist(true)) summary.invocationCollection = "partial";
-  return summary;
+  return retainedSummary();
 }

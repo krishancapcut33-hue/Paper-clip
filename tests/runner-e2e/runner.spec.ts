@@ -3083,11 +3083,12 @@ for (const execution of executions) {
             teardown: async () => {
               try {
                 feedback = await collectAttemptFeedback({ api, companyId: fixtures!.company.id,
+                  onCheckpoint: summary => { feedback = summary; },
                   persist: async (evidence, signal) => {
-                    feedback = structuredClone(evidence.summary);
                     await writeSanitizedJson(snapshotsDir, "agent-feedback.pending.json", evidence, secrets, signal);
                     signal.throwIfAborted();
                     await rename(path.join(snapshotsDir, "agent-feedback.pending.json"), path.join(snapshotsDir, "agent-feedback.json"));
+                    signal.throwIfAborted();
                   },
                 });
               } catch {

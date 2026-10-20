@@ -258,6 +258,44 @@ it("aborts stalled evidence persistence at the collection deadline", async () =>
   expect(reads).toBe(0);
 });
 
+it("acknowledges only successfully persisted feedback when a later checkpoint fails", async () => {
+  let retained: FeedbackEvidence | undefined, acknowledged = emptyFeedbackSummary();
+  const entries = Array.from({ length: 11 }, (_, index) => entry(String(index)));
+  await expect(collectAttemptFeedback({ companyId: "company",
+    onCheckpoint: summary => { acknowledged = summary; },
+    persist: async evidence => {
+      if (evidence.entries.length > 10) throw new Error("disk full");
+      retained = structuredClone(evidence);
+    },
+    api: api(url => url.includes("agent-commentary?") ? { items: entries, total: entries.length }
+      : entries[Number(url.split("/").at(-1))]),
+  })).rejects.toThrow("disk full");
+  expect(retained!.entries).toHaveLength(10);
+  expect(acknowledged).toEqual(retained!.summary);
+  expect(acknowledged.bodiesCollected).toBe(10);
+  expect(acknowledged.review).toMatchObject([{ occurrences: 10 }]);
+});
+
+it("returns saved review counts when the deadline expires before a later checkpoint", async () => {
+  let now = 0, retained: FeedbackEvidence | undefined;
+  const clock = vi.spyOn(Date, "now").mockImplementation(() => now);
+  const entries = Array.from({ length: 11 }, (_, index) => entry(String(index)));
+  try {
+    const summary = await collectAttemptFeedback({ companyId: "company", deadlineAt: 30_000,
+      persist: async evidence => { retained = structuredClone(evidence); },
+      api: api(url => {
+        if (url.includes("agent-commentary?")) return { items: entries, total: entries.length };
+        const index = Number(url.split("/").at(-1));
+        if (index === 10) now = 30_001;
+        return entries[index];
+      }),
+    });
+    expect(retained!.entries).toHaveLength(10);
+    expect(summary).toMatchObject({ bodiesCollected: 10, collection: "partial", invocationCollection: "unavailable" });
+    expect(summary.review).toEqual(retained!.summary.review);
+  } finally { clock.mockRestore(); }
+});
+
 it("bounds raw event inspection while retaining the observed feedback receipt prefix", async () => {
   let pages = 0, retained: FeedbackEvidence | undefined;
   const summary = await collectAttemptFeedback({ companyId: "company", persist: async evidence => { retained = structuredClone(evidence); },

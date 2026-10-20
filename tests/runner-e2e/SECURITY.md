@@ -438,3 +438,6 @@ the collected prefix. Persistence shares the overall collection deadline and
 receives an abort signal. The fixture writes an abortable temporary
 snapshot before replacing the last complete checkpoint, so a stalled write does
 not overwrite earlier evidence with a partially written JSON file.
+Review counts and fingerprints advance only after a checkpoint succeeds. A later
+write failure or expired deadline retains the last saved bodies and marks coverage
+incomplete.
