@@ -12683,7 +12683,7 @@ export function issueService(db: Db) {
           // instead of returning early and letting the generic completion
           // milestone win the provider reply slot.
           const shouldUpgradeExternalAuthorization =
-            ***REDACTED*** === "agent" &&
+            authorType === "agent" &&
             metadata?.authorizationReason ===
               CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON &&
             existing.metadata?.authorizationReason !==
@@ -12691,7 +12691,7 @@ export function issueService(db: Db) {
           const shouldBindAttachments =
             (options?.attachmentIds?.length ?? 0) > 0;
           const shouldUpgradeAttachmentAuthorization =
-            ***REDACTED*** &&
+            shouldBindAttachments &&
             isExplicitExternalAgentComment(metadata) &&
             !isExplicitExternalAgentComment(existing.metadata);
           if (
