@@ -5,7 +5,7 @@ import { rm } from "node:fs/promises";
 import { hostname } from "node:os";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq } from "drizzle-orm";
-import { agents, agentWakeupRequests, authUsers, caseEvents, caseHandoffs, cases, companies, companyMemberships,
+import { agents, agentWakeupRequests, authSessions, authUsers, caseEvents, caseHandoffs, cases, companies, companyMemberships,
   createDb, heartbeatRunEvents, heartbeatRuns, issueComments, issues } from "@paperclipai/db";
 import { issueRecoveryActions, issueRelations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -14,6 +14,7 @@ import { runningProcesses } from "../adapters/index.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertNoCaseHandoffMutation, isCaseHandoffSourceReleased, recordCaseHandoffExecutionReleased, recordLegacyCaseHandoffCleanupIntent, recordLegacyCaseHandoffCleanupVerified } from "../services/heartbeat/case-handoff-lifecycle.js";
 import { caseHandoffDeliveryService } from "../services/case-handoff-delivery.js";
+import { caseHandoffActorContext } from "../services/case-handoff-authority.js";
 import { conflict } from "../errors.js";
 import { prepareHeartbeatRunScratch, cleanupHeartbeatRunScratch } from "../services/run-scratch.js";
 import { appendHeartbeatRunEvent } from "../services/heartbeat-run-events.js";
@@ -29,10 +30,13 @@ describe("durable case handoff queue admission", () => {
   afterAll(async () => { for (const id of heldRuns) runningProcesses.delete(id); await temporary?.cleanup(); });
   async function fixture() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), caseId = randomUUID(), handoffId = randomUUID(),
-      userId = randomUUID(), wakeupRequestId = randomUUID(), occupyingRunId = randomUUID();
+      userId = randomUUID(), sessionId = randomUUID(), wakeupRequestId = randomUUID(), occupyingRunId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Factory", issuePrefix: `Q${companyId.slice(0, 6)}`, defaultResponsibleUserId: userId });
     await db.insert(authUsers).values({ id: userId, name: "Owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
     await db.insert(companyMemberships).values({ companyId, principalId: userId, principalType: "user", status: "active", membershipRole: "owner" });
+    await db.insert(authSessions).values({ id: sessionId, userId, token: randomUUID(), createdAt: new Date(), updatedAt: new Date(),
+      expiresAt: new Date(Date.now() + 60 * 60_000) });
+    const actorContext = caseHandoffActorContext({ type: "board", userId, source: "session", sessionId, companyIds: [companyId] }, companyId);
     await db.insert(agents).values({ id: agentId, companyId, name: "Builder", role: "ceo", status: "running", adapterType: "process",
       runtimeConfig: { heartbeat: { maxConcurrentRuns: 1, wakeOnDemand: true } } });
     // Hold the recipient's ordinary concurrency slot so admission remains
@@ -44,12 +48,12 @@ describe("durable case handoff queue admission", () => {
     await db.insert(cases).values({ id: caseId, companyId, caseNumber: 1, identifier: `CASE-${caseId}`, caseType: "work", title: "Build",
       workIssueId: issueId, handoffVersion: 1, phase: "implementation" });
     await db.insert(caseHandoffs).values({ id: handoffId, companyId, caseId, issueId, version: 1, toAgentId: agentId, phase: "implementation",
-      instructions: "Build the requested change", actorType: "user", actorId: userId, responsibleUserId: userId,
+      instructions: "Build the requested change", actorType: "user", actorId: userId, actorContext, responsibleUserId: userId,
       expectedIssueStatusVersion: 0, appliedIssueStatusVersion: 0, wakeupRequestId, idempotencyKey: "start", inputFingerprint: "fixture", state: "pending_dispatch" });
     const options = { source: "assignment" as const, triggerDetail: "system" as const, reason: "case_handoff", requestedByActorType: "user" as const,
       requestedByActorId: userId, payload: { issueId, handoffId }, contextSnapshot: { issueId, taskKey: issueId, responsibleUserId: userId },
       durableCaseHandoffRequest: { handoffId, wakeupRequestId, issueId, expectedIssueStatusVersion: 0 } };
-    return { companyId, agentId, issueId, caseId, handoffId, userId, wakeupRequestId, occupyingRunId, options };
+    return { companyId, agentId, issueId, caseId, handoffId, userId, sessionId, wakeupRequestId, occupyingRunId, options };
   }
   it("blocks generic wakes and admits one exact receipt across separate scheduler instances", async () => {
     const f = await fixture();
@@ -140,11 +144,36 @@ describe("durable case handoff queue admission", () => {
         throw new Error("Controller acknowledgement lost after queue commit");
       },
     } }).sweepPending();
-    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId)))[0]?.state).toBe("pending_dispatch");
+    const [afterSettlement] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId));
+    expect(afterSettlement).toMatchObject({ actorType: "user", actorId: f.userId,
+      actorContext: { source: "session", actorId: f.userId, companyId: f.companyId, sessionId: f.sessionId } });
+    expect(afterSettlement?.state, afterSettlement?.lastError ?? undefined).toBe("pending_dispatch");
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(1);
     await caseHandoffDeliveryService(db, { heartbeat: heartbeatService(db), now: () => new Date(at.getTime() + 122_000) }).sweepPending();
     expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId)))[0]?.state).toBe("delivered");
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(1);
+  });
+  it("retains a settled legacy transfer without authenticated original actor provenance", async () => {
+    const f = await fixture(), sourceRunId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: sourceRunId, companyId: f.companyId, agentId: f.agentId,
+      status: "succeeded", runtimeMode: "legacy", contextSnapshot: { issueId: f.issueId }, responsibleUserId: f.userId });
+    await db.update(issues).set({ executionRunId: sourceRunId }).where(eq(issues.id, f.issueId));
+    await db.update(caseHandoffs).set({ state: "awaiting_release", sourceRunId, fromAgentId: f.agentId,
+      actorContext: null, appliedIssueStatusVersion: null, assignmentAppliedAt: null }).where(eq(caseHandoffs.id, f.handoffId));
+    await recordCaseHandoffExecutionReleased(db, sourceRunId, f.issueId);
+    expect(await isCaseHandoffSourceReleased(db, { runId: sourceRunId, issueId: f.issueId })).toBe(true);
+    await caseHandoffDeliveryService(db, { heartbeat: heartbeatService(db), now: () => new Date(Date.now() + 60_000) }).sweepPending();
+    expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId)))[0]).toMatchObject({
+      state: "awaiting_release", actorContext: null, lastErrorCode: "access_or_admission_blocked",
+      lastError: "Handoff original actor context is unavailable", assignmentAppliedAt: null, appliedIssueStatusVersion: null,
+    });
+    expect((await db.select().from(issues).where(eq(issues.id, f.issueId)))[0])
+      .toMatchObject({ status: "todo", statusVersion: 0, assigneeAgentId: f.agentId, executionRunId: sourceRunId });
+    expect((await db.select().from(cases).where(eq(cases.id, f.caseId)))[0]!.phase).toBe("implementation");
+    expect(await db.select().from(caseEvents).where(and(eq(caseEvents.caseId, f.caseId), eq(caseEvents.kind, "handoff_applied")))).toHaveLength(0);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeupRequestId))).toHaveLength(0);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(0);
+    await expect(assertNoCaseHandoffMutation(db, sourceRunId, f.issueId)).rejects.toThrow("handed off");
   });
   it.each(["after_removal", "before_removal"] as const)("recovers a clean local legacy handoff across a %s crash before the release marker", async crash => {
     const f = await fixture(), sourceRunId = randomUUID(), controllerBootId = randomUUID();
@@ -204,7 +233,8 @@ describe("durable case handoff queue admission", () => {
       restartedDb = createDb(temporary.connectionString);
       const at = new Date(Date.now() + 61_000);
       await caseHandoffDeliveryService(restartedDb, { heartbeat: heartbeatService(restartedDb), now: () => at }).sweepPending();
-      expect((await restartedDb.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId)))[0]?.state).toBe("delivered");
+      const [afterRestart] = await restartedDb.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId));
+      expect(afterRestart?.state, afterRestart?.lastError ?? undefined).toBe("delivered");
       expect(await restartedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(1);
       expect((await restartedDb.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)))[0]?.resultJson)
         .toHaveProperty("caseHandoffExecutionReleased");
@@ -251,7 +281,8 @@ describe("durable case handoff queue admission", () => {
 
       await caseHandoffDeliveryService(restartedDb, { heartbeat: heartbeatService(restartedDb),
         now: () => new Date(at.getTime() + 61_000) }).sweepPending();
-      expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId)))[0]?.state).toBe("delivered");
+      const [afterRestart] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.handoffId));
+      expect(afterRestart?.state, afterRestart?.lastError ?? undefined).toBe("delivered");
       expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.wakeupRequestId, f.wakeupRequestId))).toHaveLength(1);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, sourceRunId)))[0]?.resultJson)
         .toHaveProperty("caseHandoffExecutionReleased");
