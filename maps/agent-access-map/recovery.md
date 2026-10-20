@@ -84,7 +84,7 @@ Gaps: Native/Legacy and live provider takeover need separate proof; preserve exi
 
 ### `resolve-permitted-source-action`
 
-API: `present` — POST /api/issues/{id}/recovery-actions/resolve with exact actionId/outcome/sourceIssueStatus/note.
+API: `present` — POST /api/issues/{id}/recovery-actions/resolve with exact actionId/outcome/sourceIssueStatus/resolutionNote.
 
 Agent access: `partial` — eligible REST/CLI issue recovery:resolve; native call_api standard/skill_test. false_positive/cancelled and special reconciliation/workspace paths board-only.
 

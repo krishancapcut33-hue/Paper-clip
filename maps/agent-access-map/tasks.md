@@ -72,13 +72,13 @@ Read task collections, navigation projections and blocked counts; distinguish do
 
 API: `present` — GET /api/companies/{companyId}/issues; optional view=compact.
 
-Agent access: `partial` — REST/call_api full query; CLI issue list exposes status/agent/project and local --match on one fetched page; native search_tasks query up to 500 characters, statuses, and limit 1..200 (default 50), without full paging/project/label/workspace knobs.
+Agent access: `partial` — REST/call_api full query; CLI issue list exposes status/agent/project and local --match on one fetched page; native search_tasks query up to 500 characters, statuses, and a declared limit 1..200; production clamps the limit to 1..100 (default 50), without full paging/project/label/workspace knobs.
 
 Policy: Company/read privacy filtering and inaccessible edge redaction; task-bridge company list denied. Default 500, maximum 1000, offset>=0, sortField updated|id, sortDir asc|desc, afterId. Supports status/assignee/participant/project/workspace/parent/descendant/label/origin/text/date and routine/plugin/blocker query groups. includeAgentCreatedTasks=false filters independent roots before search/pagination; omission retains agent/API behavior. includeParticipatedTasks and user me filters require board identity. Compact ETag is actor-private; 429 is not empty results.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [issues.ts](../../server/src/services/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue.ts](../../cli/src/commands/client/issue.ts), [issues-list-query-parsing.test.ts](../../server/src/__tests__/issues-list-query-parsing.test.ts), [issues-creation-visibility.test.ts](../../server/src/__tests__/issues-creation-visibility.test.ts), [issue-list-assignee-filter-routes.test.ts](../../server/src/__tests__/issue-list-assignee-filter-routes.test.ts), [private-json-etag.test.ts](../../server/src/__tests__/private-json-etag.test.ts). No live execution claimed.
 
-Verification: `not-run` — Compare human/agent/routine/channel tasks, list/compact/full filters and ID pagination without duplicates or inaccessible rows. Reject invalid boolean/date/sort/limit and agent human-only/task-bridge query. Preserve failed/429 result visibly.
+Verification: `not-run` — Compare human/agent/routine/channel tasks, list/compact/full filters and ID pagination without duplicates or inaccessible rows. Reject invalid boolean/date/sort/limit and agent human-only/task-bridge query. Preserve failed/429 result visibly. Request native limit 200 and confirm the production result contains at most 100 tasks.
 
 Gaps: Bounded native search and one-page CLI local match are not complete company-search substitutes.
 
@@ -256,13 +256,13 @@ Read, append/retry, author-delete or queued-cancel messages, attach allowed file
 
 API: `present` — GET /api/issues/{id}/comments and /comments/{commentId}.
 
-Agent access: `available` — REST/call_api, CLI issue comments/comment:get; native get_task_history CURRENT task only, limit 1..200, default 50.
+Agent access: `available` — REST/call_api, CLI issue comments/comment:get; native get_task_history CURRENT task only, declared limit 1..200 but production clamps to 1..100 (default 50).
 
 Policy: Company/task issue:read, exact task/comment binding, run/trust redaction. API supports after/afterCommentId, asc|desc, limit cap500. Locked mention edge is not comment read authority.
 
 Evidence: `source-only` — reviewed at `3bbc2104b65caf9f7763938a01260a5673e12f7a`; [issues.ts](../../server/src/routes/issues.ts), [paperclip-runner-tool-authority.ts](../../server/src/services/native-runtime/paperclip-runner-tool-authority.ts), [issue.ts](../../cli/src/commands/client/issue.ts), [issue-comment-redaction.test.ts](../../server/src/__tests__/issue-comment-redaction.test.ts), [issue-agent-mutation-ownership-routes.test.ts](../../server/src/__tests__/issue-agent-mutation-ownership-routes.test.ts). No live execution claimed.
 
-Verification: `not-run` — Read multipage history and exact comment, reload same content; reject inaccessible task, foreign/mismatched comment and inspect trust redaction.
+Verification: `not-run` — Read multipage history and exact comment, reload same content; reject inaccessible task, foreign/mismatched comment and inspect trust redaction. Request native limit 200 and confirm at most 100 comments.
 
 Gaps: Native bounded history is not an arbitrary-task/paginated API substitute.
 
