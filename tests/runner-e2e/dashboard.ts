@@ -349,7 +349,7 @@ function renderSuiteResults(input: {
       const executions = input.suiteCatalog.filter(row => row.task.id === task.id);
       const href = `?view=case&case=${encodeURIComponent(key)}`;
       return `<section class="report-journey" id="journey-${html(key)}" data-report-journey="${html(key)}">
-        <div class="report-journey-heading"><h3><a href="${html(href)}" data-nav-case="${html(key)}">${html(task.label)}</a></h3><a href="${html(href)}" data-nav-case="${html(key)}">Inspect case ↗</a></div>
+        <div class="report-journey-heading"><h3><a href="${html(href)}" data-nav-case="${html(key)}" data-report-case-link="${html(key)}">${html(task.label)}</a></h3><a href="${html(href)}" data-nav-case="${html(key)}" data-report-case-link="${html(key)}">Inspect case ↗</a></div>
         <div class="case-config-options" aria-label="Execution configurations" hidden>${executions.map(row => `<button type="button" data-nav-configuration="${html(row.id)}" aria-pressed="false"><span class="case-status-dot" aria-hidden="true"></span>${html(row.profile.label)} · ${html(row.environment.label)}</button>`).join("")}</div>
         <div class="execution-previews">${executions.map(row => `<div class="execution-preview"><div class="execution-preview-label"><strong>${html(row.profile.label)}</strong><span>${html(row.environment.label)}</span><span>${html(row.profile.provider)} · ${html(row.profile.model)}</span></div>${renderCase(row, input.expected, input.entryById)}</div>`).join("")}</div>
       </section>`;

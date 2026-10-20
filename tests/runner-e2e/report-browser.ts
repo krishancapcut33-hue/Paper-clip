@@ -55,20 +55,23 @@ export const reportBrowserScript = String.raw`
   };
   const apply = () => {
     const search = query.value.trim().toLowerCase();
+    const matchesFilters = card =>
+      (!search || card.dataset.reportSearch.includes(search)) &&
+      (!feature.value || (feature.value === '__unmapped__' ? !card.dataset.reportFeatures : card.dataset.reportFeatures.split(' ').includes(feature.value))) &&
+      (!profile.value || card.dataset.reportProfile === profile.value) &&
+      (!environment.value || card.dataset.reportEnvironment === environment.value) &&
+      (!suite.value || card.dataset.reportSuite === suite.value) &&
+      (!status.value || card.dataset.reportStatus === status.value);
     const variants = byKey.get(caseKey) || [];
+    const matchingVariants = variants.filter(matchesFilters);
+    const candidates = matchingVariants.length ? matchingVariants : variants;
     let selected = variants.find(row => row.dataset.executionId === configuration);
-    if(!selected) selected = variants.find(row => row.dataset.reportStatus === severity(variants)) || variants[0];
+    if(!selected) selected = candidates.find(row => row.dataset.reportStatus === severity(candidates)) || candidates[0];
     configuration = selected?.dataset.executionId || '';
     let visible = 0;
     cards.forEach(card => {
       const matches = view === 'case' ? card === selected :
-        (view !== 'attention' || card.dataset.reportStatus !== 'passed') &&
-        (!search || card.dataset.reportSearch.includes(search)) &&
-        (!feature.value || (feature.value === '__unmapped__' ? !card.dataset.reportFeatures : card.dataset.reportFeatures.split(' ').includes(feature.value))) &&
-        (!profile.value || card.dataset.reportProfile === profile.value) &&
-        (!environment.value || card.dataset.reportEnvironment === environment.value) &&
-        (!suite.value || card.dataset.reportSuite === suite.value) &&
-        (!status.value || card.dataset.reportStatus === status.value);
+        (view !== 'attention' || card.dataset.reportStatus !== 'passed') && matchesFilters(card);
       card.hidden = !matches;
       card.closest('.execution-preview').hidden = !matches;
       if(matches) visible++;
@@ -86,7 +89,7 @@ export const reportBrowserScript = String.raw`
     });
     document.querySelectorAll('[data-report-case-link]').forEach(link => {
       const variants = byKey.get(link.dataset.reportCaseLink) || [];
-      const matching = variants.filter(row => !row.hidden);
+      const matching = variants.filter(matchesFilters);
       const rows = matching.length ? matching : variants;
       if(!rows.length) return;
       const state = severity(rows), target = rows.find(row => row.dataset.reportStatus === state) || rows[0];
