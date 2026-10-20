@@ -2068,14 +2068,14 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     expect((await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action!.id)))[0]).toEqual(recorded);
   });
 
-  it("hands a verified no-replay recovery to the current assignee with fresh-session lineage", async () => {
+  it.each(["blocked", "todo"] as const)("hands a verified no-replay %s issue to the current assignee with fresh-session lineage", async (status) => {
     const { companyId, managerId, coderId, sourceIssueId } = await seedCompany();
     const runId = randomUUID();
     await seedHeartbeatRun({ companyId, agentId: coderId, runId, issueId: sourceIssueId, status: "failed" });
     await db.update(agents).set({ adapterType: "http" }).where(eq(agents.id, coderId));
     await db.update(heartbeatRuns).set({ runtimeMode: "legacy", errorCode: "adapter_failed",
       error: "HTTP invoke failed with status 502", finishedAt: new Date() }).where(eq(heartbeatRuns.id, runId));
-    await db.update(issues).set({ status: "blocked", assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
+    await db.update(issues).set({ status, assigneeAgentId: managerId }).where(eq(issues.id, sourceIssueId));
     const [action] = await db.insert(issueRecoveryActions).values({
       companyId, sourceIssueId, kind: "active_run_watchdog", status: "resolved", outcome: "blocked",
       ownerType: "board", returnOwnerAgentId: coderId, cause: "legacy_execution_requires_reconciliation",
@@ -2088,7 +2088,7 @@ describeEmbeddedPostgres("issue recovery actions", () => {
     const app = createApp();
     await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
       .send({ ...body, executionReconciliation: undefined }).expect(200);
-    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]!.status).toBe("blocked");
+    expect((await db.select().from(issues).where(eq(issues.id, sourceIssueId)))[0]!.status).toBe(status);
     const restored = await request(app).post(`/api/issues/${sourceIssueId}/recovery-actions/resolve`)
       .send(body).expect(200);
     expect(restored.body.issue).toMatchObject({ status: "todo", assigneeAgentId: managerId });

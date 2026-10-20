@@ -9871,7 +9871,7 @@ export function issueRoutes(
             const automatic = activeRecoveryAction.evidence.automaticRecovery as { replay?: string } | undefined;
             if (activeRecoveryAction.kind !== "active_run_watchdog" || automatic?.replay !== "blocked" ||
                 activeRecoveryAction.returnOwnerAgentId !== sourceRun.agentId ||
-                lockedIssue.status !== "blocked" || !lockedIssue.assigneeAgentId ||
+                !["blocked", "todo"].includes(lockedIssue.status) || !lockedIssue.assigneeAgentId ||
                 lockedIssue.checkoutRunId || lockedIssue.executionRunId) {
               throw conflict("The stopped source or current task owner changed. Inspect the recovery before handing it off.");
             }
@@ -9962,6 +9962,13 @@ export function issueRoutes(
         }
         let issue = lockedIssue;
         const sourceStatusChanged = sourceIssueStatus !== lockedIssue.status;
+        if (ownerHandoff && !sourceStatusChanged) {
+          await assertSafeRecoveryHandBackGates({
+            req,
+            issue: lockedIssue,
+            recoveryAction: { ...activeRecoveryAction, returnOwnerAgentId: ownerHandoff.destinationAgentId },
+          });
+        }
         if (outcome === "blocked" && sourceStatusChanged) {
           const unresolvedBlockers = await tx
             .select({ id: issueRows.id })
