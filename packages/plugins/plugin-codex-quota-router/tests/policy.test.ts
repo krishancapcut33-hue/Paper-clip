@@ -122,10 +122,15 @@ describe("Codex quota router", () => {
     });
   });
 
-  it("does not use a pinned reserve when the other configured account is unobserved", () => {
+  it("uses a pinned account's own admitted near-reset quota without switching identities", () => {
     const input = request([{ remaining: 8, resetHours: 4 }, { remaining: 9, resetHours: 4 }],
       "20000000-0000-4000-8000-000000000001");
-    expect(routeCodexConnection(input).kind).toBe("exhausted");
+    expect(routeCodexConnection(input)).toMatchObject({ kind: "selected", memberId: input.memberOrder[0] });
+  });
+
+  it("can use the near-reset account when its peer has known low quota but denies admission", () => {
+    const input = request([{ remaining: 8, resetHours: 4 }, { remaining: 5, resetHours: 4, allowed: false }]);
+    expect(routeCodexConnection(input)).toMatchObject({ kind: "selected", memberId: input.memberOrder[0] });
   });
 
   it("ignores exhausted feature limits unrelated to ordinary Codex runs", () => {

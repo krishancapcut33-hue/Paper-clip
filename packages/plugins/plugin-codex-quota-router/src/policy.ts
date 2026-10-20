@@ -56,11 +56,13 @@ function assess(candidate: Candidate, now: number): Assessment {
   if (codex.length === 0) return waiting("Codex quota window missing");
   const windows = codex.map((limit) => ({ limit, remaining: remainingPercent(limit) }));
   if (windows.some((window) => window.remaining == null)) return waiting("Codex quota percentage unknown");
-  if (windows.some((window) => window.limit.allowed !== true)) return waiting("Codex admission unknown or denied");
   const remaining = Math.min(...windows.map((window) => window.remaining!));
   const resetTimes = windows.map((window) => futureReset(window.limit.resetsAt, now));
   const earliestReset = Math.min(...resetTimes.filter((reset): reset is number => reset != null));
   const retryAt = Number.isFinite(earliestReset) ? earliestReset : now + RECHECK_MS;
+  if (windows.some((window) => window.limit.allowed !== true)) {
+    return waiting("Codex admission unknown or denied", now + RECHECK_MS, remaining <= RESERVE_PERCENT);
+  }
 
   if (usage.limits.some((limit) =>
     (isCodexLimit(limit) || (limit.id === "spend_control" && limit.scope === null)) &&
@@ -112,9 +114,7 @@ export function routeCodexConnection(request: AiConnectionRouterRequest): AiConn
   // A task pin can outlive a member's removal from the current pool config.
   // The host still authorizes that member, but memberOrder no longer lists it.
   const pinned = request.pinnedMemberId ? assessed[0] : undefined;
-  if (pinned && (pinned.tier === "normal" ||
-      (pinned.tier === "near_reset" && request.memberOrder.length === 1 &&
-       request.memberOrder[0] === pinned.candidate.member.id))) {
+  if (pinned && pinned.tier !== "wait") {
     return { kind: "selected", memberId: pinned.candidate.member.id };
   }
   const normal = inRotationOrder(request, assessed.filter((entry) => entry.tier === "normal"));
