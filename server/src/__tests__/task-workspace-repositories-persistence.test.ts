@@ -195,6 +195,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await readFile(path.join(checkout, "source.txt"), "utf8")).toBe("uncommitted work\n");
     if (process.platform !== "win32") {
       const receiptPath = path.join(checkout, ".git", "paperclip-workspace-owner.json");
+      await rm(receiptPath, { force: true });
       await promisify(execFileCallback)("mkfifo", [receiptPath]);
       let deadline: ReturnType<typeof setTimeout> | undefined;
       try {
@@ -224,7 +225,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(prepared[0]).toMatchObject({ id: intent.operationId, cwd: path.join(await realpath(cwd), original.relativePath), pinnedCommit: original.pinnedCommit });
     expect(await readFile(path.join(prepared[0].cwd, "source.txt"), "utf8")).toBe("uncommitted work\n");
     expect(JSON.parse(await readFile(path.join(prepared[0].cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
-      .toMatchObject({ repositoryId: original.id, pinnedCommit: original.pinnedCommit });
+      .toMatchObject({ repositoryId: intent.operationId, pinnedCommit: original.pinnedCommit });
     const [differentRefWorkspace] = await db.insert(executionWorkspaces).values({ companyId, name: "Conflicting ref", cwd, mode: "shared_workspace", strategyType: "operator_directory" }).returning();
     const [differentRefIssue] = await db.insert(issues).values({ companyId, title: "Different ref", executionWorkspaceId: differentRefWorkspace.id }).returning();
     await service.request({ companyId, issueId: differentRefIssue.id, actor, request: { repository: { kind: "catalog", id: "123" }, ref: "release", requestKey: "conflicting-ref" } });

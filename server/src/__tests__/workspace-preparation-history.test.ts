@@ -7,10 +7,11 @@ import request from "supertest";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { createDb, executionWorkspaceRepositories, executionWorkspaceRepositoryRoots, heartbeatRuns, issues, projects, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { createDb, executionWorkspaceRepositories, executionWorkspaceRepositoryRoots, executionWorkspaces, heartbeatRuns, issues, projects, projectWorkspaces, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { authorizationService, canActorReadExecutionWorkspace } from "../services/authorization.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess } from "../services/task-workspace-access.js";
 import { executionWorkspaceRepositoryService } from "../services/execution-workspace-repositories.js";
+import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { taskWorkspaceRoutes } from "../routes/task-workspaces.js";
 import { startEmbeddedPostgresTestDatabase, getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
 import { addPoisonedWorkspaceHistory, addReadyWorkspaceHistoryRepository, createWorkspacePreparationHistoryFixture } from "./helpers/workspace-preparation-history-fixture.js";
@@ -73,6 +74,71 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(decision.allowed).toBe(false);
     expect(await canActorReadExecutionWorkspace(db, fixture.actor, fixture.workspaceId)).toBe(false);
     await expect(assertExecutionWorkspaceRecordAccess(db, fixture.actor, fixture.companyId, fixture.workspaceId)).rejects.toThrow();
+  });
+
+  it.each(["task_directory", "configured_source", "existing"] as const)("applies a saved %s selection after the old workspace source becomes private", async kind => {
+    const current = await createWorkspacePreparationHistoryFixture(db, path.join(directory, `escape-${kind}`), {
+      workspaces: 0, sharedRoots: 0, sources: 0, readers: 0,
+    });
+    const [oldProject, nextProject] = await db.insert(projects).values([
+      { companyId: current.companyId, name: "Old source" }, { companyId: current.companyId, name: "New source" },
+    ]).returning();
+    const [oldSource, nextSource] = await db.insert(projectWorkspaces).values([
+      { companyId: current.companyId, projectId: oldProject.id, name: "Old source", cwd: current.cwd },
+      { companyId: current.companyId, projectId: nextProject.id, name: "New source", cwd: current.cwd },
+    ]).returning();
+    await db.update(issues).set({ projectWorkspaceId: oldSource.id }).where(eq(issues.id, current.issueId));
+    await db.update(executionWorkspaces).set({ projectId: oldProject.id, projectWorkspaceId: oldSource.id })
+      .where(eq(executionWorkspaces.id, current.workspaceId));
+    const [nextWorkspace] = await db.insert(executionWorkspaces).values({ companyId: current.companyId, name: "New workspace",
+      sourceIssueId: current.issueId, cwd: current.cwd, mode: "shared_workspace", strategyType: "task_directory" }).returning();
+    const selection = kind === "task_directory" ? { kind } : kind === "existing" ? { kind, workspaceId: nextWorkspace.id }
+      : { kind, projectWorkspaceId: nextSource.id, mode: "shared" as const };
+    const service = executionWorkspaceService(db);
+    await service.selectTaskWorkspace({ companyId: current.companyId, issueId: current.issueId, actor: current.actor,
+      selection, expectedBindingRevision: 0, requestKey: randomUUID() });
+    await db.update(projects).set({ visibility: "private", privacyOwnerUserId: current.principals[1].userId })
+      .where(eq(projects.id, oldProject.id));
+    await expect(assertTaskWorkspaceExecutionAccess(db, current.actor, current.companyId, {
+      issueId: current.issueId, projectWorkspaceId: null,
+    })).rejects.toThrow();
+    await expect(service.applyPendingTaskWorkspaceSelection({ ...current.input, actor: current.actor })).resolves.toBe(true);
+    const [task] = await db.select().from(issues).where(eq(issues.id, current.issueId));
+    expect(task).toMatchObject({ projectId: null, workspacePendingSelection: null, workspaceSelection: { selection },
+      executionWorkspaceId: kind === "existing" ? nextWorkspace.id : null,
+      projectWorkspaceId: kind === "configured_source" ? nextSource.id : null });
+  });
+
+  it("accepts only persisted selection context and keeps current-task and new-source authorization", async () => {
+    const current = await createWorkspacePreparationHistoryFixture(db, path.join(directory, "selection-authority"), {
+      workspaces: 0, sharedRoots: 0, sources: 0, readers: 0,
+    });
+    const taskDirectory = { kind: "task_directory" as const };
+    const context = { issueId: current.issueId, persistedSelection: taskDirectory };
+    await expect(assertTaskWorkspaceExecutionAccess(db, current.actor, current.companyId, context))
+      .rejects.toThrow("not a current persisted intent");
+    await db.update(issues).set({ workspacePendingSelection: { version: 1, requestKey: "stale", expectedBindingRevision: 1,
+      intent: { version: 1, source: "explicit", selection: taskDirectory } } }).where(eq(issues.id, current.issueId));
+    await expect(assertTaskWorkspaceExecutionAccess(db, current.actor, current.companyId, context))
+      .rejects.toThrow("not a current persisted intent");
+    await db.update(issues).set({ workspacePendingSelection: null }).where(eq(issues.id, current.issueId));
+    const service = executionWorkspaceService(db);
+    await service.selectTaskWorkspace({ companyId: current.companyId, issueId: current.issueId, actor: current.actor,
+      selection: taskDirectory, expectedBindingRevision: 0, requestKey: randomUUID() });
+    await db.update(issues).set({ visibility: "private", privacyRootIssueId: current.issueId,
+      responsibleUserId: current.principals[1].userId }).where(eq(issues.id, current.issueId));
+    await expect(service.applyPendingTaskWorkspaceSelection({ ...current.input, actor: current.actor })).rejects.toThrow();
+    await db.update(issues).set({ visibility: "open", privacyRootIssueId: null, responsibleUserId: current.userId })
+      .where(eq(issues.id, current.issueId));
+    const [project] = await db.insert(projects).values({ companyId: current.companyId, name: "Next source" }).returning();
+    const [source] = await db.insert(projectWorkspaces).values({ companyId: current.companyId, projectId: project.id,
+      name: "Next source", cwd: current.cwd }).returning();
+    await service.selectTaskWorkspace({ companyId: current.companyId, issueId: current.issueId, actor: current.actor,
+      selection: { kind: "configured_source", projectWorkspaceId: source.id, mode: "shared" },
+      expectedBindingRevision: 1, requestKey: randomUUID() });
+    await db.update(projects).set({ visibility: "private", privacyOwnerUserId: current.principals[1].userId })
+      .where(eq(projects.id, project.id));
+    await expect(service.applyPendingTaskWorkspaceSelection({ ...current.input, actor: current.actor })).rejects.toThrow();
   });
 
   it("routes current-task repository requests and new selections independently from full workspace disclosure", async () => {

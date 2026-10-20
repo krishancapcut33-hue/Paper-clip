@@ -156,10 +156,56 @@ const support = await getEmbeddedPostgresTestSupport();
       expect.objectContaining({ id: next.operationId, cwd: published.cwd, pinnedCommit: published.pinnedCommit }),
     ]);
     expect(JSON.parse(await readFile(path.join(published.cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
-      .toMatchObject({ repositoryId: first.operationId, pinnedCommit: published.pinnedCommit });
+      .toMatchObject({ repositoryId: next.operationId, pinnedCommit: published.pinnedCommit });
     const { authorizationService } = await import("../services/authorization.js");
     expect((await authorizationService(db).decide({ actor: peer.actor, action: "issue:read",
       resource: { type: "issue", companyId: f.companyId, issueId: f.issueId } })).allowed).toBe(false);
+  });
+
+  it("keeps shared checkout ownership current when an earlier workspace moves", async () => {
+    const f = await fixture(), peer = await standardPeer(f);
+    await f.request({ kind: "catalog", id: "private-repo" });
+    await localPrivateClone(f);
+    const [published] = await f.service.prepareForAdmission(f.admission);
+    const next = await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    const actual = await vi.importActual<typeof import("../services/managed-repository-checkout.js")>("../services/managed-repository-checkout.js");
+    acquisition.materialize.mockImplementationOnce(actual.materializeManagedProjectWorkspace);
+    await f.service.prepareForAdmission(peer.admission);
+    const moved = path.join(root, `${f.issueId}-moved-after-reuse`);
+    await mkdir(moved);
+    await db.update(executionWorkspaces).set({ cwd: moved }).where(eq(executionWorkspaces.id, f.workspace.id));
+    const latest = await standardPeer(f);
+    const last = await f.service.request({ companyId: f.companyId, issueId: latest.issueId, actor: latest.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    acquisition.materialize.mockImplementationOnce(actual.materializeManagedProjectWorkspace);
+    await expect(f.service.prepareForAdmission(latest.admission)).resolves.toEqual([
+      expect.objectContaining({ id: last.operationId, cwd: published.cwd, pinnedCommit: published.pinnedCommit }),
+    ]);
+    expect(JSON.parse(await readFile(path.join(published.cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: last.operationId, pinnedCommit: published.pinnedCommit });
+    expect((await f.service.list(f.companyId, peer.workspace.id))[0])
+      .toMatchObject({ id: next.operationId, state: "ready", pinnedCommit: published.pinnedCommit });
+    expect(await readFile(path.join(published.cwd, "private.txt"), "utf8")).toBe("Private task edits\n");
+    expect(acquisition.managedAuth).not.toHaveBeenCalled();
+  });
+
+  it("does not transfer shared ownership after the current task binding changes", async () => {
+    const f = await fixture(), peer = await standardPeer(f);
+    const first = await f.request({ kind: "catalog", id: "private-repo" });
+    await localPrivateClone(f);
+    const [published] = await f.service.prepareForAdmission(f.admission);
+    await f.service.request({ companyId: f.companyId, issueId: peer.issueId, actor: peer.actor,
+      request: { repository: { kind: "catalog", id: "private-repo" }, requestKey: randomUUID() } });
+    const actual = await vi.importActual<typeof import("../services/managed-repository-checkout.js")>("../services/managed-repository-checkout.js");
+    acquisition.materialize.mockImplementationOnce(async (cwd, input) => {
+      const result = await actual.materializeManagedProjectWorkspace(cwd, input);
+      await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, peer.issueId));
+      return result;
+    });
+    await expect(f.service.prepareForAdmission(peer.admission)).rejects.toThrow(/publication binding/);
+    expect(JSON.parse(await readFile(path.join(published.cwd, ".git", "paperclip-workspace-owner.json"), "utf8")))
+      .toMatchObject({ repositoryId: first.operationId, pinnedCommit: published.pinnedCommit });
   });
 
   it.each(["missing", "malformed", "symlink", "foreign_company", "conflicting_pin"] as const)("rejects unverified shared publication ownership (%s) without overwriting files", async marker => {

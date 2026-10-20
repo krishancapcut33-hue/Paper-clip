@@ -53,7 +53,7 @@ export type TaskWorkspaceCreationTrustContext = {
 
 export async function assertSelectedWorkspaceTrust(db: Db | DbTransaction, input: {
   companyId: string; sourceProjectId: string | null; actor: AuthorizationActor;
-  issueId?: string | null; sourceWorkspaceId?: string; assigneeAgentId?: string | null; taskCreation?: TaskWorkspaceCreationTrustContext;
+  issueId?: string | null; sourceWorkspaceId?: string | null; assigneeAgentId?: string | null; taskCreation?: TaskWorkspaceCreationTrustContext;
 }) {
   if (!input.sourceProjectId) return;
   const [selectedSource] = await db.select({ id: projects.id, companyId: projects.companyId,
@@ -71,7 +71,7 @@ export async function assertSelectedWorkspaceTrust(db: Db | DbTransaction, input
   const agentId = input.actor.type === "agent" ? input.actor.agentId : issue?.assigneeAgentId ?? input.assigneeAgentId;
   const [agent] = agentId ? await db.select().from(agents).where(and(eq(agents.id, agentId), eq(agents.companyId, input.companyId))) : [];
   const [project] = issue?.projectId ? await db.select().from(projects).where(and(eq(projects.id, issue.projectId), eq(projects.companyId, input.companyId))) : [];
-  const workspaceId = input.sourceWorkspaceId ?? issue?.executionWorkspaceId;
+  const workspaceId = input.sourceWorkspaceId === undefined ? issue?.executionWorkspaceId : input.sourceWorkspaceId;
   const [workspace] = workspaceId ? await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, input.companyId))) : [];
   const [source] = workspace?.projectId ? await db.select().from(projects).where(and(eq(projects.id, workspace.projectId), eq(projects.companyId, input.companyId))) : [];
   if ((agentId && !agent) || (runId && (!run || run.agentId !== agentId || !issue || !runRetainsIssueIdentity(run, issue.id)))) throw incompatible();

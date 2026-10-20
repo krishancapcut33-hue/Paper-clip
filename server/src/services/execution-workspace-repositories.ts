@@ -384,6 +384,29 @@ export function executionWorkspaceRepositoryService(db: Db) {
           const pinnedCommit: string = authorizedPin ?? ownership.pinnedCommit;
           if (acquisitionRestricted) await git("cat-file", "-e", `${pinnedCommit}^{commit}`);
           const branchName = await git("symbolic-ref", "--quiet", "--short", "HEAD").catch(() => null);
+          await assertPublicationAllowed(input);
+          if (!acquisitionRestricted) {
+            await assertCurrentControllerAcquisition(input);
+            if (source.catalogRepositoryId) {
+              const currentCatalog = await catalog(input.companyId, input.responsibleUserId, input.responsibleUserId === "local-board");
+              const currentSource = resolveAcquisitionSource({ kind: "catalog", id: source.catalogRepositoryId }, currentCatalog, false);
+              if (currentSource.repositoryIdentity !== row.repositoryIdentity) throw conflict("Repository preparation receipt does not match its source");
+            }
+          }
+          if (ownership?.repositoryId !== row.id || ownership?.pinnedCommit !== pinnedCommit) {
+            const gitDir = path.join(cwd, ".git");
+            const metadata = await fs.lstat(gitDir);
+            if (!metadata.isDirectory() || metadata.isSymbolicLink() || await fs.realpath(gitDir) !== gitDir) {
+              throw conflict("Repository Git metadata escapes the managed checkout");
+            }
+            const temporaryOwnershipPath = path.join(gitDir, `.paperclip-workspace-owner-${randomUUID()}.tmp`);
+            try {
+              await fs.writeFile(temporaryOwnershipPath, JSON.stringify({ version: 1, repositoryId: row.id, pinnedCommit }), { flag: "wx", mode: 0o600 });
+              // Keep bounded ownership lookup attached to a receipt for this root,
+              // even if the workspace that originally published it later moves.
+              await fs.rename(temporaryOwnershipPath, ownershipPath);
+            } finally { await fs.rm(temporaryOwnershipPath, { force: true }); }
+          }
           await db.update(executionWorkspaceRepositories).set({ state: "ready", pinnedCommit, branchName, failureCode: null, updatedAt: new Date() }).where(eq(executionWorkspaceRepositories.id, row.id));
           prepared.push({ id: row.id, cwd, repoUrl: row.repoUrl, relativePath: row.relativePath, pinnedCommit, branchName });
         } catch (error) {

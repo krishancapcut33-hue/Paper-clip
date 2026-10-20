@@ -7,6 +7,8 @@ import { executionWorkspaceReadSqlCondition, type AuthorizationActor } from "./a
 import { canonicalExecutionUuid } from "./execution-identity.js";
 import { assertSelectedWorkspaceTrust, runRetainsIssueIdentity, taskRepositoryRunColumns } from "./task-repository-acquisition.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
+import { isDeepStrictEqual } from "node:util";
+import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection } from "@paperclipai/shared";
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 
@@ -54,7 +56,7 @@ export async function assertTaskWorkspaceExecutionAccess(
   db: Db | DbTransaction,
   actor: AuthorizationActor,
   companyId: string,
-  input: { issueId: string; workspaceId?: string | null; projectWorkspaceId?: string | null },
+  input: { issueId: string; workspaceId?: string | null; projectWorkspaceId?: string | null; persistedSelection?: TaskWorkspaceSelection },
 ) {
   if (actor.companyId && actor.companyId !== companyId) throw forbidden("Task workspace belongs to another company");
   const [task] = await db.select({
@@ -83,16 +85,27 @@ export async function assertTaskWorkspaceExecutionAccess(
   const selection = task.workspaceSelection?.selection;
   const pending = task.workspacePendingSelection;
   const pendingSelection = pending?.expectedBindingRevision === task.workspaceBindingRevision ? pending.intent.selection : undefined;
-  const [workspace] = input.workspaceId ? await db.select({
+  const effectiveSelection = input.persistedSelection !== undefined
+    ? taskWorkspaceSelectionSchema.parse(input.persistedSelection) : undefined;
+  if (effectiveSelection && (input.workspaceId != null || input.projectWorkspaceId != null
+    || (!isDeepStrictEqual(effectiveSelection, selection) && !isDeepStrictEqual(effectiveSelection, pendingSelection)))) {
+    throw forbidden("Task workspace selection is not a current persisted intent");
+  }
+  const workspaceId = effectiveSelection
+    ? effectiveSelection.kind === "existing" ? effectiveSelection.workspaceId : null
+    : input.workspaceId;
+  const [workspace] = workspaceId ? await db.select({
     id: executionWorkspaces.id, companyId: executionWorkspaces.companyId,
     projectId: executionWorkspaces.projectId, projectWorkspaceId: executionWorkspaces.projectWorkspaceId,
-  }).from(executionWorkspaces).where(and(eq(executionWorkspaces.id, input.workspaceId), eq(executionWorkspaces.companyId, companyId))) : [];
-  if (input.workspaceId && (!workspace || (task.executionWorkspaceId !== workspace.id
+  }).from(executionWorkspaces).where(and(eq(executionWorkspaces.id, workspaceId), eq(executionWorkspaces.companyId, companyId))) : [];
+  if (workspaceId && (!workspace || (task.executionWorkspaceId !== workspace.id
     && !(selection?.kind === "existing" && selection.workspaceId === workspace.id)
     && !(pendingSelection?.kind === "existing" && pendingSelection.workspaceId === workspace.id)))) {
     throw forbidden("Task workspace binding is unavailable");
   }
-  const selectedSourceId = input.projectWorkspaceId ?? workspace?.projectWorkspaceId ?? task.projectWorkspaceId;
+  const selectedSourceId = effectiveSelection
+    ? effectiveSelection.kind === "configured_source" ? effectiveSelection.projectWorkspaceId : workspace?.projectWorkspaceId ?? null
+    : input.projectWorkspaceId ?? workspace?.projectWorkspaceId ?? task.projectWorkspaceId;
   if (input.projectWorkspaceId && input.projectWorkspaceId !== task.projectWorkspaceId
     && input.projectWorkspaceId !== workspace?.projectWorkspaceId
     && !(selection?.kind === "configured_source" && selection.projectWorkspaceId === input.projectWorkspaceId)
@@ -114,6 +127,6 @@ export async function assertTaskWorkspaceExecutionAccess(
     run: run ? { companyId: run.companyId, executionPolicy: run.contextSnapshot?.executionPolicy } : null });
   if (trust.kind === "denied") throw forbidden(trust.detail);
   await assertSelectedWorkspaceTrust(db, { companyId, actor, issueId: task.id,
-    sourceProjectId: sourceProjectId ?? null, sourceWorkspaceId: workspace?.id });
+    sourceProjectId: sourceProjectId ?? null, sourceWorkspaceId: effectiveSelection ? workspace?.id ?? null : workspace?.id });
   return { task, workspace, source };
 }

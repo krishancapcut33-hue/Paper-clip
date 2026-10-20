@@ -1470,8 +1470,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     if (!input.issueId) throw forbidden("Persisted workspace selection requires a current task");
     await assertTaskWorkspaceExecutionAccess(reader, input.actor, input.companyId, {
       issueId: input.issueId,
-      ...(input.selection.kind === "existing" ? { workspaceId: input.selection.workspaceId } : {}),
-      ...(input.selection.kind === "configured_source" ? { projectWorkspaceId: input.selection.projectWorkspaceId } : {}),
+      persistedSelection: input.selection,
     });
     return validateSelection(input, reader, true);
   }

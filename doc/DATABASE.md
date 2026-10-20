@@ -950,26 +950,19 @@ requests, pins, preparation state, and idempotency. Shared publication recovery
 uses the current receipt and the exact receipt named by the checkout's bounded
 ownership marker, with company, origin, ref, path, and pin integrity checks.
 
-A disposable PostgreSQL 18.1 fixture compared the pinned pre-removal commit
-`df80616d98119cbf5abd40549794d9980a5fabf6` with the new guards using 8,500
-workspaces, 4,800 shared-root records, 5,300 retained sources, and 50 readers.
-Two warmups and five measured samples produced these local service medians:
+The disposable preparation benchmark compares a pinned pre-removal commit with
+the checked-out implementation using 8,500 workspaces, 4,800 shared-root records,
+5,300 retained sources, and 50 readers. It reports two warmups and five measured
+samples, phase medians/ranges, SQL fingerprints, and canonicalization counts.
+Both retired-table query counts must remain zero, and increasing peer history
+must not increase preparation authorization or path checks. Record the exact
+treatment commit and measured improvement in the change's verification report.
+These service measurements exclude network acquisition, copying, environment
+acquisition, and provider startup. Reproduce with:
 
-| Phase | Baseline | Current |
-| --- | ---: | ---: |
-| Initial source guard | 5,978.52 ms | 14.27 ms |
-| Before-copy revalidation | 5,808.31 ms | 11.17 ms |
-| Publication guard | 2,390.15 ms | 5.92 ms |
-| Empty repository admission | 2,823.30 ms | 10.10 ms |
-| Recovery binding validation | 3,127.59 ms | 7.48 ms |
-| Ready repository reuse | 3,288.67 ms | 45.89 ms |
-
-The sum of the five guard medians fell from 20,127.88 ms to 48.95 ms (99.76%).
-This is not an end-to-end startup measurement. Query and canonicalization counts
-were identical between small and stress histories; runtime queries to both legacy
-root tables were zero. The benchmark excludes network acquisition, copying,
-environment acquisition, and provider startup. Reproduce with
-`scripts/benchmark-workspace-preparation-history.ts --baseline-ref=df80616d98119cbf5abd40549794d9980a5fabf6`.
+```sh
+pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-workspace-preparation-history.ts --baseline-ref=df80616d98119cbf5abd40549794d9980a5fabf6
+```
 
 Workspace-record and workspace-operation `_issuePrivacySources` /
 `_runPrivacySources` metadata and their migration 0313 triggers remain app-data
