@@ -46,6 +46,19 @@ disposable project. Persistence checks can assign work to Me or leave it
 unassigned; execution checks additionally need an invokable test agent. Record
 whether a real or simulated harness handles execution.
 
+**Operation checkpoints**
+
+Use these checks alongside the entry-point recipes below and the operation records in the [access companion](../agent-access-map/tasks.md). Record the actual actor, surface, saved result and denial separately. Source review and linked tests do not establish a live pass.
+
+| Capability ID | Action and persisted result | Denial, race and retry checks |
+| --- | --- | --- |
+| `tasks/create` | Create an unassigned task or assign it to Me; save its description and context, then reopen and reload the exact task. | Exercise required fields, inaccessible parents/projects, and the same API creation key with identical and changed input. Compare task IDs and run counts; saving a draft is not creation. |
+| `tasks/organize` | Find the saved task through list, project, filter, and direct-link surfaces; change supported labels separately. | Compare another actor’s private results and another company. Distinguish browser sorting/grouping preferences from saved task data. |
+| `tasks/properties` | Change title, metadata, assignee, dependencies, work mode, execution settings, and monitor/watchdog configuration as separate operations. Reload each saved change. | Use an occupied checkout, stale status version, invalid dependency, stopped run, and disallowed mode. Check the specific rejection and unchanged fields; a successful title edit does not establish assignment authority. |
+| `tasks/discussion` | Post a unique comment, reload, and inspect attribution. Read history, inspect a queued message, and delete only an owned disposable comment where allowed. | Separate an ordinary comment from steering or a wake. Check inaccessible task history, author-only deletion, queued cancellation, and duplicate delivery. Feedback votes have their own human authority. |
+| `tasks/completion` | Complete, block, request review, reopen, and cancel separate disposable tasks through offered controls. Inspect the saved outcome, review gates, and execution state. | Test pending dependencies/reviews, a stale or active checkout, and late writes after handoff. Terminal status does not prove provider stop or saved files. Verify checkout/release and destructive deletion separately from completion. |
+| `tasks/privacy` | Create private work with a responsible person; share a child, inspect direct/inherited rows, revoke a direct grant, and check publication constraints. | Use separate ordinary people and an actual agent. Shared readers cannot manage grants; ancestor/project access changes at its source. Reload and retry discovery/direct reads after revocation; keep unrelated direct grants. |
+
 ### `new-task`
 
 Automated: [creation dialog](../../ui/src/components/NewIssueDialog.test.tsx) is component coverage with mocked requests.
