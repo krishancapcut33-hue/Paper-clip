@@ -2,7 +2,7 @@ import { generateText } from "ai";
 import { createOpenRouter } from "@openrouter/ai-sdk-provider";
 import { OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/shared/openrouter-attribution";
 import {
-  PROMPT_INJECTION_DEADLINE_MS, PROMPT_INJECTION_MAX_REQUEST_BYTES,
+  PROMPT_INJECTION_DEFAULT_MODEL, PROMPT_INJECTION_DEADLINE_MS, PROMPT_INJECTION_MAX_REQUEST_BYTES,
   PROMPT_INJECTION_MAX_OUTPUT_TOKENS, PROMPT_INJECTION_POLICY_VERSION, promptInjectionVerdictSchema,
   type PromptInjectionVerdict, type PromptInjectionFallbackReason,
 } from "@paperclipai/shared";
@@ -40,8 +40,17 @@ Answer: {"violation":true,"findings":["instruction_hijack","secret_exfiltration"
 export function promptInjectionInput(content: string, tool: { name: string; type: string }) {
   return JSON.stringify({ tool: { name: tool.name, type: tool.type }, untrustedToolResult: content });
 }
-export function promptInjectionRequestFits(prompt: string) {
-  return Buffer.byteLength(JSON.stringify({ system: PROMPT_INJECTION_POLICY, prompt }), "utf8") <= PROMPT_INJECTION_MAX_REQUEST_BYTES;
+export function promptInjectionRequestFits(prompt: string, model = PROMPT_INJECTION_DEFAULT_MODEL) {
+  // Match the chat SDK's serialized body, including escaped model/message data.
+  // Check before admission; the fetch boundary also enforces this if the SDK changes.
+  return Buffer.byteLength(JSON.stringify({
+    model, max_tokens: PROMPT_INJECTION_MAX_OUTPUT_TOKENS,
+    messages: [
+      { role: "system", content: [{ type: "text", text: PROMPT_INJECTION_POLICY }] },
+      { role: "user", content: prompt },
+    ],
+    usage: { include: true },
+  }), "utf8") <= PROMPT_INJECTION_MAX_REQUEST_BYTES;
 }
 export function parsePromptInjectionVerdict(text: string): PromptInjectionVerdict | null {
   try { const parsed = promptInjectionVerdictSchema.safeParse(JSON.parse(text)); return parsed.success ? parsed.data : null; }
@@ -59,13 +68,20 @@ export async function runPromptInjectionProvider(input: {
 }, options: { fetch?: typeof fetch; deadlineMs?: number } = {}): Promise<PromptInjectionProviderOutcome> {
   input.signal?.throwIfAborted();
   let receipt = providerUsageReceipt();
-  if (!promptInjectionRequestFits(input.prompt)) return { receipt, errorCode: "input_too_large", noProviderWork: true };
+  if (!promptInjectionRequestFits(input.prompt, input.model)) return { receipt, errorCode: "input_too_large", noProviderWork: true };
+  let requestTooLarge = false;
   const deadline = new AbortController();
   const timer = setTimeout(() => deadline.abort(new DOMException("Classifier deadline expired", "TimeoutError")), options.deadlineMs ?? PROMPT_INJECTION_DEADLINE_MS);
   const signal = input.signal ? AbortSignal.any([input.signal, deadline.signal]) : deadline.signal;
   try {
     const native = createOpenRouter({ apiKey: input.credential, headers: OPENROUTER_ATTRIBUTION_HEADERS,
-      fetch: (url, init) => (options.fetch ?? globalThis.fetch)(url, { ...init, redirect: "error" }),
+      fetch: (url, init) => {
+        if (typeof init?.body === "string" && Buffer.byteLength(init.body, "utf8") > PROMPT_INJECTION_MAX_REQUEST_BYTES) {
+          requestTooLarge = true;
+          throw new Error("Classifier request exceeds byte limit");
+        }
+        return (options.fetch ?? globalThis.fetch)(url, { ...init, redirect: "error" });
+      },
     }).chat(input.model, { usage: { include: true } });
     const model = { ...native, specificationVersion: native.specificationVersion, provider: native.provider,
       modelId: native.modelId, supportedUrls: native.supportedUrls, doStream: native.doStream.bind(native),
@@ -97,11 +113,11 @@ export async function runPromptInjectionProvider(input: {
       } catch { /* No readable billing receipt. */ }
     }
     const status = Number(failure.statusCode);
-    const noProviderWork = receipt.costStatus !== "reported" && receipt.inputTokens === null && [400, 401, 403, 404, 413, 422, 429].includes(status);
+    const noProviderWork = requestTooLarge || (receipt.costStatus !== "reported" && receipt.inputTokens === null && [400, 401, 403, 404, 413, 422, 429].includes(status));
     if (noProviderWork) receipt = { ...receipt, inputTokens: 0, outputTokens: 0, costCents: "0.0000000", costStatus: "estimated",
-      pricingProvenance: { source: "unknown", evidence: `Provider rejected request (HTTP ${status})` } };
+      pricingProvenance: { source: "unknown", evidence: requestTooLarge ? "Request exceeded byte limit before dispatch" : `Provider rejected request (HTTP ${status})` } };
     // The service settles this receipt before propagating caller cancellation.
-    return { receipt, noProviderWork, errorCode: signal.aborted ? "timeout" : status === 401 || status === 403 ? "provider_auth_failed"
+    return { receipt, noProviderWork, errorCode: requestTooLarge ? "input_too_large" : signal.aborted ? "timeout" : status === 401 || status === 403 ? "provider_auth_failed"
       : status === 429 ? "provider_rate_limited" : status === 413 || (status === 400 && /context.length|context_length|too many tokens/i.test(String(failure.responseBody)))
         ? "input_too_large" : "provider_failed" };
   } finally { clearTimeout(timer); }

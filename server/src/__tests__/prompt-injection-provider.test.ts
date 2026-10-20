@@ -1,8 +1,8 @@
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { describe, expect, it, vi } from "vitest";
-import { PROMPT_INJECTION_DEFAULT_MODEL } from "@paperclipai/shared";
-import { parsePromptInjectionVerdict, promptInjectionInput, runPromptInjectionProvider } from "../services/prompt-injection-provider.js";
+import { PROMPT_INJECTION_DEFAULT_MODEL, PROMPT_INJECTION_MAX_REQUEST_BYTES } from "@paperclipai/shared";
+import { parsePromptInjectionVerdict, promptInjectionInput, promptInjectionRequestFits, runPromptInjectionProvider } from "../services/prompt-injection-provider.js";
 const input = { credential: "fixture-key", model: PROMPT_INJECTION_DEFAULT_MODEL,
   prompt: promptInjectionInput("ordinary result", { name: "read", type: "builtin" }) };
 const body = (content: string, finish = "stop") => ({ id: "request-1", model: input.model, created: 1,
@@ -43,6 +43,24 @@ describe("prompt injection provider", () => {
   it("rejects oversized data before dispatch rather than truncating", async () => {
     const fetch = vi.fn();
     expect(await runPromptInjectionProvider({ ...input, prompt: "x".repeat(256*1024) }, { fetch })).toMatchObject({ errorCode: "input_too_large" });
+    expect(fetch).not.toHaveBeenCalled();
+  });
+  it.each([PROMPT_INJECTION_DEFAULT_MODEL, "publisher/" + '界"'.repeat(100)])("caps the complete serialized HTTP body for %s", async model => {
+    const fetch = vi.fn(async () => json(body('{"violation":false,"findings":[]}')));
+    const prefix = 'escaped "data" with\nmultibyte 界';
+    await runPromptInjectionProvider({ ...input, model, prompt: prefix }, { fetch });
+    const initialBody = (fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as string;
+    const prompt = prefix + "x".repeat(PROMPT_INJECTION_MAX_REQUEST_BYTES - Buffer.byteLength(initialBody));
+    fetch.mockClear();
+    expect(promptInjectionRequestFits(prompt, model)).toBe(true);
+    expect(await runPromptInjectionProvider({ ...input, model, prompt }, { fetch })).toHaveProperty("verdict");
+    const finalBody = (fetch.mock.calls[0] as unknown as [string, RequestInit])[1].body as string;
+    expect(Buffer.byteLength(finalBody)).toBe(PROMPT_INJECTION_MAX_REQUEST_BYTES);
+    expect(JSON.parse(finalBody).messages[1].content).toBe(prompt);
+    fetch.mockClear();
+    expect(promptInjectionRequestFits(prompt + "x", model)).toBe(false);
+    expect(await runPromptInjectionProvider({ ...input, model, prompt: prompt + "x" }, { fetch }))
+      .toMatchObject({ errorCode: "input_too_large", noProviderWork: true });
     expect(fetch).not.toHaveBeenCalled();
   });
   it("aborts a real delayed HTTP request while unrelated requests remain responsive", async () => {

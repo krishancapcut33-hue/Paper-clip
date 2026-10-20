@@ -138,10 +138,10 @@ export function promptInjectionPreventionService(db: Db, options: {
   async function classify(context: PromptInjectionContext, content: string, signal?: AbortSignal): Promise<PromptInjectionModelOutcome & { usage?: DecisionUsage }> {
     signal?.throwIfAborted();
     const prompt = promptInjectionInput(content, { name: context.toolName, type: context.toolType });
-    if (!promptInjectionRequestFits(prompt)) return { status: "unavailable", reason: "input_too_large" };
     let selected: Awaited<ReturnType<typeof resolve>>;
     try { selected = await resolve(context); }
     catch (error) { const reason = unavailableReason(error); if (reason) return { status: "unavailable", reason }; throw error; }
+    if (!promptInjectionRequestFits(prompt, selected.config.model)) return { status: "unavailable", reason: "input_too_large" };
     const secretId = selected.connection.grant.credentialSecretRefs.find(ref => ref.configPath === "ai.credential")?.secretId;
     const [credentialSnapshot] = secretId ? await db.select({ id: companySecrets.id, status: companySecrets.status, version: companySecrets.latestVersion })
       .from(companySecrets).where(and(eq(companySecrets.companyId, context.companyId), eq(companySecrets.id, secretId))) : [];

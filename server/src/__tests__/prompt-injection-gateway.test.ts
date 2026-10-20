@@ -1,18 +1,23 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { once } from "node:events";
 import { mkdtemp, realpath, rm } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
+import express from "express";
 import { createDb, companies, companyMemberships, agents, issues, heartbeatRuns, toolApplications, toolConnections, connectionGrants,
-  toolCatalogEntries, toolPolicies, toolInvocations, toolCallEvents, toolActionRequests, promptInjectionInvocations, costEvents } from "@paperclipai/db";
+  toolCatalogEntries, toolPolicies, toolInvocations, toolCallEvents, toolActionRequests, promptInjectionInvocations, costEvents, budgetReservations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "@paperclipai/db/test-embedded-postgres";
 import { PROMPT_INJECTION_DEFAULT_MODEL } from "@paperclipai/shared";
 import { createToolGatewayService } from "../services/tool-gateway.js";
+import { toolGatewayRoutes } from "../routes/tool-gateway.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import { aiConnectionService } from "../services/ai-connections.js";
 import { promptInjectionPreventionService } from "../services/prompt-injection-prevention.js";
 import { providerUsageReceipt } from "../services/provider-usage.js";
+import { adapterExecutionControls, createAdapterExecutionControl, registerAdapterExecutionControl } from "../services/adapter-execution-control.js";
 import type { PluginToolDispatcher } from "../services/plugin-tool-dispatcher.js";
 import { promptInjectionCorpus } from "./fixtures/prompt-injection-corpus.js";
 let db: ReturnType<typeof createDb>, database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>, home: string;
@@ -130,6 +135,56 @@ async function evidence(companyId: string, toolInvocationId: string) {
   expect(events).toContainEqual(expect.objectContaining({ eventType: "call_completed", metadata: expect.objectContaining({ promptInjection: expect.objectContaining({ detector: "model", invocationId: invocations[0].id }) }) }));
 }
 describe("model classification at gateway result boundaries", () => {
+  it.each(["request", "run", "disconnect"] as const)("cancels an in-flight classifier with the existing %s signal and preserves uncertain accounting", async source => {
+    const f = await fixture(), caller = new AbortController(), runControl = createAdapterExecutionControl();
+    await registerAdapterExecutionControl(f.run.id, runControl);
+    let started!: () => void;
+    const dispatched = new Promise<void>(resolve => { started = resolve; });
+    f.classifier.mockImplementation(async ({ signal }: { signal?: AbortSignal }) => {
+      expect(signal).toBeInstanceOf(AbortSignal);
+      const stopped = new Promise<void>(resolve => signal!.addEventListener("abort", () => resolve(), { once: true }));
+      started();
+      await stopped;
+      return { errorCode: "timeout", receipt: providerUsageReceipt() };
+    });
+    const app = express();
+    app.use(express.json(), toolGatewayRoutes(db, f.gateway));
+    const server = createServer(app);
+    if (source === "disconnect") { server.listen(0, "127.0.0.1"); await once(server, "listening"); }
+    const pending = source === "disconnect"
+      ? fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}/tool-gateway/tools/call`, {
+          method: "POST", headers: { "content-type": "application/json", "x-paperclip-tool-gateway-token": f.session.token },
+          body: JSON.stringify({ tool: f.tool.name, parameters: {} }), signal: caller.signal,
+        })
+      : f.gateway.executeTool({ sessionToken: f.session.token, tool: f.tool.name, parameters: {}, signal: caller.signal });
+    const rejection = expect(pending).rejects.toMatchObject(source === "disconnect"
+      ? { name: "AbortError" } : { reasonCode: "tool_execution_failed", message: "Caller stopped" });
+    try {
+      await dispatched;
+      (source === "run" ? runControl.controller : caller).abort(new DOMException("Caller stopped", "AbortError"));
+      await rejection;
+      await vi.waitFor(async () => {
+        const [tool] = await db.select().from(toolInvocations).where(eq(toolInvocations.companyId, f.company.id));
+        expect(tool?.status).toBe("failed");
+      });
+      expect(f.classifier).toHaveBeenCalledTimes(1);
+      const [invocation] = await db.select().from(promptInjectionInvocations).where(eq(promptInjectionInvocations.companyId, f.company.id));
+      expect(invocation).toMatchObject({ status: "unknown", errorCode: "timeout" });
+      const [hold] = await db.select().from(budgetReservations).where(eq(budgetReservations.promptInjectionInvocationId, invocation.id));
+      expect(hold.state).toBe("held");
+      expect(await db.select().from(costEvents).where(eq(costEvents.companyId, f.company.id))).toHaveLength(1);
+      const [tool] = await db.select().from(toolInvocations).where(eq(toolInvocations.id, invocation.toolInvocationId!));
+      expect(tool.status).toBe("failed");
+    } finally {
+      caller.abort();
+      runControl.finish();
+      adapterExecutionControls.delete(f.run.id);
+      if (server.listening) {
+        server.closeAllConnections();
+        await new Promise<void>(resolve => server.close(() => resolve()));
+      }
+    }
+  });
   it("returns the full benign diff from the main connected MCP path and records the selected detector", async () => {
     const f = await fixture(); const result = await f.gateway.executeTool({ sessionToken: f.session.token, tool: f.tool.name, parameters: {} });
     expect(JSON.stringify(result.result)).toContain("secret.txt"); await evidence(f.company.id, result.invocationId);
@@ -168,7 +223,15 @@ describe("model classification at gateway result boundaries", () => {
     await expect(f.gateway.executeTool({ sessionToken: f.session.token, tool: "mcp-remote-fixture:update_note", parameters: { noteId: "one", body: "hello" } })).rejects.toMatchObject({ reasonCode: "approval_required" });
     const [action] = await db.select().from(toolActionRequests).where(eq(toolActionRequests.companyId, f.company.id));
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.run.id));
-    expect(await f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: action.id, actor: { userId: "alice" } })).toMatchObject({ status: "executed" });
+    const originalRunControl = createAdapterExecutionControl();
+    originalRunControl.controller.abort();
+    await registerAdapterExecutionControl(f.run.id, originalRunControl);
+    try {
+      expect(await f.gateway.approveActionRequest({ companyId: f.company.id, actionRequestId: action.id, actor: { userId: "alice" } })).toMatchObject({ status: "executed" });
+    } finally {
+      originalRunControl.finish();
+      adapterExecutionControls.delete(f.run.id);
+    }
     await evidence(f.company.id, action.invocationId);
     expect((await db.select().from(toolInvocations).where(eq(toolInvocations.id, action.invocationId)))[0].status).toBe("succeeded");
   });

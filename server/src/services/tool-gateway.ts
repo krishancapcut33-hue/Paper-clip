@@ -1,5 +1,6 @@
 import type { runPromptInjectionProvider } from "./prompt-injection-provider.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
+import { adapterExecutionControls } from "./adapter-execution-control.js";
 import type { BudgetServiceHooks } from "./budgets.js";
 import type { PromptInjectionDetectorMetadata } from "@paperclipai/shared";
 import { notifyDeliveryWork, DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -384,6 +385,7 @@ export function deduplicateToolDescriptors(tools: readonly ToolGatewayDescriptor
 }
 
 interface ExecuteGatewayToolInput {
+  signal?: AbortSignal;
   sessionToken: string;
   gatewayId?: string | null;
   gatewayPublicId?: string | null;
@@ -396,6 +398,7 @@ interface ExecuteGatewayToolInput {
 }
 
 interface ExecuteTestCallInput {
+  signal?: AbortSignal;
   companyId: string;
   connectionId: string;
   agentId: string;
@@ -406,6 +409,7 @@ interface ExecuteTestCallInput {
 }
 
 interface ExecutePluginToolInput {
+  signal?: AbortSignal;
   actor: {
     type: "agent" | "board";
     agentId?: string | null;
@@ -1173,8 +1177,14 @@ export function createToolGatewayService(
   } = {},
 ) {
   const injectionPrevention = promptInjectionPreventionService(db, { budgetHooks: options.budgetHooks, provider: options.promptInjectionProvider });
-  function resultClassifier(session: ToolGatewaySession, tool: ToolGatewayDescriptor, toolInvocationId: string | null, approvedAction = false) {
+  function resultClassifier(session: ToolGatewaySession, tool: ToolGatewayDescriptor, toolInvocationId: string | null,
+    { approvedAction = false, signal: callerSignal }: { approvedAction?: boolean; signal?: AbortSignal } = {}) {
+    // Approved actions retain historical run attribution, not that run's lifetime.
+    const runSignal = session.runId && !approvedAction
+      ? adapterExecutionControls.get(session.runId)?.controller.signal : undefined;
+    const signal = callerSignal && runSignal ? AbortSignal.any([callerSignal, runSignal]) : callerSignal ?? runSignal;
     return async (content: string) => {
+      signal?.throwIfAborted();
       // Legacy/plugin sessions may not carry identity fields. Resolve them from
       // the admitted run, never from parameters. Signed approvals keep their origin.
       let identity = session;
@@ -1189,7 +1199,7 @@ export function createToolGatewayService(
         responsibleUserId: identity.responsibleUserId ?? null, agentId: identity.agentId,
         issueId: identity.issueId, projectId: identity.projectId, runId: identity.runId, identityContextId: identity.identityContextId,
         toolInvocationId, toolName: tool.name, toolType: tool.providerType, approvedAction,
-      }, content);
+      }, content, signal);
     };
   }
   // Authorization links can contain one-time codes. Keep them briefly in memory;
@@ -7337,6 +7347,7 @@ export function createToolGatewayService(
     reasonCode: string;
     matchedPolicyIds: string[];
     timeoutMs?: number;
+    signal?: AbortSignal;
   }): Promise<
     | { decision: "allowed"; invocationId: string; result: unknown }
     | {
@@ -7412,7 +7423,7 @@ export function createToolGatewayService(
         value: result,
         direction: "result",
         sensitiveMode: "redact",
-        promptInjectionMode: "block", classifier: resultClassifier(args.session, args.tool, args.invocationId),
+        promptInjectionMode: "block", classifier: resultClassifier(args.session, args.tool, args.invocationId, { signal: args.signal }),
       });
       const providerResult = asRecord(resultValidation.value);
       if (providerResult?.error) {
@@ -8269,7 +8280,7 @@ export function createToolGatewayService(
         value: result,
         direction: "result",
         sensitiveMode: "redact",
-        promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocation.id, true),
+        promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocation.id, { approvedAction: true }),
       });
       const now = new Date();
       await db
@@ -9563,6 +9574,7 @@ export function createToolGatewayService(
         reasonCode: accessDecision.reasonCode,
         matchedPolicyIds: accessDecision.matchedPolicyIds,
         timeoutMs: input.timeoutMs,
+        signal: input.signal,
       });
     },
 
@@ -10133,7 +10145,7 @@ export function createToolGatewayService(
         );
         const resultValidation = await validateToolContent({
           value: result, direction: "result", sensitiveMode: "redact",
-          promptInjectionMode: "block", classifier: resultClassifier(session, tool, null),
+          promptInjectionMode: "block", classifier: resultClassifier(session, tool, null, { signal: input.signal }),
         }).catch(async (error: unknown) => {
           if (error instanceof ToolContentValidationError) {
             await writeToolCallEvent({ session, eventType: "call_failed", outcome: "failure", toolName: tool.name,
@@ -10280,7 +10292,7 @@ export function createToolGatewayService(
               // invocation or executing its external write again.
               try {
                 const validation = await validateToolContent({ value: { content: JSON.stringify(receipt), data: receipt },
-                  direction: "result", sensitiveMode: "redact", promptInjectionMode: "block", classifier: resultClassifier(session, tool, replay.invocationId) });
+                  direction: "result", sensitiveMode: "redact", promptInjectionMode: "block", classifier: resultClassifier(session, tool, replay.invocationId, { signal: input.signal }) });
                 replayResult = validation.value;
                 await writeToolCallEvent({ invocationId: replay.invocationId, session, eventType: "call_completed", outcome: "success",
                   toolName: tool.name, reasonCode: "receipt_revalidated", tool, detectorMetadata: validation.detectorMetadata, metadata: { replay: true } });
@@ -10884,7 +10896,7 @@ export function createToolGatewayService(
           value: result,
           direction: "result",
           sensitiveMode: "redact",
-          promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocationId, Boolean(input.approvedActionRequestId)),
+          promptInjectionMode: "block", classifier: resultClassifier(session, tool, invocationId, { approvedAction: Boolean(input.approvedActionRequestId), signal: input.signal }),
         });
         const completedAt = new Date();
         const validatedMcpResult = connectedMcpExecution
@@ -11296,7 +11308,7 @@ export function createToolGatewayService(
           value: result,
           direction: "result",
           sensitiveMode: "redact",
-          promptInjectionMode: "block", classifier: resultClassifier(sessionLike, tool, invocationId),
+          promptInjectionMode: "block", classifier: resultClassifier(sessionLike, tool, invocationId, { signal: input.signal }),
         });
         await db
           .update(toolInvocations)
