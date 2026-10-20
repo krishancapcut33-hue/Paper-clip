@@ -1365,6 +1365,8 @@ retired records cannot reopen. Inspection reconciles a pending restoration with
 its recorded request, advances its generation, and keeps the Core row closed.
 Cleanup must then inspect that generation afresh; it cannot reuse an earlier
 removal receipt. Direct removal refuses unresolved restoration intent.
+Core commits storage intent and recovery results with cleanup notifications so
+incremental terminal-workspace sweeps revisit changed records.
 Pending deletion is replayed before inspection, including after a lost removal
 result. File browsing and
 other Core-host filesystem operations are unavailable for managed storage.

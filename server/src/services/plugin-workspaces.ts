@@ -21,6 +21,7 @@ import {
   type PluginWorkspaceParams,
 } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import {
   assertTaskWorkspaceExecutionAccess,
@@ -364,6 +365,7 @@ export async function preparePluginWorkspace(
       if (!task || task.executionWorkspaceId)
         throw conflict("Task workspace binding changed; retry preparation");
       const id = randomUUID();
+      await notifyTerminalWorkspaceWork(tx, `workspace:${id}`);
       const [row] = await tx
         .insert(executionWorkspaces)
         .values({
@@ -461,6 +463,7 @@ export async function preparePluginWorkspace(
       .where(eq(issues.id, input.issueId!));
     if (task?.executionWorkspaceId !== workspace.id)
       throw conflict("Task workspace binding changed during preparation");
+    await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
     const [updated] = await tx
       .update(executionWorkspaces)
       .set({
@@ -530,28 +533,31 @@ async function reconcilePluginWorkspaceReservation(
   });
   if (result.kind !== "prepared")
     throw conflict("Workspace reconciliation is incomplete");
-  const [updated] = await db
-    .update(executionWorkspaces)
-    .set({
-      providerRef: result.binding.workspaceRef,
-      branchName: result.branchName,
-      updatedAt: new Date(),
-      metadata: {
-        ...workspace.metadata,
-        workspaceProvider: result.binding,
-        workspaceProviderBaseSha: result.baseSha,
-        createdByRuntime: result.branchCreatedByRuntime,
-      },
-    })
-    .where(
-      and(
-        eq(executionWorkspaces.id, workspace.id),
-        eq(executionWorkspaces.companyId, workspace.companyId),
-        sql`${executionWorkspaces.providerRef} IS NULL`,
-        sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${workspace.metadata?.lifecycleGeneration ?? 0}`,
-      ),
-    )
-    .returning();
+  const [updated] = await db.transaction(async (tx) => {
+    await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+    return tx
+      .update(executionWorkspaces)
+      .set({
+        providerRef: result.binding.workspaceRef,
+        branchName: result.branchName,
+        updatedAt: new Date(),
+        metadata: {
+          ...workspace.metadata,
+          workspaceProvider: result.binding,
+          workspaceProviderBaseSha: result.baseSha,
+          createdByRuntime: result.branchCreatedByRuntime,
+        },
+      })
+      .where(
+        and(
+          eq(executionWorkspaces.id, workspace.id),
+          eq(executionWorkspaces.companyId, workspace.companyId),
+          sql`${executionWorkspaces.providerRef} IS NULL`,
+          sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${workspace.metadata?.lifecycleGeneration ?? 0}`,
+        ),
+      )
+      .returning();
+  });
   if (!updated)
     throw conflict("Workspace changed during reconciliation; retry inspection");
   return updated;
@@ -636,31 +642,34 @@ async function finishPendingRestoration(
   });
   if (result.kind !== "prepared")
     throw conflict("Workspace restoration is incomplete");
-  const [updated] = await db
-    .update(executionWorkspaces)
-    .set({
-      providerRef: result.binding.workspaceRef,
-      branchName: result.branchName,
-      updatedAt: new Date(),
-      metadata: {
-        ...workspace.metadata,
-        lifecycleGeneration: generation + 1,
-        workspaceProvider: result.binding,
-        workspaceProviderBaseSha: result.baseSha,
-        workspaceProviderRemoved: false,
-        workspaceProviderRestoration: null,
-      },
-    })
-    .where(
-      and(
-        eq(executionWorkspaces.id, workspace.id),
-        eq(executionWorkspaces.companyId, workspace.companyId),
-        eq(executionWorkspaces.status, workspace.status),
-        sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}`,
-        sql`${executionWorkspaces.metadata}->'workspaceProviderRestoration' = ${JSON.stringify(pending)}::jsonb`,
-      ),
-    )
-    .returning();
+  const [updated] = await db.transaction(async (tx) => {
+    await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+    return tx
+      .update(executionWorkspaces)
+      .set({
+        providerRef: result.binding.workspaceRef,
+        branchName: result.branchName,
+        updatedAt: new Date(),
+        metadata: {
+          ...workspace.metadata,
+          lifecycleGeneration: generation + 1,
+          workspaceProvider: result.binding,
+          workspaceProviderBaseSha: result.baseSha,
+          workspaceProviderRemoved: false,
+          workspaceProviderRestoration: null,
+        },
+      })
+      .where(
+        and(
+          eq(executionWorkspaces.id, workspace.id),
+          eq(executionWorkspaces.companyId, workspace.companyId),
+          eq(executionWorkspaces.status, workspace.status),
+          sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}`,
+          sql`${executionWorkspaces.metadata}->'workspaceProviderRestoration' = ${JSON.stringify(pending)}::jsonb`,
+        ),
+      )
+      .returning();
+  });
   if (!updated)
     throw conflict("Workspace changed during restoration reconciliation");
   return updated;
@@ -691,27 +700,30 @@ async function finishPendingRemoval(
   });
   if (result.kind !== "removed")
     throw conflict("Workspace removal is incomplete");
-  const [updated] = await db
-    .update(executionWorkspaces)
-    .set({
-      ...(workspace.status === "cleanup_failed"
-        ? { status: "archived", cleanupReason: null }
-        : {}),
-      metadata: {
-        ...workspace.metadata,
-        workspaceProviderRemoval: null,
-        workspaceProviderRemoved: true,
-      },
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(executionWorkspaces.id, workspace.id),
-        eq(executionWorkspaces.companyId, workspace.companyId),
-        sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${pending!.generation}`,
-      ),
-    )
-    .returning();
+  const [updated] = await db.transaction(async (tx) => {
+    await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+    return tx
+      .update(executionWorkspaces)
+      .set({
+        ...(workspace.status === "cleanup_failed"
+          ? { status: "archived", cleanupReason: null }
+          : {}),
+        metadata: {
+          ...workspace.metadata,
+          workspaceProviderRemoval: null,
+          workspaceProviderRemoved: true,
+        },
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(executionWorkspaces.id, workspace.id),
+          eq(executionWorkspaces.companyId, workspace.companyId),
+          sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${pending!.generation}`,
+        ),
+      )
+      .returning();
+  });
   if (!updated)
     throw conflict("Workspace changed during removal reconciliation");
   return updated;
@@ -748,24 +760,27 @@ export async function removePluginWorkspace(
   }
   const generation = workspace.metadata?.lifecycleGeneration ?? 0;
   const operation = { kind: "remove" as const, binding, expectedHeadSha };
-  const [pending] = await db
-    .update(executionWorkspaces)
-    .set({
-      metadata: {
-        ...workspace.metadata,
-        workspaceProviderRemoval: { generation, operation },
-      },
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(executionWorkspaces.id, workspace.id),
-        eq(executionWorkspaces.companyId, workspace.companyId),
-        sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}`,
-        eq(executionWorkspaces.providerRef, binding.workspaceRef),
-      ),
-    )
-    .returning();
+  const [pending] = await db.transaction(async (tx) => {
+    await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+    return tx
+      .update(executionWorkspaces)
+      .set({
+        metadata: {
+          ...workspace.metadata,
+          workspaceProviderRemoval: { generation, operation },
+        },
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(executionWorkspaces.id, workspace.id),
+          eq(executionWorkspaces.companyId, workspace.companyId),
+          sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${generation}`,
+          eq(executionWorkspaces.providerRef, binding.workspaceRef),
+        ),
+      )
+      .returning();
+  });
   if (!pending)
     throw conflict("Workspace changed before removal could be recorded");
   await finishPendingRemoval(db, workers, pending);
@@ -844,28 +859,31 @@ export async function restorePluginWorkspace(
     baseRef: workspace.baseRef,
     existing: binding,
   });
-  const [pending] = await db
-    .update(executionWorkspaces)
-    .set({
-      metadata: {
-        ...workspace.metadata,
-        workspaceProviderRemoved: false,
-        workspaceProviderRestoration: {
-          generation:
-            ((workspace.metadata?.lifecycleGeneration as number) ?? 0) + 1,
-          operation,
+  const [pending] = await db.transaction(async (tx) => {
+    await notifyTerminalWorkspaceWork(tx, `workspace:${workspace.id}`);
+    return tx
+      .update(executionWorkspaces)
+      .set({
+        metadata: {
+          ...workspace.metadata,
+          workspaceProviderRemoved: false,
+          workspaceProviderRestoration: {
+            generation:
+              ((workspace.metadata?.lifecycleGeneration as number) ?? 0) + 1,
+            operation,
+          },
         },
-      },
-      updatedAt: new Date(),
-    })
-    .where(
-      and(
-        eq(executionWorkspaces.id, workspace.id),
-        eq(executionWorkspaces.companyId, workspace.companyId),
-        sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${workspace.metadata?.lifecycleGeneration ?? 0}`,
-      ),
-    )
-    .returning();
+        updatedAt: new Date(),
+      })
+      .where(
+        and(
+          eq(executionWorkspaces.id, workspace.id),
+          eq(executionWorkspaces.companyId, workspace.companyId),
+          sql`coalesce((${executionWorkspaces.metadata}->>'lifecycleGeneration')::int, 0) = ${workspace.metadata?.lifecycleGeneration ?? 0}`,
+        ),
+      )
+      .returning();
+  });
   if (!pending)
     throw conflict("Workspace changed before restoration could be recorded");
   workspace = pending;

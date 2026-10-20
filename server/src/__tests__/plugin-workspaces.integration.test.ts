@@ -4,6 +4,7 @@ import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { and, eq, sql } from "drizzle-orm";
 import {
   createDb,
+  subscribeDatabaseWork,
   executionWorkspaces,
   heartbeatRuns,
   issues,
@@ -18,6 +19,7 @@ import {
 } from "../services/plugin-workspaces.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { projectService } from "../services/projects.js";
+import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.js";
 import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
@@ -752,22 +754,36 @@ const support = await getEmbeddedPostgresTestSupport();
         (call) => call.operation.kind === "remove",
       );
       loseRestoreReply = true;
-      expect(
-        await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
-          workspaceId: workspace!.id,
-          issue: {
-            id: f.issueId,
-            companyId: f.companyId,
-            projectId: f.input.projectId,
-          },
-          actor: { actorType: "user", agentId: null },
-          authorizationActor: {
-            type: "board",
-            source: "local_implicit",
-            isInstanceAdmin: true,
-          },
-        }),
-      ).toMatchObject({ ok: false, code: "rebuild_failed" });
+      const restoreEvents: string[] = [];
+      const stopRestoreEvents = subscribeDatabaseWork(
+        db,
+        DELIVERY_QUEUES.terminalWorkspaces,
+        (event, hints) => {
+          if (hints?.has(`workspace:${workspace!.id}`))
+            restoreEvents.push(event);
+        },
+      );
+      try {
+        expect(
+          await svc.reopenClosedIsolatedExecutionWorkspaceForIssue({
+            workspaceId: workspace!.id,
+            issue: {
+              id: f.issueId,
+              companyId: f.companyId,
+              projectId: f.input.projectId,
+            },
+            actor: { actorType: "user", agentId: null },
+            authorizationActor: {
+              type: "board",
+              source: "local_implicit",
+              isInstanceAdmin: true,
+            },
+          }),
+        ).toMatchObject({ ok: false, code: "rebuild_failed" });
+      } finally {
+        stopRestoreEvents();
+      }
+      expect(restoreEvents).toEqual(["intent", "settled"]);
       const pending = await read();
       expect(pending.metadata?.workspaceProviderRestoration).toMatchObject({
         generation: firstRemoval.generation + 1,
@@ -775,7 +791,30 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(
         removePluginWorkspace(db, f.workers, pending, "a".repeat(40)),
       ).rejects.toThrow("restoration");
-      await svc.sweepTerminalWorkspaces(100);
+      const settled: Array<ReturnType<typeof read>> = [];
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(
+        db,
+        DELIVERY_QUEUES.terminalWorkspaces,
+        (event, hints) => {
+          if (!hints?.has(`workspace:${workspace!.id}`)) return;
+          events.push(event);
+          if (event === "settled") settled.push(read());
+        },
+      );
+      try {
+        await svc.sweepTerminalWorkspaces(100);
+      } finally {
+        unsubscribe();
+      }
+      expect(events).toEqual(["intent", "settled"]);
+      expect(await settled[0]).toMatchObject({
+        metadata: {
+          workspaceProviderRestoration: null,
+          lifecycleGeneration: firstRemoval.generation + 1,
+          workspaceProviderRemoved: false,
+        },
+      });
       const recovered = await read();
       expect(recovered.metadata).toMatchObject({
         workspaceProviderRemoved: false,
