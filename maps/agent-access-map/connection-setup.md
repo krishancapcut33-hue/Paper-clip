@@ -9,6 +9,11 @@ Each capability needs operation-level review before its entire scope can be
 qualified. No live agent execution is claimed. Follow the [map contract](../README.md)
 for format, permission checks, evidence and maintenance.
 
+Prompt Injection Prevention reuses shared OpenRouter API-key setup directly from
+Settings → Connections. It adds no Apps provider or transport. Credential ownership
+and audience rules are the existing connection rules; saving a connection alone
+does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
+
 ## `catalog`
 
 Review: `baseline`.

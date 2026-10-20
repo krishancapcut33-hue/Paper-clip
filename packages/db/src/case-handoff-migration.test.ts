@@ -6,8 +6,8 @@ import { applyPendingMigrations, inspectMigrations } from "./client.js";
 import { EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./test-embedded-postgres.js";
 
 const migrationNames = [
-  "0362_gray_venus.sql", "0363_clear_maria_hill.sql", "0364_naive_shatterstar.sql",
-  "0365_superb_adam_warlock.sql", "0366_noisy_lilandra.sql", "0367_abandoned_bucky.sql",
+  "0363_steady_storm.sql", "0364_clear_maria_hill.sql", "0365_naive_shatterstar.sql",
+  "0366_superb_adam_warlock.sql", "0367_noisy_lilandra.sql", "0368_abandoned_bucky.sql",
 ];
 const migrations = await Promise.all(migrationNames.map(async name => {
   const body = await readFile(new URL(`./migrations/${name}`, import.meta.url), "utf8");
@@ -21,6 +21,16 @@ const legacyHashes = [
   "c7249783638bddaa9c86cf5e1d5139ee832063394fec000d3a47b84fdcb2e924",
   "99f7d24f4b8db5ae2b718112ead427d94ebf302031ef9bde50e522e894b1c3db",
   "343a69c1f20fea11adf9a9cddd77dced125c673522ed50a6615a67a87096689e",
+];
+// These byte-identical SQL receipts were written before master added its own
+// 0362 migration. Renaming our files must not replay or rewrite those receipts.
+const previousFeatureReceipts = [
+  { hash: "b9270a6d233463f808aba4360f4478f30eba4604e0d105ecc53970191671c6d8", createdAt: 1792498810598 },
+  { hash: "aa979e1f432aed46873d5e94465bb134f8aa171c6f3a6c0a2704961e602af3cb", createdAt: 1792498810599 },
+  { hash: "1a44b0f62f4bb617a16295378b48412da9baf1684bb31fa7a71dca5bc421e0a2", createdAt: 1792498810600 },
+  { hash: "13006eb46e3a1b91389abd71301f03471207297ac0208f07911ac60e27930f59", createdAt: 1792498810601 },
+  { hash: "6339672e38d852726eae64478250e0bc3628c248d8419c65aeced0431f0c86e5", createdAt: 1792498810602 },
+  { hash: "ed8849bb66aac03150a1414db4485fc086aab6608c8e838b9621efb062d0b0cb", createdAt: 1792507212651 },
 ];
 const cleanups: Array<() => Promise<void>> = [];
 const support = await getEmbeddedPostgresTestSupport();
@@ -98,7 +108,7 @@ describePostgres("case handoff migration upgrades", () => {
 
   it("adds nullable actor context without inventing authority for existing handoffs", async () => {
     const { sql, connectionString } = await database();
-    const actorContextMigration = migrations.find(migration => migration.name === "0367_abandoned_bucky.sql")!;
+    const actorContextMigration = migrations.find(migration => migration.name === "0368_abandoned_bucky.sql")!;
     await sql`ALTER TABLE case_handoffs DROP COLUMN actor_context`;
     await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash = ${actorContextMigration.hash}`;
     const row = await seed(sql);
@@ -149,6 +159,29 @@ describePostgres("case handoff migration upgrades", () => {
     await applyPendingMigrations(connectionString);
     expect(await sql`SELECT * FROM drizzle.__drizzle_migrations ORDER BY id`).toEqual(afterHistory);
     expect(await inspectMigrations(connectionString)).toMatchObject({ status: "upToDate" });
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
+
+  it("recognizes every already-applied receipt from the previous feature numbering", async () => {
+    const { sql, connectionString } = await database();
+    const row = await seed(sql);
+    await sql`UPDATE cases SET work_issue_id = ${row.issueId}, phase = 'verification', handoff_version = 1 WHERE id = ${row.caseId}`;
+    await sql`INSERT INTO case_handoffs (company_id, case_id, issue_id, version, from_agent_id, destination_kind,
+      to_agent_id, phase, instructions, actor_type, actor_id, actor_context, wakeup_request_id, idempotency_key, input_fingerprint, state) VALUES
+      (${row.companyId}, ${row.caseId}, ${row.issueId}, 1, ${row.agentId}, 'agent', ${row.agentId},
+      'verification', 'Keep the existing authority context', 'agent', ${row.agentId}, '{"preserved":true}',
+      ${randomUUID()}, 'previous-numbering', 'fingerprint', 'pending_dispatch')`;
+    expect(migrations.map(migration => migration.hash)).toEqual(previousFeatureReceipts.map(receipt => receipt.hash));
+    await sql`DELETE FROM drizzle.__drizzle_migrations WHERE hash IN ${sql(migrations.map(migration => migration.hash))}`;
+    for (const receipt of previousFeatureReceipts) {
+      await sql`INSERT INTO drizzle.__drizzle_migrations (hash, created_at) VALUES (${receipt.hash}, ${receipt.createdAt})`;
+    }
+    const before = await contents(sql), beforeGuards = await guards(sql);
+    const beforeHistory = await sql`SELECT * FROM drizzle.__drizzle_migrations ORDER BY id`;
+    expect(await inspectMigrations(connectionString)).toMatchObject({ status: "upToDate" });
+    await applyPendingMigrations(connectionString);
+    expect(await contents(sql)).toEqual(before);
+    expect(await guards(sql)).toEqual(beforeGuards);
+    expect(await sql`SELECT * FROM drizzle.__drizzle_migrations ORDER BY id`).toEqual(beforeHistory);
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it("rolls back the complete migration and its receipt when a replacement guard fails", async () => {

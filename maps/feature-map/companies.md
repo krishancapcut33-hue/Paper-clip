@@ -15,6 +15,7 @@ Agent access: [companion](../agent-access-map/companies.md).
 - `selection`: create/select a company and keep navigation in its scope.
 - `identity`: update company identity and configured settings.
 - `decision-models`: configure and test the company's decision model, then inspect invocation history and recorded usage.
+- `prompt-injection-prevention`: opt into a shared OpenRouter classifier for existing tool-result guards, test fixed samples, and recover unavailable selections.
 - `fast-responses`: configure and test the experimental fast-response service, then inspect acknowledgement history, failures, and recorded usage.
 - `agent-observability`: configure one company OTLP destination for Codex and Claude Code, test synthetic delivery, and disable export.
 - `archive`: archive and restore through the available controls without confusing archival with deletion.
@@ -32,8 +33,9 @@ Use `/company/export` and `/company/import` where enabled, or the corresponding 
 
 ### `company-ai-services`
 
-Use Settings → Connections (`/company/settings/connections`) when fast responses
-are enabled. Otherwise decision-model settings remain in Company Settings.
+Use Settings → Connections (`/company/settings/connections`) for Decision model
+and Prompt Injection Prevention, independent of experimental flags. Fast response
+appears there only when its experiment is enabled.
 Open the Decisions and Fast responses tabs in Costs to inspect invocation history.
 
 ## Driving it with Playwright and the Paperclip CLI
@@ -123,3 +125,20 @@ inspect their unique markers at the destination, then disable and verify a new m
 
 Storybook verification: `agent-observability-01-settings`, `agent-observability-02-states`,
 and `agent-observability-03-journey` mount production subjects with simulated APIs/providers.
+
+### `prompt-injection-prevention`
+
+Scope: ui, api, runtime
+Storybook: Production PromptInjectionPreventionSettingsView states under Companies
+and portability → Prompt Injection Prevention. Provider data is simulated.
+Automated: [settings](../../ui/src/components/prompt-injection-prevention/PromptInjectionPreventionSettings.test.tsx),
+[service](../../server/src/__tests__/prompt-injection-prevention.test.ts),
+[gateway](../../server/src/__tests__/prompt-injection-gateway.test.ts),
+[guards](../../server/src/__tests__/tool-content-guards.test.ts) including redaction
+that hides content still delivered under the existing return contract.
+Manual: Open Connections with Fast Responses off, save a shared OpenRouter
+connection/default model, reload, run both fixed samples, and inspect charges.
+Verify benign code reaches a gateway caller, malicious instructions are blocked,
+provider failure records regex fallback, and disabling makes no model call.
+Root results with concealed instruction text use `input_redaction_mismatch`
+fallback without model dispatch.
