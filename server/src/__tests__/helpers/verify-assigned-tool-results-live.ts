@@ -1,5 +1,5 @@
 /** Opt-in paid smoke:
- * node cli/node_modules/tsx/dist/cli.mjs server/scripts/verify-assigned-tool-results-live.ts
+ * PAPERCLIP_LIVE_TOOL_RESULTS=true pnpm --filter @paperclipai/server exec vitest run src/services/native-runtime/runner-tool-results.live.test.ts
  * Requires a built native runner and an existing Codex login. Uses disposable
  * database/storage and a private credential copy. The app response is synthetic;
  * Codex, Runner, PRP, persistence and authenticated asset reads are real.
@@ -12,11 +12,11 @@ import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 import { eq } from "drizzle-orm";
 import { agents, heartbeatRuns, issues } from "@paperclipai/db";
-import { startRunnerApiTestServer } from "../src/__tests__/helpers/runner-api-server.js";
-import { createAssignedMcpTools } from "../src/services/native-runtime/assigned-mcp-tools.js";
-import { PaperclipRunnerToolAuthority } from "../src/services/native-runtime/paperclip-runner-tool-authority.js";
-import type { ToolGatewayService } from "../src/services/tool-gateway.js";
-import { createRunnerdCodexTransport } from "../src/vendor/paperclip-runner/index.js";
+import { startRunnerApiTestServer } from "./runner-api-server.js";
+import { createAssignedMcpTools } from "../../services/native-runtime/assigned-mcp-tools.js";
+import { PaperclipRunnerToolAuthority } from "../../services/native-runtime/paperclip-runner-tool-authority.js";
+import type { ToolGatewayService } from "../../services/tool-gateway.js";
+import { createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
 
 const root = await mkdtemp(join(tmpdir(), "paperclip-tool-result-live-"));
 let server: Awaited<ReturnType<typeof startRunnerApiTestServer>> | undefined;
@@ -53,7 +53,7 @@ try {
   const calls: Array<{ tool: string; resultBytes: number }> = [];
   const started = Date.now();
   bundle = createRunnerdCodexTransport({
-    codexCommand: process.env.PAPERCLIP_LIVE_CODEX_COMMAND ?? fileURLToPath(new URL("../../node_modules/.pnpm/@openai+codex@0.160.0/node_modules/@openai/codex/bin/codex.js", import.meta.url)),
+    codexCommand: process.env.PAPERCLIP_LIVE_CODEX_COMMAND ?? fileURLToPath(new URL("../../../../node_modules/.pnpm/@openai+codex@0.160.0/node_modules/@openai/codex/bin/codex.js", import.meta.url)),
     sourceCodexHome: codexHome, environment: { ...process.env, CODEX_HOME: codexHome },
     disableCodexProjectInstructions: true,
     stateDirectory: join(root, "runner"),
