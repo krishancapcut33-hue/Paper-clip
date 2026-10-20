@@ -1,4 +1,5 @@
 import { inspectPluginWorkspace, removePluginWorkspace, restorePluginWorkspace, type WorkspaceWorkers } from "./plugin-workspaces.js";
+import { acquireExecutionWorkspaceLifecycleLock, withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
@@ -18,7 +19,7 @@ import { taskWorkspaceSelectionSchema, type TaskWorkspaceSelection, type TaskWor
 import { authorizationService, executionWorkspaceReadSqlCondition, projectReadSqlCondition, issueReadSqlCondition, type AuthorizationActor } from "./authorization.js";
 import type { SQL } from "drizzle-orm";
 import { createWorkspaceGitInspectionCache } from "./workspace-git-inspection-cache.js";
-import { notifyTerminalWorkspaceWork } from "./terminal-workspace-work.js";
+import { notifyTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./terminal-workspace-work.js";
 import {
   deleteWorkspaceCompactionTrash,
   findRegenerableWorkspaceDirs,
@@ -236,20 +237,6 @@ export function clearMetadataReopenPendingConsumption(
   delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_METADATA_KEY];
   delete next[EXECUTION_WORKSPACE_REOPEN_PENDING_SINCE_METADATA_KEY];
   return next;
-}
-
-// Acquire the per-workspace, transaction-scoped Postgres advisory lock. Postgres
-// releases the lock when the transaction that holds `tx` commits or rolls back.
-// Both the reopen path and the destructive cleanup path acquire the same lock,
-// so they never run against the same workspace at the same time, even on
-// different server processes.
-async function acquireExecutionWorkspaceLifecycleLock(
-  tx: DbTransaction,
-  workspaceId: string,
-): Promise<void> {
-  await tx.execute(
-    sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspaceId}`}, 0))`,
-  );
 }
 
 const workspaceSourceKeys = ["providerType", "cwd", "providerRef", "projectId", "projectWorkspaceId", "sourceIssueId", "mode", "strategyType", "branchName", "repoUrl", "baseRef"] as const;
@@ -1987,8 +1974,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     skipLog?: { event: string; message: string };
     write: (context: { tx: DbTransaction; fresh: FenceableWorkspaceRow }) => Promise<T>;
   }): Promise<T> {
-    return db.transaction(async (tx) => {
-      await acquireExecutionWorkspaceLifecycleLock(tx, input.workspaceId);
+    return withExecutionWorkspaceLifecycleLock(db, input.workspaceId, async (tx) => {
       const row = await tx
         .select({ status: executionWorkspaces.status, metadata: executionWorkspaces.metadata })
         .from(executionWorkspaces)
@@ -3232,7 +3218,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         sql<boolean>`${executionWorkspaces.sourceIssueId} IS NOT NULL`,
         or(and(inArray(executionWorkspaces.status, ["active", "idle", "in_review"]), isNull(executionWorkspaces.closedAt)),
           and(eq(executionWorkspaces.providerType, "plugin"), inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
-            sql`${executionWorkspaces.metadata}->'workspaceProviderRemoval' IS NOT NULL AND ${executionWorkspaces.metadata}->'workspaceProviderRemoval' <> 'null'::jsonb`),
+            sql`(${executionWorkspaces.metadata}->>'workspaceProviderRemoved') IS DISTINCT FROM 'true'`),
           opts.gitCacheExpirationEnabled ? and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
             sql`${executionWorkspaces.metadata}->'gitCacheExpiration'->>'completed' = 'false'`) : undefined),
       );
@@ -3516,6 +3502,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           continue;
         }
         result.eligible += 1;
+        if (workspace.providerType === "plugin" && isClosedExecutionWorkspaceStatus(workspace.status)) {
+          const generation = readExecutionWorkspaceLifecycleGeneration(workspace.metadata);
+          try {
+            const cleanup = await cleanupTerminalWorkspace(workspace, assessment.workspaceHeadSha, generation);
+            if (cleanup.skippedReopened) result.skippedReopened += 1;
+            else if (!cleanup.cleaned) result.cleanupFailed += 1;
+            else { result.archived += 1; terminalWorkspaceDeadlines.delete(workspace.id); }
+          } catch (error) {
+            result.cleanupFailed += 1;
+            terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
+            await markTerminalCleanupFailedFenced({ workspaceId: workspace.id, capturedGeneration: generation,
+              cleanupReason: `${ISSUE_TERMINAL_WORKSPACE_CLEANUP_REASON} | ${error instanceof Error ? error.message : String(error)}` });
+            logger.warn({ err: error, executionWorkspaceId: workspace.id }, "workspace storage cleanup remains pending");
+          }
+          continue;
+        }
         const closedAt = now();
         // Raise the lifecycle generation on archive. The cleanup below captures
         // this generation and re-checks it before it deletes the worktree, so a
@@ -3644,6 +3646,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           else result.archived += 1;
         } catch (error) {
           result.cleanupFailed += 1;
+          if (archived.providerType === "plugin") terminalWorkspaceDeadlines.set(archived.id, now().getTime() + TERMINAL_WORKSPACE_RETRY_MS);
           const failure = error instanceof Error ? error.message : String(error);
           // Mark cleanup_failed only while the row is still closed at the
           // generation this sweep captured. A reopen that raced after the failure
@@ -3766,8 +3769,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
       }
       const snapshot = freshSnapshot;
       if (snapshot.providerType === "plugin") {
-        return db.transaction(async tx => {
-          await acquireExecutionWorkspaceLifecycleLock(tx, snapshot.id);
+        return withExecutionWorkspaceLifecycleLock(db, snapshot.id, async tx => {
           const [row] = await tx.select().from(executionWorkspaces).where(and(
             eq(executionWorkspaces.id, snapshot.id), eq(executionWorkspaces.companyId, issue.companyId)));
           if (!row || row.sourceIssueId !== sourceIssueId || row.metadata?.workspaceProviderRetired === true) return { ok: false, code: "not_reopenable", message: "Workspace source changed" };

@@ -1,16 +1,13 @@
+import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import {
-  agents,
-  companies,
   createDb,
   executionWorkspaces,
   heartbeatRuns,
   issues,
   plugins,
-  projects,
-  projectWorkspaces,
   pluginCompanySettings,
 } from "@paperclipai/db";
 import {
@@ -34,187 +31,200 @@ const support = await getEmbeddedPostgresTestSupport();
     beforeAll(async () => {
       const started =
         await startEmbeddedPostgresTestDatabase("plugin-workspaces");
-      db = createDb(started.connectionString);
+      db = createDb(started.connectionString, { maxConnections: 1 });
       stopDb = started.stop;
     });
     afterAll(async () => {
       await db?.$client.end();
       await stopDb?.();
     });
-    async function fixture(existingCompanyId?: string) {
-      const companyId = existingCompanyId ?? randomUUID(),
-        agentId = randomUUID(),
-        projectId = randomUUID(),
-        sourceId = randomUUID(),
-        pluginId = randomUUID(),
-        issueId = randomUUID(),
-        runId = randomUUID();
-      if (!existingCompanyId)
-        await db.insert(companies).values({
-          id: companyId,
-          name: "Storage fixture",
-          issuePrefix: companyId.slice(0, 8).toUpperCase(),
-        });
-      await db.insert(agents).values({
-        id: agentId,
-        companyId,
-        name: "Worker",
-        role: "engineer",
-        status: "idle",
-        adapterType: "paperclip_runner",
+    const fixture = (companyId?: string) =>
+      createPluginWorkspaceFixture(db, companyId);
+    it("keeps the single-connection pool responsive while provider preparation holds its lifecycle lock", async () => {
+      const f = await fixture();
+      let entered!: () => void, release!: () => void;
+      const started = new Promise<void>((resolve) => {
+        entered = resolve;
       });
-      await db.insert(plugins).values({
-        id: pluginId,
-        pluginKey: `test.${pluginId}`,
-        packageName: "test-storage",
-        version: "1.0.0",
-        apiVersion: 1,
-        status: "ready",
-        categories: ["workspace"],
-        manifestJson: {
-          id: `test.${pluginId}`,
-          apiVersion: 1,
-          version: "1.0.0",
-          displayName: "Storage",
-          description: "Storage",
-          author: "Test",
-          categories: ["workspace"],
-          capabilities: ["workspaces.manage", "events.subscribe"],
-          resourceLifecycle: ["project"],
-          workspaceProvider: {
-            modes: ["isolated_workspace", "operator_branch"],
-            strategies: ["git_worktree"],
+      const resume = new Promise<void>((resolve) => {
+        release = resolve;
+      });
+      const call = f.workers.call.bind(f.workers);
+      f.workers.call = async (...args) => {
+        if ((args[2] as any).operation.kind === "prepare") {
+          entered();
+          await resume;
+        }
+        return call(...args);
+      };
+      const preparing = preparePluginWorkspace(db, f.workers, f.input);
+      await started;
+      try {
+        expect(await db.execute(sql`select 1 as usable`)).toMatchObject([
+          { usable: 1 },
+        ]);
+      } finally {
+        release();
+      }
+      const workspace = await preparing;
+      await expect(
+        inspectPluginWorkspace(db, f.workers, workspace!),
+      ).resolves.toMatchObject({ kind: "inspection" });
+    });
+    it("preserves a scheduled selection through the first provider binding and next admission", async () => {
+      const f = await fixture();
+      const svc = executionWorkspaceService(db, {
+        pluginWorkerManager: f.workers,
+      });
+      const actor = {
+        type: "board" as const,
+        source: "local_implicit" as const,
+        isInstanceAdmin: true,
+      };
+      const request = {
+        companyId: f.companyId,
+        issueId: f.issueId,
+        actor,
+        selection: { kind: "task_directory" as const },
+        expectedBindingRevision: 0,
+        requestKey: "during-prepare",
+      };
+      await svc.selectTaskWorkspace(request);
+      await preparePluginWorkspace(db, f.workers, f.input);
+      expect(
+        await svc.inspectTaskWorkspace(f.companyId, f.issueId, actor),
+      ).toMatchObject({
+        bindingRevision: 2,
+        pendingSelection: {
+          expectedBindingRevision: 2,
+          intent: { request: { expectedBindingRevision: 0 } },
+        },
+      });
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, f.runId));
+      expect(
+        await svc.applyPendingTaskWorkspaceSelection({
+          companyId: f.companyId,
+          issueId: f.issueId,
+          runId: randomUUID(),
+          actor,
+        }),
+      ).toBe(true);
+      expect(await svc.selectTaskWorkspace(request)).toMatchObject({
+        kind: "applied",
+      });
+    });
+    it("does not retire reusable storage when a source edit is rejected", async () => {
+      const f = await fixture(),
+        workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      await db
+        .update(executionWorkspaces)
+        .set({ status: "archived", closedAt: new Date() })
+        .where(eq(executionWorkspaces.id, workspace!.id));
+      await removePluginWorkspace(db, f.workers, workspace!, "a".repeat(40));
+      expect(
+        await projectService(db).updateWorkspace(
+          f.input.projectId,
+          f.input.projectWorkspaceId,
+          { repoUrl: null },
+        ),
+      ).toBeNull();
+      const [row] = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspace!.id));
+      expect(row.metadata?.workspaceProviderRetired).not.toBe(true);
+      expect(
+        await executionWorkspaceService(db, {
+          pluginWorkerManager: f.workers,
+        }).reopenClosedIsolatedExecutionWorkspaceForIssue({
+          workspaceId: workspace!.id,
+          issue: {
+            id: f.issueId,
+            companyId: f.companyId,
+            projectId: f.input.projectId,
           },
-          entrypoints: { worker: "./worker.js" },
-        },
-      });
-      await db.insert(projects).values({
-        id: projectId,
-        companyId,
-        name: "Project",
-        status: "in_progress",
-        executionWorkspacePolicy: {
-          enabled: true,
-          storageProviderPluginId: pluginId,
-        },
-      });
-      await db.insert(projectWorkspaces).values({
-        id: sourceId,
-        companyId,
-        projectId,
-        name: "Repository",
-        sourceType: "remote_managed",
-        repoUrl: "https://github.com/example/repo.git",
-        cwd: null,
-        isPrimary: true,
-      });
-      await db.insert(issues).values({
-        id: issueId,
-        companyId,
-        projectId,
-        projectWorkspaceId: sourceId,
-        title: "Task",
-        status: "in_progress",
-        assigneeAgentId: agentId,
-      });
-      await db.insert(heartbeatRuns).values({
-        id: runId,
-        companyId,
-        agentId,
-        issueId,
-        invocationSource: "manual",
-        status: "running",
-      });
-      const calls: any[] = [];
-      let loseResponse = false,
-        dirty = false,
-        removed = false,
-        loseRemovalResponse = false,
-        workspaceRefSuffix = "";
+          actor: { actorType: "user", agentId: null },
+          authorizationActor: {
+            type: "board",
+            source: "local_implicit",
+            isInstanceAdmin: true,
+          },
+        }),
+      ).toMatchObject({ ok: true, reopened: true });
+    });
+    it("uses new inspection identities even when the provider caches operation results", async () => {
+      const f = await fixture(),
+        workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      const call = f.workers.call.bind(f.workers),
+        cache = new Map<string, unknown>();
+      f.workers.call = async (...args) => {
+        const params = args[2] as any;
+        if (cache.has(params.operationId))
+          return cache.get(params.operationId) as any;
+        const result = await call(...args);
+        cache.set(params.operationId, result);
+        return result;
+      };
+      expect(
+        await inspectPluginWorkspace(db, f.workers, workspace!),
+      ).toMatchObject({ hasDirtyTrackedFiles: false });
+      f.dirty();
+      expect(
+        await inspectPluginWorkspace(db, f.workers, workspace!),
+      ).toMatchObject({ hasDirtyTrackedFiles: true });
+      expect(cache.size).toBe(2);
+    });
+    it("retries closed storage cleanup when the pre-delete inspection failed before recording removal", async () => {
+      const f = await fixture(),
+        workspace = await preparePluginWorkspace(db, f.workers, f.input);
+      await db
+        .update(issues)
+        .set({ status: "done", completedAt: new Date() })
+        .where(eq(issues.id, f.issueId));
+      await db
+        .update(heartbeatRuns)
+        .set({ status: "succeeded" })
+        .where(eq(heartbeatRuns.id, f.runId));
+      const call = f.workers.call.bind(f.workers);
+      let inspections = 0;
       const workers = {
-        getWorker: () => ({ supportedMethods: ["workspaceOperation"] }),
-        call: async (_id: string, method: string, params: any) => {
-          expect(method).toBe("workspaceOperation");
-          expect(params).not.toHaveProperty("lease");
-          calls.push(params);
-          if (loseResponse) {
-            loseResponse = false;
-            throw new Error("lost result");
-          }
-          if (params.operation.kind === "prepare") {
-            removed = false;
-            return {
-              kind: "prepared",
-              binding: {
-                pluginId,
-                projectId,
-                executionWorkspaceId: params.executionWorkspaceId,
-                projectWorkspaceId: sourceId,
-                sourceRevision: params.operation.source.revision,
-                workspaceRef: `checkout:${params.executionWorkspaceId}${workspaceRefSuffix}`,
-              },
-              branchName: params.operation.branchName,
-              baseSha: "a".repeat(40),
-              created: true,
-              branchCreatedByRuntime: true,
-            };
-          }
-          if (params.operation.kind === "inspect") {
-            if (removed) throw new Error("checkout missing");
-            return {
-              kind: "inspection",
-              headSha: "a".repeat(40),
-              branchName: "work",
-              hasDirtyTrackedFiles: dirty,
-              hasUntrackedFiles: false,
-              hasLocalOnlyData: false,
-              isMergedIntoBase: true,
-              remotelyRecoverable: true,
-            };
-          }
-          removed = true;
-          if (loseRemovalResponse) {
-            loseRemovalResponse = false;
-            throw new Error("lost removal response");
-          }
-          return { kind: "removed" };
+        getWorker: (id: string) =>
+          id === f.pluginId
+            ? { supportedMethods: ["workspaceOperation"] }
+            : undefined,
+        call: async (...args: Parameters<WorkspaceWorkers["call"]>) => {
+          if (
+            (args[2] as any).operation.kind === "inspect" &&
+            ++inspections === 2
+          )
+            throw new Error("temporary inspection outage");
+          return call(...args);
         },
       } as unknown as WorkspaceWorkers;
-      const input = {
-        companyId,
-        projectId,
-        projectWorkspaceId: sourceId,
-        issueId,
-        runId,
-        agentId,
-        responsibleUserId: null,
-        existingWorkspaceId: null as string | null,
-        mode: "isolated_workspace",
-        strategy: "git_worktree",
-        branchName: "work",
-      };
-      return {
-        companyId,
-        pluginId,
-        issueId,
-        runId,
-        input,
-        calls,
-        workers,
-        relocate: () => {
-          workspaceRefSuffix = ":restored";
-        },
-        loseRemoval: () => {
-          loseRemovalResponse = true;
-        },
-        lose: () => {
-          loseResponse = true;
-        },
-        dirty: () => {
-          dirty = true;
-        },
-      };
-    }
+      const svc = executionWorkspaceService(db, {
+        pluginWorkerManager: workers,
+        workspaceReaperCooldownDays: 0,
+      });
+      const sweep = () => svc.sweepTerminalWorkspaces(100);
+      expect(await sweep()).toMatchObject({ cleanupFailed: 1 });
+      const [failed] = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspace!.id));
+      expect(failed.status).toBe("cleanup_failed");
+      expect(failed.metadata?.workspaceProviderRemoval).toBeUndefined();
+      expect(await svc.nextTerminalWorkspaceSweepAt()).not.toBeNull();
+      await sweep();
+      const [removed] = await db
+        .select()
+        .from(executionWorkspaces)
+        .where(eq(executionWorkspaces.id, workspace!.id));
+      expect(removed.metadata?.workspaceProviderRemoved).toBe(true);
+      expect(removed.status).toBe("archived");
+    });
     it("prepares a durable reference without a local checkout or agent allocation", async () => {
       const f = await fixture();
       const workspace = await preparePluginWorkspace(db, f.workers, f.input);

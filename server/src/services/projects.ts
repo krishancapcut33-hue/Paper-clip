@@ -1206,11 +1206,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .for("update")
         .then((rows) => rows[0] ?? null);
       if (!existing) return null;
-      if (["repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>
-          key in data && data[key as keyof typeof data] !== existing[key as keyof typeof existing])) {
-        await retireRemovedPluginWorkspaceDependents(db, projectId, workspaceId);
-      }
-
       const nextCwd =
         data.cwd !== undefined
           ? normalizeWorkspaceCwd(data.cwd)
@@ -1231,6 +1226,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         if (!nextRemoteWorkspaceRef && !nextRepoUrl) return null;
       } else if (!nextCwd && !nextRepoUrl) {
         return null;
+      }
+      if (["repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>
+          key in data && data[key as keyof typeof data] !== existing[key as keyof typeof existing])) {
+        await retireRemovedPluginWorkspaceDependents(db, projectId, workspaceId);
       }
 
       const patch: Partial<typeof projectWorkspaces.$inferInsert> = {

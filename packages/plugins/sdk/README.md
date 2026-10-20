@@ -1326,6 +1326,8 @@ optional context. A storage hook must work without an environment lease, a live
 agent, or a filesystem mount on Core. It must reconcile ambiguous retries before
 repeating side effects. Use the workspace ID and generation to fence provider
 operations; the operation ID identifies a retry of the same request.
+Fresh inspections get a new operation ID so provider result caches cannot reuse
+an earlier checkout status. Prepare and removal retries retain their IDs.
 
 - `prepare` creates or restores the checkout. It returns an opaque, durable
   `WorkspaceProviderBinding`, a branch, and the starting commit. `branchMode:

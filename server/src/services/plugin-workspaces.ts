@@ -21,6 +21,7 @@ import {
   type PluginWorkspaceParams,
 } from "@paperclipai/plugin-sdk";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
+import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import {
   assertTaskWorkspaceExecutionAccess,
   assertTaskWorkspaceSourceProjectAccess,
@@ -96,9 +97,14 @@ export async function callWorkspaceProvider(
     companyId: workspace.companyId,
     projectId: workspace.projectId,
     executionWorkspaceId: workspace.id,
-    operationId: createHash("sha256")
-      .update(JSON.stringify([workspace.id, operationGeneration, operation]))
-      .digest("hex"),
+    operationId:
+      operation.kind === "inspect"
+        ? randomUUID()
+        : createHash("sha256")
+            .update(
+              JSON.stringify([workspace.id, operationGeneration, operation]),
+            )
+            .digest("hex"),
     generation: operationGeneration,
     deadline: new Date(Date.now() + 300_000).toISOString(),
     runId: input.runId ?? null,
@@ -389,15 +395,20 @@ export async function preparePluginWorkspace(
           executionWorkspaceId: id,
           executionWorkspacePreference: "reuse_existing",
           workspaceBindingRevision: task.workspaceBindingRevision + 1,
+          workspacePendingSelection:
+            task.workspacePendingSelection?.expectedBindingRevision ===
+            task.workspaceBindingRevision
+              ? {
+                  ...task.workspacePendingSelection,
+                  expectedBindingRevision: task.workspaceBindingRevision + 1,
+                }
+              : task.workspacePendingSelection,
           updatedAt: new Date(),
         })
         .where(eq(issues.id, task.id));
       return row!;
     }));
-  return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspace.id}`}, 0))`,
-    );
+  return withExecutionWorkspaceLifecycleLock(db, workspace.id, async (tx) => {
     const [current] = await tx
       .select()
       .from(executionWorkspaces)
@@ -567,10 +578,7 @@ export async function inspectPluginWorkspace(
   workers: WorkspaceWorkers | undefined,
   workspace: Workspace,
 ) {
-  return db.transaction(async (tx) => {
-    await tx.execute(
-      sql`select pg_advisory_xact_lock(hashtextextended(${`execution_workspace_lifecycle:${workspace.id}`}, 0))`,
-    );
+  return withExecutionWorkspaceLifecycleLock(db, workspace.id, async () => {
     // Keep recovery intent/results durable across an ambiguous provider response.
     workspace = await reconcilePluginWorkspaceReservation(
       db,
