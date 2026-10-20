@@ -30,6 +30,7 @@ const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   errorsByRun: new Map(),
   hydratedRunIds: undefined as Set<string> | undefined,
+  terminalHydratedRunIds: undefined as Set<string> | undefined,
 }));
 const transcriptHookRuns = vi.hoisted(() => ({
   legacy: [] as unknown[][],
@@ -59,12 +60,14 @@ vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   },
 }));
 vi.mock("@/components/transcript/useNativeRunTranscripts", () => ({
-  useNativeRunTranscripts: (runs: unknown[]) => {
+  useNativeRunTranscripts: (runs: { id: string; status: string }[]) => {
     transcriptHookRuns.native.push(runs);
     return {
       transcriptByRun: new Map(nativeTranscriptState.transcriptByRun),
       errorsByRun: new Map(nativeTranscriptState.errorsByRun),
       hydratedRunIds: nativeTranscriptState.hydratedRunIds,
+      terminalHydratedRunIds: nativeTranscriptState.terminalHydratedRunIds ??
+        new Set(runs.filter((run) => run.status !== "running" && run.status !== "queued").map((run) => run.id)),
     };
   },
 }));
@@ -120,6 +123,7 @@ beforeEach(() => {
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
   nativeTranscriptState.hydratedRunIds = undefined;
+  nativeTranscriptState.terminalHydratedRunIds = undefined;
   transcriptHookRuns.legacy.length = 0;
   transcriptHookRuns.native.length = 0;
   sidebarState.isMobile = false;
@@ -1065,6 +1069,79 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
     expect(container.textContent).toContain("Thinking");
   });
+
+  it.each([false, true].flatMap(mobile => ["streamed", "late", "absent"].map(reply => ({ mobile, reply }))))(
+    "keeps report fallbacks behind complete terminal history ($reply, mobile=$mobile)",
+    ({ mobile, reply }) => {
+      sidebarState.isMobile = mobile;
+      const run = nativeRunningRun();
+      const summary = "The report contains a longer account of the completed work.";
+      const finalText = "The final reply is complete.";
+      const result = {
+        schema: "paperclip.run_result.v1", reportedWorkDisposition: "done", summary,
+        completionClaim: { objectiveSatisfied: true, remainingWork: [] },
+      };
+      const events: HeartbeatRunEvent[] = [];
+      const append = (eventType: string, payload: Record<string, unknown>) => {
+        const seq = events.length + 1;
+        events.push({
+          id: seq, runId: run.id, seq, eventType,
+          companyId: "company", agentId: run.agentId, stream: "system", level: "info", color: null, message: null,
+          createdAt: new Date(`2026-08-25T18:00:0${seq}.000Z`),
+          payload: { prpEvent: {
+            schema: "paperclip.prp.event.v1", schemaVersion: 1,
+            runId: run.id, eventType, sourceEventId: `event-${seq}`,
+            itemId: "final-reply", payload,
+          } },
+        });
+        nativeTranscriptState.transcriptByRun.set(run.id, nativeRunEventsToTranscript(events));
+      };
+      const props = { comments: [], onAdd: async () => {}, issueStatus: "in_progress" };
+      nativeTranscriptState.terminalHydratedRunIds = new Set();
+      append("run.result.proposed", result);
+      renderThread({ ...props, activeRun: run });
+      const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+      expect(container.textContent).not.toContain(summary);
+
+      if (reply === "streamed") {
+        append("item.delta", { kind: "agentMessage", channel: "final", text: "The final reply" });
+        renderThread({ ...props, activeRun: run });
+        expect(container.textContent).toContain("The final reply");
+        expect(container.textContent).not.toContain(summary);
+        expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
+        append("item.completed", { kind: "agentMessage", channel: "final", text: finalText });
+        renderThread({ ...props, activeRun: run });
+        expect(container.textContent?.split(finalText)).toHaveLength(2);
+      }
+
+      const linkedRun = {
+        ...run, runId: run.id, status: "succeeded", finishedAt: "2026-08-25T18:00:10.000Z",
+        resultJson: { nativeResult: result },
+      };
+      renderThread({ ...props, linkedRuns: [linkedRun] });
+      expect(container.textContent).not.toContain(summary);
+
+      if (reply === "late") {
+        append("item.completed", { kind: "agentMessage", channel: "final", text: finalText });
+      }
+      nativeTranscriptState.terminalHydratedRunIds = new Set([run.id]);
+      renderThread({ ...props, linkedRuns: [linkedRun] });
+      const displayed = reply === "absent" ? summary : finalText;
+      expect(container.textContent?.split(displayed)).toHaveLength(2);
+      if (reply !== "absent") expect(container.textContent).not.toContain(summary);
+
+      renderThread({
+        ...props, linkedRuns: [linkedRun], comments: [{
+          id: "saved-response", companyId: "company", issueId: "issue", runId: run.id,
+          authorType: "agent", authorAgentId: run.agentId, authorUserId: null,
+          body: displayed, presentation: null, metadata: null,
+          createdAt: new Date("2026-08-25T18:00:10.000Z"), updatedAt: new Date("2026-08-25T18:00:10.000Z"),
+        }],
+      });
+      expect(container.textContent?.split(displayed)).toHaveLength(2);
+      if (reply !== "absent") expect(container.textContent).not.toContain(summary);
+    },
+  );
 
   it("keeps runner layout during admission and native transcripts scoped to native runs", () => {
     nativeTranscriptState.transcriptByRun.set("native-run", [
