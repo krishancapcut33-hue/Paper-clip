@@ -1,11 +1,21 @@
-import type { TaskChatItem, TaskChatMarkerItem } from "./task-chat-model";
+import type { TaskChatItem, TaskChatMarkerItem, TaskChatMessageItem } from "./task-chat-model";
+
+export function isNoLiveExecutionPathNotice(item: TaskChatMessageItem): boolean {
+  if (item.author !== "system") return false;
+  // Structured notices identify their own purpose; quoted error text must not
+  // turn another system update into a suppressible recovery row.
+  if (item.presentation) {
+    return item.presentation.title?.trim().toLowerCase() === "no live execution path";
+  }
+  // Older recovery comments lack presentation metadata. Recognize their own
+  // recovery statement rather than any mention of the error phrase.
+  return /^Paperclip (?:automatically )?retried (?:dispatch|continuation|this issue's run)\b[^\r\n]*\bit still has no live execution path\b/i.test(item.text.trim());
+}
 
 function errorKind(item: TaskChatItem): "run" | "recovery" | null {
   if (item.kind === "marker" && item.variant === "interrupted"
     && item.tone !== "neutral" && !item.credentialAccess) return "run";
-  if (item.kind === "message" && item.author === "system"
-    && (item.presentation?.title?.trim().toLowerCase() === "no live execution path"
-      || item.text.toLowerCase().includes("no live execution path"))) return "recovery";
+  if (item.kind === "message" && isNoLiveExecutionPathNotice(item)) return "recovery";
   return null;
 }
 

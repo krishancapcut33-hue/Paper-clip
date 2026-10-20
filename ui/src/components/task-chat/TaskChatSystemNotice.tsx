@@ -22,6 +22,7 @@ import { humanizeSystemNotice } from "@/lib/system-notice-humanizer";
 import { mapCommentMetadataToSystemNoticeSections } from "@/lib/system-notice-comment";
 import { timeAgo } from "@/lib/timeAgo";
 import type { TaskChatMessageItem } from "./task-chat-model";
+import { isNoLiveExecutionPathNotice } from "./adjacent-errors";
 
 const TONE_ICON: Record<SystemNoticeTone, LucideIcon> = {
   neutral: Info,
@@ -79,8 +80,7 @@ export function TaskChatSystemNotice({
   const relative = item.createdAtIso ? timeAgo(item.createdAtIso) : undefined;
   const showTryAgain =
     Boolean(onTryAgainNoLiveExecutionPath) &&
-    (item.presentation?.title?.trim() === "No live execution path" ||
-      item.text.toLowerCase().includes("no live execution path"));
+    isNoLiveExecutionPathNotice(item);
   const handleTryAgain = () => {
     void Promise.resolve()
       .then(() => onTryAgainNoLiveExecutionPath?.())

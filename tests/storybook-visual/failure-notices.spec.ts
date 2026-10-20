@@ -3,7 +3,8 @@ import { expect, test } from "@playwright/test";
 const stories = [
   "failed-run", "older-marker", "production-mode", "recovery-is-latest",
   "failure-is-latest", "expanded-recovery-and-retry", "expanded-failure-and-retry",
-  "message-between-errors", "light", "mobile", "legacy-run-retry", "legacy-production-retry",
+  "message-between-errors", "system-notice-between-errors", "production-system-notice-between-errors",
+  "light", "mobile", "legacy-run-retry", "legacy-production-retry",
 ];
 
 for (const theme of ["dark", "light"]) {

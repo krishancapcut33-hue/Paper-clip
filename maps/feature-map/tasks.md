@@ -64,7 +64,9 @@ Automated: [task detail](../../ui/src/pages/IssueDetail.test.tsx) covers compone
 Failure markers have no dashed divider rules. An adjacent run error and
 no-live-execution-path notice show only the last error, with its details and
 retry action, including a permitted legacy run retry carried onto a later
-recovery notice. Intervening messages and credential-access denials stay visible.
+recovery notice. Intervening messages, unrelated system notices that quote error
+text, and credential-access denials stay visible. Explicit non-recovery titles
+stop grouping; only known recovery statements use the legacy text fallback.
 [Grouping tests](../../ui/src/components/task-chat/adjacent-errors.test.ts) and
 [marker tests](../../ui/src/components/task-chat/TaskChatMarker.test.tsx) cover
 the presentation. The [Failure notices stories](../../ui/storybook/stories/tasks/failure-notices.stories.tsx)

@@ -239,6 +239,15 @@ describe("TaskChatSystemNotice (PAP-443)", () => {
     ).toHaveLength(1);
   });
 
+  it.each([
+    { text: "Paperclip retried continuation, but it still has no live execution path.",
+      presentation: { kind: "system_notice" as const, title: "Child task blocked", tone: "warning" as const, detailsDefaultOpen: false } },
+    { text: "Child task has no live execution path. Parent must review its result." },
+  ])("does not attach a parent recovery retry to an unrelated notice: $text", (item) => {
+    renderNotice(item, { onTryAgainNoLiveExecutionPath: vi.fn() });
+    expect(container.querySelector('[data-testid="task-chat-no-live-path-try-again"]')).toBeNull();
+  });
+
   it("shows the pending state and omits Try again from unrelated notices", () => {
     renderNotice(
       {

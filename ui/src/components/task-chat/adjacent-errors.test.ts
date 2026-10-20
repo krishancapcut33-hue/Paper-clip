@@ -37,8 +37,29 @@ describe("compactAdjacentErrors", () => {
     expect(compactAdjacentErrors([failed, { id: "human", kind: "message", author: "human", text: "Retry?" }, recovery]).retryMarkers.size).toBe(0);
   });
 
-  it("recognizes old unstructured recovery comments", () => {
-    expect(compactAdjacentErrors([failed, { ...recovery, presentation: null }]).items).toEqual([{ ...recovery, presentation: null }]);
+  it.each([
+    recovery.text,
+    "Paperclip automatically retried dispatch for this assigned `todo` issue during terminal run recovery, but it still has no live execution path.",
+    "Paperclip automatically retried continuation for this assigned `in_progress` issue and the retry made progress, but it still has no live execution path.",
+    "Paperclip retried this issue's run after it ended without finishing, but the bounded retry budget is spent and it still has no live execution path.",
+  ])("recognizes an old unstructured recovery comment: %s", (text) => {
+    const legacy = { ...recovery, text, presentation: null };
+    expect(compactAdjacentErrors([failed, legacy]).items).toEqual([legacy]);
+  });
+
+  it.each([
+    { ...recovery, presentation: { ...recovery.presentation!, title: "Child task blocked" } },
+    { ...recovery, presentation: { ...recovery.presentation!, title: "" } },
+    { ...recovery, presentation: null, text: "Child task has no live execution path. Parent must review its result." },
+    { ...recovery, presentation: null, text: "Child task report: Paperclip retried continuation, but it still has no live execution path." },
+  ])("preserves unrelated notices and their retry boundaries: $text ($presentation.title)", (boundary) => {
+    const lastFailure = { ...failed, id: "last-failure", runId: "last-run" };
+    for (const last of [recovery, lastFailure]) {
+      const items = [failed, { ...boundary, id: "unrelated" }, last];
+      const result = compactAdjacentErrors(items);
+      expect(result.items).toEqual(items);
+      expect(result.retryMarkers.size).toBe(0);
+    }
   });
 
   const boundaries: TaskChatItem[] = [

@@ -50,7 +50,7 @@ const meta = {
     paperclip: {
       capabilities: ["tasks/discussion", "runs-adapters/runs"],
       status: "current", implementation: "production", boundary: "fixtures",
-      notes: "Uses the shared production thread and failure markers. Covers older and current markers, either order of adjacent run/recovery errors, intervening messages, both presentation modes, permitted legacy run retries, light and mobile. Retry callbacks record a local receipt; no agent runs or API changes occur.",
+      notes: "Uses the shared production thread and failure markers. Covers older and current markers, either order of adjacent run/recovery errors, intervening messages and unrelated system notices with quoted error text, both presentation modes, permitted legacy run retries, light and mobile. Retry callbacks record a local receipt; no agent runs or API changes occur.",
     },
   },
 } satisfies Meta<typeof FailureNotices>;
@@ -120,6 +120,25 @@ export const MessageBetweenErrors: Story = {
     await waitFor(() => expect(canvas.getByText("Run failed")).toBeVisible());
     await waitFor(() => expect(canvas.getByText("No live execution path")).toBeVisible());
   },
+};
+export const SystemNoticeBetweenErrors: Story = {
+  args: { items: [failed, {
+    id: "child-notice", kind: "message", author: "system",
+    text: "Child task has no live execution path. Parent must review its result.",
+    presentation: { kind: "system_notice", title: "Child task blocked", tone: "warning", detailsDefaultOpen: false },
+  }, recovery] },
+  play: async (context) => {
+    await MessageBetweenErrors.play?.(context);
+    const canvas = within(context.canvasElement);
+    await userEvent.click(canvas.getByRole("button", { name: /Child task blocked/ }));
+    await waitFor(() => expect(canvas.getByText(/Parent must review its result/)).toBeVisible());
+    await expect(context.canvasElement.querySelectorAll('[data-testid="task-chat-no-live-path-try-again"]')).toHaveLength(1);
+    await expectNoRules(context.canvasElement);
+  },
+};
+export const ProductionSystemNoticeBetweenErrors: Story = {
+  ...SystemNoticeBetweenErrors,
+  args: { ...SystemNoticeBetweenErrors.args, mode: "production" },
 };
 export const Light: Story = { ...RecoveryIsLatest, globals: { theme: "light" } };
 export const Mobile: Story = { ...RecoveryIsLatest, globals: { viewport: { value: "mobile1", isRotated: false } } };
