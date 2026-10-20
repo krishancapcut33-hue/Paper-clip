@@ -17,6 +17,7 @@ import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.
 import { prepareHeartbeatTaskContext } from "../heartbeat/task-context.js";
 import { createAssignedMcpTools } from "./assigned-mcp-tools.js";
 import type { ToolGatewayService } from "../tool-gateway.js";
+import { RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 
 describe("runner API against real HTTP routes", () => {
   let server: Awaited<ReturnType<typeof startRunnerApiTestServer>>;
@@ -67,16 +68,20 @@ describe("runner API against real HTTP routes", () => {
     expect(reopened.definitions().some(tool => tool.name === "read_tool_result")).toBe(true);
     let offsetBytes: number | null = 0;
     let text = "";
+    let pages = 0;
     do {
       const page: any = await reopened.execute({ tool: "read_tool_result", callId: randomUUID(),
         arguments: { artifactId: result.artifact.artifactId, offsetBytes } });
       expect(page).not.toHaveProperty("operationId");
       expect(page.ok).toBe(true);
-      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThan(160 * 1024);
+      expect(Buffer.byteLength(JSON.stringify(page))).toBeLessThanOrEqual(RUNNER_TOOL_RESULT_MAX_BYTES);
+      if (pages === 0) expect(Buffer.byteLength(page.data)).toBeGreaterThan(490_000);
+      pages++;
       text += page.data;
       offsetBytes = page.responseText.nextOffsetBytes;
     } while (offsetBytes !== null);
     expect(JSON.parse(text)).toEqual(original);
+    expect(pages).toBe(2);
     expect(executeTool).toHaveBeenCalledOnce();
     expect((await fixture.snapshot()).assets.filter(asset => asset.id === result.artifact.artifactId)).toHaveLength(1);
     const foreign = await server.fixture();

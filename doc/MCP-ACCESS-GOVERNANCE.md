@@ -125,9 +125,12 @@ Paperclip plays two roles in the MCP graph, and confusing them is the most commo
 
 Operators usually mean *gateway* when they say "MCP access governance". For Paperclip-managed local adapter runs, Paperclip writes adapter MCP config that points at named gateway endpoints with short-lived scoped bearer tokens. Policies, approvals, and the audit log only exist for calls that enter gateway mode.
 
-Native assigned-tool responses larger than 24 KiB are saved after gateway
+Native assigned-tool responses larger than 500,000 encoded bytes are saved after gateway
 validation and redaction. The provider receives a bounded asset reference and
-uses `read_tool_result` to retrieve UTF-8 JSON pages. Reading the saved response
+uses `read_tool_result` to retrieve UTF-8 JSON pages. The entire result is preserved:
+each page includes the next byte offset until EOF.
+The reader fits each encoded page within 500,000 bytes, including JSON escaping,
+with space left for PRP framing. Reading the saved response
 does not call the upstream tool again. The reader requires a currently authorized
 run, the same task and agent, and the existing asset/responsible-user access checks.
 It works when generic API tools are disabled. Storage uses the existing response

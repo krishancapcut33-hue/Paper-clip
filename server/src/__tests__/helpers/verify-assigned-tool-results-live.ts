@@ -17,6 +17,7 @@ import { createAssignedMcpTools } from "../../services/native-runtime/assigned-m
 import { PaperclipRunnerToolAuthority } from "../../services/native-runtime/paperclip-runner-tool-authority.js";
 import type { ToolGatewayService } from "../../services/tool-gateway.js";
 import { createRunnerdCodexTransport } from "../../vendor/paperclip-runner/index.js";
+import { RUNNER_TOOL_RESULT_MAX_BYTES } from "../../services/native-runtime/runner-tool-results.js";
 
 const root = await mkdtemp(join(tmpdir(), "paperclip-tool-result-live-"));
 let server: Awaited<ReturnType<typeof startRunnerApiTestServer>> | undefined;
@@ -51,6 +52,8 @@ try {
   const toolName = assignedMcpTools.definitions()[0]!.name as string;
   const tools = authority.definitions().filter(tool => [toolName, "read_tool_result"].includes(String(tool.name)));
   const calls: Array<{ tool: string; resultBytes: number }> = [];
+  const pages: Array<{ offsetBytes: number; nextOffsetBytes: number | null }> = [];
+  let retrieved = "";
   const started = Date.now();
   bundle = createRunnerdCodexTransport({
     codexCommand: process.env.PAPERCLIP_LIVE_CODEX_COMMAND ?? fileURLToPath(new URL("../../../../node_modules/.pnpm/@openai+codex@0.160.0/node_modules/@openai/codex/bin/codex.js", import.meta.url)),
@@ -66,6 +69,12 @@ try {
     const result = await authority.execute({ tool: String(params.tool), arguments: params.arguments, callId: String(params.callId) });
     const json = JSON.stringify(result);
     calls.push({ tool: String(params.tool), resultBytes: Buffer.byteLength(json) });
+    const page = result as { data?: string; responseText?: { offsetBytes: number; nextOffsetBytes: number | null } };
+    if (params.tool === "read_tool_result" && page.responseText && typeof page.data === "string") {
+      assert.equal(page.responseText.offsetBytes, Buffer.byteLength(retrieved), "Pages must continue without gaps or repeated bytes");
+      retrieved += page.data;
+      pages.push(page.responseText);
+    }
     return { success: true, contentItems: [{ type: "inputText", text: json }] };
   });
   await bundle.transport.request("initialize", {});
@@ -74,7 +83,7 @@ try {
     dynamicTools: tools,
   });
   await bundle.transport.request("turn/start", { input: [{ type: "text",
-    text: `Call ${toolName} once. Find the verificationCode at the end of its result and reply with that code. If the result is saved, use read_tool_result at offsetBytes = artifact.byteSize minus 1024 to read the final page. Do not repeat the original call or use shell tools. This is a disposable integration test.`,
+    text: `Call ${toolName} once. Read the entire result. If it is saved, call read_tool_result starting at offsetBytes 0, then follow each responseText.nextOffsetBytes until null. Reply with the verificationCode at the end. Do not skip pages, repeat the original call, or use shell tools. This is a disposable integration test.`,
   }] });
   let answer = "";
   await Promise.race([
@@ -91,14 +100,18 @@ try {
   clearTimeout(timer);
   assert.equal(executions, 1, "The original operation must execute once");
   assert.ok(calls.some(call => call.tool === "read_tool_result"), "Provider must retrieve the saved result");
-  assert.ok(calls.every(call => call.resultBytes < 160 * 1024), "All delivered results must fit PRP");
+  assert.ok(calls.every(call => call.resultBytes <= RUNNER_TOOL_RESULT_MAX_BYTES), "All delivered results must fit PRP");
+  assert.ok(calls.some(call => call.resultBytes > 490_000), "Provider must receive a page near the 500 KB limit");
+  assert.equal(pages.length, 2, "The full 660 KB result should require only two page reads");
+  assert.equal(pages.at(-1)?.nextOffsetBytes, null, "Provider must read through EOF");
+  assert.equal(retrieved, JSON.stringify(original), "Every byte of the original result must be delivered");
   assert.ok(answer.includes(marker), "Provider must receive the result's final field");
   await bundle.transport.close();
   bundle = undefined;
   await server.db.update(issues).set({ executionRunId: null }).where(eq(issues.id, fixture.issueId));
   await server.db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, fixture.runId));
   const evidence = { passed: true, model: "gpt-6.1-sol", trust: "low_trust_review", platform: `${process.platform}-${process.arch}`,
-    responseBytes: Buffer.byteLength(JSON.stringify(original)), executions, calls, providerReceivedFinalField: true,
+    responseBytes: Buffer.byteLength(JSON.stringify(original)), executions, calls, allPagesDelivered: true, providerReceivedFinalField: true,
     runnerClosed: true, durationMs: Date.now() - started, upstream: "synthetic governed response" };
   if (process.env.PAPERCLIP_LIVE_EVIDENCE_PATH) await writeFile(process.env.PAPERCLIP_LIVE_EVIDENCE_PATH, JSON.stringify(evidence, null, 2) + "\n");
   console.log(JSON.stringify(evidence));

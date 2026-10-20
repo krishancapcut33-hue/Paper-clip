@@ -89,9 +89,11 @@ remaining operations before qualifying the whole capability.
 Gaps: Scoped sessions remain agent/run-bound. MCP requires its existing protocol
 client; named gateways and gateway-token management retain board permissions.
 
-Native assigned-tool results above 24 KiB are stored as scoped response assets.
+Native assigned-tool results above 500,000 encoded bytes are stored as scoped response assets.
 `read_tool_result` reads bounded JSON pages without repeating the upstream call,
-including when generic `call_api` is disabled. Current run authority, same task
+including when generic `call_api` is disabled.
+Each encoded page is at most 500,000 bytes and continues by byte offset until the
+entire result has been read. Current run authority, same task
 and agent, and asset/responsible-user access remain required. Provider content
 stays untrusted. The
 [response integration tests](../../server/src/services/native-runtime/runner-api.integration.test.ts)

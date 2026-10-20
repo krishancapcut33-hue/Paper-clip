@@ -19,7 +19,7 @@ import { publicChatTaskUrl } from "../chat-task-url.js";
 import { agentCommentaryToolInputSchema } from "@paperclipai/shared";
 import { submitAgentCommentary } from "../agent-commentary.js";
 import type { createAssignedMcpTools } from "./assigned-mcp-tools.js";
-import { captureRunnerToolResult, READ_TOOL_RESULT, READ_TOOL_RESULT_DEFINITION, readToolResultSchema } from "./runner-tool-results.js";
+import { captureRunnerToolResult, fitRunnerToolResultPage, READ_TOOL_RESULT, READ_TOOL_RESULT_DEFINITION, readToolResultSchema, RUNNER_TOOL_RESULT_MAX_BYTES } from "./runner-tool-results.js";
 import { assertAssignableAgent } from "../agent-assignability.js";
 import { approvalReadSqlCondition, canActorReadApproval, authorizationService, issueReadSqlCondition, type AuthorizationActor } from "../authorization.js";
 import { resolveCoreTrustPreset } from "../trust-preset-resolver.js";
@@ -910,11 +910,11 @@ export class PaperclipRunnerToolAuthority {
       pathParams: { assetId: input.artifactId },
       responseText: { offsetBytes: input.offsetBytes },
     }, { ...this.binding, workMode: context.issue.workMode }, {
-      apiUrl, token, beforeDispatch: authorize,
+      apiUrl, token, beforeDispatch: authorize, responseTextPageBytes: RUNNER_TOOL_RESULT_MAX_BYTES,
       readFile: async () => { throw new Error("Saved result reads cannot upload files"); },
       saveResponse: async () => { throw new Error("Saved result reads cannot create assets"); },
     });
-    return { ...response, apiOperationId: operationId };
+    return fitRunnerToolResultPage({ ...response, apiOperationId: operationId });
   }
 
   #responseCaptureIo(source: "runner.call_api" | "runner.assigned_tool"): Pick<RunnerApiIo, "reserveResponseCapture" | "saveResponse"> {
