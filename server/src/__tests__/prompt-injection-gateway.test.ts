@@ -157,8 +157,7 @@ describe("model classification at gateway result boundaries", () => {
           body: JSON.stringify({ tool: f.tool.name, parameters: {} }), signal: caller.signal,
         })
       : f.gateway.executeTool({ sessionToken: f.session.token, tool: f.tool.name, parameters: {}, signal: caller.signal });
-    const rejection = expect(pending).rejects.toMatchObject(source === "disconnect"
-      ? { name: "AbortError" } : { reasonCode: "tool_execution_failed", message: "Caller stopped" });
+    const rejection = expect(pending).rejects.toMatchObject({ name: "AbortError", message: "Caller stopped" });
     try {
       await dispatched;
       (source === "run" ? runControl.controller : caller).abort(new DOMException("Caller stopped", "AbortError"));

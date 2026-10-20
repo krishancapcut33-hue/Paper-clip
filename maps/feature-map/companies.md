@@ -133,8 +133,12 @@ Storybook: Production PromptInjectionPreventionSettingsView states under Compani
 and portability → Prompt Injection Prevention. Provider data is simulated.
 Automated: [settings](../../ui/src/components/prompt-injection-prevention/PromptInjectionPreventionSettings.test.tsx),
 [service](../../server/src/__tests__/prompt-injection-prevention.test.ts),
-[gateway](../../server/src/__tests__/prompt-injection-gateway.test.ts).
+[gateway](../../server/src/__tests__/prompt-injection-gateway.test.ts),
+[guards](../../server/src/__tests__/tool-content-guards.test.ts) including redaction
+that hides content still delivered under the existing return contract.
 Manual: Open Connections with Fast Responses off, save a shared OpenRouter
 connection/default model, reload, run both fixed samples, and inspect charges.
 Verify benign code reaches a gateway caller, malicious instructions are blocked,
 provider failure records regex fallback, and disabling makes no model call.
+Root results with concealed instruction text use `input_redaction_mismatch`
+fallback without model dispatch.

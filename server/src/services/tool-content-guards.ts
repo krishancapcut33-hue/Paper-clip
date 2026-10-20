@@ -247,7 +247,14 @@ export async function validateToolContent(input: {
     // Wrapping allows the existing recursive redactor to handle root arrays and
     // strings, without changing the tool return value or its historical hash.
     const outbound = redactSensitiveText(stableSerialize(redactEventPayload({ value: input.value })?.value));
-    const outcome = input.classifier ? await input.classifier(outbound) : undefined;
+    // A verdict cannot cover text hidden from the model but still delivered to
+    // the caller by the legacy return contract. Fall back before dispatch, so a
+    // secret-named field cannot conceal instructions behind a safe verdict.
+    const outcome: PromptInjectionModelOutcome | undefined = input.classifier
+      ? outbound !== stableSerialize(redactedValue)
+        ? { status: "unavailable", reason: "input_redaction_mismatch" }
+        : await input.classifier(outbound)
+      : undefined;
     if (outcome?.status === "classified") {
       promptFindings = outcome.findings;
       detectorMetadata = { detector: "model", model: outcome.model, invocationId: outcome.invocationId, policyVersion: outcome.policyVersion };

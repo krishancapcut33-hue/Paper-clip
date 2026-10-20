@@ -28,13 +28,20 @@ the complete original result. Local tool events/audit details record the selecte
 detector and bounded fallback reason. Successful model classification does not
 provide a guarantee that all attacks will be detected.
 
+If outbound redaction hides content that the existing tool return contract
+would still deliver, model classification is unavailable for that result.
+The guard records `input_redaction_mismatch` and scans the complete original
+result with regex without dispatching or charging a model request. This prevents
+instructions in secret-named fields of root strings or arrays from being
+hidden behind a safe verdict, while preserving existing return values.
+
 Each classification makes at most one provider request, with a 10-second deadline
 that cancels the request. Client disconnects and existing active-run cancellation
 signals also cancel classification; a stopped caller does not receive a regex
 fallback result. Approved actions retain their own lifetime after the originating
 run ends. The complete serialized request body, including policy, input, model,
-and API options, must fit in 256 KiB; larger inputs use built-in detection without truncating a prefix for the
-model. Output is capped at 4,096 tokens, including model reasoning. Caller
+and API options, must fit in 256 KiB; larger inputs use built-in detection without
+truncating a prefix for the model. Output is capped at 4,096 tokens, including model reasoning. Caller
 cancellation propagates after accounting settlement. Existing argument checks,
 result return values, summary hashes, signatures, and ignored paths are unchanged.
 A blocked tool result cannot undo a write already performed by the tool.

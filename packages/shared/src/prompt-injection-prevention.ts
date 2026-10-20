@@ -34,7 +34,7 @@ export interface PromptInjectionPreventionSettingsResponse {
 }
 export type PromptInjectionFallbackReason =
   | "not_configured" | "disabled" | "access_denied" | "connection_unavailable" | "incompatible_connection"
-  | "budget_blocked" | "input_too_large" | "timeout" | "provider_auth_failed" | "provider_rate_limited"
+  | "budget_blocked" | "input_too_large" | "input_redaction_mismatch" | "timeout" | "provider_auth_failed" | "provider_rate_limited"
   | "provider_failed" | "invalid_output" | "interrupted";
 export type PromptInjectionModelOutcome =
   | { status: "classified"; violation: boolean; findings: PromptInjectionFinding[]; model: string; invocationId: string; policyVersion: string }
