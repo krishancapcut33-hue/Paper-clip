@@ -33,6 +33,7 @@ import type {
   AcpxTerminalSessionFailure,
 } from "@paperclipai/adapter-utils/acpx-engine/execute";
 import {
+  asBoolean,
   asNumber,
   asString,
   asStringArray,
@@ -125,9 +126,16 @@ export function buildCodexAcpConfig(config: Record<string, unknown>): Record<str
   const agentCommand = firstNonEmptyString(config.agentCommand, config.acpAgentCommand);
   const stateDir = firstNonEmptyString(config.stateDir, config.acpStateDir);
   const mode = firstNonEmptyString(config.mode, config.acpMode) ?? DEFAULT_ACP_ENGINE_MODE;
+  // Codex's default engine is ACP, so the shared engine default ("approve-all")
+  // would auto-approve every tool for agents that never opted in. Keep the
+  // permissive mode only when the legacy CLI bypass flag is explicit.
+  const skipPermissions = asBoolean(
+    config.dangerouslyBypassApprovalsAndSandbox ?? config.dangerouslyBypassSandbox,
+    false,
+  );
   const permissionMode =
     firstNonEmptyString(config.permissionMode, config.acpPermissionMode) ??
-    DEFAULT_ACP_ENGINE_PERMISSION_MODE;
+    (skipPermissions ? DEFAULT_ACP_ENGINE_PERMISSION_MODE : "deny-all");
   const nonInteractivePermissions =
     firstNonEmptyString(config.nonInteractivePermissions, config.acpNonInteractivePermissions) ??
     DEFAULT_ACP_ENGINE_NON_INTERACTIVE_PERMISSIONS;

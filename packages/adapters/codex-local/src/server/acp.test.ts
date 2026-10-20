@@ -502,10 +502,20 @@ describe("codex_local ACP lane", () => {
       fastMode: true,
       agentCommand: "custom-codex-acp",
       mode: "persistent",
-      permissionMode: "approve-all",
+      permissionMode: "deny-all",
       nonInteractivePermissions: "deny",
       warmHandleIdleMs: 25,
     });
+  });
+
+  it("only approves all ACP tools when the Codex bypass flag is explicitly enabled", () => {
+    expect(buildCodexAcpConfig({}).permissionMode).toBe("deny-all");
+    expect(buildCodexAcpConfig({ dangerouslyBypassApprovalsAndSandbox: false }).permissionMode).toBe("deny-all");
+    expect(buildCodexAcpConfig({ dangerouslyBypassApprovalsAndSandbox: true }).permissionMode).toBe("approve-all");
+    expect(buildCodexAcpConfig({ dangerouslyBypassSandbox: true }).permissionMode).toBe("approve-all");
+    expect(buildCodexAcpConfig({ dangerouslyBypassApprovalsAndSandbox: true, permissionMode: "deny-all" }).permissionMode)
+      .toBe("deny-all");
+    expect(buildCodexAcpConfig({ acpPermissionMode: "approve-reads" }).permissionMode).toBe("approve-reads");
   });
 
   it.each([["gpt-6-astra", "ultra"], ["gpt-6.1-sol", "ultra"], ["gpt-6-sol", "ultra"], ["gpt-6-luna", "max"], ["gpt-5.6-sol", "ultra"], ["gpt-5.6-terra", "ultra"], ["gpt-5.6-luna", "max"]])("forwards %s controls to the ACPX Codex target", (model, effort) => {
