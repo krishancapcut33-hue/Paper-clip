@@ -115,6 +115,8 @@ export function arbitrateNativeStatus(input: {
   planWaitAuthorized?: boolean;
   monitorWaitAuthorized?: boolean;
   caseHandoffAuthorized?: boolean;
+  /** The saved timer already admitted another run and this run no longer owns checkout. */
+  monitorWaitDispatched?: boolean;
   boardResponseWaitAuthorized?: boolean;
   boardResponseWaitOrigin?: boolean;
   isConversation?: boolean;
@@ -470,6 +472,16 @@ export function arbitrateNativeStatus(input: {
     };
   }
   if (input.assessment.reportedDisposition === "yielded" && input.assessment.continuation?.kind === "monitor") {
+    if (input.monitorWaitDispatched) {
+      return {
+        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
+        statusAction: "preserve", toStatus: input.priorIssueStatus,
+        reasonCode: "scheduled_monitor_dispatched", unblockDescriptor: null,
+        // Delivery already happened. Preserve successor ownership and never
+        // re-arm its timer or repeat the completed provider turn.
+        effects: [],
+      };
+    }
     if (input.monitorWaitAuthorized) {
       return {
         policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
