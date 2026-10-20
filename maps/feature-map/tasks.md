@@ -6,17 +6,19 @@ navigation: {"section":"Tasks and conversations","sectionOrder":20,"order":10}
 
 People create, assign, organize, discuss, and finish tasks. A task retains its owner, project, priority, history, and outputs as it moves through the work lifecycle.
 
+Feature ID: `tasks`.
+
 Implementation: [new task](../../ui/src/components/NewIssueDialog.tsx), [task list](../../ui/src/pages/Issues.tsx), [task detail](../../ui/src/pages/IssueDetail.tsx).
 
 Agent access: [companion](../agent-access-map/tasks.md).
 
 ## Sub-features
 
-- `create`: capture a title/request with the intended agent, project, and attachments.
-- `organize`: filter, sort, group, and navigate tasks without losing the selected context.
-- `properties`: change status, priority, assignee, project, and relationships where authorized.
-- `discussion`: persist comments, references, and files on the task.
-- `completion`: distinguish backlog, active work, review, blocked, done, and cancelled outcomes.
+- `create`: `tasks/create` — capture a title/request with the intended agent, project, and attachments.
+- `organize`: `tasks/organize` — filter, sort, group, and navigate tasks without losing the selected context.
+- `properties`: `tasks/properties` — change status, priority, assignee, project, and relationships where authorized.
+- `discussion`: `tasks/discussion` — persist comments, references, and files on the task.
+- `completion`: `tasks/completion` — distinguish backlog, active work, review, blocked, done, and cancelled outcomes.
 
 ## How to get to it (user POV)
 
@@ -94,6 +96,15 @@ schema feedback supports a corrected call before a wait is claimed.
 For a due monitor held by execution recovery, confirm that the schedule remains
 and task activity explains the deferral. Repeated checks must not replay the held
 work. Resolve the hold through its existing recovery action, then verify one wake.
+Hold native finalization after the provider has stopped, and verify that both
+scheduled and manual checks retain the due monitor. After settlement, verify one
+wake. If its timeout passes during workspace recovery, verify settlement followed
+by the configured expiry recovery, with no ordinary monitor wake or duplicate
+escalation. For a timer already dispatched before recovery, verify that the saved
+result settles without changing the task, removing a successor's checkout, or
+creating another wake. The [monitor regression](../../server/src/services/native-runtime/task-monitor.integration.test.ts)
+and [scheduler regression](../../server/src/services/heartbeat/scheduling.test.ts)
+cover these boundaries with PostgreSQL.
 
 Manual: Add an ordinary Board comment while a task retry is queued or running.
 Confirm that the same execution keeps working and receives the saved message,

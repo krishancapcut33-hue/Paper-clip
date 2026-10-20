@@ -1,5 +1,6 @@
 import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
-import { eligibleIssueMonitorWait } from "../issue-monitors.js";
+import { scheduledIssueMonitorWait } from "../issue-monitors.js";
+import { readNativeMonitorDelivery } from "./native-monitor-delivery.js";
 import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
@@ -1366,8 +1367,14 @@ export async function finalizeNativeRun(input: {
     };
     const hasPendingChildCompletion = !reviewContext &&
       await hasPendingNativeChildCompletion(input.db, childCompletionRecipient);
-    const monitorWaitAt = eligibleIssueMonitorWait(authoritativeIssue, run.agentId);
+    const monitorWaitAt = scheduledIssueMonitorWait(authoritativeIssue, run.agentId);
+    const monitorDelivery = assessment.reportedDisposition === "yielded" &&
+      assessment.continuation?.kind === "monitor" &&
+      authoritativeIssue.executionRunId !== run.id && authoritativeIssue.checkoutRunId !== run.id
+      ? await readNativeMonitorDelivery(input.db, { companyId: run.companyId, issueId: coordinator.issueId, runId: run.id })
+      : null;
     const proposedDecision = resolveNativeFinalizerStatus({
+      monitorWaitDispatched: monitorDelivery !== null,
       monitorWaitAuthorized: authoritativeIssue.workMode === "standard" && authoritativeIssue.executionRunId === run.id && monitorWaitAt !== null,
       planWaitAuthorized: planWait !== null,
       hasPendingChildCompletion,
@@ -1423,6 +1430,8 @@ export async function finalizeNativeRun(input: {
       assessment,
       supersedesAssessmentId,
       workspaceFinalizeStatus: input.workspaceFinalizeStatus,
+      monitorDelivery,
+      monitorWaitAt: assessment.continuation?.kind === "monitor" ? monitorWaitAt : null,
     });
     await input.db
       .update(nativeRunFinalizations)
@@ -1459,6 +1468,8 @@ export async function finalizeNativeRun(input: {
         decision,
         requireMonitorWait: decision.reasonCode === "scheduled_monitor_waiting" && monitorWaitAt
           ? { agentId: run.agentId, nextCheckAt: monitorWaitAt } : undefined,
+        requireMonitorDelivery: decision.reasonCode === "scheduled_monitor_dispatched"
+          ? monitorDelivery ?? undefined : undefined,
         requirePlanWaitSource:
           decision.reasonCode === "native_plan_accepted_waiting_for_continuation"
             ? planWait?.source : undefined,

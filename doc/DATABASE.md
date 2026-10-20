@@ -316,6 +316,13 @@ Attention counts use the same catalog projection and read only invocation IDs
 and connection IDs to associate pending requests. Summary queries also omit
 review titles and descriptions; the separate review query still returns them.
 
+Internal effective-tool assignment lookups use the same catalog projection.
+Run preparation, native runtime setup, and connection policy checks need tool
+IDs and names, not complete tool definitions. They still resolve current profile
+bindings, selectors, exclusions, and installed connections on every call. The
+public effective-profile response continues to include complete tool schemas
+and annotations.
+
 ## Execution identity row locks
 
 Identity initialization, credential acquisition, and steering reconciliation lock
@@ -400,13 +407,18 @@ keep the application fully active. A failed database check fails startup.
 
 An empty unclaimed application keeps its HTTP server and sandbox plugins ready,
 but skips recurring database work: chat/email delivery, plugin jobs, browser
-cleanup, feedback export, import cleanup, execution reconciliation, heartbeat
+cleanup, feedback export, import cleanup, execution reconciliation, Muse maintenance, heartbeat
 schedules, and automatic backups. Startup migrations, plugin installation, and
 other one-time preparation still run. Normal anonymous health probes return
 `warmStandby: true` without SQL or session lookups. This is application liveness,
 not a current database connectivity check. Other API requests and WebSocket upgrades return 503 until
 the signed claim succeeds. Page and asset requests serve only the static UI
 router, bypassing session, bearer-key, tenant, and other dynamic handlers.
+
+Muse defers its startup qualification-evidence update and recurring database
+sweeps until standby ends. The first enabled sweep marks interrupted evidence
+before it reconciles qualification deadlines or terminal assignments. Claimed
+workspaces retain ordinary Muse maintenance even when idle task drain is active.
 
 The existing signed claim on `GET /api/health` writes the identity durably before
 normal requests and polling resume. No polling discovers claims and no process
@@ -1054,3 +1066,13 @@ and migration history remain so existing records, documents, and links are prese
 and future schema generation does not drop them. No removal migration or data
 cleanup runs. These tables remain part of normal database backups; the separate
 Cases feature is unaffected.
+
+### Prompt injection classification
+
+`company_prompt_injection_prevention` stores optional shared connection/model
+preferences without backfilling existing companies. `prompt_injection_invocations`
+stores content-free classification verdicts, provider receipts and archival
+identity references. Budget reservations have a distinct classifier invocation
+source, and cost events accept `prompt_injection`. Unknown charges retain their
+holds through agent deletion attempts and settle through billing correction.
+See [service behavior](prompt-injection-prevention.md).

@@ -2,6 +2,8 @@
 
 Product map: [Task creation and lifecycle](../feature-map/tasks.md).
 
+Feature ID: `tasks`.
+
 Review date: 2026-10-12. Source commit: `58e16dbddfc9c8d0cf60867f9d9847f0feda055b`.
 Native REST transport reconciled in this change; see the
 [shared transport contract](README.md#native-rest-transport).
@@ -12,6 +14,8 @@ qualified. No live agent execution is claimed. Follow the [map contract](../READ
 for format, permission checks, evidence and maintenance.
 
 ## `create`
+
+Capability ID: `tasks/create`.
 
 Review: `baseline`.
 
@@ -39,6 +43,8 @@ Gaps: Creation is implemented; agent/user assignment and attachments may need
 narrower/different APIs.
 
 ## `organize`
+
+Capability ID: `tasks/organize`.
 
 `GET /api/companies/{companyId}/issues/summaries?ids=...` reads up to five exact
 UUIDs and returns only navigation summaries. Normal company and task-read
@@ -83,6 +89,8 @@ Gaps: Search/filter API exists; sorting/grouping/presentation defaults are not
 necessarily shared server preferences.
 
 ## `properties`
+
+Capability ID: `tasks/properties`.
 
 Review: `baseline`.
 
@@ -149,11 +157,21 @@ for the safe blocker cause; unexpected dispatch failures record
 five minutes. The scheduler regression proves that a held source does not replay
 and that clearing the hold permits one later wake. This is local PostgreSQL
 evidence, not live provider recovery.
+Native timer dispatch also waits for unfinished finalization after a terminal
+provider run. Recovery may use that run's scheduling receipt and the matching
+admitted successor as historical delivery evidence. It does not grant new
+execution authority or clear a successor's ownership. Missing receipts,
+unadmitted wakes, and unfinished workspace persistence remain held.
+An accepted result may settle into a schedule that expired during recovery;
+the scheduler applies its existing expiry policy afterward. This does not
+authorize a new provider result to wait on an expired or exhausted monitor.
 
 Gaps: Dedicated tools differ in scope and fields. Generic `call_api` forwards
 status, assignment and dependency fields to existing route authorization.
 
 ## `discussion`
+
+Capability ID: `tasks/discussion`.
 
 Review: `baseline`.
 
@@ -181,6 +199,8 @@ Gaps: Other-task comments and active-task progress have separate scopes. Generic
 checks; it cannot impersonate a user.
 
 ## `completion`
+
+Capability ID: `tasks/completion`.
 
 Task chat may group adjacent run and recovery errors for display. The API
 retains all run and comment records. This presentation does not change retry,
