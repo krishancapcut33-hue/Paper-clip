@@ -78,6 +78,13 @@ schema feedback supports a corrected call before a wait is claimed.
 For a due monitor held by execution recovery, confirm that the schedule remains
 and task activity explains the deferral. Repeated checks must not replay the held
 work. Resolve the hold through its existing recovery action, then verify one wake.
+Hold native finalization after the provider has stopped, and verify that both
+scheduled and manual checks retain the due monitor. After settlement, verify one
+wake. For a timer already dispatched before recovery, verify that the saved
+result settles without changing the task, removing a successor's checkout, or
+creating another wake. The [monitor regression](../../server/src/services/native-runtime/task-monitor.integration.test.ts)
+and [scheduler regression](../../server/src/services/heartbeat/scheduling.test.ts)
+cover these boundaries with PostgreSQL.
 
 Manual: Add an ordinary Board comment while a task retry is queued or running.
 Confirm that the same execution keeps working and receives the saved message,

@@ -149,6 +149,11 @@ for the safe blocker cause; unexpected dispatch failures record
 five minutes. The scheduler regression proves that a held source does not replay
 and that clearing the hold permits one later wake. This is local PostgreSQL
 evidence, not live provider recovery.
+Native timer dispatch also waits for unfinished finalization after a terminal
+provider run. Recovery may use that run's scheduling receipt and the matching
+admitted successor as historical delivery evidence. It does not grant new
+execution authority or clear a successor's ownership. Missing receipts,
+unadmitted wakes, and unfinished workspace persistence remain held.
 
 Gaps: Dedicated tools differ in scope and fields. Generic `call_api` forwards
 status, assignment and dependency fields to existing route authorization.

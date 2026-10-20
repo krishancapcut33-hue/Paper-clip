@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
   activityLog, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues, nativeRunFinalizations,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -273,6 +273,24 @@ describe.skipIf(!postgres.supported)("heartbeat scheduling database boundary", (
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run!.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+  });
+
+  it("keeps a due monitor until a terminal native run finishes finalization", async () => {
+    const f = await fixture();
+    const [run] = await db.insert(heartbeatRuns).values({
+      companyId: f.company.id, agentId: f.agent.id, nativeIssueId: f.issue.id,
+      runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: f.issue.id },
+    }).returning();
+    await db.insert(nativeRunFinalizations).values({
+      companyId: f.company.id, issueId: f.issue.id, runId: run!.id, phase: "retryable_failure",
+    });
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
+    await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now })).rejects.toThrow("waiting for the previous run to settle");
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
+    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, run!.id));
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(1);
   });
 
   it("skips archived companies for both timers and monitors", async () => {
