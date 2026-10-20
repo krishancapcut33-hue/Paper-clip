@@ -1,4 +1,6 @@
 import { randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import type { AddressInfo } from "node:net";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -7,6 +9,7 @@ import { activityLog, agentApiKeys, agentWakeupRequests, agents, authSessions, a
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
 import { caseHandoffRoutes } from "../routes/case-handoffs.js";
 import { errorHandler } from "../middleware/error-handler.js";
+import { resolveCloudTenantActor } from "../middleware/auth.js";
 import { caseHandoffService } from "./case-handoffs.js";
 import { caseHandoffDeliveryService } from "./case-handoff-delivery.js";
 import { completeTerminalCaseHandoffsForIssue, pendingCaseHandoffForRun, recordCaseHandoffExecutionReleased } from "./heartbeat/case-handoff-lifecycle.js";
@@ -108,6 +111,42 @@ describe("durable same-task case handoffs", () => {
         expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, handoff!.wakeupRequestId))).toEqual([]);
       },
     };
+  }
+
+  async function cloudTransfer() {
+    const userId = randomUUID(), stackId = `stack-${randomUUID()}`, stackSlug = "handoff-cloud";
+    const state: { role: string; status: number; body?: unknown; afterResponse?: () => void } = { role: "owner", status: 200 };
+    const requests: Array<{ path: string; userId: string | undefined; stackId: string | undefined; authenticated: boolean }> = [];
+    const backend = createServer((req, res) => {
+      requests.push({ path: req.url!, userId: req.headers["x-paperclip-cloud-user-id"] as string | undefined,
+        stackId: req.headers["x-paperclip-cloud-stack-id"] as string | undefined,
+        authenticated: req.headers.authorization === "Bearer cloud-authority-test-token" });
+      res.writeHead(state.status, { "content-type": "application/json" });
+      res.end(JSON.stringify(state.body ?? { stacks: [{ stackSlug, role: state.role, isCurrent: true }] }));
+      state.afterResponse?.();
+    });
+    await new Promise<void>(resolve => backend.listen(0, "127.0.0.1", resolve));
+    vi.stubEnv("PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN", "cloud-authority-test-token");
+    vi.stubEnv("PAPERCLIP_CLOUD_API_ORIGIN", `http://127.0.0.1:${(backend.address() as AddressInfo).port}`);
+    vi.stubEnv("PAPERCLIP_CLOUD_STACK_ID", stackId);
+    vi.stubEnv("PAPERCLIP_STACK_SLUG", stackSlug);
+    const flag = (enabled: boolean) => vi.stubEnv("PAPERCLIP_MANAGED_CONFIG", JSON.stringify({ v: 1, mode: "cloud", catalogVersion: "test",
+      features: { enableCases: true, enableOwnerInstanceAdmin: enabled }, plugins: { autoInstall: [] } }));
+    flag(true);
+    const close = async () => { await new Promise<void>((resolve, reject) => backend.close(error => error ? reject(error) : resolve())); vi.unstubAllEnvs(); };
+    try {
+      const f = await delayedTransfer(async (f) => {
+        await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
+        await db.update(agents).set({ permissions: { authorizationPolicy: { protectedAgent: { blockAssignment: true } } } }).where(eq(agents.id, f.engineer));
+        const headers: Record<string, string> = { "x-paperclip-cloud-tenant-token": "cloud-authority-test-token", "x-paperclip-cloud-user-id": userId,
+          "x-paperclip-cloud-user-email": `${userId}@example.test`, "x-paperclip-cloud-stack-id": stackId, "x-paperclip-cloud-stack-role": "owner" };
+        const actor = await resolveCloudTenantActor(db, { header: name => headers[name] });
+        expect(actor).toMatchObject({ type: "board", source: "cloud_tenant", userId, isInstanceAdmin: true });
+        return actor!;
+      });
+      expect(requests).toHaveLength(0); // Remote revalidation belongs to delayed apply.
+      return { ...f, state, requests, stackSlug, stackId, userId, flag, close };
+    } catch (error) { await close(); throw error; }
   }
 
   async function terminalFixture() {
@@ -757,10 +796,66 @@ describe("durable same-task case handoffs", () => {
     const f = await delayedTransfer(async f => {
       await db.insert(authUsers).values({ id: userId, name: "Authenticated board", email: "board@example.test", createdAt: new Date(), updatedAt: new Date() });
       await db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "user", principalId: userId, status: "active", membershipRole: "owner" });
-      return { type: "board", userId, source: "cloud_tenant", companyIds: [f.companyId] };
+      const sessionId = randomUUID();
+      await db.insert(authSessions).values({ id: sessionId, userId, token: randomUUID(), createdAt: new Date(), updatedAt: new Date(), expiresAt: new Date(Date.now() + 60_000) });
+      return { type: "board", userId, source: "session", sessionId, companyIds: [f.companyId] };
     });
     await db.delete(companyMemberships).where(eq(companyMemberships.principalId, userId));
     await f.release(); await f.sweep(); await f.assertHeld(/actor.*access|permission|membership|grant/i);
+  });
+
+  it("restores a current trusted Cloud owner's elevation for the delayed assignment", async () => {
+    const f = await cloudTransfer();
+    try {
+      const [stored] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId));
+      expect(stored!.actorContext).not.toHaveProperty("isInstanceAdmin");
+      expect(stored!.actorContext).not.toHaveProperty("stackRole");
+      await f.release(); await f.sweep();
+      expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0]!.state).toBe("delivered");
+      expect((await db.select().from(issues).where(eq(issues.id, f.first.taskId)))[0]).toMatchObject({ assigneeAgentId: f.engineer, status: "todo" });
+      expect(f.requests).toEqual([{ path: "/v1/tenant/portfolio", userId: f.userId, stackId: f.stackId, authenticated: true }]);
+    } finally { await f.close(); }
+  });
+
+  it.each(["admin", "member", "support", "viewer"])("checks current Cloud role %s and the live managed elevation flag", async role => {
+    const f = await cloudTransfer();
+    try {
+      // The local company membership remains owner throughout; it cannot
+      // substitute for current Cloud stack ownership or grant elevation.
+      f.state.role = role;
+      await f.release(); await f.sweep(); await f.assertHeld(role === "viewer" ? /membership does not allow task assignment/i : /protected-agent policy/i);
+      expect((await db.select().from(companyMemberships).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.userId))))[0]!.membershipRole).toBe("owner");
+      f.state.role = "owner"; f.flag(false);
+      await f.sweep(); await f.assertHeld(/protected-agent policy/i);
+      f.flag(true);
+      await f.sweep();
+      expect((await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, f.receipt.handoffId)))[0]!.state).toBe("delivered");
+      expect(f.requests).toHaveLength(3); // Every attempt revalidates; no portfolio cache.
+    } finally { await f.close(); }
+  });
+
+  it.each(["forbidden", "upstream", "malformed", "ambiguous", "mismatched", "config_changed", "flag_changed"])("fails closed on %s current Cloud authority", async failure => {
+    const f = await cloudTransfer();
+    try {
+      if (failure === "forbidden") f.state.status = 403;
+      else if (failure === "upstream") f.state.status = 503;
+      else if (failure === "malformed") f.state.body = { stacks: [{ stackSlug: f.stackSlug, role: {}, isCurrent: true }] };
+      else if (failure === "ambiguous") f.state.body = { stacks: [1, 2].map(() => ({ stackSlug: f.stackSlug, role: "owner", isCurrent: true })) };
+      else if (failure === "mismatched") f.state.body = { stacks: [{ stackSlug: "different-stack", role: "owner", isCurrent: true }] };
+      else if (failure === "config_changed") f.state.afterResponse = () => vi.stubEnv("PAPERCLIP_STACK_SLUG", "different-stack");
+      else f.state.afterResponse = () => f.flag(false);
+      await f.release(); await f.sweep();
+      await f.assertHeld(failure === "flag_changed" ? /protected-agent policy/i : /Current Cloud tenant authority is unavailable/i);
+      expect(f.requests).toHaveLength(1);
+    } finally { await f.close(); }
+  });
+
+  it("does not let current Cloud ownership replace revoked local company membership", async () => {
+    const f = await cloudTransfer();
+    try {
+      await db.delete(companyMemberships).where(and(eq(companyMemberships.companyId, f.companyId), eq(companyMemberships.principalId, f.userId)));
+      await f.release(); await f.sweep(); await f.assertHeld(/not a current company member/i);
+    } finally { await f.close(); }
   });
 
   it.each(["board_key_revoked", "board_key_expired", "session_deleted", "session_expired"] as const)("revalidates original board credentials (%s)", async reason => {

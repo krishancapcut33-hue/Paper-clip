@@ -15,9 +15,10 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { instanceSettingsService } from "./instance-settings.js";
 import { issueService } from "./issues.js";
 import { documentService } from "./documents.js";
+import type { CurrentCloudOwnerAuthority } from "./cloud-tenant-authority.js";
 import { resolveActorSourceTrustForIssue } from "./source-trust.js";
 import { completeTerminalCaseHandoffsForIssue, pendingCaseHandoffForRun } from "./heartbeat/case-handoff-lifecycle.js";
-import { assertCaseHandoffDispatchAuthority, caseHandoffActorContext, lockCaseHandoffAuthorityRun, restoreCaseHandoffActor } from "./case-handoff-authority.js";
+import { assertCaseHandoffDispatchAuthority, caseHandoffActorContext, loadCaseHandoffCloudAuthority, lockCaseHandoffAuthorityRun, restoreCaseHandoffActor } from "./case-handoff-authority.js";
 
 export type CaseHandoffRow = typeof caseHandoffs.$inferSelect;
 type CaseRow = typeof cases.$inferSelect;
@@ -236,14 +237,14 @@ export function caseHandoffService(db: Db) {
     return row;
   }
 
-  async function apply(tx: Db, row: CaseHandoffRow, caseRow: CaseRow, issue: IssueRow, publications: ActivityPublication[], originalActor?: AuthorizationActor) {
+  async function apply(tx: Db, row: CaseHandoffRow, caseRow: CaseRow, issue: IssueRow, publications: ActivityPublication[], originalActor?: AuthorizationActor, cloudAuthority?: CurrentCloudOwnerAuthority | null) {
     if (row.destinationKind !== "agent" || !row.toAgentId) throw conflict("Only agent handoffs can transfer a task");
     if (caseRow.workIssueId !== issue.id || caseRow.handoffVersion !== row.version || issue.statusVersion !== row.expectedIssueStatusVersion || issue.responsibleUserId !== row.responsibleUserId ||
         issue.assigneeAgentId !== row.fromAgentId || issue.assigneeUserId) throw conflict("Handoff was superseded by a newer task decision");
     await assertCaseTrustedForExecution(tx, caseRow);
     await eligible(tx, issue);
     const sourceAuthorizer = await assertCaseHandoffDispatchAuthority(tx, row, issue, caseRow);
-    const assigningActor = originalActor ?? await restoreCaseHandoffActor(tx, row, issue, sourceAuthorizer);
+    const assigningActor = originalActor ?? await restoreCaseHandoffActor(tx, row, issue, sourceAuthorizer, cloudAuthority);
     // Acceptance does not reserve permission. Recheck the original principal at
     // the actual transfer, while it still owns/reads the outgoing task.
     try {
@@ -593,6 +594,8 @@ export function caseHandoffService(db: Db) {
     /** Call only after the runtime's authoritative settlement predicate succeeds. */
     async applyPending(handoffId: string) {
       await assertEnabled(db);
+      const [authoritySnapshot] = await db.select().from(caseHandoffs).where(eq(caseHandoffs.id, handoffId));
+      const cloudAuthority = authoritySnapshot?.state === "awaiting_release" ? await loadCaseHandoffCloudAuthority(authoritySnapshot) : null;
       const publications: ActivityPublication[] = [];
       const applied = await db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
@@ -605,7 +608,7 @@ export function caseHandoffService(db: Db) {
         const [row] = await tx.select().from(caseHandoffs).where(eq(caseHandoffs.id, handoffId)).for("update");
         if (!row || row.state !== "awaiting_release") return row ?? null;
         if (!issue || !caseRow) throw notFound("Case work no longer exists");
-        const updated = await apply(tx, row, caseRow, issue, publications);
+        const updated = await apply(tx, row, caseRow, issue, publications, undefined, cloudAuthority);
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.caseHandoffs, row.id);
         return updated;
       });

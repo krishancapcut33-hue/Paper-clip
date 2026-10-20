@@ -6,6 +6,7 @@ import { forbidden } from "../errors.js";
 import { resolveDeploymentMode } from "../config-file.js";
 import { isCloudManagedInstance } from "./cloud-instance.js";
 import { boardAuthService } from "./board-auth.js";
+import { isCurrentCloudOwnerInstanceAdmin, isCurrentCloudTenantAuthority, loadCurrentCloudOwnerAuthority, type CurrentCloudOwnerAuthority } from "./cloud-tenant-authority.js";
 import { withExternalAdmissionGuard, type ExternalAdmissionTransaction } from "../modules/external-agents/index.js";
 import { parseNativeExecutionInput } from "../vendor/paperclip-runner/index.js";
 import { authorizeExternalBotBinding } from "./external-bot-authority.js";
@@ -44,8 +45,16 @@ export function caseHandoffActorContext(actor: AuthorizationActor, companyId: st
   });
 }
 
+/** Resolve remote authority outside the task transaction, without trusting stored privileges. */
+export async function loadCaseHandoffCloudAuthority(row: Handoff): Promise<CurrentCloudOwnerAuthority | null> {
+  const context = actorContextSchema.safeParse(row.actorContext);
+  if (row.actorType !== "user" || !context.success || context.data.actorType !== row.actorType ||
+    context.data.actorId !== row.actorId || context.data.companyId !== row.companyId || context.data.source !== "cloud_tenant") return null;
+  return loadCurrentCloudOwnerAuthority(row.actorId);
+}
+
 /** Restore identity only; the caller must run canonical authorization afresh. */
-export async function restoreCaseHandoffActor(db: Db, row: Handoff, issue: Issue, sourceAuthorizer?: string): Promise<AuthorizationActor> {
+export async function restoreCaseHandoffActor(db: Db, row: Handoff, issue: Issue, sourceAuthorizer?: string, cloudAuthority?: CurrentCloudOwnerAuthority | null): Promise<AuthorizationActor> {
   const parsed = actorContextSchema.safeParse(row.actorContext);
   if (!parsed.success || parsed.data.actorType !== row.actorType || parsed.data.actorId !== row.actorId ||
     parsed.data.companyId !== row.companyId || !parsed.data.source) throw forbidden("Handoff original actor context is unavailable");
@@ -58,8 +67,13 @@ export async function restoreCaseHandoffActor(db: Db, row: Handoff, issue: Issue
       return { type: "board", userId: row.actorId, source: "local_implicit" };
     }
     if (!["session", "board_key", "mcp_oauth", "cloud_tenant"].includes(source)) throw forbidden("Handoff board authority is unavailable");
+    if (source === "cloud_tenant") {
+      if (!isCurrentCloudTenantAuthority(row.actorId, cloudAuthority)) throw forbidden("Current Cloud tenant authority is unavailable");
+      if (cloudAuthority.role === "viewer") throw forbidden("Current Cloud tenant membership does not allow task assignment");
+    }
     const access = await boardAuthService(db).resolveBoardAccess(row.actorId);
     if (!access.user) throw forbidden("Handoff original user is unavailable");
+    if (source === "cloud_tenant" && !access.companyIds.includes(row.companyId)) throw forbidden("Handoff original user is not a current company member");
     if (source === "board_key") {
       if (!context.keyId) throw forbidden("Handoff board key context is unavailable");
       const [key] = await db.select().from(boardApiKeys).where(and(eq(boardApiKeys.id, context.keyId), eq(boardApiKeys.userId, row.actorId), isNull(boardApiKeys.revokedAt)));
@@ -70,9 +84,11 @@ export async function restoreCaseHandoffActor(db: Db, row: Handoff, issue: Issue
       const [session] = await db.select().from(authSessions).where(and(eq(authSessions.id, context.sessionId), eq(authSessions.userId, row.actorId)));
       if (!session || session.expiresAt.getTime() <= Date.now()) throw forbidden("Handoff board session was revoked or expired");
     }
-    return { type: "board", userId: row.actorId, source, companyIds: access.companyIds,
-      // Cloud/MCP authority cannot be elevated by a local instance-admin row.
-      isInstanceAdmin: source !== "cloud_tenant" && source !== "mcp_oauth" && access.isInstanceAdmin };
+    // Cloud/MCP authority cannot be elevated by a local instance-admin row.
+    const isInstanceAdmin = source === "cloud_tenant" ? await isCurrentCloudOwnerInstanceAdmin(db, row.actorId, cloudAuthority)
+      : source !== "mcp_oauth" && access.isInstanceAdmin;
+    if (source === "cloud_tenant" && !isCurrentCloudTenantAuthority(row.actorId, cloudAuthority)) throw forbidden("Current Cloud tenant authority is unavailable");
+    return { type: "board", userId: row.actorId, source, companyIds: access.companyIds, isInstanceAdmin };
   }
   if (!["agent_key", "agent_jwt", "mcp_oauth"].includes(source)) throw forbidden("Handoff agent authority is unavailable");
   if ((source === "agent_jwt" && context.runId !== row.sourceRunId) ||

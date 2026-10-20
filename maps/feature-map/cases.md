@@ -75,6 +75,11 @@ the permission and verify that the same receipt can proceed without duplicate
 comments or tasks. Internal authorization context must not appear in public
 history, retry, or cancellation responses.
 
+In Cloud, verify that a stack owner with owner elevation enabled can complete a
+permitted delayed transfer. Disable that setting or change the current stack
+role before release, then verify that the transfer observes the new authority.
+An unavailable portfolio lookup must leave the transfer pending for recovery.
+
 Small live smoke: select only
 `case-handoffs.runner-codex-subscription.local.receipt-smoke` in Product E2E.
 Three agents use four bounded runs to save, review, and correct a tiny case receipt
