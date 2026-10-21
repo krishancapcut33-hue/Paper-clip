@@ -590,6 +590,7 @@ export class AcpxRuntimeHost {
             signal: options.signal,
             acquire: () => startRunnerToolBridge({
               ...options.semanticTools!,
+              preserveToolNames: options.assignedMcpTransport === "prp",
               preloadClaudeTaskTools: options.agent === "claude",
             }),
             resource: "tool_bridge",

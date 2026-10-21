@@ -379,17 +379,18 @@ describe("ACPX runtime host", () => {
     await nextOwner.close({ reason: "cancelled initializer ownership released" });
   });
 
-  it("admits assigned MCP tools through PRP without changing isolated Claude policy", async () => {
+  it.each(["deny-all", "approve-all"] as const)("admits the compact assigned MCP catalog through PRP with %s policy", async permissionMode => {
     const fixture = await hostFixture();
     const runtimeContext = { skills: [], mcp: { bindingId: "assigned-run" } } as unknown as NativeRuntimeContextSnapshot;
-    const tool = { name: "assigned_lookup", inputSchema: { type: "object" } };
+    const catalog = ["paperclip_search_assigned_tools", "paperclip_call_assigned_tool"].map(name => ({ name, inputSchema: { type: "object" } }));
+    const readOnly = permissionMode === "deny-all";
     const handler = vi.fn(async () => ({ value: "assigned result" }));
     let bridge: { url: string; bearerToken: string } | undefined;
     const options = { ...fixture.options, agent: "claude" as const, model: "claude-sonnet-5",
-      permissionMode: "deny-all" as const, providerPolicy: { readOnly: true }, runtimeContext,
-      semanticTools: { tools: [tool], handler } };
+      permissionMode, providerPolicy: { readOnly }, runtimeContext,
+      semanticTools: { tools: catalog, handler } };
     const openRuntime = vi.fn(async (launch: AcpxRuntimePortOpenOptions) => {
-      expect(launch.permissionMode).toBe("deny-all");
+      expect(launch.permissionMode).toBe(permissionMode);
       expect(launch.launchEnvironment.PAPERCLIP_RUNNER_HOME_MODE).toBeUndefined();
       expect(launch.mcpServers.map(server => server.name)).toEqual(["paperclip"]);
       if (!("url" in launch.mcpServers[0])) throw new Error("missing tool bridge");
@@ -398,18 +399,21 @@ describe("ACPX runtime host", () => {
     });
     const dependencies = fixture.dependencies({ openRuntime });
     const prepare = dependencies.prepareSandbox!;
-    dependencies.prepareSandbox = input => { expect(input.providerPolicy?.readOnly).toBe(true); return prepare(input); };
+    dependencies.prepareSandbox = input => { expect(input.providerPolicy?.readOnly).toBe(readOnly); return prepare(input); };
     await expect(AcpxRuntimeHost.open(options, dependencies)).rejects.toThrow("assigned native MCP launch binding is unavailable");
     await expect(AcpxRuntimeHost.open({ ...options, assignedMcpTransport: "prp", semanticTools: undefined }, dependencies)).rejects.toThrow("assigned native MCP launch binding is unavailable");
     expect(openRuntime).not.toHaveBeenCalled();
     const host = await AcpxRuntimeHost.open({ ...options, assignedMcpTransport: "prp" }, dependencies);
     try {
-      const response = await fetch(bridge!.url, { method: "POST", headers: {
-        Authorization: `Bearer ${bridge!.bearerToken}`, "Content-Type": "application/json",
-      }, body: JSON.stringify({ jsonrpc: "2.0", id: "assigned-call", method: "tools/call", params: { name: tool.name, arguments: {} } }) });
-      expect(response.status).toBe(200);
-      expect(await response.json()).toMatchObject({ id: "assigned-call", result: { content: expect.any(Array) } });
-      expect(handler).toHaveBeenCalledExactlyOnceWith(expect.objectContaining({ tool: tool.name, arguments: {} }));
+      for (const tool of catalog) {
+        const response = await fetch(bridge!.url, { method: "POST", headers: {
+          Authorization: `Bearer ${bridge!.bearerToken}`, "Content-Type": "application/json",
+        }, body: JSON.stringify({ jsonrpc: "2.0", id: tool.name, method: "tools/call", params: { name: tool.name, arguments: {} } }) });
+        expect(response.status).toBe(200);
+        expect(await response.json()).toMatchObject({ id: tool.name, result: { content: expect.any(Array) } });
+        expect(handler).toHaveBeenLastCalledWith(expect.objectContaining({ tool: tool.name, arguments: {} }));
+      }
+      expect(handler).toHaveBeenCalledTimes(catalog.length);
     } finally { await host.close({ reason: "PRP assignment verified" }); }
     expect(openRuntime).toHaveBeenCalledTimes(1);
   });

@@ -197,6 +197,7 @@ its authenticated tool bridge.
 Isolated provider admission accepts this route without a separate native MCP endpoint.
 Direct runtime-host callers must supply the native gateway binding unless they select
 PRP tool delivery and supply the semantic tool bridge.
+PRP delivery keeps the controller's exact operation names, including compact MCP catalog tools.
 The selected permission and read-only policies still apply.
 
 Install Cursor explicitly with `paperclipai runtime setup cursor`; npm installation

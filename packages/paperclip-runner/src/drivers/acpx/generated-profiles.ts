@@ -53,7 +53,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerVersion": "1.0.88",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:99f1dd7e8e7bc3d4ea8d4409e145fe6320b8452d89d7881338fe0264440ebd45",
+    "commandDigest": "sha256:7fbf0b3a48250c0c1852503d0dfd0af238c402d19c53573b573cc81f07c6016f",
     "permissionPolicy": "interactive"
   },
   "claude": {
