@@ -30,7 +30,7 @@
       "capabilityProfile": {
         "key": "write",
         "label": "Read and write",
-        "description": "Inspect Braintrust data, manage datasets and evaluators, and run evaluations."
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
       },
       "whenToUse": "Use browser sign-in for a Braintrust organization hosted in the US.",
       "defaults": {
@@ -62,7 +62,7 @@
       "capabilityProfile": {
         "key": "write",
         "label": "Read and write",
-        "description": "Inspect Braintrust data, manage datasets and evaluators, and run evaluations."
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
       },
       "whenToUse": "Use an API key for a Braintrust organization hosted in the US.",
       "defaults": {
@@ -87,7 +87,7 @@
           "required": true,
           "placeholder": "Paste your Braintrust API key",
           "secret": true,
-          "helperMd": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions."
+          "helperMd": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
         }
       ],
       "keyPlacement": {
@@ -107,7 +107,7 @@
       "capabilityProfile": {
         "key": "write",
         "label": "Read and write",
-        "description": "Inspect Braintrust data, manage datasets and evaluators, and run evaluations."
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
       },
       "whenToUse": "Use browser sign-in for a Braintrust organization hosted in the EU.",
       "defaults": {
@@ -139,7 +139,7 @@
       "capabilityProfile": {
         "key": "write",
         "label": "Read and write",
-        "description": "Inspect Braintrust data, manage datasets and evaluators, and run evaluations."
+        "description": "Inspect Braintrust data and run evaluations. Access follows your Braintrust account permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
       },
       "whenToUse": "Use an API key for a Braintrust organization hosted in the EU.",
       "defaults": {
@@ -164,7 +164,7 @@
           "required": true,
           "placeholder": "Paste your Braintrust API key",
           "secret": true,
-          "helperMd": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions."
+          "helperMd": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions. Evaluations and Topics processing can incur costs. Dataset edits can permanently delete rows; automation activation can enable retention or delivery."
         }
       ],
       "keyPlacement": {

@@ -1,8 +1,8 @@
 # Braintrust
 
-Updated: 2026-10-21. Status: connector implementation and public protocol
-metadata reviewed; account-bound qualification remains outstanding for all four
-methods. Keep the delivery PR draft until the required live checks pass.
+Updated: 2026-10-21. Status: US OAuth connected and exercised against an
+authorized account; US API-key and both EU methods still require live account
+qualification. Keep the delivery PR draft until the required live checks pass.
 
 Braintrust is a P2 resource connection using Paperclip's existing remote MCP
 transport, vault, catalog, access profiles, policy evaluation, run-scoped gateway,
@@ -114,15 +114,51 @@ invalidation.
 ## Qualification record
 
 Public metadata is protocol evidence, not proof of account authorization or
-tool execution. No authorized Braintrust account or credential was available
-for the following account-bound checks.
+tool execution. An existing signed-in US account was authorized for a temporary
+personal connection in an isolated source-checkout instance on 2026-10-21.
 
 | Method | Public regional metadata | Connect / authenticated discovery | Bounded read / disposable write | Real run gateway / refresh or reconnect | Local removal / provider revocation / secret inspection |
 | --- | --- | --- | --- | --- | --- |
-| `mcp-oauth` | pass, US | not run | not run | not run | not run |
-| `mcp-api-key` | pass, US; does not validate a key | not run | not run | not run | not run |
-| `mcp-eu-oauth` | pass, EU | not run | not run | not run | not run |
-| `mcp-eu-api-key` | pass, EU; does not validate a key | not run | not run | not run | not run |
+| `mcp-oauth` | pass, US | pass; 49 tools | pass; synthetic insert and readback | pass; process-agent runs and OAuth reconnect; token expiry/refresh not forced | removal and structural redaction pass; remote revocation unqualified |
+| `mcp-api-key` | pass, US; does not validate a key | not run; no test key supplied | not run | not run | not run |
+| `mcp-eu-oauth` | pass, EU | not run; available account uses US data plane | not run | not run | not run |
+| `mcp-eu-api-key` | pass, EU; does not validate a key | not run; no EU account/key supplied | not run | not run | not run |
+
+The live US connection discovered 17 reads and 32 non-read actions. Provider
+annotations raised several write classifications to destructive; unreviewed
+names remained writes. `list_recent_objects` performed a bounded read.
+`edit_dataset_rows` created one synthetic row in a new disposable dataset, and
+`sql_query` read it back. Both ran through real process-agent heartbeats and
+run-scoped gateway sessions. The qualification harness delivered the gateway
+capability through a private temporary file; this does not qualify automatic
+credential delivery for a native CLI harness. No provider credential was sent
+to the process agent and no evaluation/model execution was invoked.
+
+Catalog refresh and OAuth reconnect retained the same connection, US method,
+49 actions, and changed-tool quarantine configuration. A subsequent bounded
+read succeeded. The provider returned `openid profile email offline_access` in
+the token response scope despite the authorization request containing only
+`mcp`; Paperclip retained that discrepancy as provider metadata. Access-token
+expiry and refresh were tested with fixtures, not forced on this live grant.
+
+Cleanup deleted the synthetic row, verified an empty result, and removed the
+new empty dataset in Braintrust after explicit approval. Local connection
+removal revoked two vault secrets and one grant, removed the installation and
+49 profile entries, and rejected a subsequent call with `tool_not_found`.
+Qualification gateway sessions were revoked and their private files deleted.
+The owned server and database were stopped and the disposable instance data
+was removed.
+Remote OAuth token invalidation remains unqualified because no revocation
+endpoint is advertised.
+
+Connection/catalog API responses contained no raw credential fields. The
+isolated server log had no bearer values, access/refresh-token values, or OAuth
+callback codes under credential-shaped scans. This was a structural redaction
+check, not an exact decrypted-token search. Non-submitted key canaries were
+absent from browser storage during the separate UI walkthrough. Fixture tests
+provide exact canary redaction assertions. The sanitized
+[qualification record](./braintrust-qualification-2026-10-21.json) separates
+live, browser, and simulated-provider evidence.
 
 Qualify each method independently in an owned isolated instance. Record the
 revision, deployment, region, credential identity, discovered inventory, action
@@ -154,3 +190,11 @@ Brand validation checks the official local artwork; provenance is recorded in
 [`braintrust-brand-provenance-2026-10-21.json`](./braintrust-brand-provenance-2026-10-21.json).
 These checks establish Paperclip behavior with fixtures, not live Braintrust
 account compatibility.
+
+The isolated browser walkthrough passed 15 checks covering Apps and direct-link
+entry, all four method choices and reloads, password-field validation,
+cancellation, personal/shared access controls, and official light/dark artwork.
+Its first pass exposed missing pre-auth caveats: warnings were present in the
+definition but were not rendered by the setup form. The capability summary and
+key helper now show account permissions, costs, permanent deletion, and
+automation risks before authorization; the repeated walkthrough passed.

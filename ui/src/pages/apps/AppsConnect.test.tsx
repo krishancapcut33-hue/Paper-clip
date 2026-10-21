@@ -2162,12 +2162,18 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render();
 
     expect(buttonByText("Continue to sign in")?.disabled).toBe(false);
+    expect(container.textContent).toContain("permissions");
+    expect(container.textContent).toContain("cost");
+    expect(container.textContent).toContain("permanently delete");
     expect(container.querySelector('input[type="password"]')).toBeNull();
     await openAccessAdvanced();
     expect(radioContaining(BRAINTRUST.methods[0]!.label!)?.getAttribute("aria-checked")).toBe("true");
     await act(async () => { radioContaining(method.label!)!.click(); });
     await flushReact();
 
+    expect(container.textContent).toContain("permissions");
+    expect(container.textContent).toContain("cost");
+    expect(container.textContent).toContain("permanently delete");
     if (method.auth === "api_key") {
       const input = container.querySelector<HTMLInputElement>('input[type="password"]')!;
       expect(input).toBeTruthy();
