@@ -9460,13 +9460,24 @@ describe("native session bounded recovery", () => {
       );
       const transact = db.transaction.bind(db);
       const recoveryWriteAttempt = vi.fn();
-      db.transaction = (async (operation) => {
-        if (state.execute.mock.calls.length > 0) {
-          recoveryWriteAttempt();
-          if (ancillaryFailure === "recovery_write") throw secondaryFailure;
-        }
-        return transact(operation);
-      }) as typeof db.transaction;
+      db.transaction = (async (operation) => transact(async tx => operation(new Proxy(tx, {
+        get(target, key) {
+          if (key !== "update") return Reflect.get(target, key);
+          return (table: unknown) => {
+            const query = Reflect.apply(target.update, target, [table]);
+            return new Proxy(query, { get(update, property) {
+              if (property !== "set") return Reflect.get(update, property);
+              return (values: Record<string, unknown>) => {
+                if (table === nativeRunFinalizations && values.phase === "terminal_failure") {
+                  recoveryWriteAttempt();
+                  if (ancillaryFailure === "recovery_write") throw secondaryFailure;
+                }
+                return update.set(values);
+              };
+            } });
+          };
+        },
+      })))) as typeof db.transaction;
       const updateIssue = vi.fn(async () => null);
       const service = vi
         .spyOn(issueServiceModule, "issueService")
