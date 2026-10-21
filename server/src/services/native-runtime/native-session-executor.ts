@@ -1,5 +1,8 @@
+import { createRunUsageRecorder } from "../usage-receipts.js";
 import { applyObservabilityEnvironment, type ProviderObservabilityLaunch } from "@paperclipai/adapter-utils/agent-observability";
 import { museRunnerBroker } from "../muse-runner-broker.js";
+import { nativeCaseHandoffResult } from "./native-case-handoff.js";
+import { assertExternalNativeRunAuthority } from "./external-native-authority.js";
 import { stageRemoteLaunchAssets } from "./remote-launch-assets.js";
 import { createRunPreparationTiming } from "../execution-preparation-timing.js";
 import { configuredEnvironment } from "../../vendor/paperclip-runner/index.js";
@@ -333,6 +336,24 @@ const CODEX_HOME_NON_PERSISTENT_ENTRIES = [
   ".tmp",
   "auth.json",
   "config.toml",
+] as const;
+const CODEX_REMOTE_PLUGIN_MARKETPLACES = [
+  "openai-curated-remote",
+  "created-by-me-remote",
+  "workspace-directory",
+  "workspace-shared-with-me",
+  "workspace-shared-with-me-private",
+  "workspace-shared-with-me-unlisted",
+] as const;
+const CODEX_HOME_REDOWNLOADABLE_ENTRIES = [
+  ".remote-plugin-install-staging",
+  "cache/remote_plugin_catalog",
+  "plugins/.remote-plugin-install-staging",
+  ...CODEX_REMOTE_PLUGIN_MARKETPLACES.map((marketplace) => `plugins/cache/${marketplace}`),
+] as const;
+const CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES = [
+  ...CODEX_HOME_NON_PERSISTENT_ENTRIES,
+  ...CODEX_HOME_REDOWNLOADABLE_ENTRIES,
 ] as const;
 const RUNNERD_CONTROL_PLANE_STATE_SCHEMA =
   "paperclip.runner.durable.control-plane-state.v1";
@@ -1665,10 +1686,16 @@ const initializingSessionToolAuthorities = new Set<string>();
 const executingRunnerdSessionScopes = new Map<string, string>();
 const executingNativeOwnerScopes = new Map<string, symbol>();
 
-async function assertExternalNativeRunAuthority(db: Db, execution: NativeExecutionInput, authorityDatabase: Db = db): Promise<void> {
-  if (execution.schema === "paperclip.native-execution-input.v6") return dotRunnerBroker(db).assertRunAuthority(execution);
-  if (execution.schema === "paperclip.native-execution-input.v8") return museRunnerBroker(db).assertRunAuthority(execution, authorityDatabase);
-  throw new Error("external_native_execution_required");
+export function nativeSessionScopeDigestIsBusy(digest: string): boolean {
+  const scopes = [
+    ...executingRunnerdSessionScopes.keys(),
+    ...initializingSessionToolAuthorities,
+    ...warmNativeSessions.keys(),
+    ...closingWarmNativeSessions.keys(),
+  ];
+  return scopes.some(
+    (scope) => createHash("sha256").update(scope).digest("hex") === digest,
+  );
 }
 
 function nativeSessionKey(execution: NativeExecutionInput): string {
@@ -5510,7 +5537,7 @@ export function resolveNativeHarnessPersistenceProfile(
           // credential source and config.toml can contain the native MCP
           // bearer token. Re-materialize both for a replacement sandbox
           // instead of putting credentials into the disaster-recovery copy.
-          excludeEntries: CODEX_HOME_NON_PERSISTENT_ENTRIES,
+          excludeEntries: CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES,
         })
       : execution.provider.kind === "opencode"
         ? {
@@ -5533,7 +5560,7 @@ export function resolveNativeHarnessPersistenceProfile(
                   ? ["auth.json", "auth-refresh.json", "auth-refresh.json.tmp", "config.toml", "logs"].map((entry) =>
                     `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/grok-home/${entry}`)
                   : execution.provider.agent === "codex"
-                  ? CODEX_HOME_NON_PERSISTENT_ENTRIES.map(
+                  ? CODEX_HOME_CHECKPOINT_EXCLUDED_ENTRIES.map(
                       (entry) =>
                         `acpx/${acpxRuntimeSessionDirectoryName(nativeSessionKey(execution))}/codex-home/${entry}`,
                     )
@@ -7487,6 +7514,7 @@ function startNativeSessionExecutionLeaseRenewal(input: {
 }
 
 export async function executePaperclipNativeSession(input: {
+  casesEnabled?: boolean;
   getFreshSessionHandoff?: () => Promise<string | null>;
   /** Retire a retained transport so recovery can replace provider tool declarations. */
   refreshTools?: boolean;
@@ -8190,6 +8218,7 @@ async function executePaperclipNativeSessionWithinScope(
     )).orderBy(heartbeatRunEvents.seq);
     for (const row of history) turnAccounting.observe(record(row.payload).prpEvent as PrpEvent);
   }
+  let fallbackUsageRecorder: ReturnType<typeof createRunUsageRecorder> | undefined;
   const persistAccountingUsage = async (usage: Record<string, unknown> | null, complete: boolean) => {
     const accountingUsage = normalizeNativeUsage(usage, { inputIncludesCacheReads: input.execution.provider.kind === "codex" });
     const accountingCost = accountingUsage ? nativeUsageCostUsd(usage, input.execution.provider) : undefined;
@@ -8199,15 +8228,14 @@ async function executePaperclipNativeSessionWithinScope(
       : "unpriced" as const;
     const billing = resolveNativeBilling(input.execution.provider, input.runnerEnvironment, input.billingIdentity);
     const costUsdExact = typeof usage?.accountingCostUsdExact === "string" ? usage.accountingCostUsdExact : undefined;
-    await input.onUsage?.({ usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
-      model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus });
-    if (!input.onUsage) await input.db.update(heartbeatRuns).set({
-      costAccountingPending: true,
-      usageJson: sql`coalesce(${heartbeatRuns.usageJson}, '{}'::jsonb) || ${JSON.stringify({
-        ...accountingUsage, ...billing, accountingReceiptReady: complete, model: input.execution.provider.model ?? "unknown",
-        costUsd: accountingCost ?? null, costUsdExact: costUsdExact ?? null, costStatus: costStatus ?? null, usageSource: "per_run",
-      })}::jsonb`,
-    }).where(and(eq(heartbeatRuns.id, input.execution.binding.runId), eq(heartbeatRuns.companyId, input.execution.binding.companyId), isNull(heartbeatRuns.costAccountedAt)));
+    const checkpoint: AdapterUsageCheckpoint = { usage: accountingUsage, ...billing, complete, usageBasis: "per_run", costUsdExact,
+      model: input.execution.provider.model ?? "unknown", costUsd: accountingCost ?? null, costStatus };
+    if (input.onUsage) await input.onUsage(checkpoint);
+    else {
+      fallbackUsageRecorder ??= createRunUsageRecorder(input.db, { companyId: input.execution.binding.companyId,
+        runId: input.execution.binding.runId, adapterType: "paperclip_runner" });
+      await (await fallbackUsageRecorder).capture(checkpoint);
+    }
   };
   // appendEvent awaits this receipt before the runtime may commit completeRun.
   // Replayed events must rebuild it too after a stop between event and receipt.
@@ -8632,6 +8660,9 @@ async function executePaperclipNativeSessionWithinScope(
     }
   }
   async function resolvePendingGovernedWait() {
+    const handoff = await nativeCaseHandoffResult(input.db, { ...input.execution.binding,
+      completionContract: input.execution.completionContract.contract });
+    if (handoff) return handoff;
     const continuingInteractionIds = continuingPendingInteractionIds(
       input.execution,
     );
@@ -9730,7 +9761,10 @@ async function executePaperclipNativeSessionWithinScope(
     // throwing. Heartbeat still stops its sandbox, so retire the provider now
     // while its transport can collect files and checkpoint the suspended runner.
     // Leaving it in the warm map makes the next turn retire a stopped transport.
-    const retainSession = native.terminal.runTerminalState === "succeeded";
+    // A different agent may next use this same task workspace. Persist this
+    // agent's session checkpoint, then close its provider process before the
+    // heartbeat release proof. Returning later resumes its own saved session.
+    const retainSession = native.terminal.runTerminalState === "succeeded" && native.result.continuation?.kind !== "case_handoff";
     const instructionCopy = input.instructionWorkingCopy;
     const ownedSession = warmNativeSessions.get(warmSessionId);
     let collectInstructions: boolean;
@@ -11360,6 +11394,7 @@ export function remoteCheckpointIncompleteFailure(
 
 /** Production runnerd backend seam, exported so provider wiring can be regression tested. */
 export async function createRunnerdBackend(input: {
+  casesEnabled?: boolean;
   db: Db;
   execution: NativeExecutionInput;
   runnerInstanceId: string;
@@ -11623,6 +11658,7 @@ async function createRunnerdBackendWithinSessionClaim(
         eq(agents.id, input.execution.binding.agentId), eq(agents.companyId, input.execution.binding.companyId),
       )).limit(1).then(rows => rows[0]) : undefined;
   const authority = new PaperclipRunnerToolAuthority(input.db, {
+    casesEnabled: input.casesEnabled === true,
     ...(nativeReview ? { nativeReview } : {}),
     connectorAssignments,
     assignedMcpTools,

@@ -141,6 +141,25 @@ records are evidence and do not grant permission to resolve another review.
 
 ### Answered Slack conversations
 
+An accepted scheduled-monitor yield remains unfinished task work. Its committed
+summary is visible as a continuation explanation on the board and its authorized
+chat conversation. A run-owned question or confirmation keeps the response slot;
+the explanation must not duplicate that interaction. Presentation recovery can
+materialize the saved summary once after workspace finalization, without another
+provider turn. Run success alone cannot produce a task-completion claim.
+
+Monitor replies inherit a conversation only through an admitted monitor wake
+and the matching server-issued scheduling receipt on the source run. Company,
+task, agent, requester, schedule identity, and current delivery authorization
+remain enforced. Provider-supplied source IDs do not establish that lineage.
+
+An accepted same-agent continuation retains the same presentation contract.
+Its successor inherits conversation provenance only through the applied status
+decision, delivered continuation effect, and admitted wake that name the same
+company, task, agent, and requester. Dispatch still checks current endpoint,
+principal, and resource authorization. These receipts do not grant execution
+or override Stop.
+
 A successful Slack turn with a published final reply and no remaining execution
 or decision path settles to `chat_conversations.state = waiting` and issue
 `in_review`. This is a server-owned passive conversation state, displayed as
@@ -157,6 +176,13 @@ and pending decisions prevent settlement. Reconciliation applies the same rule
 to existing answered threads without another model invocation. Slack identity,
 permissions, and the ability to execute work in the same thread are unchanged.
 Other providers keep their existing lifecycle.
+
+Several chat conversations can share one task, such as the inline finding
+threads of a GitHub pull request review. A reviewed chat run attests exactly one
+conversation, so wake coalescing keeps each conversation in its own batch.
+Messages from the same conversation still coalesce into one run. Messages from
+different conversations queue separately and run one after the other. Wakes
+without a conversation keep their normal coalescing.
 
 ### `done`
 
@@ -240,7 +266,7 @@ Repeated automatic signals for an unchanged gate share one durable skipped-wake 
 
 A wake whose only gate is the previous execution's unreleased process or environment lease (`execution_owner_active` without a recovery action) is saved input, not a diagnostic: a handoff or stage wake blocked there is the only notification its recipient will get. Admission parks it as a deferred receipt; repeated signals from one requester merge into that receipt. When the executor that held the lease finishes cleanup, and on each periodic queue sweep, the receipt re-enters ordinary admission with its own identity, so every current gate still applies and the receipt is consumed with its successor run. A run of the same agent admitted on that task in the meantime adopts the receipt instead; a receipt whose task closed, changed owner, or moved to another stage participant, or whose agent already started a later run on the task, retires without a run. Chat conversations keep their existing turn rules.
 
-New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. The ownership-wait merge and sweep exclude comments, interrupts, interaction continuations, and native status receipts before selecting a batch or changing retry timestamps, even when those receipts name the same execution hold. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
+New comments received during an execution hold retain their individual deferred receipts and ordered comment ids. The ownership-wait merge and sweep exclude comments, interrupts, task Retry requests, interaction continuations, and native status receipts before selecting a batch or changing retry timestamps, even when those receipts name the same execution hold. Release cannot drain those receipts while replay remains blocked; the next eligible wake can adopt them. Authorized external-chat requests also remain deferred with their exact durable receipt. They must use normal promotion and current authorization; a generic wake cannot adopt only their comment ids and discard their actor or session contract. A wait does not authorize replay, reset an incident retry budget, or bypass an interaction's delivery rules.
 
 The conversation groups repeated empty pre-start reconciliation cancellations into a neutral waiting notice. Started runs, actual startup failures, and run history remain inspectable. No historical run records are deleted.
 
@@ -455,6 +481,19 @@ and record `issue.monitor_dispatch_failed`, with no raw provider error. Repeated
 identical diagnostics for one schedule are limited to one per five minutes.
 Diagnostics never authorize execution or consume a monitor attempt.
 
+A native run's terminal provider status does not release its timer while
+finalization is unfinished. Scheduled and manual monitor dispatch wait for that
+finalization to settle. For an already-dispatched timer, recovery can settle the
+old saved monitor result when its server-issued scheduling receipt matches a
+durable wake and an admitted successor run. The old run must no longer own the
+task's checkout or execution. This settlement preserves the task and successor
+ownership, and neither re-arms the timer nor starts another provider turn.
+Workspace persistence must still succeed first.
+If a saved monitor expires during workspace recovery, settlement releases the
+old run into the still-persisted schedule. The scheduler then applies its timeout
+or attempt-limit recovery policy. Expiration still rejects new monitor-wait
+results; finalizing accepted work neither renews the deadline nor starts a turn.
+
 Native `set_task_monitor` arguments put scheduling fields inside `monitor`:
 `{ "idempotencyKey": "check-ci", "monitor": { "nextCheckAt": "<future UTC timestamp>", "notes": "Check pending CI." } }`.
 Use `monitor: null` to clear a schedule. A runner schema rejection executes no
@@ -479,9 +518,13 @@ of the invalid call. Unauthorized tools still receive a generic rejection, and
 corrected calls retain the same permission and approval checks.
 
 A native provider may omit `continuation` (or send `null`) when it reports
-`yielded` after saving a monitor. The controller reads current authorized task
-context and fills the canonical `monitor` continuation only if that same task,
-run, assignee, work mode, and monitor remain eligible. Completion admission
+`yielded` after saving a monitor or requesting repository preparation. The controller reads current authorized task
+context and fills the canonical continuation only if that same task,
+run, assignee, and work mode remain eligible. An eligible monitor takes precedence.
+A pending repository requested by that task in its current workspace offers
+`same_agent`; the existing status arbiter and wake queue own the next admission.
+Prepared repositories and requests belonging to another task cannot offer it.
+An explicit `done` result does not acquire a continuation. Completion admission
 checks that persisted monitor again. This default does not create or renew a
 schedule. A consumed, cleared, exhausted, or ineligible monitor cannot authorize
 a passive wait. An explicit `response_wake` still identifies a real response
@@ -1627,6 +1670,14 @@ controller must recover it through the authenticated ownership checks. This
 preserves active work and queued messages without treating a server restart as
 user cancellation.
 
+Recovery restores a structured result proposal from the durable run events when
+its append survived but the active turn's session checkpoint did not. Advancing
+the replay cursor must preserve that proposal for the exact run, session, source,
+and turn. Conflicting or invalid proposals fail closed. A proposal from another
+turn cannot complete the current turn, and a later started turn prevents adoption
+of the older proposal. The provider must still supply terminal evidence before
+normal finalization; recovery must not repeat completed work to obtain its result.
+
 When a native turn creates a governed approval wait, its checkpoint retains the
 exact committed triggering event and yielded disposition before interrupting the
 provider. Shutdown gives these turns a shared, bounded 20-second window to finish
@@ -1657,11 +1708,36 @@ runnerd recovery, and durable control-plane readers. These paths synchronously
 read and parse the full JSON file, so memory use and parse time grow with file
 size. Remote checkpoint archive and expanded-size limits remain 64 MiB.
 
+Native assigned app tools save governed responses above 500,000 encoded bytes before returning
+a bounded reference through PRP. `read_tool_result` retrieves the saved JSON in
+UTF-8 pages under the same task, agent, and responsible-user access checks.
+Each encoded page fits within 500,000 bytes, including JSON escaping and metadata,
+leaving space for the PRP command envelope. Follow the next byte offset until EOF
+to reconstruct the full original JSON; paging never discards remaining content.
+Retrieval never repeats the upstream action. Storage failure after execution
+retains an uncertain result-delivery outcome, preserving the no-replay rule.
+Runner command and receipt size limits remain unchanged.
+
 Sparse remote workspace checkpoints capture at most eight regular files at once.
 Each file retains the content hash and mutation checks. A failed capture settles
 its active readers before closing the manifest and publishes no success receipt.
 
 ### Warm sandbox continuity
+
+Automatic GitHub review messages contain the current event and commit identifiers,
+not repeated review policy or the full PR description. The harness loads review
+instructions from the processed, company/task-bound delivery snapshot. Native
+GitHub sessions with a verified checkpoint and a complete inline comment batch
+receive only that batch and configuration not present in the previous turn.
+Configuration identity includes the endpoint, PR conversation, revision, and rendered
+instructions. A fresh session or failed resume receives the full bootstrap;
+incomplete batches, attachments, recovery, and interactions retain their existing
+framing. This prompt optimization does not change tool authorization or review
+publication checks. PR descriptions remain available through the metadata tool.
+Coalesced requests use the last accepted request's policy. Discussion turns retain
+the admitted configuration identity for the next automatic review.
+Board follow-ups with no new provider message restore the latest admitted review
+configuration from the same company, task, and bot binding.
 
 An active remote runner's health probe is an observation, not an exit receipt.
 Timed-out or rejected read-only probes retry within the existing 30-second

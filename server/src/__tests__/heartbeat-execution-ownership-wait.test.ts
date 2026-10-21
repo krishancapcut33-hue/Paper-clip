@@ -251,6 +251,7 @@ const support = await getEmbeddedPostgresTestSupport();
       { _paperclipWakeContext: { wakeCommentId: randomUUID() } },
       { _paperclipWakeContext: { wakeCommentIds: [randomUUID()] } },
       { queuedCommentInterrupt: { actorId: "board", requestedAt: older.toISOString() } },
+      { taskRetry: { actorId: "board", generationId: randomUUID(), sourceRunId: f.runId } },
       { mutation: "interaction", _paperclipWakeContext: { interactionId: randomUUID() } },
       { _paperclipWakeContext: { continuationPolicy: "wake_assignee" } },
       { _paperclipWakeContext: { nativeStatusWakeIntentId: randomUUID() } },
