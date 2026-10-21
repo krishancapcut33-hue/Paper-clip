@@ -1,4 +1,7 @@
 // @vitest-environment jsdom
+import { act } from "react";
+import { createRoot } from "react-dom/client";
+import { BreadcrumbProvider } from "@/context/BreadcrumbContext";
 import { renderToStaticMarkup } from "react-dom/server";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { describe, expect, it, vi } from "vitest";
@@ -9,12 +12,23 @@ const state = vi.hoisted(() => ({ slots: [{ pluginKey: "test.plugin", id: "insig
 const mount = vi.hoisted(() => vi.fn());
 vi.mock("@/lib/router", () => ({ useParams: () => params, Link: ({ children }: { children: React.ReactNode }) => <a>{children}</a> }));
 vi.mock("@/context/CompanyContext", () => ({ useCompany: () => ({ selectedCompanyId: "other", companies: [{ id: "company", issuePrefix: "CO" }] }) }));
-vi.mock("./AgentDetail", () => ({ AgentDetail: () => <p>Built-in agent view</p> }));
+vi.mock("./AgentDetail", async () => {
+  const { useEffect } = await import("react");
+  const { useBreadcrumbs } = await import("@/context/BreadcrumbContext");
+  return { AgentDetail: () => {
+    const { setBreadcrumbs } = useBreadcrumbs();
+    useEffect(() => { setBreadcrumbs([{ label: "Overview" }]); }, [setBreadcrumbs]);
+    return <p>Built-in agent view</p>;
+  } };
+});
 vi.mock("@/plugins/slots", () => ({ usePluginSlots: () => state, PluginSlotMount: (props: unknown) => { mount(props); return <p>Plugin contribution</p>; } }));
-function render() {
+function view() {
   const client = new QueryClient();
   client.setQueryData([...queryKeys.agents.detail("agent"), "company"], { id: "agent-id", companyId: "company", name: "Agent" });
-  return renderToStaticMarkup(<QueryClientProvider client={client}><AgentDetailPage /></QueryClientProvider>);
+  return <QueryClientProvider client={client}><BreadcrumbProvider companyName="Test company"><AgentDetailPage /></BreadcrumbProvider></QueryClientProvider>;
+}
+function render() {
+  return renderToStaticMarkup(view());
 }
 describe("agent plugin detail views", () => {
   it.each(["insights", "notes"])("mounts arbitrary %s contributions with the resolved agent/company", (id) => {
@@ -32,4 +46,29 @@ describe("agent plugin detail views", () => {
     expect(render()).toContain("Built-in agent view");
     params.tab = "plugin:test.plugin:insights";
   });
+});
+
+it.each(["plugin:test.plugin:insights", "overview"])("updates headings on entry from %s and between plugin views", (initialTab) => {
+  Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    params.tab = initialTab;
+    act(() => { root.render(view()); });
+    if (initialTab === "overview") {
+      expect(document.title).toBe("Overview • Test company • Paperclip");
+      params.tab = "plugin:test.plugin:insights";
+      act(() => { root.render(view()); });
+    }
+    expect(document.title).toBe("Insights • Agent • Agents • Test company • Paperclip");
+    params.tab = "plugin:test.plugin:notes";
+    act(() => { root.render(view()); });
+    expect(document.title).toBe("Notes • Agent • Agents • Test company • Paperclip");
+    params.tab = "plugin:removed:notes";
+    act(() => { root.render(view()); });
+    expect(document.title).toBe("Plugin view • Agent • Agents • Test company • Paperclip");
+  } finally {
+    act(() => { root.unmount(); });
+    params.tab = "plugin:test.plugin:insights";
+  }
 });

@@ -669,7 +669,11 @@ export const pluginApiRouteDeclarationSchema = z.object({
     z.object({ from: z.literal("issue"), param: z.string().min(1) }),
     z.object({ from: z.literal("agent"), param: z.string().min(1) }),
   ]).optional(),
-}).refine(route => !route.transport || (route.method === "GET" && route.auth === "board"), { message: "WebSocket routes require GET and board authentication" });
+}).refine(route => !route.transport || (route.method === "GET" && route.auth === "board"), { message: "WebSocket routes require GET and board authentication" })
+  .refine(route => !route.transport || route.companyResolution?.from !== "body", {
+    message: "WebSocket routes cannot resolve company from a request body",
+    path: ["companyResolution"],
+  });
 
 export type PluginApiRouteDeclarationInput = z.infer<typeof pluginApiRouteDeclarationSchema>;
 

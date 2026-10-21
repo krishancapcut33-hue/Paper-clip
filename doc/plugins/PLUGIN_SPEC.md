@@ -1870,8 +1870,9 @@ The transport carries opaque text and binary WebSocket frames. For example,
 a plugin can declare `/channels/:channelId` for build output, metrics, or a
 remote tool protocol. The worker receives the route key and parameters and
 selects the upstream; Core does not interpret channel contents or require an
-agent resource. Query/body company resolution and entity-based resolution are
-independent of transport selection.
+agent resource. WebSocket routes support query or entity-based company
+resolution; body-based resolution is rejected because browser upgrade requests
+cannot send a request body. Ordinary HTTP routes retain body-based resolution.
 
 Agent detail-tab contributions are also independent of WebSockets. Any plugin
 can mount a detail component, including a report or notes view backed by its
