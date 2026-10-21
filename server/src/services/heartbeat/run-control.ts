@@ -574,7 +574,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
           sql`${issueComments.id}::text = ${commentId}`, eq(issueComments.authorType, "user"),
           eq(issueComments.authorUserId, requestedByActorId), isNull(issueComments.deletedAt),
           isNull(issueComments.createdByRunId),
-          stoppedNativeContinuation ? undefined : gt(issueComments.createdAt, run.finishedAt),
+          gt(issueComments.createdAt, run.finishedAt),
         ));
         if (!comment?.body.trim()) continue;
       } else {
