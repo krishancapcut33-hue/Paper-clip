@@ -66,7 +66,11 @@ classifications with a fixture, including billable tests classified as writes
 and dataset row edits/automation activation classified as destructive. After
 initial discovery, newly added or changed tools remain quarantined until
 reviewed. Use synthetic data for provider calls; see
-[Braintrust](../../doc/connections/BRAINTRUST.md#actions-and-governance).
+[Braintrust](../../doc/connections/BRAINTRUST.md#actions-and-governance). Live US
+OAuth proof covers bounded reads, a synthetic dataset insert/readback through
+actual process-agent gateway calls, and denial after local removal. Off,
+Ask-first, and changed-tool denial use fixture evidence; the other three methods
+still need live account qualification.
 
 ### `test-and-maintain`
 

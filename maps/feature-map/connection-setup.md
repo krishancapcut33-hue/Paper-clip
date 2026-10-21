@@ -130,8 +130,12 @@ these operations must retain the saved connection and its access choices.
 Verify the key stays out of browser draft storage and public responses, then
 perform a bounded read and disposable write through an actual eligible run.
 The [Braintrust qualification matrix](../../doc/connections/BRAINTRUST.md#qualification-record)
-keeps public metadata and fixture checks separate from outstanding account-bound
-proof; a successful discovery probe alone does not qualify a region or method.
+records completed US OAuth connect/discovery, bounded read, synthetic write
+through actual process-agent gateway calls, catalog refresh, reconnect, local
+removal, and structural redaction. US API-key and both EU methods still need
+account-bound proof. Live token expiry/refresh, remote OAuth revocation, and
+native CLI automatic capability delivery remain unqualified; public metadata
+and fixtures do not establish those results.
 
 ### `mcp-link`
 
