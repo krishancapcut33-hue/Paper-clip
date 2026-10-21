@@ -42,6 +42,17 @@ describe("durable system recovery budget", () => {
   it("keeps an invalid ownership binding out of the physical retry loop", () => {
     const state = failSystemRecovery(createSystemRecovery(randomUUID()),
       new SystemRecoveryFailure("source_binding_invalid", "service_required"));
-    expect(state).toMatchObject({ state: "exhausted", nextAttemptAt: null, incident: { status: "pending" } });
+    expect(state).toMatchObject({ state: "exhausted", nextAttemptAt: null,
+      failure: { code: "source_binding_invalid", retryClass: "service_required" } });
   });
+  it("reads prior incident metadata without losing the local recovery budget or failure", () => {
+    const state = failSystemRecovery(createSystemRecovery(randomUUID()),
+      new SystemRecoveryFailure("source_unavailable", "service_required"), { now: 1_000 });
+    const restored = readSystemRecovery({ systemRecovery: { ...state,
+      incident: { status: "pending", id: null, attempts: 2, nextDeliveryAt: 60_000 },
+    }, recoveryIncidentDelivery: { attempts: 2, nextAttemptAt: 60_000 } });
+    expect(restored).toEqual(state);
+    expect(reserveSystemRecoveryAttempt(restored!, 61_000)).toBeNull();
+  });
+
 });

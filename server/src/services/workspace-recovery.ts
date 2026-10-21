@@ -1,4 +1,3 @@
-import { deliverSystemRecoveryIncidents } from "./recovery-incidents.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { and, asc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
 import { agentWakeupRequests, environmentLeases, heartbeatRuns, issues, issueRecoveryActions, workspaceOperations, type Db } from "@paperclipai/db";
@@ -51,7 +50,7 @@ export async function requestWorkspaceRecovery(input: Source & { db: Db; idempot
       nextAttemptAt: previous.state === "running" ? previous.nextAttemptAt : Math.max(Date.now(), previous.providerCooldownAt ?? 0) } : { ...createSystemRecovery(run.id),
       revision: (previous?.revision ?? -1) + 1,
       preservationOperationIds: previous?.preservationOperationIds ?? [],
-      incident: previous?.incident ?? null, providerCooldownAt: previous?.providerCooldownAt ?? null,
+      providerCooldownAt: previous?.providerCooldownAt ?? null,
       nextAttemptAt: previous?.providerCooldownAt ?? null };
     await tx.update(issueRecoveryActions).set({ ownerType: "system", ownerAgentId: null, ownerUserId: null,
       evidence: { ...action.evidence, workspaceRecovery: state, systemRecovery: system }, updatedAt: new Date() })
@@ -79,8 +78,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
     if (!reserved) {
       if (current.state !== "exhausted" && current.deadlineAt !== null && Date.now() >= current.deadlineAt)
         await updateSystemRecovery(db, input, current, { ...current, revision: current.revision + 1,
-          state: "exhausted", nextAttemptAt: null,
-          incident: current.incident ?? { status: "pending", id: null, attempts: 0, nextDeliveryAt: Date.now() } });
+          state: "exhausted", nextAttemptAt: null });
       return;
     }
     if (!await updateSystemRecovery(db, input, current, reserved)) return;
@@ -224,8 +222,7 @@ export async function recoverRetainedWorkspace(input: Source & { db: Db; environ
       }
       await ownership.assertHeld();
       const next = { ...current!, revision: current!.revision + 1, phase: "reconcile_effects" as const,
-        state: "complete" as const, nextAttemptAt: null,
-        incident: current!.incident ? { ...current!.incident, status: "resolved" as const } : null };
+        state: "complete" as const, nextAttemptAt: null };
       const activity = await db.transaction(async tx => {
         await tx.insert(workspaceOperations).values({ companyId: input.companyId, issueId: input.issueId,
           heartbeatRunId: input.runId, phase: "workspace_finalize", status: "succeeded", finishedAt: new Date(),
@@ -325,7 +322,6 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string) {
 export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRuntimeService,
   onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>) {
   await adoptHistoricalWorkspaceRecoveries(db);
-  void deliverSystemRecoveryIncidents(db).catch(() => logger.warn("Recovery incident outbox remains pending"));
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
   if (pending.size >= 2) return;

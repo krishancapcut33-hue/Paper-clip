@@ -11,7 +11,6 @@ import { adoptSystemRecovery } from "./system-recovery.js";
 import { getStorageService } from "../storage/index.js";
 import { attachPreservedWorkspaceSnapshots } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries, historicalRecoveryCounts } from "./workspace-recovery-backfill.js";
-import { deliverSystemRecoveryIncidents } from "./recovery-incidents.js";
 import { createSystemRecovery, failSystemRecovery, SystemRecoveryFailure } from "./system-recovery-state.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
@@ -182,43 +181,6 @@ describe("automatic retained workspace recovery", () => {
     expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId))).toHaveLength(1);
     expect(await db.select().from(nativeRunResults).where(eq(nativeRunResults.companyId, f.companyId))).toHaveLength(1);
   }, 30_000);
-
-  it("claims incident delivery durably across workers, retries lost replies, and never sends self-hosted data", async () => {
-    const f = await seed("legacy", false);
-    const state = failSystemRecovery(createSystemRecovery(f.runId),
-      new SystemRecoveryFailure("source_unavailable", "service_required"));
-    const current = await action(f.actionId);
-    await db.update(issueRecoveryActions).set({ evidence: { ...current.evidence, systemRecovery: state } })
-      .where(eq(issueRecoveryActions.id, f.actionId));
-    const env = { PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN: "configured", PAPERCLIP_PRIMARY_HOST: "fixture.paperclip.app",
-      PAPERCLIP_CLOUD_API_ORIGIN: "https://cloud.example.test", BETTER_AUTH_SECRET: "fixture-secret" };
-    let acknowledge!: () => void;
-    const blocked = new Promise<void>(resolve => { acknowledge = resolve; });
-    const bodies: Record<string, unknown>[] = [];
-    const fetchImpl = vi.fn(async (_url: unknown, init?: RequestInit) => {
-      bodies.push(JSON.parse(String(init?.body)));
-      await blocked;
-      return new Response("lost reply", { status: 503 });
-    }) as unknown as typeof fetch;
-    await deliverSystemRecoveryIncidents(db, { env: {}, fetchImpl });
-    expect(fetchImpl).not.toHaveBeenCalled();
-    const first = deliverSystemRecoveryIncidents(db, { env, fetchImpl, now: 1000 });
-    await vi.waitFor(() => expect(fetchImpl).toHaveBeenCalledTimes(1));
-    await deliverSystemRecoveryIncidents(db, { env, fetchImpl, now: 1000 });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    acknowledge(); await first;
-    const pending = (await action(f.actionId)).evidence.recoveryIncidentDelivery as { nextAttemptAt: number };
-    await deliverSystemRecoveryIncidents(db, { env, fetchImpl, now: pending.nextAttemptAt - 1 });
-    expect(fetchImpl).toHaveBeenCalledTimes(1);
-    const delivered = vi.fn(async () => Response.json({ revision: state.revision })) as unknown as typeof fetch;
-    await deliverSystemRecoveryIncidents(db, { env, fetchImpl: delivered, now: pending.nextAttemptAt });
-    expect(delivered).toHaveBeenCalledTimes(1);
-    await deliverSystemRecoveryIncidents(db, { env, fetchImpl: delivered, now: pending.nextAttemptAt + 1000 });
-    expect(delivered).toHaveBeenCalledTimes(1);
-    expect(Object.keys(bodies[0]).sort()).toEqual(["schema", "sourceRecoveryId", "companyId", "issueId", "sourceRunId",
-      "revision", "state", "phase", "failureCode", "evidenceFingerprint", "occurredAt"].sort());
-    expect(await historicalRecoveryCounts(db, f.companyId)).toMatchObject({ classified: 1, repaired: 0, unresolvedSources: 1 });
-  });
 
   it("preserves a historical legacy source without manufacturing a native descriptor or overwriting current files", async () => {
     const f = await seed("legacy", false);

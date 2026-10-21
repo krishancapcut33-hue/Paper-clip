@@ -49,12 +49,6 @@ export const systemRecoverySchema = z.object({
   }).nullable(),
   preservationOperationIds: z.array(z.string().uuid()),
   freshAttemptRunId: z.string().uuid().nullable(),
-  incident: z.object({
-    status: z.enum(["pending", "acknowledged", "resolved"]),
-    id: z.string().nullable(),
-    attempts: z.number().int().nonnegative(),
-    nextDeliveryAt: z.number().nullable(),
-  }).nullable(),
 });
 export type SystemRecoveryState = z.infer<typeof systemRecoverySchema>;
 
@@ -70,7 +64,7 @@ export function createSystemRecovery(sourceRunId: string, intentId: string | nul
     sourceRunId, revision: 0, generationId: intentId ?? randomUUID(), intentId,
     phase: "verify_execution", state: "scheduled", attemptId: null, attempts: 0, retriesUsed: 0,
     firstFailureAt: null, nextAttemptAt: null, deadlineAt: null, providerCooldownAt: null, failure: null,
-    preservationOperationIds: [], freshAttemptRunId: null, incident: null,
+    preservationOperationIds: [], freshAttemptRunId: null,
   };
 }
 
@@ -106,6 +100,5 @@ export function failSystemRecovery(
     nextAttemptAt: retry ? nextAttemptAt : null,
     failure: { code: failure.code, retryClass: failure.retryClass,
       evidenceFingerprint: options.evidenceFingerprint ?? createHash("sha256").update(`${state.sourceRunId}:${failure.code}`).digest("hex") },
-    incident: retry ? state.incident : state.incident ?? { status: "pending", id: null, attempts: 0, nextDeliveryAt: now },
   };
 }

@@ -117,7 +117,7 @@ export async function requestTaskRetry(input: {
         // gets a new budget only because this click is a new durable intent.
         const next = previous.state === "exhausted"
           ? { ...createSystemRecovery(latest.id, id), revision: previous.revision + 1,
-            preservationOperationIds: previous.preservationOperationIds, incident: previous.incident,
+            preservationOperationIds: previous.preservationOperationIds,
             providerCooldownAt: previous.providerCooldownAt, nextAttemptAt: previous.providerCooldownAt }
           : { ...previous, revision: previous.revision + 1, intentId: active?.id ?? id,
             // Retry may advance our backoff, never a provider's cooldown and

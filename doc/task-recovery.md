@@ -82,15 +82,13 @@ because old files need maintenance.
 waiting-for-Retry and unresolved-source counts for protected diagnostics.
 Adoption alone is not proof that files were recovered.
 
-## Service incidents and presentation
+## Local diagnostics and presentation
 
-Managed Cloud delivery uses the existing authenticated tenant endpoint:
-`POST /v1/tenant/recovery-incidents`. Only structured identifiers, revision,
-phase, failure code, timestamps and an evidence fingerprint leave the instance.
-The source record retains delivery state. Cloud deduplicates by authenticated
-stack and source identity and owns a durable operator-alert outbox. Delivery
-failure never blocks preservation or Retry. Self-hosted installations keep
-protected local diagnostics and their existing configured error reporting.
+Recovery and its durable failure evidence stay inside the stack. Exhausted
+attempts remain on the system-owned source recovery record with their failure
+code, evidence fingerprint and retry budget. The existing local server log
+records preservation failures. Recovery does not add a Cloud incident endpoint,
+notification worker or outbound reporting channel.
 
 The task interruption projection drives thread, composer and list status.
 Thinking is optimistic presentation, not a fake run or provider-start record.
