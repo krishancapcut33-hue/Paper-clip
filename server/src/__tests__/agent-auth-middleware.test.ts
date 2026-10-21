@@ -32,10 +32,10 @@ function createSelectChain(rowsForTable: (table: unknown) => unknown[]) {
 
 function createDbState(input: {
   agent: { id: string; companyId: string; status?: string };
-  boardKeys?: Array<{ id: string; userId: string; keyHash: string; expiresAt: Date | null; revokedAt: Date | null }>;
   agentKey?: { id: string; agentId: string; companyId: string; keyHash: string; responsibleUserId?: string | null };
   run?: { id: string; companyId: string; agentId: string; responsibleUserId?: string | null;
     status?: string; contextSnapshot?: Record<string, unknown>; resultJson?: Record<string, unknown> };
+  boardKeys?: Array<{ id: string; userId: string; keyHash: string; expiresAt: Date | null; revokedAt: Date | null }>;
 }) {
   const activity: Array<Record<string, unknown>> = [];
   const agentRow = {
