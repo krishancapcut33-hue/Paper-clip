@@ -1054,11 +1054,13 @@ async function reconcileNativeFinalizationsPass(
         const unrecoverable = operation.stderrExcerpt?.includes(
           "workspace_sync_out_unrecoverable",
         );
+        const pluginFailure = operation.stderrExcerpt?.trim();
+        const pluginRepair = pluginFailure === "plugin_workspace_branch_mismatch" || pluginFailure === "plugin_workspace_owner_mismatch";
         const failure = await recordNativeFinalizationFailure({
           db,
           runId: row.runId,
           error: new Error(
-            unrecoverable
+            pluginRepair ? `native_${pluginFailure}` : unrecoverable
               ? "native_workspace_sync_out_unrecoverable"
               : "native_workspace_sync_out_failed",
           ),
