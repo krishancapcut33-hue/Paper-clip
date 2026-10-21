@@ -71,6 +71,15 @@ own policy and access review.
 Gaps: An agent cannot authorize itself by editing the policy. Decide whether any
 explicitly delegated administration should be supported.
 
+Braintrust's reviewed classifier treats retrieval as read, dataset row edits and
+automation-status changes as destructive, and other mutations, billable
+execution, and unknown tools as write. Provider hints cannot lower a reviewed
+mutation's risk. The classifier grants no authority: shared Allowed defaults
+and explicit Off/Ask-first policies still govern each agent's actual run-bound
+call. See [Braintrust](../../doc/connections/BRAINTRUST.md#actions-and-governance).
+Live allowed and denied agent execution remains `not-run` for all four methods;
+board Test calls do not establish that evidence.
+
 ## `catalog-change`
 
 Capability ID: `app-permissions/catalog-change`.
@@ -96,6 +105,13 @@ own policy and access review.
 
 Gaps: Catalog refresh/review and quarantined-action enablement are management
 operations.
+
+Braintrust enables changed-tool quarantine after initial discovery and preserves
+it through reconnect and refresh. Agents cannot approve newly quarantined tools
+or bypass a changed schema by reusing its old name. Verify the quarantined call
+denial through a real run-scoped gateway separately from board catalog review;
+the [provider qualification record](../../doc/connections/BRAINTRUST.md#qualification-record)
+keeps that live evidence outstanding.
 
 Daytona also checks its deployed native contract on the board's
 `GET /api/tool-connections/{connectionId}/catalog`. A changed saved catalog

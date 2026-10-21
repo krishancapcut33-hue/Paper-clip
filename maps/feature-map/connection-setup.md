@@ -123,6 +123,16 @@ checks the catalog, password field, access controls, and optional organization
 pin. It does not submit a key or qualify a real provider account. See
 [Daytona](../../doc/connections/DAYTONA.md) for API-key authority and OAuth limits.
 
+For Braintrust, verify US OAuth (default), US API key, EU OAuth, and EU API key
+from both Apps and `/apps/connect?source=braintrust`. Inspect the exact regional
+endpoint and method after Save & exit, cancellation/resume, and reconnect;
+these operations must retain the saved connection and its access choices.
+Verify the key stays out of browser draft storage and public responses, then
+perform a bounded read and disposable write through an actual eligible run.
+The [Braintrust qualification matrix](../../doc/connections/BRAINTRUST.md#qualification-record)
+keeps public metadata and fixture checks separate from outstanding account-bound
+proof; a successful discovery probe alone does not qualify a region or method.
+
 ### `mcp-link`
 
 Automated: AppsConnect's generic MCP cases cover probe-driven auth, private or

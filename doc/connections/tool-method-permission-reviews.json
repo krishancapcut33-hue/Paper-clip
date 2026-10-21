@@ -2805,6 +2805,80 @@
       "reviewedAt": "2026-10-20",
       "liveProof": "not-run",
       "evidenceLimit": "First-party implementation contract; canonical service availability and live OAuth qualification are deployment prerequisites. Uses the existing personal OAuth flow with default connection labels; automatic remote revocation and custom keyed refresh recovery are deferred."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp"
+      ],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public provider documentation and OAuth metadata only. Account-bound connect, discovery, read/write execution, run-scoped gateway, refresh/reconnect, removal, and secret handling remain to be qualified for this method."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public provider documentation and OAuth metadata only. Account-bound connect, discovery, read/write execution, run-scoped gateway, refresh/reconnect, removal, and secret handling remain to be qualified for this method.",
+      "keyPermissions": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-eu-oauth",
+      "auth": "oauth",
+      "policy": "explicit",
+      "requestedScopes": [
+        "mcp"
+      ],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public provider documentation and OAuth metadata only. Account-bound connect, discovery, read/write execution, run-scoped gateway, refresh/reconnect, removal, and secret handling remain to be qualified for this method."
+    },
+    {
+      "app": "braintrust",
+      "method": "mcp-eu-api-key",
+      "auth": "api_key",
+      "policy": "provider-key",
+      "requestedScopes": [],
+      "capability": "write",
+      "supportedActions": "Read logs, schemas, experiment summaries, datasets, projects, monitoring views, and documentation; create or update prompts, evaluators, datasets, patterns, charts, and automations; run evaluations and Topics jobs that may consume credits. Dataset row edits can permanently delete rows. Automation status can enable retention or delivery. Access remains bounded by the authenticated Braintrust account.",
+      "evidence": [
+        "https://www.braintrust.dev/docs/integrations/developer-tools/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-protected-resource/mcp",
+        "https://api-eu.braintrust.dev/.well-known/oauth-authorization-server"
+      ],
+      "reviewedAt": "2026-10-21",
+      "liveProof": "not-run",
+      "evidenceLimit": "Public provider documentation and OAuth metadata only. Account-bound connect, discovery, read/write execution, run-scoped gateway, refresh/reconnect, removal, and secret handling remain to be qualified for this method.",
+      "keyPermissions": "Create a Braintrust API key in Settings → API keys for the account and organization whose data agents should access. The key must authorize the reads and writes you intend to allow; Paperclip cannot increase or narrow its provider permissions."
     }
   ]
 }

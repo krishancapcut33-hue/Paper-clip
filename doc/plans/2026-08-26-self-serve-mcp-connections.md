@@ -93,6 +93,31 @@ Store visibility is a separate release gate from having an implemented definitio
 | Vercel | Blocked | [x] | n/a | Reconsider when reviewed-client approval is removed or Paperclip is approved. |
 | Zomato | Blocked | [x] | n/a | Reconsider when third-party clients and unallowlisted redirect URIs are supported. |
 
+## Braintrust addition — 2026-10-21
+
+Braintrust adds four hosted Streamable HTTP methods: US `mcp-oauth` and
+`mcp-api-key` at `https://api.braintrust.dev/mcp`, plus EU `mcp-eu-oauth` and
+`mcp-eu-api-key` at `https://api-eu.braintrust.dev/mcp`. US OAuth is the
+recommended default. OAuth declares DCR and requests only `mcp`; API keys use
+the bearer header. All four methods are S4 and write-capable. They reuse
+Access → Connect, personal/shared vault ownership, policy, and gateway paths.
+
+Both regions' unauthenticated challenge and metadata checks passed on
+2026-10-21. They advertise DCR, PKCE S256, and refresh tokens, with no CIMD or
+revocation endpoint. No registration or authenticated discovery was attempted.
+The reviewed risk inventory preserves retrieval tools as reads, treats dataset
+row edits and automation-status changes as destructive, and treats other
+mutations, billable execution, and unknown tools as writes. Central Allowed
+defaults and operator Off/Ask-first decisions remain intact. Catalog drift is
+quarantined after initial discovery and stays enabled across reconnect.
+
+All four account-bound live lifecycles remain **not run** without an authorized
+regional account or key. Keep the delivery PR draft until connect, discovery,
+read, disposable write, real run gateway, recovery, removal, and secret-handling
+qualification is complete. Metadata and fixture results do not satisfy that
+gate. See [Braintrust](../connections/BRAINTRUST.md) for the per-method matrix,
+provider evidence, permissions, and revocation limits.
+
 ## Browser authorization redirect audit
 
 This is a local, credential-free handoff check performed through the real BOB catalog UI on 2026-08-26. A checked provider reached its own login, consent, domain-picker, or authorization page. It does **not** satisfy the account-bound live-proof column above, which still requires consent, tool discovery, a safe read, reconnect/refresh, revocation, and secret-leak inspection.
