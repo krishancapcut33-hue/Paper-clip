@@ -1125,7 +1125,7 @@ function getDeclaredAdapterModels(): ReturnType<typeof parseAdapterModelsEnv> {
   return value;
 }
 
-function declaredModelsForAdapter(type: string): { id: string; label: string }[] | null {
+export function declaredModelsForAdapter(type: string): { id: string; label: string }[] | null {
   const declared = getDeclaredAdapterModels()?.[type];
   return declared?.length
     ? declared.map((model) => ({ id: model.id, label: model.label ?? model.id }))

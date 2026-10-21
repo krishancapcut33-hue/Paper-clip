@@ -140,7 +140,7 @@ async function mount(
 }
 function click(text: string) {
   const button = [...host.querySelectorAll("button")].find((b) =>
-    b.getAttribute("aria-label") ? b.getAttribute("aria-label") === text : b.textContent?.includes(text),
+    b.getAttribute("aria-label") === text || Boolean(b.textContent?.includes(text)),
   )!;
   expect(button).toBeTruthy();
   flushSync(() => button.click());
@@ -202,7 +202,14 @@ describe("AgentProviderConnection reuse", () => {
     expect(input.value).toBe("fixture-key");
     const apiTile = host.querySelector<HTMLElement>('[role="radio"][aria-checked="true"]')!;
     flushSync(() => apiTile.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowRight", bubbles: true })));
-    expect(host.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("AdvancedCustom Gateway");
+    // The arrow walks the caret; it does not answer the row. The key stays the
+    // answer, and the tile the caret reached carries the row's one Tab stop.
+    // `tabindex` is posed synchronously by that walk, unlike focus, which lands
+    // on the next frame.
+    expect(host.querySelector('[role="radio"][aria-checked="true"]')?.textContent).toBe("OpenAIAPI key");
+    const stops = Array.from(host.querySelectorAll<HTMLElement>('[role="radio"]')).filter(tile => tile.getAttribute("tabindex") === "0");
+    expect(stops, "a radiogroup is one stop, and the caret holds it").toHaveLength(1);
+    expect(stops[0]?.textContent).toBe("AdvancedCustom Gateway");
     expect(host.querySelectorAll('[role="radio"]')).toHaveLength(3);
   });
 

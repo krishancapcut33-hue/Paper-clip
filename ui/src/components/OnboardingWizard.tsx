@@ -12,7 +12,7 @@ import { AiConnectionField, aiProviderForAdapter } from "./ai-connections/AiConn
 import { PAPERCLIP_RUNNER_ACPX_PROFILES } from "@paperclipai/adapter-utils";
 import { aiConnectionBindingSchema } from "@paperclipai/shared";
 import type { AiConnectionBinding } from "@paperclipai/shared";
-import { storeProviderApiKey } from "../lib/provider-credential";
+import { PROVIDER_ENV_KEYS, storeProviderApiKey } from "../lib/provider-credential";
 import { SavedProviderKeySelect, useSavedProviderKeys } from "./onboarding/SavedProviderKeySelect";
 import { randomAgentAppearance, resolveAgentAppearance, agentAppearanceSchema } from "@paperclipai/shared";
 import { OnboardingCharacter } from "./onboarding/OnboardingCharacter";
@@ -117,7 +117,7 @@ import { DEFAULT_CODEX_LOCAL_BYPASS_APPROVALS_AND_SANDBOX } from "@paperclipai/a
 import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
-import { DEFAULT_OPENCODE_LOCAL_MODEL, isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
+import { isValidOpenCodeModelId } from "@paperclipai/adapter-opencode-local";
 import {
   canGoBackFromOnboardingStep,
   canJumpToOnboardingStep,
@@ -163,6 +163,29 @@ const ONBOARDING_EXCLUDED_ADAPTER_TYPES = new Set([
   "http",
   "paperclip_runner",
 ]);
+
+/**
+ * The non-recommended adapters the connect step offers behind its disclosure.
+ *
+ * An explicit list rather than "whatever the registry carries" or "whatever it
+ * does not mark `recommended`". The tile row is a curated shortlist and this is
+ * the curated second tier: every other registered adapter — the CLIs this step
+ * has never walked anyone through, and every external/plugin type — stays out.
+ * A new entry lands here deliberately, next to the hint and the model default
+ * it needs, rather than appearing the day a registry entry changes. Not every
+ * entry needs both in this file: Grok's default model (`grok-build`) comes from
+ * its adapter build config, and Gemini's from `buildAdapterConfig` below, so
+ * neither is pinned here.
+ */
+const ONBOARDING_MORE_ADAPTER_TYPES = new Set(["opencode_local", "grok_local", "gemini_local"]);
+
+/**
+ * Sources with no subscription path. Their tile must say "API key" before it is
+ * picked: the row is labelled from the current source's credential mode, which
+ * defaults to subscription, and a tile that promises a subscription it cannot
+ * deliver is worse than a tile that says nothing.
+ */
+const API_ONLY_SOURCE_TYPES = new Set(["opencode_local", "gemini_local"]);
 
 const copilotOnboardingQualified = PAPERCLIP_RUNNER_ACPX_PROFILES.some(
   (profile) => profile.value === "copilot" && profile.qualified,
@@ -264,10 +287,23 @@ const MODEL_SOURCE_INLINE_MARKS: Record<string, ComponentType<{ className?: stri
 const API_KEY_ENV_KEYS: Record<string, string> = {
   claude_local: ANTHROPIC_API_KEY_ENV_KEY,
   codex_local: "OPENAI_API_KEY",
+  grok_local: "XAI_API_KEY",
+  gemini_local: "GEMINI_API_KEY",
   paperclip_runner: "COPILOT_GITHUB_TOKEN",
 };
 
-function apiKeyEnvKeyFor(adapterType: string): string {
+/** The two providers the OpenCode harness can run. Its connect step asks which. */
+type OpenCodeProvider = "openrouter" | "opencode";
+
+function apiKeyEnvKeyFor(
+  adapterType: string,
+  provider?: OpenCodeProvider,
+): string {
+  // OpenCode is the one harness with two providers, and each holds its key in
+  // its own variable. Every other adapter has a single credential slot, so the
+  // provider is ignored there.
+  if (adapterType === "opencode_local")
+    return provider === "opencode" ? PROVIDER_ENV_KEYS.opencode : PROVIDER_ENV_KEYS.openrouter;
   return API_KEY_ENV_KEYS[adapterType] ?? "API_KEY";
 }
 
@@ -581,8 +617,6 @@ function OnboardingWizardInner({
   useEffect(() => { lastStep.current = step; }, [step]);
   const [loading, setLoading] = useState(false);
   const [error, setError] = useState<string | null>(null);
-  const [modelOpen, setModelOpen] = useState(false);
-  const [modelSearch, setModelSearch] = useState("");
 
   // Step 1
   const [companyName, setCompanyName] = useState((saved?.companyName as string) ?? "");
@@ -659,7 +693,14 @@ function OnboardingWizardInner({
   const [forceUnsetAnthropicApiKey, setForceUnsetAnthropicApiKey] =
     useState(false);
   const [unsetAnthropicLoading, setUnsetAnthropicLoading] = useState(false);
-  const [showMoreAdapters, setShowMoreAdapters] = useState(false);
+  /**
+   * Whether the connect step's "More adapters" disclosure is open.
+   *
+   * Not in the draft. It is a disclosure on a question that is asked again on
+   * every visit, and restoring it open would put a second tier of adapters on
+   * screen for someone who never asked for it.
+   */
+  const [moreAdaptersOpen, setMoreAdaptersOpen] = useState(false);
   /**
    * Whether the connect step is asking for a subscription sign-in or an API key.
    *
@@ -671,6 +712,21 @@ function OnboardingWizardInner({
     (saved?.credentialModeChoice !== undefined
       ? saved.credentialModeChoice as CredentialMode | null
       : saved?.credentialMode as CredentialMode | undefined) ?? null,
+  );
+  /**
+   * Which provider the OpenCode harness runs, when the customer picked it.
+   *
+   * OpenCode is the only source here with two providers behind one harness:
+   * OpenRouter (the historical default) and the OpenCode Go gateway. The choice
+   * feeds the connection that is created, the variable a typed key is stored
+   * under, and the key field's own label.
+   *
+   * It rides in the draft: it is a choice, not a secret, and a Go draft that
+   * reopened on OpenRouter would load the wrong provider's catalog — the
+   * restored model would not be in it, and the step would refuse to continue.
+   */
+  const [providerChoice, setProviderChoice] = useState<OpenCodeProvider>(
+    (saved?.providerChoice as OpenCodeProvider | undefined) ?? "openrouter",
   );
   /**
    * Where the connect step's sign-in sequence is.
@@ -712,7 +768,7 @@ function OnboardingWizardInner({
   );
   const savedKeys = useSavedProviderKeys(
     createdCompanyId,
-    apiKeyEnvKeyFor(adapterType),
+    apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined),
     effectiveOnboardingOpen && step === 4,
   );
   // The chooser is absent in onboarding. Prefer the user's explicit default;
@@ -720,14 +776,19 @@ function OnboardingWizardInner({
   const savedSubscription = savedKeys.subscriptions.find((option) => option.aiConnection?.mode === "responsible_user")
     ?? (savedKeys.subscriptions.length === 1 ? savedKeys.subscriptions[0] : undefined);
   const [selectedSavedKey, setSelectedSavedKey] = useState<{ companyId: string; envKey: string; id: string } | null>(null);
-  const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType)
+  const selectedApiKeyId = selectedSavedKey?.companyId === createdCompanyId && selectedSavedKey?.envKey === apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined)
     ? selectedSavedKey.id
     : savedKeys.options[0]?.id;
   const selectedApiKey = savedKeys.options.find((option) => option.id === selectedApiKeyId);
-  const credentialMode = isCopilot ? "api" : credentialModeChoice ?? (
-    (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
-      ? "subscription" : savedKeys.options.length || adapterType === "opencode_local" ? "api" : "subscription"
-  );
+  // Gemini and OpenCode have no subscription path, so a saved preference can
+  // never move them to the subscription form: the API-key field would vanish.
+  // Copilot has no subscription path either.
+  const credentialMode = isCopilot || API_ONLY_SOURCE_TYPES.has(adapterType)
+    ? "api"
+    : credentialModeChoice ?? (
+      (savedKeys.subscriptions.length > 0 || (adapterType === "claude_local" && savedKeys.storedLogin.data))
+        ? "subscription" : savedKeys.options.length ? "api" : "subscription"
+    );
   const [createdCompanyPrefix, setCreatedCompanyPrefix] = useState<
     string | null
   >((saved?.createdCompanyPrefix as string) ?? null);
@@ -784,8 +845,24 @@ function OnboardingWizardInner({
    */
   const apiKeySecretRef = useRef<{ key: string; companyId: string; envKey: string; binding?: Awaited<ReturnType<typeof storeProviderApiKey>>["binding"]; aiConnection?: AiConnectionBinding } | null>(null);
   const managedSubscriptionRef = useRef<{ companyId: string; binding: AiConnectionBinding } | null>(null);
-  const managedProvider = aiProviderForAdapter(isCopilot ? "copilot_runtime" : adapterType);
+  // OpenCode's harness maps to OpenRouter by default, but the step asks which of
+  // the two providers behind it this run is for — so the answer, not the
+  // adapter's historical default, is what the connection is created against.
+  const managedProvider = isCopilot
+    ? aiProviderForAdapter("copilot_runtime")
+    : adapterType === "opencode_local" ? providerChoice : aiProviderForAdapter(adapterType);
   const managedSubscriptionProvider = managedProvider === "anthropic" || managedProvider === "openai" || managedProvider === "xai" ? managedProvider : undefined;
+  /**
+   * What the key card calls the credential it is asking for.
+   *
+   * For OpenCode the customer's answer is a provider rather than an adapter, so
+   * the card names the one they picked: a key typed here is an OpenRouter key or
+   * an OpenCode Go key, and which one it is decides the variable it lands in.
+   * Every other source has a single provider, so the adapter's own name is it.
+   */
+  const keyCardProviderName = adapterType === "opencode_local"
+    ? (providerChoice === "opencode" ? "OpenCode" : "OpenRouter")
+    : CONNECT_SOURCE_NAMES[adapterType] ?? adapterType;
   function managedBindingForStep(): AiConnectionBinding | undefined {
     if (isCopilot) return copilotConnection;
     const restoredBinding = restoredSetup?.companyId === createdCompanyId
@@ -796,10 +873,10 @@ function OnboardingWizardInner({
       const savedEnv = restoredSetup?.companyId === createdCompanyId
         && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, {})
         ? restoredSetup.adapterConfig.env as Record<string, unknown> | undefined : undefined;
-      if (savedEnv?.[credentialMode === "api" ? apiKeyEnvKeyFor(adapterType) : "CODEX_HOME"]) return undefined;
+      if (savedEnv?.[credentialMode === "api" ? apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined) : "CODEX_HOME"]) return undefined;
     }
     if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
-      !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType)
+      !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined)
         ? apiKeySecretRef.current.aiConnection : undefined);
     return savedSubscription?.aiConnection ?? (managedSubscriptionRef.current?.companyId === createdCompanyId && managedSubscriptionRef.current.binding.provider === managedProvider ? managedSubscriptionRef.current.binding : undefined);
   }
@@ -952,6 +1029,8 @@ function OnboardingWizardInner({
       onboardingCopilot: isCopilot,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
+      // The provider behind the OpenCode harness. A choice, not a secret.
+      providerChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
     };
@@ -959,11 +1038,23 @@ function OnboardingWizardInner({
   }, [
     effectiveOnboardingOpen, step, companyName,
     agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
-    credentialMode, credentialModeChoice,
+    credentialMode, credentialModeChoice, providerChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
   ]);
 
+  /**
+   * Which provider's catalog the model list is asked for.
+   *
+   * OpenCode runs on one of two providers and the step asks which. The two
+   * answer from different catalogs — OpenRouter's own list, and OpenCode Go's
+   * gateway catalog, whose ids arrive unprefixed and are namespaced
+   * `opencode-go/…` on the way back — so the answer belongs in the query, and
+   * in its key: serving one provider's list from the other's cache is how a
+   * customer would be offered models the provider they picked cannot route.
+   */
+  const adapterModelsProvider =
+    adapterType === "opencode_local" ? providerChoice : undefined;
   const getCapabilities = useAdapterCapabilities();
   const adapterCaps = getCapabilities(adapterType);
 
@@ -1032,10 +1123,14 @@ function OnboardingWizardInner({
   } = useQuery({
     queryKey: isCopilot
       ? ["onboarding-adapter-models", createdCompanyId, adapterType, resolvedLoginEnvironmentId, copilotConnection]
-      : createdCompanyId ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null) : ["agents", "none", "adapter-models", adapterType, null],
+      : createdCompanyId
+        ? queryKeys.agents.adapterModels(createdCompanyId, adapterType, null, adapterModelsProvider)
+        : ["agents", "none", "adapter-models", adapterType, null, adapterModelsProvider ?? null],
     queryFn: () => agentsApi.adapterModels(createdCompanyId!, adapterType, {
       environmentId: isCopilot ? resolvedLoginEnvironmentId : null,
-      ...(isCopilot ? { provider: "acpx", acpxAgent: "copilot", aiConnection: copilotConnection } : {}),
+      ...(isCopilot
+        ? { provider: "acpx", acpxAgent: "copilot", aiConnection: copilotConnection }
+        : adapterModelsProvider ? { provider: adapterModelsProvider } : {}),
     }),
     ...(isCopilot ? COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS : {}),
     enabled: Boolean(createdCompanyId) && effectiveOnboardingOpen && step === 4 && (!isCopilot || Boolean(copilotConnection && copilotEnvironmentReady)),
@@ -1244,7 +1339,7 @@ function OnboardingWizardInner({
   // Build adapter grids dynamically from the UI registry + display metadata.
   // External/plugin adapters automatically appear with generic defaults, and
   // server-disabled types are filtered out.
-  const { recommendedAdapters, moreAdapters } = useMemo(() => {
+  const { recommendedAdapters, moreAdapters, moreAdapterChoices } = useMemo(() => {
     const all = listUIAdapters()
       .filter((a) =>
         !ONBOARDING_EXCLUDED_ADAPTER_TYPES.has(a.type) &&
@@ -1252,13 +1347,23 @@ function OnboardingWizardInner({
         isVisualAdapterChoice(a.type)
       )
       .map((a) => ({ ...getAdapterDisplay(a.type), type: a.type }));
+    const recommendedAdapters = all.filter((a) => a.recommended);
+    const moreAdapters = all.filter((a) => !a.recommended);
 
     const copilot = copilotOnboardingEnabled && !disabledTypes.has("paperclip_runner") && listUIAdapters().some((a) => a.type === "paperclip_runner")
       ? [{ ...getAdapterDisplay("copilot_runtime"), type: "paperclip_runner", label: "GitHub Copilot", recommended: true }]
       : [];
     return {
-      recommendedAdapters: [...all.filter((a) => a.recommended), ...copilot],
-      moreAdapters: all.filter((a) => !a.recommended),
+      recommendedAdapters: [...recommendedAdapters, ...copilot],
+      moreAdapters,
+      // What the disclosure below the row actually offers — a subset of
+      // `moreAdapters`, which stays the wider list the snap reads as "adapters
+      // this step knows about". Keyed on the type, never on `recommended`: that
+      // flag also drives the master wizard's grid, and a type listed here is
+      // offerable on this step whatever the registry says about its prominence.
+      moreAdapterChoices: moreAdapters.filter((a) =>
+        ONBOARDING_MORE_ADAPTER_TYPES.has(a.type)
+      ),
     };
   }, [disabledTypes, copilotOnboardingEnabled]);
 
@@ -1266,9 +1371,49 @@ function OnboardingWizardInner({
    * A source chosen from the visible row. Read off the row rather than off
    * `adapterType` alone, because a restored draft can name an adapter this step
    * no longer offers — a selection the customer cannot see.
+   *
+   * Both rows are the same question, so answering either one counts: the pair
+   * of flags is what lets the collapsed row know which section the answer came
+   * from, and `sourceSelected` is what the step gates on.
    */
-  const sourceSelected =
+  const recommendedSourceSelected =
     sourcePicked && recommendedAdapters.some((opt) => opt.type === adapterType);
+  const moreSourceSelected =
+    sourcePicked && moreAdapterChoices.some((opt) => opt.type === adapterType);
+  const sourceSelected = recommendedSourceSelected || moreSourceSelected;
+
+  /**
+   * Picking a source, whichever row it was drawn in.
+   *
+   * Shared rather than written twice: the two rows are one answer, and a second
+   * copy is how the pick, the runner reset and the model default drift apart.
+   * A press during the sequence is refused — by then the row is a statement and
+   * the disclosure is out of the DOM, and a late swap would change the adapter
+   * out from under a running sign-in.
+   */
+  const selectSource = (id: string) => {
+    if (connectPhase !== "idle") return;
+    autoConnectStartedRef.current = false;
+    setSourcePicked(true);
+    setAdapterType(id);
+    if (id !== adapterType) setRunner("auto");
+    // No model is preselected for any source. OpenCode used to arrive on a
+    // pinned model; with two providers behind it and a discovered catalog, that
+    // model was frequently one the chosen provider could not even route. The
+    // customer answers this on the card instead, and the CTA waits for it.
+    //
+    // Only when the source actually changes. Re-picking the source that is
+    // already selected is what a restored draft does, and the restored model
+    // is the answer to that draft — clearing it here would wipe the very model
+    // the restore brought back.
+    if (id !== adapterType && id !== "codex_local") setModel("");
+    // Closed here rather than left as it was: the answer is in, and the
+    // disclosure is out of the DOM from this beat on. Leaving the flag open
+    // would hand a second visit — or the unwind back to the question — a row
+    // still unfolded, for a choice already made.
+    setMoreAdaptersOpen(false);
+    setConnectPhase("collapsing");
+  };
 
   /**
    * Whether the connect step may advance.
@@ -1286,11 +1431,39 @@ function OnboardingWizardInner({
    *
    * Anything that gates this step belongs in here, so the next one is added
    * once rather than twice.
+   *
+   * OpenCode discovers models over the network (the gateway's public catalog,
+   * or OpenRouter's list), which takes a round trip on the first call. Clicking
+   * Connect during that window only earns
+   * the "still loading" error from `handleGiveHeartbeat`, so the wait gates the
+   * button instead. Other adapters answer from a static list and stay clickable.
    */
+  /**
+   * Whether a model has been chosen, for the source whose model comes from
+   * discovery.
+   *
+   * There is no OpenCode default to fall back on: the list is the host's, and a
+   * selection outside it is not one the chosen provider can serve — so the
+   * field starts empty and the step waits for the answer. `false` while the
+   * list is still loading too, since nothing has been offered to choose from
+   * yet and `handleGiveHeartbeat` refuses a model it cannot find there.
+   */
+  const openCodeModelChosen =
+    adapterType !== "opencode_local" ||
+    (adapterModels ?? []).some((entry) => entry.id === model.trim());
+
   const restoredApiCredential = restoredSetup?.companyId === createdCompanyId
     && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {})
     && !selectedSavedKey && (restoredSetup.adapterConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)];
-  const connectStepReady = Boolean(setupPrepared || createdAgentId) && sourceSelected && !adapterEnvLoading && !savedKeys.loading && runnerDiscoveryReady && (!isCopilot || copilotModelReady);
+  const connectStepReady =
+    Boolean(setupPrepared || createdAgentId) &&
+    sourceSelected &&
+    openCodeModelChosen &&
+    !adapterEnvLoading &&
+    !savedKeys.loading &&
+    runnerDiscoveryReady &&
+    (!isCopilot || copilotModelReady) &&
+    !(adapterType === "opencode_local" && (adapterModelsLoading || adapterModelsFetching));
 
   useEffect(() => {
     if (step !== 4 || !createdCompanyId || !agentName.trim() || !adapterRegistryLoaded
@@ -1352,10 +1525,20 @@ function OnboardingWizardInner({
             setUrl(typeof config.url === "string" ? config.url : "");
             setRunner(agent.adapterType === "paperclip_runner" ? "paperclip" : "legacy");
             const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
+            // The provider behind the OpenCode harness is part of the restored
+            // answer, not a detail of it: a Go setup restored on OpenRouter
+            // would load the wrong catalog, and the step would then reject the
+            // model it had just restored. It also decides which variable holds
+            // the key, so it is settled before the credential chain reads one.
+            const restoredProvider = binding?.provider === "opencode" ? "opencode"
+              : binding?.provider === "openrouter" ? "openrouter"
+              : (config.env as Record<string, unknown> | undefined)?.[PROVIDER_ENV_KEYS.opencode] ? "opencode"
+              : undefined;
             if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
-            else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
+            else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? restoredProvider : undefined)]) setCredentialMode("api");
             else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
               || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
+            if (agentHarnessType(agent.adapterType, config) === "opencode_local" && restoredProvider) setProviderChoice(restoredProvider);
             if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
           }
         }
@@ -1699,10 +1882,6 @@ function OnboardingWizardInner({
     // unofferable, so the question is open again.
     setSourcePicked(false);
     if (next === "codex_local") return;
-    if (next === "opencode_local") {
-      setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-      return;
-    }
     if (next === "gemini_local") {
       setModel(DEFAULT_GEMINI_LOCAL_MODEL);
       return;
@@ -1769,39 +1948,18 @@ function OnboardingWizardInner({
     setConnectCredentialStored(false);
   }, [step]);
 
-  const selectedModel = (adapterModels ?? []).find((m) => m.id === model);
-  const hasAnthropicApiKeyOverrideCheck =
-    adapterEnvResult?.checks.some(
-      (check) =>
-        check.code === "claude_anthropic_api_key_overrides_subscription"
-    ) ?? false;
-  const shouldSuggestUnsetAnthropicApiKey =
-    adapterType === "claude_local" &&
-    adapterEnvResult?.status === "fail" &&
-    hasAnthropicApiKeyOverrideCheck;
-  const filteredModels = useMemo(() => {
-    const query = modelSearch.trim().toLowerCase();
-    return (adapterModels ?? []).filter((entry) => {
-      if (!query) return true;
-      const provider = extractProviderIdWithFallback(entry.id, "");
-      return (
-        entry.id.toLowerCase().includes(query) ||
-        entry.label.toLowerCase().includes(query) ||
-        provider.toLowerCase().includes(query)
-      );
-    });
-  }, [adapterModels, modelSearch]);
-  const groupedModels = useMemo(() => {
-    if (adapterType !== "opencode_local") {
-      return [
-        {
-          provider: "models",
-          entries: [...filteredModels].sort((a, b) => a.id.localeCompare(b.id))
-        }
-      ];
-    }
+  /**
+   * The discovered models, grouped by provider namespace for the card's select.
+   *
+   * `adapterModels` is already the chosen provider's catalog — OpenRouter's, or
+   * the Go gateway's `opencode-go/…` entries — so a group is the namespace the
+   * server answered with, and the grouping keeps a long list scannable instead
+   * of one alphabetical run across namespaces. Not sorted across groups: what
+   * the server reports is what the customer chooses from.
+   */
+  const modelChoices = useMemo(() => {
     const groups = new Map<string, Array<{ id: string; label: string }>>();
-    for (const entry of filteredModels) {
+    for (const entry of adapterModels ?? []) {
       const provider = extractProviderIdWithFallback(entry.id);
       const bucket = groups.get(provider) ?? [];
       bucket.push(entry);
@@ -1813,7 +1971,16 @@ function OnboardingWizardInner({
         provider,
         entries: [...entries].sort((a, b) => a.id.localeCompare(b.id))
       }));
-  }, [filteredModels, adapterType]);
+  }, [adapterModels]);
+  const hasAnthropicApiKeyOverrideCheck =
+    adapterEnvResult?.checks.some(
+      (check) =>
+        check.code === "claude_anthropic_api_key_overrides_subscription"
+    ) ?? false;
+  const shouldSuggestUnsetAnthropicApiKey =
+    adapterType === "claude_local" &&
+    adapterEnvResult?.status === "fail" &&
+    hasAnthropicApiKeyOverrideCheck;
 
   function reset() {
     onboardingDraftStorage.clear();
@@ -2001,11 +2168,18 @@ function OnboardingWizardInner({
    */
   async function storeApiKeyUserSecret(companyId: string): Promise<boolean> {
     const key = apiKey.trim();
-    const envKey = apiKeyEnvKeyFor(adapterType);
+    const envKey = apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined);
     if (apiKeySecretRef.current?.key === key && apiKeySecretRef.current.companyId === companyId && apiKeySecretRef.current.envKey === envKey) return true;
     try {
       if (managedProvider) {
-        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
+        // OpenCode-local is the one source the connect step asks a provider
+        // question for, so its connection is named for the answer (OpenRouter
+        // or OpenCode Go) rather than for the adapter alone. Every other
+        // adapter keeps its existing source/provider name.
+        const connectionName = adapterType === "opencode_local"
+          ? `My ${keyCardProviderName} API`
+          : `My ${CONNECT_SOURCE_NAMES[adapterType] ?? managedProvider} API`;
+        await aiConnectionsApi.create(companyId, { provider: managedProvider, method: "api_key", name: connectionName, ownership: "personal", apiKey: key, agentIds: [], allAgents: true });
         apiKeySecretRef.current = { key, companyId, envKey, aiConnection: { provider: managedProvider, method: "api_key", mode: "responsible_user" } };
         return true;
       }
@@ -2040,9 +2214,7 @@ function OnboardingWizardInner({
             ? model || DEFAULT_KIMI_LOCAL_MODEL
           : adapterType === "cursor"
             ? model || DEFAULT_CURSOR_LOCAL_MODEL
-            : adapterType === "opencode_local"
-              ? model || DEFAULT_OPENCODE_LOCAL_MODEL
-              : model,
+            : model,
       command,
       args,
       url,
@@ -2091,13 +2263,13 @@ function OnboardingWizardInner({
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
     if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)
-      && (!((savedConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)])
+      && (!((savedConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined)])
         || selectedSavedKey || apiKey.trim())) {
       const env =
         typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
           ? { ...(config.env as Record<string, unknown>) }
           : {};
-      env[apiKeyEnvKeyFor(adapterType)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
+      env[apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined)] = selectedApiKey?.binding ?? apiKeySecretRef.current?.binding;
       config.env = env;
     }
     if (credentialMode === "subscription" && savedSubscription?.binding && !(savedConfig.env as Record<string, unknown> | undefined)?.CODEX_HOME) {
@@ -2378,7 +2550,7 @@ function OnboardingWizardInner({
         if (!discoveredModels.some((entry) => entry.id === selectedModelId)) {
           setError(
             discoveredModels.length === 0
-              ? "No OpenCode models discovered. Run `opencode models` and authenticate providers."
+              ? "No OpenCode models discovered. Retry, or enter a model ID manually."
               : `Configured OpenCode model is unavailable: ${selectedModelId}`
           );
           return;
@@ -3009,27 +3181,73 @@ function OnboardingWizardInner({
                         ...(opt.type === "paperclip_runner" ? { credentialMode: "api" as const } : {}),
                       }))}
                       mode={credentialMode}
-                      selectedId={
-                        sourcePicked &&
-                        recommendedAdapters.some((opt) => opt.type === adapterType)
-                          ? adapterType
-                          : null
-                      }
+                      selectedId={recommendedSourceSelected ? adapterType : null}
                       collapsed={connectCollapsed}
                       settling={connectPhase === "unwindRow"}
-                      onSelect={(id) => {
-                        if (connectPhase !== "idle") return;
-                        autoConnectStartedRef.current = false;
-                        setSourcePicked(true);
-                        setAdapterType(id);
-                        if (id !== adapterType) setRunner("auto");
-                        if (id !== adapterType) {
-                          if (id === "opencode_local") setModel(DEFAULT_OPENCODE_LOCAL_MODEL);
-                          else if (id !== "codex_local") setModel("");
-                        }
-                        setConnectPhase("collapsing");
-                      }}
+                      onSelect={selectSource}
                     />
+
+                    {/* The second tier, folded away. Same tiles, same tiles
+                        component, same handler — the disclosure only decides
+                        whether they are on screen, and the step cannot tell
+                        afterwards which row the answer came from.
+
+                        With something chosen from here the row below holds the
+                        choice alone: the recommended row keeps rendering (its
+                        tiles leave with their own fade) but has nothing to
+                        show, so what stands is the picked tile, exactly as it
+                        does for a recommended pick. */}
+                    {moreAdapterChoices.length > 0 && (
+                      <div className={cn(!connectCollapsed && "mt-3")}>
+                        {/* Gone once the row has collapsed. The step is
+                            answering the question by then, and a disclosure
+                            left sitting under the choice invites a press that
+                            would have to abandon a live sign-in to honour. */}
+                        {!connectCollapsed && (
+                          <button
+                            type="button"
+                            aria-expanded={moreAdaptersOpen}
+                            aria-controls="onboarding-more-adapters"
+                            onClick={() => setMoreAdaptersOpen((open) => !open)}
+                            className="flex cursor-pointer items-center gap-1.5 text-sm text-muted-foreground transition-colors hover:text-foreground"
+                          >
+                            <ChevronDown
+                              className={cn(
+                                "size-3.5 transition-transform",
+                                moreAdaptersOpen ? "rotate-0" : "-rotate-90",
+                              )}
+                            />
+                            More adapters
+                          </button>
+                        )}
+                        {/* Outside the collapsed step, and only while the
+                            disclosure is open. Collapsed, the tiles are the
+                            answer rather than the question, and an open
+                            disclosure with nothing picked would mount an empty
+                            radiogroup — announced as a group with no radios in
+                            it. `moreSourceSelected` keeps the answered tiles of
+                            this row on screen through the collapse, which is
+                            what the recommended row does with its own tiles. */}
+                        {((!connectCollapsed && moreAdaptersOpen) || moreSourceSelected) && (
+                          <div id="onboarding-more-adapters">
+                            <ModelSourceTiles
+                              label="More adapters"
+                              sources={moreAdapterChoices.map((opt) => ({
+                                id: opt.type,
+                                label: CONNECT_SOURCE_NAMES[opt.type] ?? opt.label,
+                                icon: <ModelSourceMark type={opt.type} Fallback={opt.icon} />,
+                                ...(API_ONLY_SOURCE_TYPES.has(opt.type) ? { credentialMode: "api" as const } : {}),
+                              }))}
+                              mode={credentialMode}
+                              selectedId={moreSourceSelected ? adapterType : null}
+                              collapsed={connectCollapsed}
+                              settling={connectPhase === "unwindRow"}
+                              onSelect={selectSource}
+                            />
+                          </div>
+                        )}
+                      </div>
+                    )}
 
                     {/* Fades on the first beat but keeps its space until the
                         second, so pressing a tile moves nothing vertically.
@@ -3131,12 +3349,50 @@ function OnboardingWizardInner({
                       </OnboardingLoginCard>
                     ) : credentialMode === "api" ? (
                       <OnboardingLoginCard
-                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : `Provide your ${
-                          CONNECT_SOURCE_NAMES[adapterType] ?? adapterType
-                        } API key to connect`}
+                        instruction={savedKeys.options.length ? "Choose a saved API key or enter a new one" : (
+                          // A live region, because this sentence names the
+                          // provider picked just above it and changes with that
+                          // choice rather than with anything on the card.
+                          <span role="status">{`Provide your ${keyCardProviderName} API key to connect`}</span>
+                        )}
                       >
+                        {/* OpenCode is the one source here that runs on a
+                            provider the step has to ask for. Above the key
+                            field, because it is what the key *is* — the two
+                            providers hold their credentials under different
+                            variables, and picking one is what makes the saved
+                            keys below the right ones to offer. */}
+                        {adapterType === "opencode_local" && (
+                          <label className="mb-4 block space-y-2 text-sm">
+                            <span>Provider</span>
+                            <select
+                              aria-label="Provider"
+                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              value={providerChoice}
+                              onChange={(event) => {
+                                // The other provider's key does not carry over:
+                                // it is valid for that provider alone, so the
+                                // field empties and the saved keys are looked up
+                                // again under the variable the new choice names.
+                                setProviderChoice(event.target.value as OpenCodeProvider);
+                                setApiKey("");
+                                setSelectedSavedKey(null);
+                                // Nor does the other provider's model: the two
+                                // catalogs are different, and a model from one
+                                // is not routable through the other. The list
+                                // below is re-fetched, and the answer is asked
+                                // again from an empty field.
+                                setModel("");
+                              }}
+                              disabled={loading || adapterEnvLoading}
+                            >
+                              <option value="openrouter">OpenRouter</option>
+                              <option value="opencode">OpenCode Go</option>
+                            </select>
+                          </label>
+                        )}
                         <SavedProviderKeySelect {...savedKeys} disabled={loading || adapterEnvLoading} value={selectedApiKey?.id ?? ""} onChange={(id) => {
-                          setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id } : null);
+                          setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined), id } : null);
                           setApiKey("");
                         }} />
                         {!selectedApiKey && <OnboardingCardField
@@ -3149,11 +3405,69 @@ function OnboardingWizardInner({
                           autoFocus
                           value={apiKey}
                           onChange={(value) => {
-                            setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType), id: "" } : null);
+                            setSelectedSavedKey(createdCompanyId ? { companyId: createdCompanyId, envKey: apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined), id: "" } : null);
                             setApiKey(value);
                           }}
                           onSubmit={() => handleConnectStepPrimary()}
                         />}
+                        {/* The model is asked for *after* the key, because it is
+                            the second half of one answer: the credential says
+                            who is paying, the model says what runs, and the
+                            picker cannot offer anything until the provider
+                            above is known. It arrives empty — nothing is
+                            preselected — because the list is the gateway's own
+                            and a pinned model is one nobody chose, frequently
+                            one the provider selected above cannot route. The
+                            CTA waits on this answer, the way it waits on the
+                            key. */}
+                        {adapterType === "opencode_local" && (
+                          <label className="block space-y-2 text-sm">
+                            <span>Model</span>
+                            <select
+                              aria-label="Model"
+                              className="w-full rounded-md border border-input bg-background px-3 py-2 text-sm outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                              value={model}
+                              onChange={(event) => setModel(event.target.value)}
+                              disabled={loading || adapterEnvLoading || adapterModelsLoading}
+                            >
+                              {/* A placeholder rather than a value: the field
+                                  starts unanswered, and this names why when
+                                  there is nothing to choose from yet. */}
+                              <option value="" disabled>
+                                {adapterModelsError
+                                  ? "Could not load models"
+                                  : adapterModelsLoading || adapterModelsFetching
+                                    ? "Loading models…"
+                                    : modelChoices.length === 0
+                                      ? "No models available"
+                                      : "Select a model"}
+                              </option>
+                              {modelChoices.map(({ provider, entries }) => (
+                                <optgroup key={provider} label={provider}>
+                                  {entries.map((entry) => (
+                                    <option key={entry.id} value={entry.id}>
+                                      {entry.label}
+                                    </option>
+                                  ))}
+                                </optgroup>
+                              ))}
+                            </select>
+                            {adapterModelsError && (
+                              <span className="block text-(length:--text-micro) text-destructive">
+                                {adapterModelsError instanceof Error
+                                  ? adapterModelsError.message
+                                  : "Failed to load models."}
+                                <button
+                                  type="button"
+                                  className="ml-1 underline"
+                                  onClick={() => { void refreshAdapterModels(); }}
+                                >
+                                  Retry
+                                </button>
+                              </span>
+                            )}
+                          </label>
+                        )}
                       </OnboardingLoginCard>
                     ) : connectStepNeedsLogin &&
                       createdCompanyId &&
@@ -3266,8 +3580,16 @@ function OnboardingWizardInner({
                   </details>}
 
                   {/* Conditional adapter fields */}
-                  {/* Direct adapters resolve their defaults. Copilot requires
-                      an explicit authenticated model in its connection card. */}
+                  {/* No model picker here, for the adapters that resolve their
+                      own default (see buildAdapterConfig): the picker asked the
+                      customer to choose a model before they had any way to
+                      judge one, and the agent's model is changeable later, where
+                      its work gives the choice meaning. OpenCode is the one
+                      exception. It has no such default — two providers behind
+                      one harness and a discovered catalog — so its key card
+                      carries the provider and the model, and the CTA waits for
+                      both. Copilot likewise requires an explicit authenticated
+                      model in its connection card. */}
 
                   {/* Progress is shown above; failed checks remain actionable here. */}
                   {/* Not while the hire is in flight. The probe's result lands
@@ -3369,8 +3691,7 @@ function OnboardingWizardInner({
                             </p>
                           ) : adapterType === "cursor" ||
                           adapterType === "gemini_local" ||
-                          adapterType === "kimi_local" ||
-                          adapterType === "opencode_local" ? (
+                          adapterType === "kimi_local" ? (
                             <p className="text-muted-foreground">
                               If auth fails, set{" "}
                               <span className="font-mono">
@@ -3378,9 +3699,7 @@ function OnboardingWizardInner({
                                   ? "CURSOR_API_KEY"
                                   : adapterType === "gemini_local"
                                     ? "GEMINI_API_KEY"
-                                    : adapterType === "kimi_local"
-                                      ? "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"
-                                    : "OPENAI_API_KEY"}
+                                    : "KIMI_MODEL_NAME + KIMI_MODEL_API_KEY"}
                               </span>{" "}
                               in env or run{" "}
                               <span className="font-mono">
@@ -3388,9 +3707,7 @@ function OnboardingWizardInner({
                                   ? "agent login"
                                   : adapterType === "gemini_local"
                                       ? "gemini auth"
-                                      : adapterType === "kimi_local"
-                                        ? "kimi login"
-                                      : "opencode auth login"}
+                                      : "kimi login"}
                               </span>
                               .
                             </p>

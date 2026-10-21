@@ -1,4 +1,4 @@
-import { useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "../../lib/utils";
@@ -65,10 +65,28 @@ export function CredentialTag({ mode }: { mode: ModelConnectionMode }) {
   );
 }
 
+/**
+ * The tile's accessible name.
+ *
+ * Composed rather than read off the contents, and for two reasons. The name and
+ * its tag sit side by side with nothing between them, so as one run of text they
+ * arrive as "OpenCodeAPI key". And the tag swaps in place: through the swap the
+ * outgoing and incoming labels are both in the DOM, and a name read from there
+ * would name the credential the customer just abandoned.
+ *
+ * Written only here. `radio` is a role whose children are presentational, so
+ * the spans below are already out of the name — nothing has to be hidden to stop
+ * them being read.
+ */
+function accessibleName(source: ModelSource, mode: ModelConnectionMode | null): string {
+  return mode ? `${source.label} ${CREDENTIAL_TAG_LABEL[mode]}` : source.label;
+}
+
 function ModelSourceTile({
   source,
   mode,
   selected,
+  tabbable,
   onSelect,
   buttonRef,
   settling,
@@ -76,6 +94,8 @@ function ModelSourceTile({
   source: ModelSource;
   mode: ModelConnectionMode | null;
   selected: boolean;
+  /** Whether this tile is the row's one stop on the Tab path — see the caller. */
+  tabbable: boolean;
   onSelect: () => void;
   buttonRef: (node: HTMLButtonElement | null) => void;
   settling: boolean;
@@ -86,6 +106,11 @@ function ModelSourceTile({
       type="button"
       role="radio"
       aria-checked={selected}
+      aria-label={accessibleName(source, mode)}
+      // Roving tabindex: the group is one stop, and the arrows move inside it.
+      // Every tile tabbable would make the row three stops that the arrow keys
+      // also walk, which is two ways through the same question.
+      tabIndex={tabbable ? 0 : -1}
       onClick={onSelect}
       className={cn(
         "flex min-w-0 flex-1 cursor-pointer flex-col items-center gap-1.5 self-stretch rounded-md border p-3",
@@ -163,26 +188,81 @@ export function ModelSourceTiles({
   settling?: boolean;
 }) {
   const tiles = useRef(new Map<string, HTMLButtonElement>());
+  /**
+   * The frame waiting to move focus onto a tile the arrows have just walked to.
+   *
+   * Held so it can be dropped on unmount, and so a held-down arrow key does not
+   * queue one focus per repeat behind the last.
+   */
+  const focusFrame = useRef<number | null>(null);
+  /**
+   * The tile the caret is on, held apart from the answer.
+   *
+   * The arrows walk the row; they do not answer it. Picking a source is a
+   * commitment — the row collapses and the sign-in starts — and a row of three
+   * tiles that committed on the first arrow press left the middle one out of
+   * reach: the caret could only find it by walking past the end and wrapping,
+   * by which time the row was gone. The caret is therefore held here, and
+   * Enter or Space commits the tile it is on.
+   */
+  const [focusedId, setFocusedId] = useState<string | null>(null);
+
+  useEffect(
+    () => () => {
+      if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
+    },
+    [],
+  );
 
   /**
-   * Arrow keys move the selection and the focus together, which is what a
-   * radio group is expected to do — without it the role would be announced and
-   * then not behave, which is worse than plain buttons. Selection wraps at both
-   * ends; three tiles is short enough that stopping at the edges just reads as
-   * the key having failed.
+   * The arrows move the caret along the row, without answering it.
+   *
+   * Focus lands on the next frame rather than here. The commit that follows a
+   * click is not a no-op for the node looked up above: the row moves under
+   * `AnimatePresence`'s `popLayout` mode, and answering from the second tier
+   * also takes the disclosure out from above the tiles. Focused here, the
+   * caret can end up on a node that commit has left behind — the tile then
+   * reads as chosen with nothing holding the keyboard, which is a keyboard
+   * user with nowhere to be.
+   *
+   * Nothing has been painted in between, so this costs a frame of the tile's
+   * travel rather than a frame of the caret sitting somewhere else.
    */
-  const moveSelection = (delta: number) => {
+  const moveFocus = (delta: number) => {
     if (sources.length === 0) return;
-    const current = sources.findIndex((source) => source.id === selectedId);
+    const current = sources.findIndex((source) => source.id === (focusedId ?? selectedId));
     // Nothing picked yet: either arrow enters the row from the near end.
     const from = current === -1 ? (delta > 0 ? -1 : 0) : current;
     const next = (from + delta + sources.length) % sources.length;
     const target = sources[next]!;
-    onSelect(target.id);
-    tiles.current.get(target.id)?.focus();
+    setFocusedId(target.id);
+    if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
+    focusFrame.current = requestAnimationFrame(() => {
+      focusFrame.current = null;
+      tiles.current.get(target.id)?.focus();
+    });
   };
 
   const shown = collapsed ? sources.filter((source) => source.id === selectedId) : sources;
+  /**
+   * Whether the row holds the picked tile. A row without it — the second tier
+   * before it is answered, or one the answer has moved out of — would otherwise
+   * leave every tile at `-1` and take the group off the Tab path entirely,
+   * which is a row nobody can reach. Its first tile carries the entry instead,
+   * and the arrows take it from there.
+   */
+  const rowHasSelection = shown.some((source) => source.id === selectedId);
+  /**
+   * The tile that holds the row's one stop on the Tab path.
+   *
+   * The caret's tile while the arrows have walked it, the answer's tile while
+   * there is one, and the first tile of a row that is still a question. The
+   * group stays a single stop — a radiogroup is one tab stop, and the arrows
+   * are how a keyboard user moves inside it.
+   */
+  const tabStopId = shown.some((source) => source.id === focusedId)
+    ? focusedId
+    : rowHasSelection ? selectedId : shown[0]?.id ?? null;
 
   return (
     <div
@@ -195,10 +275,10 @@ export function ModelSourceTiles({
         if (collapsed) return;
         if (event.key === "ArrowRight" || event.key === "ArrowDown") {
           event.preventDefault();
-          moveSelection(1);
+          moveFocus(1);
         } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
           event.preventDefault();
-          moveSelection(-1);
+          moveFocus(-1);
         }
       }}
     >
@@ -226,6 +306,7 @@ export function ModelSourceTiles({
               source={source}
               mode={source.credentialMode === undefined ? mode : source.credentialMode}
               selected={source.id === selectedId}
+              tabbable={source.id === tabStopId}
               onSelect={() => onSelect(source.id)}
               settling={settling}
               buttonRef={(node) => {
