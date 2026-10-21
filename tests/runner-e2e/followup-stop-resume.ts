@@ -25,6 +25,9 @@ export const followupStopTask: RunnerTaskFixture = {
     ].join("\n");
   }, buildMatchers: () => [],
 };
+export function isActiveStopCheckpointRun(run: { status?: string; nativePhase?: string | null } | undefined) {
+  return run?.status === "running" && run.nativePhase === "provider_running";
+}
 export function exactSyntheticJson(content: string, expected: Record<string, string>): boolean {
   let parsed: unknown;
   try { parsed = JSON.parse(content); } catch { return false; }

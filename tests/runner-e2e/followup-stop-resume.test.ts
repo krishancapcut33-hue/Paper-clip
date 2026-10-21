@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runnerMatrix } from "./catalog.js";
-import { exactSyntheticJson, gradeFollowupStopResume, type FollowupStopObservation } from "./followup-stop-resume.js";
+import { isActiveStopCheckpointRun, exactSyntheticJson, gradeFollowupStopResume, type FollowupStopObservation } from "./followup-stop-resume.js";
 
 function fixture(): FollowupStopObservation {
   return { binding: { companyId: "company", issueId: "task", agentId: "agent" },
@@ -64,4 +64,11 @@ describe("one task across follow-up, Stop and explicit resumption", () => {
     expect(cells.every(cell => cell.environment.id === "local" && cell.suite.manualOnly && cell.suite.groups.length === 0 &&
       cell.suite.definitionMetadata?.stagingQualification === false && cell.task.automaticRetryPolicy === "single_attempt")).toBe(true);
   });
+});
+
+it("recognizes the production active-provider phase before checkpoint publication", () => {
+  expect(isActiveStopCheckpointRun({ status: "running", nativePhase: "provider_running" })).toBe(true);
+  for (const run of [undefined, { status: "queued", nativePhase: "provider_running" },
+    { status: "succeeded", nativePhase: "committed" }, { status: "running", nativePhase: "result_accepted" },
+    { status: "running", nativePhase: "workspace_finalizing" }]) expect(isActiveStopCheckpointRun(run)).toBe(false);
 });

@@ -5,11 +5,11 @@ import path from "node:path";
 import { expect, type Page } from "@playwright/test";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { collectRunEvents } from "./run-observations.js";
-import { readRegisteredArtifacts } from "./registered-artifact.js";
+import { readRegisteredArtifacts, RegisteredArtifactNotFoundError } from "./registered-artifact.js";
 import { captureStockHarness, gradeStockHire } from "./stock-harness.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { waitForRunDelivery } from "./run-delivery.js";
-import { exactSyntheticJson, followupStopFiles, gradeFollowupStopResume, STOP_QUIET_WINDOW_MS, type FollowupStopObservation } from "./followup-stop-resume.js";
+import { isActiveStopCheckpointRun, exactSyntheticJson, followupStopFiles, gradeFollowupStopResume, STOP_QUIET_WINDOW_MS, type FollowupStopObservation } from "./followup-stop-resume.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 
@@ -86,11 +86,16 @@ export async function runFollowupStopResumeFlow(input: {
       load: async () => {
         await refresh();
         const run = runs[0];
-        if (runs.length !== 1 || run?.status !== "running" || run.nativePhase !== "running") return false;
+        if (runs.length !== 1 || !isActiveStopCheckpointRun(run)) return false;
         const events = prpEvents(await runEvents(run.id), run.id);
-        if (!events.some(event => event.eventType === "turn.started") || events.some(event => event.eventType === "run.result.accepted")) return false;
-        const [checkpoint] = await readRegisteredArtifacts(api, issue!.id, run.id, [files.checkpoint]);
-        if (!checkpoint || !exactSyntheticJson(checkpoint.content, { sourceSha256, label: files.initialLabel })) throw new Error("Checkpoint does not match the independent source");
+        if (!events.some(event => event.eventType === "turn.started" && event.sourceKind === "runner") || events.some(event => event.eventType === "run.result.accepted")) return false;
+        const checkpoint = await readRegisteredArtifacts(api, issue!.id, run.id, [files.checkpoint])
+          .then(([artifact]) => artifact).catch(error => {
+            if (error instanceof RegisteredArtifactNotFoundError) return null;
+            throw error;
+          });
+        if (!checkpoint) return false;
+        if (!exactSyntheticJson(checkpoint.content, { sourceSha256, label: files.initialLabel })) throw new Error("Checkpoint does not match the independent source");
         const view = await api.get<Row>(`/api/issues/${issue!.id}/workspace`);
         if (await realpath(view.workspace.cwd) !== workspace || !issue!.executionWorkspaceId) throw new Error("Stop/resume did not use its configured workspace");
         observation.initial = { runId: run.id, workspaceId: issue!.executionWorkspaceId, ...retainedRuntime(run), checkpointVerified: true };
