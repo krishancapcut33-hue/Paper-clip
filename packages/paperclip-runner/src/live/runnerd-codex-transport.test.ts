@@ -1892,13 +1892,17 @@ it.each([false, true])("binds a vendored source server to its pnpm dependency ro
     expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
       join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"),
     )).toEqual({ root: selfRooted ? server : workspace, manifest: join(server, "package.json") });
+    expect(runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
+      join(server, "dist/vendor/paperclip-runner/cli/acpx-runtime-sidecar.cjs"), workspace, "pi",
+    )).toEqual({ root: server, manifest: join(server, "package.json") });
   } finally {
     await rm(workspace, { recursive: true, force: true });
   }
 });
-it.each(["source", "scoped-npm", "deployment"])(
-  "admits the controller-selected Copilot package authority in a %s layout",
-  async (layout) => {
+it.each((["copilot", "pi"] as const).flatMap(agent =>
+  ["source", "scoped-npm", "deployment"].map(layout => ({ agent, layout }))))(
+  "admits the controller-selected $agent package authority in a $layout layout",
+  async ({ agent, layout }) => {
     const directory = await realpath(await mkdtemp(join(tmpdir(), "copilot-package-authority-")));
     const runnerRoot = layout === "source"
       ? join(directory, "packages/paperclip-runner")
@@ -1909,13 +1913,13 @@ it.each(["source", "scoped-npm", "deployment"])(
     await writeFile(join(runnerRoot, "package.json"), JSON.stringify({ name: "@paperclipai/paperclip-runner" }));
     try {
       const authority = runnerdLaunchProfileInternals.acpxProviderPackageAuthority(
-        join(runnerRoot, "dist/cli/acpx-runtime-sidecar.cjs"), runnerRoot, "copilot",
+        join(runnerRoot, "dist/cli/acpx-runtime-sidecar.cjs"), runnerRoot, agent,
       );
       expect(authority).toEqual({ root: runnerRoot, manifest: join(runnerRoot, "package.json") });
       vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_ROOT", authority.root);
       vi.stubEnv("PAPERCLIP_ACPX_PROVIDER_PACKAGE_MANIFEST", authority.manifest);
-      expect(resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", "copilot"))
-        .toBe(join(runnerRoot, "provider-assets/copilot"));
+      expect(resolveRunnerProviderAssetsRoot("file:///proc/self/fd/18", agent))
+        .toBe(join(runnerRoot, `provider-assets/${agent}`));
     } finally {
       vi.unstubAllEnvs();
       await rm(directory, { recursive: true, force: true });

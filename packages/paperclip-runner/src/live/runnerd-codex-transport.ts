@@ -3023,7 +3023,7 @@ function acpxProviderPackageAuthority(
     const workspaceRoot = dirname(serverRoot);
     // Source/Docker builds share the workspace's pnpm store. Published npm
     // bundles and self-rooted pnpm deployments retain their server authority.
-    if (basename(serverRoot) === "server" &&
+    if (agent !== "pi" && basename(serverRoot) === "server" &&
         !existsSync(resolve(serverRoot, "node_modules/.pnpm")) &&
         existsSync(resolve(workspaceRoot, "node_modules/.pnpm")) &&
         existsSync(resolve(workspaceRoot, "pnpm-workspace.yaml")) &&
@@ -3046,10 +3046,10 @@ function acpxProviderPackageAuthority(
     );
   }
   const sidecarPackageRoot = resolve(cliDirectory, "../..");
-  // Copilot's native closure belongs to the runner package itself. Its asset
+  // Native Pi and Copilot closures belong to the runner package itself. Their asset
   // guard requires the bound manifest directly inside that same package root;
   // the workspace dependency root used by JS providers is a different owner.
-  if (agent === "copilot") {
+  if (agent === "copilot" || agent === "pi") {
     return {
       root: sidecarPackageRoot,
       manifest: resolve(sidecarPackageRoot, "package.json"),
