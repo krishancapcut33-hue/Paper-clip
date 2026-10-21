@@ -106,7 +106,12 @@ import {
   closeWarmNativeSessionsForEnvironment,
 } from "../native-runtime/index.js";
 import { runningProcesses } from "../../adapters/index.js";
-import { parseObject } from "../../adapters/utils.js";
+import {
+  parseObject,
+  markLocalRunCancellationRequested,
+  terminateSystemdRunScope,
+  type LocalRunContainment,
+} from "../../adapters/utils.js";
 import { isNativeRunnerOwnershipHeld } from "../native-runtime/native-runner-ownership.js";
 import {
   withCurrentBudgetEnforcement,
@@ -178,9 +183,17 @@ export function providerResourceDispositionForTerminalRun(
 export async function terminateHeartbeatRunProcess(input: {
   pid: number | null | undefined;
   processGroupId: number | null | undefined;
+  containment?: LocalRunContainment;
   graceMs?: number;
   signal?: NodeJS.Signals;
 }) {
+  if (input.containment?.kind === "systemd_user_scope") {
+    await terminateSystemdRunScope(input.containment, {
+      signal: input.signal,
+      graceMs: input.graceMs,
+    });
+    return;
+  }
   const pid = input.pid ?? null;
   const processGroupId = input.processGroupId ?? null;
   if (typeof pid !== "number" && typeof processGroupId !== "number") return;
@@ -1057,6 +1070,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         throw pendingProcessCancellation.error;
       return getRun(run.id);
     }
+    markLocalRunCancellationRequested(run.id);
     const running = runningProcesses.get(run.id);
     const stopOwnership =
       run.runtimeMode !== "native"
@@ -1179,6 +1193,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
               await terminateHeartbeatRunProcess({
                 pid: running.child.pid,
                 processGroupId: running.processGroupId,
+                containment: running.containment,
                 // Codex handles Ctrl-C by cancelling its tool sessions. SIGTERM
                 // can leave commands in their separate process groups alive.
                 signal: !control && agent?.adapterType === "codex_local" ? "SIGINT" : undefined,
