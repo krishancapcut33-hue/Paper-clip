@@ -16,12 +16,12 @@ describe("sanitizeInheritedPaperclipEnv", () => {
 
 describe("ensurePathInEnv", () => {
   it("keeps a Windows search path stored under a lowercase key", () => {
-    const env = { path: "C:\Tools;C:\Windows\System32" };
+    const env = { path: "C:\\Tools;C:\\Windows\\System32" };
     expect(ensurePathInEnv(env, "win32")).toBe(env);
   });
 
   it("adds the default PATH on Windows when the key that Windows uses is empty", () => {
-    expect(ensurePathInEnv({ PATH: "", path: "C:\Tools" }, "win32").PATH).toBe(defaultPathForPlatform());
+    expect(ensurePathInEnv({ path: "C:\\Tools", PATH: "" }, "win32").PATH).toBe(defaultPathForPlatform());
   });
 
   it("keeps case-sensitive PATH keys on other platforms", () => {
