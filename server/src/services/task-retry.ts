@@ -29,6 +29,27 @@ export function readTaskRetryIntent(payload: Record<string, unknown> | null | un
   return result.success ? result.data : null;
 }
 
+/** Caller holds the issue dispatch lock. Newer work supersedes an unadmitted
+ * Retry; retiring its authority does not acknowledge or discard saved input. */
+export async function retireSupersededTaskRetry(db: Db, input: {
+  companyId: string; issueId: string; requestId: string; sourceRunId: string;
+}) {
+  const [latest] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.companyId, input.companyId),
+    or(eq(heartbeatRuns.issueId, input.issueId), eq(heartbeatRuns.nativeIssueId, input.issueId),
+      sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${input.issueId}`),
+  )).orderBy(desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)).limit(1);
+  if (latest?.id === input.sourceRunId) return false;
+  const retired = await db.update(agentWakeupRequests).set({ status: "skipped", error: "task_retry_superseded",
+    finishedAt: new Date(), updatedAt: new Date() }).where(and(
+    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.requestId),
+    eq(agentWakeupRequests.reason, "task_retry"), sql`${agentWakeupRequests.runId} is null`,
+    sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
+    inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
+  )).returning({ id: agentWakeupRequests.id });
+  return retired.length > 0;
+}
+
 /** Persist a deliberate click under dispatch's issue-first lock order. This
  * transaction never contacts a provider. The normal wake queue owns execution. */
 export async function requestTaskRetry(input: {
@@ -67,6 +88,10 @@ export async function requestTaskRetry(input: {
       sql`${agentWakeupRequests.payload}->'taskRetry'->>'schema' = 'paperclip.task-retry.v1'`,
       inArray(agentWakeupRequests.status, ["deferred_issue_execution", "queued", "claimed"]),
     )).orderBy(desc(agentWakeupRequests.requestedAt)).limit(1)).at(0);
+    const activeIntent = readTaskRetryIntent(active?.payload);
+    if (active && !active.runId && activeIntent && await retireSupersededTaskRetry(db, {
+      companyId: issue.companyId, issueId: issue.id, requestId: active.id, sourceRunId: activeIntent.sourceRunId,
+    })) active = undefined;
     if (active && !active.runId && issue.conversationAgentId && active.requestedByActorId !== issue.conversationUserId) {
       // A former owner's unadmitted receipt cannot own the new owner's Retry.
       await tx.update(agentWakeupRequests).set({ status: "failed", finishedAt: new Date(), updatedAt: new Date() })

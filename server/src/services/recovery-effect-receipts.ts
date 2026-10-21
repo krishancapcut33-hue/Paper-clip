@@ -2,6 +2,7 @@ import { and, eq, sql, ne, or, inArray } from "drizzle-orm";
 import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, toolInvocations, type Db } from "@paperclipai/db";
 import { getSecretProvider } from "../secrets/provider-registry.js";
 import { readTaskRetryIntent } from "./task-retry.js";
+import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
 
 const record = (value: unknown): Record<string, unknown> =>
   value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -63,12 +64,14 @@ export async function priorRecoveryApiReceipt(db: Db, input: {
     if (typeof source === "string") sourceIds.add(source);
   }
   if (!sourceIds.size) return null;
-  const sources = await db.select({ result: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
+  const ancestry = new Set((await recoveryRunAncestry({ db, companyId: input.companyId,
+    issueId: input.issueId, sourceRunIds: [...sourceIds] })).map(source => source.id));
+  const sources = await db.select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId),
     sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
       ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`,
     ne(heartbeatRuns.id, input.runId),
-    or(inArray(heartbeatRuns.id, [...sourceIds]),
+    or(inArray(heartbeatRuns.id, [...ancestry]),
       sql`${heartbeatRuns.createdAt} < (select created_at from heartbeat_runs where id = ${input.runId})`)));
   let completed: Record<string, unknown> | null = null;
   for (const source of sources) {
@@ -89,7 +92,9 @@ export async function priorRecoveryApiReceipt(db: Db, input: {
       if (result.ok !== true) return { state: "pending", result: { ok: false, status: null,
         error: "api_outcome_unknown", outcome: "unknown",
         guidance: "Reconcile the existing operation before repeating it. Independent work and reads remain available." } };
-      if (receipt.digest === input.digest) completed = receipt;
+      // Successful effects belong to their original intent, not every later
+      // request on this task. Uncertain effects above retain their wider fence.
+      if (ancestry.has(source.id) && receipt.digest === input.digest) completed = receipt;
     }
   }
   return completed;

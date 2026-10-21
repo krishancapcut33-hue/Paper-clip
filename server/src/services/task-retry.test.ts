@@ -3,6 +3,7 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
+import { priorRecoveryApiReceipt } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -186,4 +187,79 @@ describe("durable task Retry admission", () => {
     expect(await readFreshWorkspaceReadiness(db, successor)).toEqual(readiness);
     expect(await readFreshWorkspaceReadiness(db, { ...successor, id: randomUUID() })).toBeNull();
   });
+  it("reuses completed API effects only from the retry ancestry while retaining unrelated uncertainty", async () => {
+    const input = await seed();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+    const receipt = { operationId: "PATCH /api/issues/{id}", digest: "same-title", state: "completed",
+      result: { ok: true, status: 200, data: { title: "Earlier title" } } };
+    const [earlier] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, issueId: input.issueId,
+      agentId: source.agentId, status: "succeeded", createdAt: new Date(1_000), resultJson: { apiToolReceipts: { receipt } } }).returning();
+    const accepted = await requestTaskRetry(input);
+    const [successor] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, issueId: input.issueId,
+      agentId: source.agentId, status: "running", createdAt: new Date(Date.now() + 1_000) }).returning();
+    await db.update(agentWakeupRequests).set({ status: "coalesced", runId: successor.id })
+      .where(eq(agentWakeupRequests.id, accepted.requestId!));
+    const call = { companyId: input.companyId, issueId: input.issueId, runId: successor.id,
+      operationId: receipt.operationId, digest: receipt.digest };
+    expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+    // An actual predecessor edge makes the exact receipt relevant, even across multiple attempts.
+    await db.update(heartbeatRuns).set({ retryOfRunId: earlier.id }).where(eq(heartbeatRuns.id, source.id));
+    expect(await priorRecoveryApiReceipt(db, call)).toEqual(receipt);
+    await db.update(heartbeatRuns).set({ retryOfRunId: null }).where(eq(heartbeatRuns.id, source.id));
+    await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { receipt: { ...receipt,
+      state: "pending", result: { ok: false, outcome: "unknown" } } } } }).where(eq(heartbeatRuns.id, earlier.id));
+    expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+  });
+
+  it("retires a deferred Retry when newer work appears while dispatch waits for the issue lock", async () => {
+    const input = { ...await seed(), actorId: "local-board", actorSource: "local_implicit" };
+    await instanceSettingsService(db).updateExperimental({ enableNativeRunner: true });
+    const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    await db.update(agents).set({ runtimeConfig: { heartbeat: { maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, issue.assigneeAgentId!));
+    await db.insert(heartbeatRuns).values({ companyId: input.companyId, agentId: issue.assigneeAgentId!, status: "running" });
+    const receipt = await requestTaskRetry(input);
+    let release!: () => void, ready!: () => void, holderPid = 0;
+    const held = new Promise<void>(resolve => { ready = resolve; });
+    const unlock = new Promise<void>(resolve => { release = resolve; });
+    const newerRunId = randomUUID();
+    const holder = db.transaction(async tx => {
+      holderPid = (await tx.execute<{ pid: number }>(sql`select pg_backend_pid() as pid`))[0].pid;
+      await tx.select().from(issues).where(eq(issues.id, issue.id)).for("update");
+      ready(); await unlock;
+      await tx.insert(heartbeatRuns).values({ id: newerRunId, companyId: input.companyId, issueId: issue.id,
+        agentId: issue.assigneeAgentId!, status: "succeeded", finishedAt: new Date(), createdAt: new Date(Date.now() + 1_000) });
+      await tx.update(issues).set({ status: "in_progress", executionRunId: newerRunId }).where(eq(issues.id, issue.id));
+    });
+    let dispatch: Promise<unknown> | undefined;
+    try {
+      await held;
+      dispatch = heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      await expect.poll(async () => (await db.execute<{ waiting: boolean }>(sql`select exists(
+        select 1 from pg_stat_activity where datname = current_database()
+          and ${holderPid} = any(pg_blocking_pids(pid))) as waiting`))[0].waiting, { timeout: 5_000 }).toBe(true);
+      release(); await holder; await dispatch;
+      await heartbeatService(db).resumeTaskRetry(input.companyId, receipt.requestId!);
+      expect(await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
+        eq(heartbeatRuns.status, "queued")))).toHaveLength(0);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, receipt.requestId!)))[0])
+        .toMatchObject({ status: "skipped", runId: null, error: "task_retry_superseded" });
+    } finally {
+      release(); await Promise.allSettled([holder, dispatch]);
+      await instanceSettingsService(db).updateExperimental({ enableNativeRunner: false });
+    }
+  }, 30_000);
+
+  it("does not attach a new deliberate Retry to an unadmitted request for an older run", async () => {
+    const input = await seed();
+    const old = await requestTaskRetry(input);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, input.issueId));
+    const [newer] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, issueId: input.issueId,
+      agentId: issue.assigneeAgentId!, status: "failed", finishedAt: new Date(), createdAt: new Date(Date.now() + 1_000) }).returning();
+    const next = await requestTaskRetry({ ...input, observedRunId: newer.id, idempotencyKey: randomUUID() });
+    expect(next.requestId).not.toBe(old.requestId);
+    expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, old.requestId!)))[0])
+      .toMatchObject({ status: "skipped", error: "task_retry_superseded" });
+  });
+
 });

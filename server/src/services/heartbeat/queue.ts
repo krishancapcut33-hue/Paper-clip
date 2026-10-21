@@ -1,5 +1,5 @@
 import { authorizationService } from "../authorization.js";
-import { assertTaskRetryConversationAllowed, readTaskRetryIntent } from "../task-retry.js";
+import { assertTaskRetryConversationAllowed, readTaskRetryIntent, retireSupersededTaskRetry } from "../task-retry.js";
 import { withExternalAdmissionGuard, assertNoExternalOverlap } from "../../modules/external-agents/index.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { normalizeAgentNameKey } from "./retries.js";
@@ -3079,6 +3079,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
 
           if (taskRetryActorId) {
             await assertTaskRetryConversationAllowed(tx as unknown as Db, issue, taskRetryActorId);
+            if (await retireSupersededTaskRetry(tx as unknown as Db, {
+              companyId: issue.companyId, issueId: issue.id, requestId: opts.taskRetryRequestId!,
+              sourceRunId: readNonEmptyString(enrichedContextSnapshot.previousRunId)!,
+            })) return { kind: "deferred" as const };
           }
           const issueStateGuard = opts.issueStateGuard;
           const activeMonitorRun = issueStateGuard?.monitorNextCheckAt === undefined ? null
