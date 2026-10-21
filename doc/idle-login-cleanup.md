@@ -17,7 +17,12 @@ schema or queue table is added.
 `login-cleanup-state.ts` owns the database predicates and reconstructed deadlines.
 `login-cleanup-work.ts` registers the independent workers. Domain stores register
 intent before each write via `writeLoginCleanup`. The AI connection save path
-also signals its session mutation in its existing transaction. Nested writes use
+also signals its session mutation in its existing transaction through
+`notifyLoginSessionChanged`. That helper invalidates both sandbox cleanup workers
+without choosing a provider. Each worker inspects its own durable predicates; the
+unaffected worker becomes quiet after reconciliation. This bounded extra scan
+occurs only after a session write, not on a recurring idle cadence. Login flows
+still own completion through the callback introduced in PR #17129. Nested writes use
 the shared outer-transaction settlement protocol, including rollback and uncertain
 commit reconciliation. Notification means inspect durable state, not perform one
 unit of work.

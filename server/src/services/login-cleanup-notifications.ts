@@ -10,7 +10,6 @@ export function writeLoginCleanup<T>(db: Db, queue: LoginCleanupQueue, write: (t
   });
 }
 
-/** Shared session writes invalidate cleanup without choosing a login provider. */
 export async function notifyLoginSessionChanged(transaction: object): Promise<void> {
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.adapterLoginCleanup);
   await notifyDeliveryWork(transaction, DELIVERY_QUEUES.setupTokenCleanup);
