@@ -408,7 +408,7 @@ export interface WakeAdmissionReader {
       agentId: string;
       issueId: string;
       /** Matches only deferred wakes for this chat conversation or for no conversation. */
-      chatConversationId?: string;
+      chatConversationId?: string | null;
       durableActor?: { type: string | null; id: string | null };
     },
   ): Promise<ExistingDeferredWake | null>;

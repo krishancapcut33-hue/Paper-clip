@@ -3163,6 +3163,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     describe("replies in review finding threads behind an active run", () => {
       const pr = "github:paperclipai/paperclip:17044";
       async function findingThreadFixture() {
+        vi.stubEnv("PAPERCLIP_API_URL", "https://paperclip.example.test");
+        onTestFinished(() => vi.unstubAllEnvs());
         const f = await subscribedGitHubFixture(pr);
         const adapterType = `github-finding-thread-test-${randomUUID()}`;
         const execute = vi.fn(async (_input: { runId: string; context: Record<string, unknown> }) => ({

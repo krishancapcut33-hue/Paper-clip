@@ -1,5 +1,4 @@
 import { logger } from "../middleware/logger.js";
-import { CHAT_CONVERSATION_ID_KEY } from "../modules/run-dispatch/index.js";
 import type { DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
@@ -67,7 +66,7 @@ export function queueIssueAssignmentWakeup(input: {
         source: input.contextSource,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
-        ...(input.chatConversationId ? { [CHAT_CONVERSATION_ID_KEY]: input.chatConversationId } : {}),
+        ...(input.chatConversationId ? { chatConversationId: input.chatConversationId } : {}),
         ...(input.wakeCommentId && input.attachmentOmissionReasons
           ? {
               externalAttachmentOmissions: [

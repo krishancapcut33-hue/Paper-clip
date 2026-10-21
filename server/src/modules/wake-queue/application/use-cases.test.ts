@@ -1006,6 +1006,7 @@ describe("admitWakeBehindIssueExecution", () => {
         companyId: "company-1",
         agentId: "wake-agent",
         issueId: "issue-1",
+        chatConversationId: null,
         durableActor: { type: "user", id: "other-user" },
       },
     );
