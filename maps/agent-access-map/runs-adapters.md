@@ -76,7 +76,11 @@ boundary, with explicit pinned-runtime setup required on the execution host.
 Native ACPX Pi is admitted with the generic flag off. Existing direct Pi agents
 remain Legacy; saved native policies remain authoritative. Incompatible thinking,
 launch, permission, or lifecycle settings return remediation on conversion.
-This adds no agent permissions, cross-company access, or runtime installation API.
+Managed Pi accounts accept OpenRouter routing and matching OpenAI, Anthropic,
+Google, or OpenRouter API-key models. Subscription methods and custom gateways
+remain excluded for Pi. Selection keeps the existing company, user, grant, and
+agent-install checks; runtime preparation clears alternate credentials and rejects
+custom Pi provider overrides. This adds no cross-company access or runtime installation API.
 An absent forced-Kubernetes environment is an unqualified sandbox target, never
 a local target. Discovery and automatic creation keep the Legacy path without
 provisioning it; explicit Paperclip selection returns qualification guidance.
