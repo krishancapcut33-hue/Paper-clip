@@ -14,6 +14,8 @@ export type PullRequestMergeDetails = {
   state: PullRequestMergeState;
   headRef: string | null;
   headSha: string | null;
+  mergedAt?: string | null;
+  mergeCommitSha?: string | null;
   workProductState?: "open" | "draft" | "merged" | "closed";
   draft?: boolean;
   baseRef?: string | null;
@@ -113,6 +115,8 @@ export function createPullRequestMergeDetailsResolver(db: Db): PullRequestMergeD
           : "unknown",
       headRef: typeof data?.headRef === "string" ? data.headRef : null,
       headSha: typeof data?.headSha === "string" ? data.headSha : null,
+      mergedAt: typeof data?.mergedAt === "string" ? data.mergedAt : null,
+      mergeCommitSha: typeof data?.mergeCommitSha === "string" ? data.mergeCommitSha : null,
       ...(workProductState ? { workProductState } : {}),
       draft: data?.draft === true,
       baseRef: typeof data?.baseRef === "string" ? data.baseRef : null,

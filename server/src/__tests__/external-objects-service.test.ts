@@ -217,7 +217,15 @@ describe("GitHub external object provider", () => {
     ],
     [
       "merged",
-      { state: "closed", draft: false, merged: true, title: "Merged PR", updated_at: "2026-04-24T01:02:03Z" },
+      {
+        state: "closed",
+        draft: false,
+        merged: true,
+        merged_at: "2026-04-24T01:01:00Z",
+        merge_commit_sha: "c".repeat(40),
+        title: "Merged PR",
+        updated_at: "2026-04-24T01:02:03Z",
+      },
       { statusKey: "merged", statusLabel: "Merged", statusIconKey: "git-merge", statusCategory: "succeeded", statusTone: "success", isTerminal: true },
     ],
   ])("resolves a %s pull request snapshot", async (_name, body, expected) => {
@@ -254,6 +262,17 @@ describe("GitHub external object provider", () => {
       }),
     });
     expect(JSON.stringify(result)).not.toContain("authorization");
+    if (_name === "merged") {
+      expect(result).toMatchObject({
+        ok: true,
+        snapshot: {
+          data: {
+            mergedAt: "2026-04-24T01:01:00Z",
+            mergeCommitSha: "c".repeat(40),
+          },
+        },
+      });
+    }
   });
 
   it.each([

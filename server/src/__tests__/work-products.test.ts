@@ -81,6 +81,8 @@ describe("workProductService", () => {
     const resolve = vi.fn(async () => ({
       state: "open" as const,
       workProductState: "merged" as const,
+      mergedAt: "2026-09-04T11:59:00.000Z",
+      mergeCommitSha: "c".repeat(40),
       draft: false,
       headRef: "feature/rich-cards",
       headSha: "abc123",
@@ -98,8 +100,11 @@ describe("workProductService", () => {
       repo: "paperclip",
       number: 42,
     });
+    expect(refreshed).toMatchObject({ status: "merged" });
     expect(refreshed?.metadata).toMatchObject({
       state: "merged",
+      mergedAt: "2026-09-04T11:59:00.000Z",
+      mergeCommitSha: "c".repeat(40),
       draft: false,
       baseRef: "master",
       headRef: "feature/rich-cards",

@@ -114,9 +114,12 @@ export async function refreshPullRequestWorkProductMetadata(
           ...(nonNegativeInteger(details.additions) === null ? {} : { additions: details.additions }),
           ...(nonNegativeInteger(details.deletions) === null ? {} : { deletions: details.deletions }),
           ...(nonNegativeInteger(details.changedFiles) === null ? {} : { changedFiles: details.changedFiles }),
+          ...(details.mergedAt ? { mergedAt: details.mergedAt } : {}),
+          ...(details.mergeCommitSha ? { mergeCommitSha: details.mergeCommitSha } : {}),
           state: details.workProductState,
           draft: details.workProductState === "draft" || details.draft === true,
         },
+        status: details.workProductState,
       };
     } catch {
       return product;

@@ -3,6 +3,8 @@ import {
   connectionEventDeliveries,
   connectionGrants,
   externalObjects,
+  issueWorkProducts,
+  issues,
   toolConnections,
   type Db,
 } from "@paperclipai/db";
@@ -72,6 +74,10 @@ function commitSha(value: unknown): string | null {
   return typeof value === "string" && /^[0-9a-f]{40,64}$/i.test(value) ? value.toLowerCase() : null;
 }
 
+function mergeCommitSha(payload: Record<string, unknown>): string | null {
+  return commitSha(payload.mergeCommitSha ?? payload.merge_commit_sha);
+}
+
 function githubUrl(value: unknown): string | null {
   const candidate = boundedString(value, 2_000);
   if (!candidate) return null;
@@ -109,8 +115,9 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       number: positiveInteger(payload.number),
       url: githubUrl(payload.url),
       state: boundedString(payload.state, 40),
-      merged: payload.merged === true,
+      merged: payload.merged === true || Boolean(isoDate(payload.mergedAt)) || Boolean(mergeCommitSha(payload)),
       mergedAt: isoDate(payload.mergedAt),
+      mergeCommitSha: mergeCommitSha(payload),
       updatedAt: isoDate(payload.updatedAt),
       headRef: boundedString(payload.headRef, 300),
       headSha: commitSha(payload.headSha),
@@ -173,7 +180,9 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
   const number = positiveInteger(payload.number);
   if (!repository || !number) return null;
   const state = stringValue(payload.state) ?? "unknown";
-  const merged = payload.merged === true;
+  const merged = payload.merged === true
+    || Boolean(isoDate(payload.mergedAt))
+    || Boolean(mergeCommitSha(payload));
   const [owner, repo, ...extra] = repository.split("/");
   if (!owner || !repo || extra.length > 0) return null;
   return {
@@ -198,6 +207,8 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
       merged,
       ...(stringValue(payload.url) ? { url: stringValue(payload.url) } : {}),
       ...(stringValue(payload.mergedAt) ? { mergedAt: stringValue(payload.mergedAt) } : {}),
+      ...(mergeCommitSha(payload) ? { mergeCommitSha: mergeCommitSha(payload) } : {}),
+      ...(stringValue(payload.updatedAt) ? { updatedAt: stringValue(payload.updatedAt) } : {}),
       ...(stringValue(payload.headRef) ? { headRef: stringValue(payload.headRef) } : {}),
       ...(stringValue(payload.headSha) ? { headSha: stringValue(payload.headSha) } : {}),
       ...(stringValue(payload.baseRef) ? { baseRef: stringValue(payload.baseRef) } : {}),
@@ -206,6 +217,8 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
     remoteVersion: stringValue(payload.updatedAt),
   } as const;
 }
+
+type GitHubSnapshotUpdate = NonNullable<ReturnType<typeof githubSnapshotUpdate>>;
 
 export function githubConnectionEventService(
   db: Db,
@@ -235,11 +248,27 @@ export function githubConnectionEventService(
     return bindingRows(rows);
   }
 
-  async function applyPullRequestEvent(companyId: string, event: LeasedEvent) {
+  async function applyPullRequestEvent(
+    database: Db,
+    companyId: string,
+    event: LeasedEvent,
+  ): Promise<GitHubSnapshotUpdate | null> {
     const snapshot = githubSnapshotUpdate(event.payload);
-    if (!snapshot) return;
+    if (!snapshot) return null;
     const appliedAt = now();
-    await db.update(externalObjects).set({
+    // A merge is a monotonic fact. Older open/closed deliveries must not undo
+    // it, while a merge delivery must still win over an older remoteVersion.
+    const acceptsSnapshot = snapshot.merged
+      ? sql`true`
+      : sql`(
+          coalesce(${externalObjects.statusKey}, '') <> 'merged'
+          AND (
+            ${externalObjects.remoteVersion} IS NULL
+            OR ${snapshot.remoteVersion === null}
+            OR ${externalObjects.remoteVersion} <= ${snapshot.remoteVersion}
+          )
+        )`;
+    await database.update(externalObjects).set({
       statusKey: snapshot.statusKey,
       statusLabel: snapshot.statusLabel,
       statusCategory: snapshot.statusCategory,
@@ -247,7 +276,14 @@ export function githubConnectionEventService(
       statusIconKey: snapshot.statusIconKey,
       isTerminal: snapshot.merged || snapshot.state === "closed",
       data: sql`${externalObjects.data} || ${JSON.stringify(snapshot.data)}::jsonb`,
-      remoteVersion: snapshot.remoteVersion,
+      remoteVersion: snapshot.remoteVersion
+        ? sql`CASE
+            WHEN ${externalObjects.remoteVersion} IS NULL
+              OR ${externalObjects.remoteVersion} <= ${snapshot.remoteVersion}
+            THEN ${snapshot.remoteVersion}
+            ELSE ${externalObjects.remoteVersion}
+          END`
+        : sql`${externalObjects.remoteVersion}`,
       lastResolvedAt: appliedAt,
       lastChangedAt: appliedAt,
       nextRefreshAt: appliedAt,
@@ -257,8 +293,61 @@ export function githubConnectionEventService(
       eq(externalObjects.providerKey, "github"),
       eq(externalObjects.objectType, "pull_request"),
       sql`lower(${externalObjects.externalId}) = lower(${snapshot.externalId})`,
+      acceptsSnapshot,
     ));
-    if (snapshot.merged && event.action === "closed") {
+
+    const workProductStatus = snapshot.merged
+      ? "merged"
+      : snapshot.state === "closed"
+        ? sql`CASE
+            WHEN ${issueWorkProducts.status} = 'merged'
+              OR ${issueWorkProducts.metadata}->>'state' = 'merged'
+              OR ${issueWorkProducts.metadata}->>'merged' = 'true'
+            THEN 'merged'
+            ELSE 'closed'
+          END`
+        : undefined;
+    const workProductPatch = {
+      metadata: sql`coalesce(${issueWorkProducts.metadata}, '{}'::jsonb) || ${JSON.stringify(snapshot.data)}::jsonb`,
+      updatedAt: appliedAt,
+      ...(workProductStatus ? { status: workProductStatus } : {}),
+    };
+    await database.update(issueWorkProducts).set(workProductPatch).where(and(
+      eq(issueWorkProducts.companyId, companyId),
+      eq(issueWorkProducts.provider, "github"),
+      eq(issueWorkProducts.type, "pull_request"),
+      sql`EXISTS (
+        SELECT 1 FROM ${issues}
+        WHERE ${issues.id} = ${issueWorkProducts.issueId}
+          AND ${issues.companyId} = ${issueWorkProducts.companyId}
+      )`,
+      sql`(
+        lower(${issueWorkProducts.externalId}) = lower(${snapshot.externalId})
+        OR lower(${issueWorkProducts.url}) = lower(${stringValue(snapshot.data.url) ?? ""})
+        OR (
+          lower(${issueWorkProducts.metadata}->>'repo') = lower(${snapshot.repository})
+          AND ${issueWorkProducts.metadata}->>'number' = ${String(snapshot.number)}
+        )
+      )`,
+      snapshot.merged
+        ? sql`true`
+        : sql`(
+            ${issueWorkProducts.status} <> 'merged'
+            AND coalesce(${issueWorkProducts.metadata}->>'state', '') <> 'merged'
+            AND coalesce(${issueWorkProducts.metadata}->>'merged', 'false') <> 'true'
+            AND (
+              ${issueWorkProducts.metadata}->>'updatedAt' IS NULL
+              OR ${snapshot.data.updatedAt === undefined}
+              OR ${issueWorkProducts.metadata}->>'updatedAt' <= ${snapshot.data.updatedAt}
+            )
+          )`,
+    ));
+    return snapshot;
+  }
+
+  async function sweepMergedPullRequestConfirmations(companyId: string, snapshot: GitHubSnapshotUpdate) {
+    if (!snapshot.merged) return;
+    try {
       await issueThreadInteractionService(db, { wakeup: options.wakeup })
         .sweepMergedPullRequestConfirmations([{
           companyId,
@@ -266,6 +355,11 @@ export function githubConnectionEventService(
           repo: snapshot.repo,
           number: snapshot.number,
         }]);
+    } catch (error) {
+      // The merge projection and receipt are already durable; a sweep retry is
+      // independent and must not turn a committed delivery into a replay.
+      logger.warn({ err: error, companyId, repository: snapshot.repository, number: snapshot.number },
+        "GitHub merged pull-request confirmation sweep failed");
     }
   }
 
@@ -339,105 +433,117 @@ export function githubConnectionEventService(
   async function processForCompany(companyId: string, bindings: GitHubBinding[], event: LeasedEvent) {
     const receiptAt = now();
     const normalizedEvent = { ...event, payload: normalizeLeasedPayload(event) };
-    const [receipt] = await db.insert(connectionEventDeliveries).values({
-      companyId,
-      provider: event.provider,
-      providerDeliveryId: event.id,
-      event: event.event,
-      action: event.action,
-      installationId: event.installationId,
-      repositoryId: event.repositoryId,
-      normalizedPayload: normalizedEvent.payload,
-      providerCreatedAt: new Date(event.createdAt),
-      status: "received",
-      attempts: 1,
-      updatedAt: receiptAt,
-    }).onConflictDoNothing().returning();
-    if (!receipt) {
-      const [existing] = await db.select().from(connectionEventDeliveries).where(and(
-        eq(connectionEventDeliveries.companyId, companyId),
-        eq(connectionEventDeliveries.provider, event.provider),
-        eq(connectionEventDeliveries.providerDeliveryId, event.id),
-      )).limit(1);
-      if (existing?.status === "processed") return "duplicate" as const;
-      await db.update(connectionEventDeliveries).set({
-        status: "received",
-        attempts: sql`${connectionEventDeliveries.attempts} + 1`,
-        lastError: null,
-        updatedAt: receiptAt,
-      }).where(eq(connectionEventDeliveries.id, existing!.id));
-    }
     const postCommitPublications: ActivityPublication[] = [];
-    try {
-      const applyAndFinalize = async (database: Db) => {
-        if (event.event === "pull_request") await applyPullRequestEvent(companyId, normalizedEvent);
-        if (event.event === "installation" || event.event === "installation_repositories") {
-          for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
-        } else {
-          const touchedAt = now();
-          for (const binding of bindings) {
-            const github = binding.providerTenant.github;
-            if (!github) continue;
-            await database.update(connectionGrants).set({
-              // Update only webhook fields; a concurrent access/token refresh
-              // owns the remaining metadata and must not be replaced here.
-              providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github}',
-                (${connectionGrants.providerTenant}->'github') || ${JSON.stringify({
-                  lastWebhookAt: touchedAt.toISOString(), webhookHealth: "healthy",
-                })}::jsonb)`,
-              updatedAt: touchedAt,
-            }).where(and(
-              eq(connectionGrants.id, binding.grantId),
-              eq(connectionGrants.companyId, companyId),
-              eq(connectionGrants.status, "active"),
-              sql`${connectionGrants.providerTenant}->'github' is not null`,
-            ));
-          }
-        }
-        const finishedAt = now();
-        await database.update(connectionEventDeliveries).set({
-          status: "processed",
-          processedAt: finishedAt,
-          lastError: null,
-          updatedAt: finishedAt,
-        }).where(and(
-          eq(connectionEventDeliveries.companyId, companyId),
-          eq(connectionEventDeliveries.provider, event.provider),
-          eq(connectionEventDeliveries.providerDeliveryId, event.id),
-        ));
-        await logActivity(database, {
-          companyId,
-          actorType: "system",
-          actorId: "system:github-webhook",
-          action: "tool_connection.webhook_processed",
-          entityType: "tool_connection",
-          entityId: bindings[0]!.connectionId,
-          details: {
-            provider: "github",
-            event: event.event,
-            action: event.action,
-            deliveryId: event.id,
-            installationId: event.installationId,
-            repositoryId: event.repositoryId,
-          },
-        }, postCommitPublications);
-      };
-      if (event.event === "installation" || event.event === "installation_repositories") {
-        await db.transaction(async (tx) => applyAndFinalize(tx as unknown as Db));
-      } else {
-        await applyAndFinalize(db);
+    let mergedPullRequestSnapshot: GitHubSnapshotUpdate | null = null;
+    let processingError: unknown = null;
+    let duplicate = false;
+    const applyAndFinalize = async (database: Db) => {
+      if (event.event === "pull_request") {
+        mergedPullRequestSnapshot = await applyPullRequestEvent(database, companyId, normalizedEvent);
       }
-    } catch (error) {
-      await db.update(connectionEventDeliveries).set({
-        status: "failed",
-        lastError: error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed",
-        updatedAt: now(),
+      if (event.event === "installation" || event.event === "installation_repositories") {
+        for (const binding of bindings) await applyInstallationEvent(database, binding, normalizedEvent);
+      } else {
+        const touchedAt = now();
+        for (const binding of bindings) {
+          const github = binding.providerTenant.github;
+          if (!github) continue;
+          await database.update(connectionGrants).set({
+            // Update only webhook fields; a concurrent access/token refresh
+            // owns the remaining metadata and must not be replaced here.
+            providerTenant: sql`jsonb_set(${connectionGrants.providerTenant}, '{github}',
+              (${connectionGrants.providerTenant}->'github') || ${JSON.stringify({
+                lastWebhookAt: touchedAt.toISOString(), webhookHealth: "healthy",
+              })}::jsonb)`,
+            updatedAt: touchedAt,
+          }).where(and(
+            eq(connectionGrants.id, binding.grantId),
+            eq(connectionGrants.companyId, companyId),
+            eq(connectionGrants.status, "active"),
+            sql`${connectionGrants.providerTenant}->'github' is not null`,
+          ));
+        }
+      }
+      const finishedAt = now();
+      await database.update(connectionEventDeliveries).set({
+        status: "processed",
+        processedAt: finishedAt,
+        lastError: null,
+        updatedAt: finishedAt,
       }).where(and(
         eq(connectionEventDeliveries.companyId, companyId),
         eq(connectionEventDeliveries.provider, event.provider),
         eq(connectionEventDeliveries.providerDeliveryId, event.id),
       ));
-      throw error;
+      await logActivity(database, {
+        companyId,
+        actorType: "system",
+        actorId: "system:github-webhook",
+        action: "tool_connection.webhook_processed",
+        entityType: "tool_connection",
+        entityId: bindings[0]!.connectionId,
+        details: {
+          provider: "github",
+          event: event.event,
+          action: event.action,
+          deliveryId: event.id,
+          installationId: event.installationId,
+          repositoryId: event.repositoryId,
+        },
+      }, postCommitPublications);
+    };
+    await db.transaction(async (tx) => {
+      const [receipt] = await tx.insert(connectionEventDeliveries).values({
+        companyId,
+        provider: event.provider,
+        providerDeliveryId: event.id,
+        event: event.event,
+        action: event.action,
+        installationId: event.installationId,
+        repositoryId: event.repositoryId,
+        normalizedPayload: normalizedEvent.payload,
+        providerCreatedAt: new Date(event.createdAt),
+        status: "received",
+        attempts: 1,
+        updatedAt: receiptAt,
+      }).onConflictDoNothing().returning();
+      if (!receipt) {
+        const [existing] = await tx.select().from(connectionEventDeliveries).where(and(
+          eq(connectionEventDeliveries.companyId, companyId),
+          eq(connectionEventDeliveries.provider, event.provider),
+          eq(connectionEventDeliveries.providerDeliveryId, event.id),
+        )).for("update").limit(1);
+        if (existing?.status === "processed") {
+          duplicate = true;
+          return;
+        }
+        await tx.update(connectionEventDeliveries).set({
+          status: "received",
+          attempts: sql`${connectionEventDeliveries.attempts} + 1`,
+          lastError: null,
+          updatedAt: receiptAt,
+        }).where(eq(connectionEventDeliveries.id, existing!.id));
+      }
+      try {
+        // Savepoint lets the failed receipt survive while both projections roll back.
+        await tx.transaction(async (savepoint) => applyAndFinalize(savepoint as unknown as Db));
+      } catch (error) {
+        processingError = error;
+        await tx.update(connectionEventDeliveries).set({
+          status: "failed",
+          lastError: error instanceof Error ? error.message.slice(0, 500) : "GitHub event processing failed",
+          updatedAt: now(),
+        }).where(and(
+          eq(connectionEventDeliveries.companyId, companyId),
+          eq(connectionEventDeliveries.provider, event.provider),
+          eq(connectionEventDeliveries.providerDeliveryId, event.id),
+        ));
+      }
+    });
+    if (processingError) throw processingError;
+    if (duplicate) return "duplicate" as const;
+    if (mergedPullRequestSnapshot && event.action === "closed") {
+      await sweepMergedPullRequestConfirmations(companyId, mergedPullRequestSnapshot);
     }
     // Persistence is complete at this point (and installation deltas have
     // committed). A synchronous live-event subscriber must not turn that
