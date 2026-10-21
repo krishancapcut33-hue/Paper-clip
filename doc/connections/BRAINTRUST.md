@@ -2,7 +2,7 @@
 
 Updated: 2026-10-21. Status: US OAuth connected and exercised against an
 authorized account; US API-key and both EU methods still require live account
-qualification. Keep the delivery PR draft until the required live checks pass.
+qualification. The remaining qualification gaps are listed below.
 
 Braintrust is a P2 resource connection using Paperclip's existing remote MCP
 transport, vault, catalog, access profiles, policy evaluation, run-scoped gateway,
@@ -70,8 +70,9 @@ authenticated tool discovery was performed by these public probes.
 
 ## Actions and governance
 
-The Braintrust connector owns the reviewed tool-risk inventory; shared dispatch
-selects it by app identity. Retrieval tools are reads, including SQL, schema and
+The Braintrust connector owns the reviewed tool-risk inventory. The connector
+policy registry selects it and declares catalog review behavior; the shared
+connection service applies those policies. Retrieval tools are reads, including SQL, schema and
 experiment inspection, object lookup, trace inspection, chart previews,
 documentation search, and skill loading. Loading a provider skill is a governed
 read; it does not install a Paperclip skill.

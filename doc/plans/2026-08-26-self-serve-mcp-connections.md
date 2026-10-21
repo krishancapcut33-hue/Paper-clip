@@ -104,18 +104,21 @@ Access → Connect, personal/shared vault ownership, policy, and gateway paths.
 
 Both regions' unauthenticated challenge and metadata checks passed on
 2026-10-21. They advertise DCR, PKCE S256, and refresh tokens, with no CIMD or
-revocation endpoint. No registration or authenticated discovery was attempted.
+revocation endpoint. These public probes performed no registration or
+authenticated discovery; separate US OAuth account proof is recorded below.
 The reviewed risk inventory preserves retrieval tools as reads, treats dataset
 row edits and automation-status changes as destructive, and treats other
 mutations, billable execution, and unknown tools as writes. Central Allowed
 defaults and operator Off/Ask-first decisions remain intact. Catalog drift is
 quarantined after initial discovery and stays enabled across reconnect.
 
-All four account-bound live lifecycles remain **not run** without an authorized
-regional account or key. Keep the delivery PR draft until connect, discovery,
-read, disposable write, real run gateway, recovery, removal, and secret-handling
-qualification is complete. Metadata and fixture results do not satisfy that
-gate. See [Braintrust](../connections/BRAINTRUST.md) for the per-method matrix,
+US OAuth account proof covers connect, discovery, bounded read, a synthetic
+dataset write/readback through real process-agent gateway calls, catalog
+refresh, OAuth reconnect, local removal and structural secret inspection. The
+synthetic data and disposable instance were removed. US API-key and both EU
+methods remain **not run** against a real account. Live token expiry/refresh,
+provider-side revocation and native CLI capability delivery remain unqualified.
+Metadata, fixture and CI results do not qualify those provider behaviors. See [Braintrust](../connections/BRAINTRUST.md) for the per-method matrix,
 provider evidence, permissions, and revocation limits.
 
 ## Browser authorization redirect audit
