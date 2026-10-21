@@ -13,6 +13,7 @@ import { captureRunIdentity } from "./run-identity.js";
 import {
   buildGitAuthInvocation,
   resolveManagedGitHubCredential,
+  resolveManagedGitHubIdentitySelection,
 } from "./git-credentials.js";
 import { secretService } from "./secrets.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
@@ -106,6 +107,21 @@ async function allowsGitHubCredentialExport(
 }
 
 /** No company secrets or ambient credentials are consulted by this path. */
+/** A bot-scoped run brokers the bot's read-only token, so launchers and native sessions treat it as a managed identity. */
+export async function resolveRunGitHubIdentitySelection(
+  db: Db,
+  input: { companyId: string; agentId: string; responsibleUserId: string | null },
+) {
+  // An agent whose bot turns on read-only GitHub never receives a person's or the host's GitHub access.
+  const botScoped = Boolean(await githubReadOnlyAgentBotConnection(db, input));
+  const selection = await resolveManagedGitHubIdentitySelection(db, input.companyId, {
+    agentId: input.agentId,
+    responsibleUserId: botScoped ? null : input.responsibleUserId,
+    allowStandingDelegation: false,
+  });
+  return botScoped ? { ...selection, configured: true } : selection;
+}
+
 export async function resolveGitHubOperationCredentials(
   db: Db,
   input: {

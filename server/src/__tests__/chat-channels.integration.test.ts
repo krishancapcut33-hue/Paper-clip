@@ -32,7 +32,8 @@ import { githubBotToolsForSession, githubReadOnlyAgentBotConnection, syncGitHubB
 import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat/run-preparation.js";
 import { createAssignedMcpTools } from "../services/native-runtime/assigned-mcp-tools.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
-import { resolveGitHubOperationCredentials } from "../services/github-operation-credentials.js";
+import { resolveGitHubOperationCredentials, resolveRunGitHubIdentitySelection } from "../services/github-operation-credentials.js";
+import { githubBotReadOnlyToken } from "../services/chat-github-client.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import { chatGitHubRegistrations, chatGitHubReviews, chatGitHubConfigurations, toolCatalogEntries } from "@paperclipai/db";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -2467,6 +2468,20 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(tokenRequests).toEqual([{
         permissions: { contents: "read", metadata: "read", issues: "read", pull_requests: "read", checks: "read" },
       }]);
+      // A launcher retry joins a slow token request instead of starting another.
+      let releaseToken = () => {};
+      f.setSupplementalProviderFetch(async (input, init) => {
+        if (!String(input).endsWith("/access_tokens")) return undefined;
+        tokenRequests.push(JSON.parse(String(init?.body)));
+        await new Promise<void>((resolve) => { releaseToken = resolve; });
+        return Response.json({ token: "slow-bot-token" });
+      });
+      const first = githubBotReadOnlyToken(db, f.companyId, f.endpoint.connectionId, f.assignedAgentId, f.providerFetch);
+      const retry = githubBotReadOnlyToken(db, f.companyId, f.endpoint.connectionId, f.assignedAgentId, f.providerFetch);
+      await vi.waitFor(() => expect(tokenRequests).toHaveLength(2));
+      releaseToken();
+      expect(await Promise.all([first, retry])).toEqual(["slow-bot-token", "slow-bot-token"]);
+      expect(tokenRequests).toHaveLength(2);
       // A refused bot token fails closed instead of falling back to the agent's account or the server's token.
       f.setSupplementalProviderFetch(async (input) => String(input).endsWith("/access_tokens")
         ? new Response("", { status: 403 })
@@ -2485,6 +2500,19 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         "owner-user",
       );
       expect(await githubReadOnlyAgentBotConnection(db, agentScope)).toBeNull();
+    });
+    it("counts a run of an agent whose bot turns on read-only GitHub as having managed GitHub access", async () => {
+      const f = await reviewBotFixture();
+      const selectionInput = { companyId: f.companyId, agentId: f.assignedAgentId, responsibleUserId: "owner-user" };
+      // Without a GitHub connection, launchers and native sessions would otherwise skip the credential broker.
+      expect((await resolveRunGitHubIdentitySelection(db, selectionInput)).configured).toBe(false);
+      const initial = await f.management.configuration(f.endpoint.id, "owner-user");
+      await f.management.saveConfiguration(
+        f.endpoint.id,
+        { expectedRevision: initial.revision, configuration: { ...initial.configuration, agentReadOnlyGitHub: true } },
+        "owner-user",
+      );
+      expect((await resolveRunGitHubIdentitySelection(db, selectionInput)).configured).toBe(true);
     });
     it("loads only the current configured instruction skills, never provider links or another company", async () => {
       const f = await reviewBotFixture();
