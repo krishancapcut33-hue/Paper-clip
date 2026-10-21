@@ -220,6 +220,11 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
 
 type GitHubSnapshotUpdate = NonNullable<ReturnType<typeof githubSnapshotUpdate>>;
 
+type ConfirmationSweep = (
+  companyId: string,
+  snapshot: GitHubSnapshotUpdate,
+) => Promise<void>;
+
 export function githubConnectionEventService(
   db: Db,
   options: {
@@ -227,6 +232,7 @@ export function githubConnectionEventService(
     env?: NodeJS.ProcessEnv;
     now?: () => Date;
     wakeup?: NonNullable<Parameters<typeof issueThreadInteractionService>[1]>["wakeup"];
+    runConfirmationSweep?: ConfirmationSweep;
   } = {},
 ) {
   const now = options.now ?? (() => new Date());
@@ -345,21 +351,38 @@ export function githubConnectionEventService(
     return snapshot;
   }
 
-  async function sweepMergedPullRequestConfirmations(companyId: string, snapshot: GitHubSnapshotUpdate) {
+  async function sweepMergedPullRequestConfirmations(companyId: string, snapshot: GitHubSnapshotUpdate, event: LeasedEvent) {
     if (!snapshot.merged) return;
     try {
-      await issueThreadInteractionService(db, { wakeup: options.wakeup })
-        .sweepMergedPullRequestConfirmations([{
-          companyId,
-          owner: snapshot.owner,
-          repo: snapshot.repo,
-          number: snapshot.number,
-        }]);
+      if (options.runConfirmationSweep) {
+        await options.runConfirmationSweep(companyId, snapshot);
+      } else {
+        await issueThreadInteractionService(db, { wakeup: options.wakeup })
+          .sweepMergedPullRequestConfirmations([{
+            companyId,
+            owner: snapshot.owner,
+            repo: snapshot.repo,
+            number: snapshot.number,
+          }]);
+      }
     } catch (error) {
-      // The merge projection and receipt are already durable; a sweep retry is
-      // independent and must not turn a committed delivery into a replay.
+      // The projection is durable, but the confirmation sweep is retryable.
+      // Leave the receipt failed so the leased delivery is not acknowledged and
+      // a later lease can retry the sweep without losing the confirmation.
+      const failedAt = now();
+      await db.update(connectionEventDeliveries).set({
+        status: "failed",
+        processedAt: null,
+        lastError: error instanceof Error ? error.message.slice(0, 500) : "GitHub confirmation sweep failed",
+        updatedAt: failedAt,
+      }).where(and(
+        eq(connectionEventDeliveries.companyId, companyId),
+        eq(connectionEventDeliveries.provider, event.provider),
+        eq(connectionEventDeliveries.providerDeliveryId, event.id),
+      ));
       logger.warn({ err: error, companyId, repository: snapshot.repository, number: snapshot.number },
         "GitHub merged pull-request confirmation sweep failed");
+      throw error;
     }
   }
 
@@ -543,7 +566,7 @@ export function githubConnectionEventService(
     if (processingError) throw processingError;
     if (duplicate) return "duplicate" as const;
     if (mergedPullRequestSnapshot && event.action === "closed") {
-      await sweepMergedPullRequestConfirmations(companyId, mergedPullRequestSnapshot);
+      await sweepMergedPullRequestConfirmations(companyId, mergedPullRequestSnapshot, event);
     }
     // Persistence is complete at this point (and installation deltas have
     // committed). A synchronous live-event subscriber must not turn that

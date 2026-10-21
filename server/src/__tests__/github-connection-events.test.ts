@@ -178,9 +178,33 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       acknowledgeEvents: vi.fn(async () => 1),
     } as unknown as PaperclipCloudConnector;
     let currentTime = new Date("2026-09-04T12:00:05.000Z");
-    const service = githubConnectionEventService(db, { connector, now: () => currentTime });
+    let failSweep = true;
+    const sweepMergedPullRequestConfirmations = vi.fn(async () => {
+      if (failSweep) {
+        failSweep = false;
+        throw new Error("injected confirmation sweep failure");
+      }
+    });
+    const service = githubConnectionEventService(db, {
+      connector,
+      now: () => currentTime,
+      runConfirmationSweep: sweepMergedPullRequestConfirmations,
+    });
 
-    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1, duplicate: 0, failed: 0 });
+    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 0, duplicate: 0, failed: 1 });
+    const [failedSweepReceipt] = await db.select().from(connectionEventDeliveries).where(eq(
+      connectionEventDeliveries.providerDeliveryId,
+      leasedEvent.id,
+    ));
+    expect(failedSweepReceipt).toMatchObject({ status: "failed", attempts: 1 });
+    expect(connector.acknowledgeEvents).not.toHaveBeenCalled();
+
+    const retryService = githubConnectionEventService(db, {
+      connector,
+      now: () => currentTime,
+      runConfirmationSweep: sweepMergedPullRequestConfirmations,
+    });
+    await expect(retryService.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 1, duplicate: 0, failed: 0 });
     const [snapshot] = await db.select().from(externalObjects).where(eq(externalObjects.id, externalObjectId));
     expect(snapshot).toMatchObject({
       statusKey: "merged",
@@ -199,7 +223,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     ));
     expect(receipt).toMatchObject({
       status: "processed",
-      attempts: 1,
+      attempts: 2,
       provider: "github",
       normalizedPayload: {
         repository: "paperclipai/paperclip",
@@ -229,13 +253,14 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(1);
 
     currentTime = new Date(currentTime.getTime() + 6_000);
-    await expect(service.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 0, duplicate: 1, failed: 0 });
+    await expect(retryService.pollOnce()).resolves.toMatchObject({ leased: 1, processed: 0, duplicate: 1, failed: 0 });
     const [duplicateReceipt] = await db.select().from(connectionEventDeliveries).where(eq(
       connectionEventDeliveries.providerDeliveryId,
       leasedEvent.id,
     ));
-    expect(duplicateReceipt?.attempts).toBe(1);
+    expect(duplicateReceipt?.attempts).toBe(2);
     expect(connector.acknowledgeEvents).toHaveBeenCalledTimes(2);
+    expect(sweepMergedPullRequestConfirmations).toHaveBeenCalledTimes(2);
   });
 
   it("persists repeated merge projections and ignores delayed pre-merge events", async () => {
