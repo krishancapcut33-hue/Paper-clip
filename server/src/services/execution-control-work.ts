@@ -19,15 +19,23 @@ export function registerExecutionControlWork(
     let requested = 1;
     let reconciled = 0;
     let next: number | null = null;
+    let earliestRunAt = 0;
     return coordinator.register(duty.queue, {
       retryMs: EXECUTION_RECONCILIATION_INTERVAL_MS,
       pausePassiveMaintenance: true,
       onSettled: () => { requested += 1; },
       run: async () => {
+        if (!canRun()) { requested += 1; next = null; return; }
+        const now = Date.now();
+        if (now < earliestRunAt) {
+          if (reconciled !== requested || (next !== null && next <= now)) next = earliestRunAt;
+          return;
+        }
         const generation = ++requested;
-        if (!canRun()) { next = null; return; }
+        earliestRunAt = now + EXECUTION_RECONCILIATION_INTERVAL_MS;
         await duty.run();
-        next = await duty.next();
+        const deadline = await duty.next();
+        next = deadline === null ? null : Math.max(deadline, earliestRunAt);
         reconciled = generation;
       },
       hasPending: async () => reconciled !== requested,

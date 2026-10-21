@@ -43,7 +43,7 @@ describe("execution-control lifecycle", () => {
       if (kind === "failure") run.mockRejectedValueOnce(new Error("delivery unavailable"));
       else draining = true;
       await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionStatus));
-      await vi.advanceTimersByTimeAsync(1);
+      await vi.advanceTimersByTimeAsync(15_000);
       draining = true;
     }
     const reads = next.mock.calls.length, runs = run.mock.calls.length;
@@ -62,12 +62,27 @@ describe("execution-control lifecycle", () => {
     await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.executionStatus, run, next: async () => null }]).ready;
     run.mockImplementationOnce(() => gate);
     await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionStatus));
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(15_000);
     await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionStatus));
     await vi.advanceTimersByTimeAsync(1);
     expect(run).toHaveBeenCalledTimes(2);
-    release(); await vi.advanceTimersByTimeAsync(1);
+    release(); await vi.advanceTimersByTimeAsync(15_000);
     expect(run).toHaveBeenCalledTimes(3); expect(c.nextWakeAt()).toBeNull();
+  });
+  it("coalesces tenant write bursts without repeatedly scanning global queues", async () => {
+    vi.useFakeTimers(); const owner = fakeOwner(); const c = coordinator(owner);
+    const run = vi.fn(async () => {}), next = vi.fn(async () => null);
+    await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.executionStatus, run, next }]).ready;
+    for (let i = 0; i < 100; i++) {
+      await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionStatus, `company-${i % 2}`));
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(run).toHaveBeenCalledTimes(1); expect(next).toHaveBeenCalledTimes(1);
+    await vi.advanceTimersByTimeAsync(14_000);
+    expect(run).toHaveBeenCalledTimes(2); expect(next).toHaveBeenCalledTimes(2);
+    expect(c.nextWakeAt()).toBeNull();
+    await vi.advanceTimersByTimeAsync(60_000);
+    expect(run).toHaveBeenCalledTimes(2);
   });
   it.each([false, true])("does not start sweeps or inspect deadlines once server shutdown begins (notification=%s)", async notification => {
     vi.useFakeTimers(); const owner = fakeOwner(); const c = coordinator(owner); let stopping = false;
@@ -120,7 +135,7 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout", "setInterval", "clearInterval"], shouldAdvanceTime: true });
   });
   async function settle() {
-    await vi.advanceTimersByTimeAsync(1);
+    await vi.advanceTimersByTimeAsync(15_000);
     await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5000 });
     await vi.advanceTimersByTimeAsync(1);
     await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5000 });
@@ -144,6 +159,24 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
       () => deliverReconciledExecutions(observed, vi.fn(async () => null)), () => deliverExecutionStatuses(observed),
       () => settleUnrecoverableExecutions(observed), () => localAiLoginService(observed).reapExpired()];
     await registerExecutionControlWork(c, Object.values(schedule).map((next, i) => ({ queue: topics[i]!, run: runs[i]!, next }))).ready;
+    await quiet(c);
+  });
+  it("bounds real producer bursts with another company's completed history present", async () => {
+    const otherCompany = randomUUID(), otherAgent = randomUUID();
+    await db.insert(companies).values({ id: otherCompany, name: "Other tenant", issuePrefix: "OTH" });
+    await db.insert(agents).values({ id: otherAgent, companyId: otherCompany, name: "Other worker", adapterType: "codex_local" });
+    await db.insert(heartbeatRuns).values({ companyId: otherCompany, agentId: otherAgent, status: "succeeded" });
+    const run = await runRow(); const publish = vi.fn(); const c = coordinator(db, undefined, error => { errors.push(error); });
+    await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.executionStatus,
+      run: () => deliverExecutionStatuses(observed, { publish }), next: executionControlSchedule(observed).status }]).ready;
+    const before = calls;
+    for (let i = 0; i < 20; i++) {
+      await terminalizeLegacyExecution({ db, run, status: "succeeded", fromStatuses: ["running", "succeeded"] });
+      await vi.advanceTimersByTimeAsync(10);
+    }
+    expect(calls).toBe(before); expect(publish).not.toHaveBeenCalled();
+    await settle(); expect(publish).toHaveBeenCalledTimes(1);
+    expect(publish.mock.calls[0]?.[0]).toMatchObject({ companyId, payload: { runId: run.id } });
     await quiet(c);
   });
   it("wakes status delivery through the real producer only after outer commit, then becomes quiet", async () => {

@@ -16,7 +16,13 @@ inside the six owning services. No table or migration is added.
 | Automatic disposition | Committed run/recovery-action changes; existing eligible recovery-action queries | Retry while a selected action still needs disposition or an obsolete conversation hold remains | No eligible action/hold; resolved history alone is quiet |
 | Local login cleanup | Committed local login creation; existing `adapter_auth_sessions.expires_at` | Earliest local login expiry; retry overdue failed cleanup | No local login expiry remains |
 
-Each worker runs once on startup to restore durable obligations. Workers remain
+Each worker runs once on startup to restore durable obligations. Passes are
+coalesced at the former 15-second resolution: a tenant's repeated writes cannot
+force continuous global scans. This is a minimum spacing between requested
+passes, not a recurring poll; an empty worker never arms that spacing by itself.
+A newly discovered deadline within the spacing window runs at its end, retaining
+the former maximum 15-second scheduling resolution. Future deadlines outside
+that window retain their exact due time. Workers remain
 independent: a slow replacement proof cannot stall status delivery. Batches and
 failed obligations retain the existing 15-second retry budget; empty workers do
 not repeatedly inspect the database. Login authorization still checks expiry on
