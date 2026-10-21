@@ -30,6 +30,11 @@ export const heartbeatRuns = pgTable(
       .notNull()
       .default("company"),
     issueId: uuid("issue_id").references((): AnyPgColumn => issues.id, { onDelete: "set null" }),
+    // The one issue this run may write to without cross-issue cap accounting.
+    // Bound lazily on the first checked-out same-issue write (timer wakeups carry
+    // no context issue), so releasing that issue cannot open an uncapped channel
+    // to another one later in the same run.
+    homeIssueId: uuid("home_issue_id"),
     invocationSource: text("invocation_source").notNull().default("on_demand"),
     triggerDetail: text("trigger_detail"),
     status: text("status").notNull().default("queued"),

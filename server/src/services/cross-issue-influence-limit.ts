@@ -1,6 +1,6 @@
-import { and, count, eq } from "drizzle-orm";
+import { and, count, eq, isNull, or } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
-import { activityLog, heartbeatRuns } from "@paperclipai/db";
+import { activityLog, heartbeatRuns, issues } from "@paperclipai/db";
 import { isUuidLike, issueWriteDenialResponse } from "@paperclipai/shared";
 import { forbidden } from "../errors.js";
 import { logger } from "../middleware/logger.js";
@@ -92,6 +92,7 @@ export async function observeCrossIssueInfluence(
         agentId: heartbeatRuns.agentId,
         responsibleUserId: heartbeatRuns.responsibleUserId,
         contextSnapshot: heartbeatRuns.contextSnapshot,
+        homeIssueId: heartbeatRuns.homeIssueId,
       })
       .from(heartbeatRuns)
       .where(and(
@@ -121,6 +122,63 @@ export async function observeCrossIssueInfluence(
         (input.targetIssueIdentifier && sourceIssueId.toUpperCase() === input.targetIssueIdentifier.toUpperCase()))
     ) {
       return null;
+    }
+
+    // A timer-woken run (heartbeat_timer) carries no source issue in its
+    // context snapshot, but a successful checkout stamps the issue's active run
+    // onto the issue row itself (checkoutRunId / executionRunId). For that case
+    // the checkout is the durable same-issue link, so a write from the run that
+    // holds the target issue is same-issue influence: it returns no decision and
+    // spends no cap.
+    //
+    // The exemption covers only the run's sole held issue. One run can reference
+    // several issues at once (stale or concurrent execution and checkout claims),
+    // so charging every write once a run claims more than one issue keeps the
+    // cap meaningful: stacking checkouts must not buy uncapped writes. Writes to
+    // issues this run does not hold keep the existing behavior — cross-issue cap
+    // accounting below, unchanged. Same-issue writes by source issue return
+    // above, so this query never runs for them.
+    //
+    // The lookup is capped at two rows: one row proves the target is the sole
+    // claim, two rows prove it is not, and anything beyond two cannot change
+    // that verdict. `issues_company_checkout_run_idx` and
+    // `issues_company_execution_run_idx` keep it off a company-wide scan.
+    //
+    // A sole claim is not enough on its own: checkout and release are free, so a
+    // run could check out issue A, write, release it, then repeat for B and
+    // every later issue, never holding two claims at once. The run row therefore
+    // carries the one issue this run may write to uncapped. It is bound on the
+    // first checked-out same-issue write and never rebound, so releasing the
+    // bound issue cannot open a second uncapped channel. The run row is already
+    // locked above, so the lazy bind cannot race another write from this run.
+    const heldIssueIds = isUuidLike(input.targetIssueId)
+      ? await tx
+          .select({ heldId: issues.id })
+          .from(issues)
+          .where(and(
+            eq(issues.companyId, input.companyId),
+            or(eq(issues.checkoutRunId, run.id), eq(issues.executionRunId, run.id)),
+          ))
+          .limit(2)
+          .then((rows) => rows.map((row) => row.heldId))
+      : [];
+    if (heldIssueIds.length === 1 && heldIssueIds[0] === input.targetIssueId) {
+      if (run.homeIssueId === input.targetIssueId) {
+        return null;
+      }
+      if (run.homeIssueId === null) {
+        await tx
+          .update(heartbeatRuns)
+          .set({ homeIssueId: input.targetIssueId })
+          .where(and(
+            eq(heartbeatRuns.id, run.id),
+            eq(heartbeatRuns.companyId, input.companyId),
+            isNull(heartbeatRuns.homeIssueId),
+          ));
+        return null;
+      }
+      // The run already spends its exemption on another issue; a fresh claim of
+      // a second issue is cross-issue influence and is accounted for below.
     }
 
     const priorCount = await tx

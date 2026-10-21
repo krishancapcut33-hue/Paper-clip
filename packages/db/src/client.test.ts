@@ -266,6 +266,13 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
     };
   }
 
+  // Later migrations may add nullable columns; that must not rewrite any pre-existing
+  // column values, and every newly introduced key must read back as null.
+  const expectRetainedRowUnchanged = (after: Record<string, unknown>, before: Record<string, unknown>) => {
+    for (const [key, value] of Object.entries(before)) expect(after[key]).toEqual(value);
+    for (const [key, value] of Object.entries(after)) if (!(key in before)) expect(value).toBeNull();
+  };
+
   it.each(["fresh", "master0346", "muse0348"] as const)("migrates %s through the normal loader without rewriting historical receipts", async baseline => {
     const referenceUrl = await createTempDatabase();
     const adminUrl = new URL(referenceUrl), databaseName = `merged_muse_${baseline.toLowerCase()}`;
@@ -319,7 +326,13 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
         const currentHash = await migrationHash(entry.file);
         expect(afterHistory.filter(row => row.hash === currentHash)).toHaveLength(1);
       }
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows && beforeRows) {
+        const afterRows = await retainedRows();
+        for (const key of ["company", "task", "run", "grant", "binding"] as const) {
+          if (beforeRows[key]) expectRetainedRowUnchanged(afterRows[key] as Record<string, unknown>, beforeRows[key] as Record<string, unknown>);
+          else expect(afterRows[key]).toBeNull();
+        }
+      }
       const indexes = await sql`
         SELECT c.relname, i.indisvalid, i.indisready, pg_get_indexdef(c.oid) AS definition
         FROM pg_index i JOIN pg_class c ON c.oid = i.indexrelid JOIN pg_namespace n ON n.oid = c.relnamespace
@@ -336,7 +349,13 @@ describeEmbeddedPostgres("merged Muse migration histories", () => {
       expect((await inspectMigrations(connectionString)).status).toBe("upToDate");
       expect(await historyRows(sql)).toEqual(afterHistory);
       expect(await schemaShape(sql)).toEqual(finalShape);
-      if (retainedRows) expect(await retainedRows()).toEqual(beforeRows);
+      if (retainedRows && beforeRows) {
+        const afterRows = await retainedRows();
+        for (const key of ["company", "task", "run", "grant", "binding"] as const) {
+          if (beforeRows[key]) expectRetainedRowUnchanged(afterRows[key] as Record<string, unknown>, beforeRows[key] as Record<string, unknown>);
+          else expect(afterRows[key]).toBeNull();
+        }
+      }
     } finally {
       await Promise.all([sql.end(), reference.end()]);
     }

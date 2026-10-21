@@ -123,6 +123,11 @@ export const issues = pgTable(
       table.status,
     ),
     responsibleUserIdx: index("issues_company_responsible_user_idx").on(table.companyId, table.responsibleUserId),
+    // Run-claim lookups: the cross-issue influence gate resolves which issues a
+    // writing run currently holds (checkout_run_id / execution_run_id) on every
+    // write, and run lifecycle cleanup scans the same columns.
+    checkoutRunIdx: index("issues_company_checkout_run_idx").on(table.companyId, table.checkoutRunId),
+    executionRunIdx: index("issues_company_execution_run_idx").on(table.companyId, table.executionRunId),
     parentIdx: index("issues_company_parent_idx").on(table.companyId, table.parentId),
     privacyParentIdx: index("issues_company_privacy_parent_idx").on(table.companyId, table.privacyParentIssueId),
     privacyRootIdx: index("issues_company_privacy_root_idx").on(table.companyId, table.privacyRootIssueId),

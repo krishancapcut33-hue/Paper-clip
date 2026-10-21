@@ -10,38 +10,68 @@ import {
 function counterDb(
   initialCount = 0,
   runOverrides: Record<string, unknown> | null = {},
+  // Issue ids whose checkout/execution claim points at this run (empty = none).
+  heldIssueIds: string[] = [],
 ) {
   let observedCount = initialCount;
   const inserted: Array<Record<string, unknown>> = [];
+  const selects: Array<string[]> = [];
+  const updates: Array<Record<string, unknown>> = [];
   const tx = {
-    select: (selection: Record<string, unknown>) => ({
-      from: () => ({
-        where: () => {
-          if (Object.keys(selection).includes("count")) {
+    select: (selection: Record<string, unknown>) => {
+      selects.push(Object.keys(selection));
+      return {
+        from: () => ({
+          where: () => {
+            const keys = Object.keys(selection);
+            if (keys.includes("count")) {
+              return {
+                then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
+              };
+            }
+            if (keys.includes("heldId")) {
+              // The timer-wake checkout lookup:
+              // select({ heldId: issues.id }).from(issues).where(...).limit(2).then(...)
+              const then = (resolve: (rows: unknown[]) => unknown) =>
+                resolve(heldIssueIds.slice(0, 2).map((id) => ({ heldId: id })));
+              return {
+                limit: () => ({ then }),
+                then,
+              };
+            }
             return {
-              then: (resolve: (rows: unknown[]) => unknown) => resolve([{ count: observedCount }]),
+              for: () => ({
+                then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
+                  id: "11111111-1111-4111-8111-111111111111",
+                  companyId: "22222222-2222-4222-8222-222222222222",
+                  agentId: "33333333-3333-4333-8333-333333333333",
+                  responsibleUserId: "user-1",
+                  contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
+                  // The one issue this run may write to uncapped; bound lazily
+                  // on the first checked-out same-issue write.
+                  homeIssueId: null,
+                  ...runOverrides,
+                }]),
+              }),
             };
-          }
-          return {
-            for: () => ({
-              then: (resolve: (rows: unknown[]) => unknown) => resolve(runOverrides === null ? [] : [{
-                id: "11111111-1111-4111-8111-111111111111",
-                companyId: "22222222-2222-4222-8222-222222222222",
-                agentId: "33333333-3333-4333-8333-333333333333",
-                responsibleUserId: "user-1",
-                contextSnapshot: { issueId: "44444444-4444-4444-8444-444444444444" },
-                ...runOverrides,
-              }]),
-            }),
-          };
-        },
-      }),
-    }),
+          },
+        }),
+      };
+    },
     insert: () => ({
       values: async (value: Record<string, unknown>) => {
         inserted.push(value);
         if (value.action === "issue.cross_issue_influence_observed") observedCount += 1;
       },
+    }),
+    // update(heartbeatRuns).set({ homeIssueId }).where(...): the lazy home-issue bind.
+    update: () => ({
+      set: (value: Record<string, unknown>) => ({
+        where: async () => {
+          updates.push(value);
+          return [];
+        },
+      }),
     }),
   };
   return {
@@ -49,6 +79,8 @@ function counterDb(
       transaction: async (callback: (value: typeof tx) => Promise<unknown>) => callback(tx),
     },
     inserted,
+    selects,
+    updates,
     get observedCount() {
       return observedCount;
     },
@@ -237,5 +269,191 @@ describe("cross-issue influence limit rollout", () => {
     expect(fake.inserted).toEqual([
       expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
     ]);
+  });
+
+  describe("timer-wake runs that hold the target issue's checkout", () => {
+    const company = "22222222-2222-4222-8222-222222222222";
+    const runId = "11111111-1111-4111-8111-111111111111";
+    const agentId = "33333333-3333-4333-8333-333333333333";
+    const targetIssueId = "55555555-5555-4555-8555-555555555555";
+    const sourceIssueId = "44444444-4444-4444-8444-444444444444";
+    const otherIssueId = "66666666-6666-4666-8666-666666666666";
+    // heartbeat_timer wake: the run row exists but carries no source issue.
+    const timerWakeRun = { contextSnapshot: {} };
+    const wokenRun = { contextSnapshot: { issueId: sourceIssueId } };
+    const base = {
+      companyId: company,
+      runId,
+      agentId,
+      targetIssueId,
+      kind: "update",
+    } as const;
+
+    it("treats a timer-wake run's write to its own checked-out issue as same-issue (no cap spend)", async () => {
+      const fake = counterDb(0, timerWakeRun, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toBeNull();
+      expect(fake.inserted).toEqual([]);
+    });
+
+    it("accepts an executionRunId-only claim as the same-issue link", async () => {
+      const fake = counterDb(0, timerWakeRun, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toBeNull();
+      expect(fake.inserted).toEqual([]);
+    });
+
+    it("treats a woken run's write to the issue it checked out as same-issue", async () => {
+      const fake = counterDb(0, wokenRun, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toBeNull();
+      expect(fake.inserted).toEqual([]);
+    });
+
+    const withoutCheckout: Array<[string, string[]]> = [
+      ["an issue nobody claims", []],
+      ["a different issue claimed by this run", [otherIssueId]],
+    ];
+    it.each(withoutCheckout)(
+      "still counts a timer-wake write when the run does not hold the target issue (%s)",
+      async (_label, heldIds) => {
+        const fake = counterDb(0, timerWakeRun, heldIds);
+
+        await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toMatchObject({
+          allowed: true,
+          count: 1,
+          cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+        });
+        expect(fake.inserted).toEqual([
+          expect.objectContaining({
+            action: "issue.cross_issue_influence_observed",
+            details: expect.objectContaining({ sourceIssueId: null, targetIssueId }),
+          }),
+        ]);
+      },
+    );
+
+    it("keeps attributing a woken run's foreign-issue write to its source issue", async () => {
+      // The foreign issue is claimed by a different run, so this run holds
+      // nothing and the write stays a counted cross-issue influence.
+      const fake = counterDb(0, wokenRun, []);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toMatchObject({
+        allowed: true,
+        count: 1,
+      });
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({
+          action: "issue.cross_issue_influence_observed",
+          details: expect.objectContaining({ sourceIssueId, targetIssueId }),
+        }),
+      ]);
+    });
+
+    it("still rejects a timer-wake run's foreign write once the cap is spent", async () => {
+      const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, timerWakeRun, []);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        ...base,
+        now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+      })).resolves.toMatchObject({
+        allowed: false,
+        count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+      });
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
+      ]);
+    });
+
+    it("never runs the checkout lookup for a non-UUID target id", async () => {
+      // A non-UUID identifier must not take part in the lookup at all, and it
+      // can never equal a held issue id, so the write stays counted.
+      const fake = counterDb(0, timerWakeRun, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        ...base,
+        targetIssueId: "TASK-482",
+        targetIssueIdentifier: "TASK-482",
+      })).resolves.toMatchObject({ allowed: true, count: 1 });
+      expect(fake.selects.some((keys) => keys.includes("heldId"))).toBe(false);
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({ action: "issue.cross_issue_influence_observed" }),
+      ]);
+    });
+
+    it("charges a write when the run holds a second issue too (no stacked-checkout bypass)", async () => {
+      // The exemption is limited to the run's sole held issue: a run that
+      // claims several issues must not buy uncapped writes by stacking claims.
+      const fake = counterDb(0, timerWakeRun, [targetIssueId, otherIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toMatchObject({
+        allowed: true,
+        count: 1,
+        cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+      });
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({
+          action: "issue.cross_issue_influence_observed",
+          details: expect.objectContaining({ sourceIssueId: null, targetIssueId }),
+        }),
+      ]);
+    });
+
+    it("binds the run's home issue on its first checked-out same-issue write", async () => {
+      // First exemption is recorded durably on the run row so that later
+      // checkouts cannot inherit it.
+      const fake = counterDb(0, timerWakeRun, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toBeNull();
+      expect(fake.updates).toEqual([{ homeIssueId: targetIssueId }]);
+      expect(fake.inserted).toEqual([]);
+    });
+
+    it("keeps exempting the bound issue when its claim is released and taken again", async () => {
+      const fake = counterDb(0, { ...timerWakeRun, homeIssueId: targetIssueId }, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toBeNull();
+      expect(fake.updates).toEqual([]);
+      expect(fake.inserted).toEqual([]);
+    });
+
+    it("charges a successive sole claim once the run's exemption is bound to another issue", async () => {
+      // The run already spends its exemption on otherIssueId (checked out,
+      // written, released). Checking out targetIssueId next must not open a
+      // second uncapped channel: the write is counted like any cross-issue one.
+      const fake = counterDb(0, { ...timerWakeRun, homeIssueId: otherIssueId }, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, base)).resolves.toMatchObject({
+        allowed: true,
+        count: 1,
+        cap: CROSS_ISSUE_INFLUENCE_LIMIT,
+      });
+      expect(fake.updates).toEqual([]);
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({
+          action: "issue.cross_issue_influence_observed",
+          details: expect.objectContaining({ sourceIssueId: null, targetIssueId }),
+        }),
+      ]);
+    });
+
+    it("still rejects a successive sole claim once the run's cap is spent", async () => {
+      const fake = counterDb(CROSS_ISSUE_INFLUENCE_LIMIT, {
+        ...timerWakeRun,
+        homeIssueId: otherIssueId,
+      }, [targetIssueId]);
+
+      await expect(observeCrossIssueInfluence(fake.db as never, {
+        ...base,
+        now: CROSS_ISSUE_INFLUENCE_ENFORCE_AT,
+      })).resolves.toMatchObject({
+        allowed: false,
+        count: CROSS_ISSUE_INFLUENCE_LIMIT + 1,
+      });
+      expect(fake.updates).toEqual([]);
+      expect(fake.inserted).toEqual([
+        expect.objectContaining({ action: "issue.cross_issue_influence_cap_rejected" }),
+      ]);
+    });
   });
 });

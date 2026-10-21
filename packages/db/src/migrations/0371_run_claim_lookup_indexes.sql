@@ -1,0 +1,2 @@
+CREATE INDEX "issues_company_checkout_run_idx" ON "issues" USING btree ("company_id","checkout_run_id");--> statement-breakpoint
+CREATE INDEX "issues_company_execution_run_idx" ON "issues" USING btree ("company_id","execution_run_id");
