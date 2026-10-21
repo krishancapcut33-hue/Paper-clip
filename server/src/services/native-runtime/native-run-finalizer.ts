@@ -421,6 +421,7 @@ async function recordRetryableFailure(input: {
             : "native_finalization_retry_exhausted"
           : input.failureCode;
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
+    await notifyExecutionRunWork(tx);
     await tx
       .update(nativeRunFinalizations)
       .set({
@@ -451,7 +452,6 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus && input.failureScope === "workspace") {
       await preserveNativeWorkspaceExportLease(tx as unknown as Db, input.run, input.coordinator.resultId);
     }
-    await notifyExecutionRunWork(tx);
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({

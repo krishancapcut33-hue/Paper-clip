@@ -9380,6 +9380,7 @@ async function executePaperclipNativeSessionWithinScope(
             ),
           )
           .for("update");
+        await notifyExecutionRunWork(tx);
         const updated = await tx
           .update(nativeRunFinalizations)
           .set({
@@ -9504,7 +9505,6 @@ async function executePaperclipNativeSessionWithinScope(
           .from(heartbeatRuns)
           .where(eq(heartbeatRuns.id, input.execution.binding.runId))
           .for("update");
-        await notifyExecutionRunWork(tx);
         let [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({

@@ -856,6 +856,7 @@ export async function claimNativeRestartRecoveries(input: {
           recycledProviderPids: providerProcesses.recycledPids,
           stderrTail: row.run.stderrExcerpt,
         });
+        await notifyExecutionRunWork(tx);
         await tx
           .update(nativeRunFinalizations)
           .set({
@@ -882,7 +883,6 @@ export async function claimNativeRestartRecoveries(input: {
               eq(nativeRunFinalizations.phase, row.coordinator.phase),
             ),
           );
-        await notifyExecutionRunWork(tx);
         const [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({
