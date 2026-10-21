@@ -124,7 +124,11 @@ agree. A checkpoint still requires the selected native run and its owned provide
 turn. The checkpoint poll treats invalid, duplicate, corrupt, or unauthorized
 evidence as a permanent attempt failure. An artifact that is not registered yet may wait.
 The final result opens its actual attachment chip and downloads through the file
-tab. Both inner and outer failure captures use the same closed lifecycle fields.
+tab. The delivery observer separates server-receipted progress and generated file
+preparation from final replies. File preparation needs its exact applied receipt
+and independently read attachment-to-comment, task, and run binding. An ordinary
+extra reply still fails; matching wording alone cannot hide it.
+Both inner and outer failure captures use the same closed lifecycle fields.
 They do not put prompt, provider text, configuration, or logs into api-state.json.
 
 ## Finalization recovery

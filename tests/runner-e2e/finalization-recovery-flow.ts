@@ -126,7 +126,9 @@ export async function runFinalizationRecoveryFlow(input: {
     const delivered = await waitForRunDelivery({ binding: observation!.binding, agentId: fixtures.agent.id, deadlineAt: input.deadlineAt,
       load: async () => {
         await refresh();
-        return { run: runs[0] ?? {}, runCount: runs.length, comments: await api.get<Row[]>(`/api/issues/${issue!.id}/comments`) };
+        const [comments, attachments] = await Promise.all([api.get<Row[]>(`/api/issues/${issue!.id}/comments`),
+          api.get<Row[]>(`/api/issues/${issue!.id}/attachments`)]);
+        return { run: runs[0] ?? {}, runCount: runs.length, comments, attachments };
       } });
     run = delivered.run;
     const delivery = delivered.delivery;

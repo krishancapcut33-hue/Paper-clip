@@ -57,3 +57,53 @@ describe("finalization final delivery observation", () => {
     expect(load).toHaveBeenCalledOnce();
   });
 });
+
+
+function withPreparedFile() {
+  const state = fixture();
+  const prepared = { ...state.comments[0]!, id: "prepared", body: "Prepared proof.json for this response." };
+  return { ...state, comments: [...state.comments, prepared],
+    attachments: [{ id: "attachment", issueId: "task", originatingRunId: "run", issueCommentId: "prepared" }],
+    run: { ...state.run, resultJson: { ...state.run.resultJson, semanticToolReceipts: {
+      proof: { operationId: "register_deliverable", result: { disposition: "applied", commandId: "deliverable-prepared:attachment",
+        attachmentId: "attachment", entityRefs: ["attachment", "work-product", "prepared"] } },
+    } } } };
+}
+
+it("counts the receipt-bound final reply separately from a verified file-preparation carrier", () => {
+  const state = withPreparedFile();
+  expect(inspectRunDelivery(state)).toMatchObject({ finalDeliveryCount: 1, deliveryReceiptMatches: true });
+});
+
+
+it.each(["no-receipt", "wrong-operation", "wrong-command", "unapplied", "no-attachment", "wrong-issue", "wrong-run", "wrong-comment", "wrong-company", "missing-reference", "duplicate-attachment"] as const)("keeps an unproven %s carrier as an extra reply instead of hiding it", kind => {
+  const state = withPreparedFile();
+  const receipt = state.run.resultJson.semanticToolReceipts.proof;
+  if (kind === "no-receipt") state.run.resultJson.semanticToolReceipts = {} as typeof state.run.resultJson.semanticToolReceipts;
+  if (kind === "wrong-operation") receipt.operationId = "ordinary_comment";
+  if (kind === "wrong-command") receipt.result.commandId = "different";
+  if (kind === "unapplied") receipt.result.disposition = "rejected";
+  if (kind === "no-attachment") state.attachments = [];
+  if (kind === "wrong-issue") state.attachments[0]!.issueId = "foreign";
+  if (kind === "wrong-run") state.attachments[0]!.originatingRunId = "foreign";
+  if (kind === "wrong-comment") state.attachments[0]!.issueCommentId = "foreign";
+  if (kind === "wrong-company") Object.assign(state.attachments[0]!, { companyId: "foreign" });
+  if (kind === "missing-reference") receipt.result.entityRefs = ["attachment", "work-product"];
+  if (kind === "duplicate-attachment") state.attachments.push({ ...state.attachments[0]! });
+  expect(inspectRunDelivery(state)).toMatchObject({ finalDeliveryCount: 2, deliveryReceiptMatches: false });
+});
+
+it("still rejects a second actual final reply alongside a verified preparation carrier", () => {
+  const state = withPreparedFile();
+  state.comments.push({ ...state.comments[0]!, id: "second-final", body: "A different final response." });
+  expect(inspectRunDelivery(state)).toMatchObject({ finalDeliveryCount: 2, deliveryReceiptMatches: false });
+});
+
+it("recognizes server-receipted progress and system notices without inspecting their prose", () => {
+  const state = fixture();
+  const comments = [...state.comments, { ...state.comments[0]!, id: "progress" },
+    { ...state.comments[0]!, id: "notice", presentation: { kind: "system_notice" } }];
+  const run = { ...state.run, resultJson: { ...state.run.resultJson,
+    semanticToolReceipts: { update: { operationId: "report_progress", result: { commentId: "progress" } } } } };
+  expect(inspectRunDelivery({ ...state, run, comments })).toMatchObject({ finalDeliveryCount: 1, deliveryReceiptMatches: true });
+});

@@ -147,8 +147,10 @@ export async function runFollowupStopResumeFlow(input: {
     const delivered = await waitForRunDelivery({ binding: { companyId: fixtures.company.id, issueId: issue.id, runId: resumedRun.id },
       agentId: fixtures.agent.id, deadlineAt: input.deadlineAt, load: async () => {
         await refresh();
+        const [comments, attachments] = await Promise.all([api.get<Row[]>(`/api/issues/${issue!.id}/comments`),
+          api.get<Row[]>(`/api/issues/${issue!.id}/attachments`)]);
         return { run: runs.find(run => run.id === resumedRun.id) ?? {}, runCount: runs.filter(run => run.id !== active.id).length,
-          comments: await api.get<Row[]>(`/api/issues/${issue!.id}/comments`) };
+          comments, attachments };
       } });
     const [artifact] = await readRegisteredArtifacts(api, issue.id, resumedRun.id, [files.result]);
     const [interactions, view, allIssues] = await Promise.all([api.get<Row[]>(`/api/issues/${issue.id}/interactions`),
