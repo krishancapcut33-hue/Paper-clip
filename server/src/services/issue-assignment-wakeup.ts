@@ -1,4 +1,5 @@
 import { logger } from "../middleware/logger.js";
+import { CHAT_CONVERSATION_ID_KEY } from "../modules/run-dispatch/index.js";
 import type { DurableChatWakeupRequest } from "./durable-chat-wakeup.js";
 
 type WakeupTriggerDetail = "manual" | "ping" | "callback" | "system";
@@ -37,6 +38,9 @@ export function queueIssueAssignmentWakeup(input: {
   /** Closed, server-derived omission counts for provider attachments on the
    * exact wake comment. These are prompt diagnostics, never authorization. */
   attachmentOmissionReasons?: Record<string, number> | null;
+  /** External chat conversation the wake answers. The wake queue keeps each
+   * conversation in its own batch, because a reviewed chat run attests one. */
+  chatConversationId?: string | null;
   rethrowOnError?: boolean;
   durableChatRequest?: DurableChatWakeupRequest;
 }) {
@@ -63,6 +67,7 @@ export function queueIssueAssignmentWakeup(input: {
         source: input.contextSource,
         ...(input.taskKey ? { taskKey: input.taskKey } : {}),
         ...(input.wakeCommentId ? { wakeCommentId: input.wakeCommentId } : {}),
+        ...(input.chatConversationId ? { [CHAT_CONVERSATION_ID_KEY]: input.chatConversationId } : {}),
         ...(input.wakeCommentId && input.attachmentOmissionReasons
           ? {
               externalAttachmentOmissions: [

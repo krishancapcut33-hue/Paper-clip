@@ -1,3 +1,7 @@
+import {
+  readWakeChatConversationId,
+  wakeChatConversationsConflict,
+} from "../../run-dispatch/index.js";
 import { enrichPromotedWakeContext } from "../domain/context.js";
 import {
   decideQueuedCommentAction,
@@ -843,8 +847,12 @@ export function createAdmitWakeBehindIssueExecution(deps: {
     // Each resolved card has its own immutable decision and continuation. Never
     // merge it with comments or another card, in either arrival order.
     const interactionReceipt = Boolean(input.contextSnapshot.interactionId || input.payload?.interactionId);
+    // A reviewed chat run attests exactly one conversation. Replies from
+    // another conversation on the same issue queue as their own wake.
+    const chatConversationId = readWakeChatConversationId(input.contextSnapshot);
     const decision = decideWakeAdmission({
-      allowRunCoalescing: interactionReceipt || parseObject(input.activeExecutionRun.contextSnapshot).interactionId
+      allowRunCoalescing: interactionReceipt || parseObject(input.activeExecutionRun.contextSnapshot).interactionId ||
+        wakeChatConversationsConflict(input.activeExecutionRun.contextSnapshot, input.contextSnapshot)
         ? false : input.allowRunCoalescing,
       sameDurableActor,
       isSameExecutionAgent,
@@ -893,6 +901,7 @@ export function createAdmitWakeBehindIssueExecution(deps: {
             companyId: input.companyId,
             agentId: input.agentId,
             issueId: input.issueId,
+            ...(chatConversationId ? { chatConversationId } : {}),
             ...(input.durableReceipt
               ? {
                   durableActor: {
