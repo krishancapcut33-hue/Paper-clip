@@ -3144,6 +3144,25 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("restores a Codex setup that carries both a key and a CLI login in API mode", async () => {
+      // The credential checks are one exclusive chain. A setup that carries an
+      // API key continues with that key, even when it also carries a CLI
+      // login, and the OpenCode provider — restored apart from that chain —
+      // must not take the subscription fallback with it.
+      const setupId = "00000000-0000-4000-8000-000000000088";
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "codex_local", adapterConfig: { env: { CODEX_HOME: { type: "plain", value: "***REDACTED***" },
+          OPENAI_API_KEY: { type: "secret_ref", secretId: "saved-key" } } },
+        runtimeConfig: {}, pauseReason: "setup", defaultEnvironmentId: "env-sandbox-1" } as never);
+      const { root } = await openStep4({ adapterType: "codex_local", setupAgentId: setupId });
+      await pickSource(/OpenAI/);
+      await vi.waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).credentialMode,
+        "the restored key wins over the CLI login, so the customer is not sent through sign-in again",
+      ).toBe("api"));
+      await act(async () => root.unmount());
+    });
+
     it("tests restored redacted environment values using the setup record", async () => {
       const setupId = "00000000-0000-4000-8000-000000000086";
       mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",

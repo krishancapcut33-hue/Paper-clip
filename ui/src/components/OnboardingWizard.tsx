@@ -1527,10 +1527,13 @@ function OnboardingWizardInner({
             const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
             if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
             else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
+            else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
+              || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
             // The provider behind the OpenCode harness is part of the restored
             // answer, not a detail of it: a Go setup restored on OpenRouter
             // would load the wrong catalog, and the step would then reject the
-            // model it had just restored.
+            // model it had just restored. It is restored apart from the
+            // credential chain above, which stays one exclusive set of checks.
             if (agentHarnessType(agent.adapterType, config) === "opencode_local") {
               const restoredProvider = binding?.provider === "opencode" ? "opencode"
                 : binding?.provider === "openrouter" ? "openrouter"
@@ -1538,8 +1541,6 @@ function OnboardingWizardInner({
                 : undefined;
               if (restoredProvider) setProviderChoice(restoredProvider);
             }
-            else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
-              || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
             if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
           }
         }
