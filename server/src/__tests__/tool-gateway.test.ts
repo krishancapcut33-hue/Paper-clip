@@ -1402,6 +1402,7 @@ describeEmbeddedPostgres("tool gateway acceptance", () => {
     const intentId = randomUUID();
     await db.insert(agentWakeupRequests).values({ id: intentId, companyId: company.id, agentId: agent.id,
       runId: run.id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: "board",
       payload: { issueId: issue.id, taskRetry: { schema: "paperclip.task-retry.v1",
         generationId: intentId, sourceRunId: source.id, actorId: "board", strategy: "fresh_isolated_workspace" } } });
     const [uncertain] = await db.insert(toolInvocations).values({ companyId: company.id,
