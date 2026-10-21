@@ -115,7 +115,7 @@ function normalizeLeasedPayload(event: LeasedEvent): Record<string, unknown> {
       number: positiveInteger(payload.number),
       url: githubUrl(payload.url),
       state: boundedString(payload.state, 40),
-      merged: payload.merged === true || Boolean(isoDate(payload.mergedAt)) || Boolean(mergeCommitSha(payload)),
+      merged: payload.merged === true || Boolean(isoDate(payload.mergedAt)),
       mergedAt: isoDate(payload.mergedAt),
       mergeCommitSha: mergeCommitSha(payload),
       updatedAt: isoDate(payload.updatedAt),
@@ -181,8 +181,7 @@ function githubSnapshotUpdate(payload: Record<string, unknown>) {
   if (!repository || !number) return null;
   const state = stringValue(payload.state) ?? "unknown";
   const merged = payload.merged === true
-    || Boolean(isoDate(payload.mergedAt))
-    || Boolean(mergeCommitSha(payload));
+    || Boolean(isoDate(payload.mergedAt));
   const [owner, repo, ...extra] = repository.split("/");
   if (!owner || !repo || extra.length > 0) return null;
   return {

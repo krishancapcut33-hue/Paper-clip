@@ -350,6 +350,25 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
       },
     });
     const firstEvent = createMergeDelivery("delivery_merge_first", "2026-09-04T11:59:01.000Z", "c".repeat(40));
+    const preMergeEvent = {
+      ...firstEvent,
+      id: "delivery_pre_merge_with_test_sha",
+      action: "synchronize",
+      payload: {
+        ...firstEvent.payload,
+        state: "open",
+        merged: false,
+        mergedAt: undefined,
+        merge_commit_sha: "e".repeat(40),
+        updatedAt: "2026-09-04T11:58:00.000Z",
+      },
+    };
+    const { connector: preMergeConnector } = createConnector(preMergeEvent);
+    await expect(githubConnectionEventService(db, { connector: preMergeConnector }).pollOnce())
+      .resolves.toMatchObject({ processed: 1, failed: 0 });
+    const [preMergeProduct] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, workProductId));
+    expect(preMergeProduct).toMatchObject({ status: "open", metadata: { merged: false, mergeCommitSha: "e".repeat(40) } });
+
     const { connector: firstConnector } = createConnector(firstEvent);
     await expect(githubConnectionEventService(db, { connector: firstConnector }).pollOnce())
       .resolves.toMatchObject({ processed: 1, failed: 0 });
