@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
 import { assertNativeCaseHandoffResult } from "./native-case-handoff.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
@@ -450,6 +451,7 @@ async function recordRetryableFailure(input: {
     if (projectsTerminalStatus && input.failureScope === "workspace") {
       await preserveNativeWorkspaceExportLease(tx as unknown as Db, input.run, input.coordinator.resultId);
     }
+    await notifyExecutionRunWork(tx);
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -705,6 +707,7 @@ async function projectCommittedRun(input: {
   const [updatedRun] = await input.db.transaction(async transaction => {
     const tx = transaction as unknown as Db;
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
+    await notifyExecutionRunWork(tx);
     return tx
       .update(heartbeatRuns)
       .set({
@@ -1617,13 +1620,12 @@ export async function finalizeNativeRun(input: {
         })
         .where(eq(heartbeatRuns.id, run.id))
         .returning();
-      const [updatedRun] = input.projectRunStatus
-        ? await input.db.transaction(async transaction => {
-            const tx = transaction as unknown as Db;
-            await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
-            return projectRun(tx);
-          })
-        : await projectRun(input.db);
+      const [updatedRun] = await input.db.transaction(async transaction => {
+        const tx = transaction as unknown as Db;
+        if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
+        await notifyExecutionRunWork(tx);
+        return projectRun(tx);
+      });
       if (
         input.projectRunStatus &&
         !alreadyEmittedByCommittedDecision &&
