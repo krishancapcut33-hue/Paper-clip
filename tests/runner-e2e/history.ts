@@ -1,5 +1,6 @@
 import { isIncompleteFirstTaskResult } from "./case-outcome.js";
 import { classifyLatency } from "./latency-timing.js";
+import { summarizeStartupReuse } from "../../packages/adapter-utils/src/startup-reuse.js";
 import { validateRetainedRunnerResult } from "./result-validation.js";
 import {
   discoverReportCatalog,
@@ -34,6 +35,9 @@ export function upgradeRunnerResult(result: RunnerE2EResult): RunnerE2EResult {
     return probe.verdict === corrected.verdict ? corrected
       : { ...corrected, recordedVerdict: probe.recordedVerdict ?? probe.verdict };
   }) };
+  result = { ...result, startupReuse: result.startupReuse ?? (result.runIds ?? []).map(runId => ({
+    runId, ...summarizeStartupReuse([]),
+  })) };
   const executionId = canonicalExecutionId(result.executionId);
   const execution = runnerMatrix.find(
     (candidate) => candidate.id === executionId,

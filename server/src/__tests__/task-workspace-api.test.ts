@@ -3,7 +3,7 @@ import { mkdtemp } from "node:fs/promises";
 import { dirname, join } from "node:path";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, executionWorkspaceRepositories, executionWorkspaces, issues, heartbeatRuns, projects, projectWorkspaces, principalPermissionGrants, companyMemberships } from "@paperclipai/db";
+import { agents, executionWorkspaceRepositories, executionWorkspaces, issues, heartbeatRuns, projects, projectWorkspaces } from "@paperclipai/db";
 import { createLocalAgentJwt } from "../agent-auth-jwt.js";
 import { startRunnerApiTestServer } from "./helpers/runner-api-server.js";
 import { getEmbeddedPostgresTestSupport } from "./helpers/embedded-postgres.js";
@@ -51,6 +51,13 @@ const support = await getEmbeddedPostgresTestSupport();
     const first = await call("prepare_repository", args) as { preparationId: string; kind: string };
     expect(first.kind).toBe("requires_next_admission");
     expect(await call("prepare_repository", args)).toMatchObject({ preparationId: first.preparationId });
+    const continued = await call("get_task_context", {}) as { completionContinuation: { kind: string; idempotencyKey: string } };
+    expect(continued.completionContinuation).toMatchObject({ kind: "same_agent" });
+    expect((await call("get_task_context", {}) as typeof continued).completionContinuation).toEqual(continued.completionContinuation);
+    await server.db.update(executionWorkspaceRepositories).set({ requestedByIssueId: f.blockerId }).where(eq(executionWorkspaceRepositories.id, first.preparationId));
+    expect(await call("get_task_context", {})).toMatchObject({ completionContinuation: null });
+    await server.db.update(executionWorkspaceRepositories).set({ requestedByIssueId: f.issueId, state: "ready" }).where(eq(executionWorkspaceRepositories.id, first.preparationId));
+    expect(await call("get_task_context", {})).toMatchObject({ completionContinuation: null });
     expect(await call("select_workspace", { selection: { kind: "task_directory" }, expectedBindingRevision: view.bindingRevision, requestKey: "root-one" })).toMatchObject({ kind: "scheduled", applies: "next_normal_admission" });
     const [task] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(task).toMatchObject({ executionWorkspaceId: workspace.id, projectId: null, workspacePendingSelection: { requestKey: "root-one" } });
@@ -58,7 +65,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(runs).toHaveLength(1);
     expect(runs[0]).toMatchObject({ id: f.runId, status: "running" });
   });
-  it("keeps projectless protected-folder aliases readable while enforcing scoped write grants", async () => {
+  it("allows a projectless task to use a directory also configured by an unrelated protected project", async () => {
     const f = await server.fixture({ conversation: true, disableWakeOnDemand: true });
     const [project] = await server.db.insert(projects).values({ companyId: f.companyId, name: "Protected physical source",
       executionWorkspacePolicy: { authorizationPolicy: { assignmentPolicy: { mode: "protected" } } } }).returning();
@@ -70,14 +77,6 @@ const support = await getEmbeddedPostgresTestSupport();
     const selection = { selection: { kind: "existing", workspaceId: workspace.id }, expectedBindingRevision: 0, requestKey: "protected-alias" };
     const repository = { repository: { kind: "url", url: "https://github.com/public/example" }, requestKey: "protected-root-write" };
     await expect(call("get_workspace", {})).resolves.toMatchObject({ workspace: { id: workspace.id, projectId: null } });
-    await expect(call("select_workspace", selection)).rejects.toThrow(/protected|not authorized/);
-    await expect(call("prepare_repository", repository)).rejects.toThrow(/protected|not authorized/);
-    await server.db.insert(companyMemberships).values({ companyId: f.companyId, principalType: "agent", principalId: f.agentId,
-      membershipRole: "member", status: "active" });
-    await server.db.insert(principalPermissionGrants).values([
-      { companyId: f.companyId, principalType: "agent", principalId: f.agentId, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } },
-      { companyId: f.companyId, principalType: "user", principalId: f.userId!, permissionKey: "tasks:assign_scope", scope: { projectId: project.id, assigneeAgentId: f.agentId } },
-    ]);
     await expect(call("select_workspace", selection)).resolves.toMatchObject({ kind: "scheduled" });
     await expect(call("prepare_repository", repository)).resolves.toMatchObject({ kind: "requires_next_admission" });
   });
@@ -155,13 +154,10 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await server.db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.companyId, f.companyId))).toHaveLength(0);
     await server.db.update(agents).set({ permissions: policy([f.projectId]) }).where(eq(agents.id, f.agentId));
     await expect(call("get_workspace", {})).resolves.toMatchObject({ workspace: { id: source.id, projectId: f.projectId } });
-    await expect(call("select_workspace", { selection: { kind: "existing", workspaceId: source.id }, expectedBindingRevision: 0, requestKey: "source-allowed" })).rejects.toThrow(/outside.*boundary/i);
-    await expect(call("prepare_repository", repository)).rejects.toThrow(/outside.*boundary/i);
-    expect(await server.db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.companyId, f.companyId))).toHaveLength(0);
-    const unrelatedCwd = await mkdtemp(join(dirname(f.workspace), "unrelated-workspace-"));
-    await server.db.update(executionWorkspaces).set({ cwd: unrelatedCwd }).where(eq(executionWorkspaces.id, unrelated.id));
     await expect(call("select_workspace", { selection: { kind: "existing", workspaceId: source.id }, expectedBindingRevision: 0, requestKey: "source-allowed" })).resolves.toMatchObject({ kind: "scheduled" });
     await expect(call("prepare_repository", repository)).rejects.toThrow(/trusted task/);
+    expect(await server.db.select().from(executionWorkspaceRepositories).where(eq(executionWorkspaceRepositories.companyId, f.companyId))).toHaveLength(0);
+    expect((await server.db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, unrelated.id)))[0]?.cwd).toBe(f.workspace);
     expect((await server.db.select().from(issues).where(eq(issues.id, f.issueId)))[0]?.projectId).toBeNull();
   });
 });

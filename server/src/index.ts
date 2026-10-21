@@ -5,8 +5,15 @@ import {
   SKILL_VERSION_RETENTION_STARTUP_DELAY_MS,
   skillVersionRetentionService,
 } from "./services/skill-version-retention.js";
+import {
+  NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS,
+  NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS,
+  nativeHarnessBackupExpirationService,
+} from "./services/native-runtime/native-harness-backup-expiration.js";
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
+import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./services/budget-enforcement-worker.js";
+import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js";
 import { registerScheduledWork } from "./services/scheduled-work.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
 import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
@@ -60,6 +67,7 @@ import {
   companies,
   companyMemberships,
   instanceUserRoles,
+  closeLivenessDb,
 } from "@paperclipai/db";
 import detectPort from "detect-port";
 import { createApp } from "./app.js";
@@ -664,7 +672,7 @@ async function startServerWithDatabaseTeardown(
   const closeDatabaseClients = async () => {
     setSentryRunLinkResolver(null);
     const clients = pluginMigrationDb === db ? [db] : [db, pluginMigrationDb];
-    await Promise.all(clients.map((client) => endDatabaseClient(client, 5)));
+    await Promise.all([...clients.map((client) => endDatabaseClient(client, 5)), closeLivenessDb(db, 5)]);
   };
   startupDatabase.close = closeDatabaseClients;
   setSentryRunLinkResolver(createSentryRunLinkResolver(db));
@@ -1228,15 +1236,6 @@ async function startServerWithDatabaseTeardown(
     heartbeatSchedulerInterval?.unref?.();
   };
   const skillSourceSync = skillSourceSyncService(db as any);
-  const sweepSkillSources = () => {
-    if (isIdleTaskDrainActive() || heartbeatSchedulerStopped || isWarmStandby()) return;
-    trackHeartbeatSchedulerWork(skillSourceSync.tick().catch(err => {
-      logger.error({ err }, "skill source synchronization failed");
-    }));
-  };
-  const skillSourceSyncInterval = setInterval(sweepSkillSources, 5000);
-  skillSourceSyncInterval.unref?.();
-  sweepSkillSources();
   // Materialized skill versions are disk caches of version rows. The sweep is
   // single-flight, bounded per tick, and stops between removals on shutdown or
   // idle drain. The first sweep runs after startup without delaying readiness.
@@ -1270,12 +1269,40 @@ async function startServerWithDatabaseTeardown(
   skillVersionRetentionInterval.unref?.();
   const skillVersionRetentionStartup = setTimeout(sweepSkillVersionSnapshots, SKILL_VERSION_RETENTION_STARTUP_DELAY_MS);
   skillVersionRetentionStartup.unref?.();
+  const nativeHarnessBackupExpiration = nativeHarnessBackupExpirationService(db as any, {
+    dryRun: config.nativeHarnessBackupExpirationDryRun,
+    closedForDays: config.nativeHarnessBackupExpirationDays,
+    shouldContinue: () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(),
+  });
+  let nativeHarnessBackupExpirationInFlight = false;
+  let nativeHarnessBackupExpirationContinuation: ReturnType<typeof setTimeout> | undefined;
+  const sweepNativeHarnessBackups = () => {
+    if (!config.nativeHarnessBackupExpirationEnabled || nativeHarnessBackupExpirationInFlight || isIdleTaskDrainActive() || heartbeatSchedulerStopped || isWarmStandby()) return;
+    nativeHarnessBackupExpirationInFlight = true;
+    trackHeartbeatSchedulerWork(nativeHarnessBackupExpiration.tick()
+      .then((result) => {
+        if (result.candidates > 0 || result.failed > 0) {
+          logger.info({ ...result, dryRun: config.nativeHarnessBackupExpirationDryRun }, "native harness backup expiration");
+        }
+        if (result.truncated && !heartbeatSchedulerStopped) {
+          nativeHarnessBackupExpirationContinuation = setTimeout(sweepNativeHarnessBackups, 1000);
+          nativeHarnessBackupExpirationContinuation.unref?.();
+        }
+      })
+      .catch((err) => {
+        logger.error({ err }, "native harness backup expiration failed");
+      })
+      .finally(() => { nativeHarnessBackupExpirationInFlight = false; }));
+  };
+  const nativeHarnessBackupExpirationInterval = setInterval(sweepNativeHarnessBackups, NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS);
+  nativeHarnessBackupExpirationInterval.unref?.();
+  const nativeHarnessBackupExpirationStartup = setTimeout(sweepNativeHarnessBackups, NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS);
+  nativeHarnessBackupExpirationStartup.unref?.();
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
   });
   const scheduleExternalObjectRefreshSweep = (now = new Date()) => {
-    sweepSkillSources();
     if (isIdleTaskDrainActive() || heartbeatSchedulerStopped) return;
     trackHeartbeatSchedulerWork(externalObjects
       .refreshDueObjectsForActiveCompanies(50, now)
@@ -1319,6 +1346,18 @@ async function startServerWithDatabaseTeardown(
     resolveNativeQuestion: (interaction) => deliverNativeQuestionResponse(db as any, interaction),
   });
   const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
+  const budgetEnforcementWorker = registerBudgetEnforcementWork(db, deliveryWork, {
+    cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,
+  });
+  const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
+  server.on("close", accountingWorker.stop);
+  skillSourceSync.start(deliveryWork);
+  const caseHandoffDeliveries = caseHandoffDeliveryService(db as any, { heartbeat: environmentLeaseCleanupHeartbeat });
+  deliveryWork.register(DELIVERY_QUEUES.caseHandoffs, {
+    retryMs: 5_000,
+    run: signal => caseHandoffDeliveries.sweepPending(signal),
+    hasPending: () => caseHandoffDeliveries.hasPending(),
+  });
   let unregisterTerminalWorkspaceProbe: (() => void) | undefined;
   const fastResponses = app.locals.fastResponses as ReturnType<typeof import("./services/fast-responses.js").fastResponseService>;
   const fastResponseWorker = deliveryWork.register(DELIVERY_QUEUES.fastResponse, {
@@ -1413,7 +1452,7 @@ async function startServerWithDatabaseTeardown(
 
   await timeStartupRecovery("tool_reviews", () => app.locals.toolGateway.sweepActionReviews()).catch((err: unknown) => logger.error({ err }, "startup tool review recovery failed"));
   await timeStartupRecovery("gateway_sessions", () => app.locals.toolGateway.cleanupExpiredSessions()).catch((err: unknown) => logger.error({ err }, "startup gateway token cleanup failed"));
-  await timeStartupRecovery("delivery_workers", () => Promise.all([fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)));
+  await timeStartupRecovery("delivery_workers", () => Promise.all([budgetEnforcementWorker, accountingWorker, fastResponseWorker, ...deliveryWorkers].map(worker => worker.ready)));
   scheduleGitHubConnectionEventPoll();
   scheduleGitHubConnectionContinuitySweep();
 
@@ -1445,6 +1484,7 @@ async function startServerWithDatabaseTeardown(
       wakeup: heartbeat.wakeup,
     });
     const terminalWorkspaces = executionWorkspaceService(db as any, {
+      pluginWorkerManager,
       gitCacheExpirationEnabled: config.gitCacheExpirationEnabled,
       gitBaseExpirationEnabled: config.gitBaseExpirationEnabled,
       gitCacheExpirationDryRun: config.gitCacheExpirationDryRun,
@@ -1555,7 +1595,6 @@ async function startServerWithDatabaseTeardown(
       },
       "worktree run-execution cutoff state",
     );
-    await timeStartupRecovery("accounting", () => accountingHeartbeat.reconcileCostAccounting()).catch((err) => logger.error({ err }, "Cost accounting recovery failed; pending receipts will retry"));
     const heartbeatSchedulingSuppression = await heartbeat.resolveSchedulingSuppression();
 
     // Reap orphaned runs before timer ticks start so wakeups cannot coalesce
@@ -1849,8 +1888,6 @@ async function startServerWithDatabaseTeardown(
             logger.error({ err }, "periodic secret proposal expiry sweep failed");
           }));
 
-        trackHeartbeatSchedulerWork(accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed")));
-
         trackHeartbeatSchedulerWork(app.locals.toolGateway.sweepActionReviews().catch((err: unknown) => logger.error({ err }, "tool review recovery failed")));
         trackHeartbeatSchedulerWork(app.locals.toolGateway.cleanupExpiredSessions().catch((err: unknown) => logger.error({ err }, "gateway token cleanup failed")));
 
@@ -1934,10 +1971,8 @@ async function startServerWithDatabaseTeardown(
     // is still required. A failed acquire can leak a paid provider sandbox, so
     // this path retries the teardown at startup and on the interval, exactly as
     // the enabled path does.
-    await timeStartupRecovery("accounting", () => accountingHeartbeat.reconcileCostAccounting()).catch((err) => logger.error({ err }, "Cost accounting recovery failed; pending receipts will retry"));
     await runEnvironmentLeaseCleanupSweep(0);
     startHeartbeatSchedulerInterval(() => {
-      trackHeartbeatSchedulerWork(accountingHeartbeat.reconcileCostAccounting().catch((err) => logger.error({ err }, "Cost accounting recovery failed")));
       scheduleExternalObjectRefreshSweep(new Date());
       scheduleEnvironmentLeaseCleanupSweep();
       scheduleGitHubConnectionEventPoll();
@@ -2046,10 +2081,12 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
-    clearInterval(skillSourceSyncInterval);
     clearInterval(skillVersionRetentionInterval);
     clearTimeout(skillVersionRetentionStartup);
     clearTimeout(skillVersionRetentionContinuation);
+    clearInterval(nativeHarnessBackupExpirationInterval);
+    clearTimeout(nativeHarnessBackupExpirationStartup);
+    clearTimeout(nativeHarnessBackupExpirationContinuation);
     await skillVersionRetention.dispose();
     await skillSourceSync.stop();
     unsubscribeChatCompletions();
@@ -2099,6 +2136,7 @@ async function startServerWithDatabaseTeardown(
       await drainRunExecutionFinalizersForShutdown({
         signal,
         drain: drainHeartbeatExecutionFinalizers,
+        timeoutMs: 30_000,
         log: logger,
       });
     }

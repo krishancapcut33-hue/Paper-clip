@@ -2,6 +2,7 @@ import { recoverLegacyUnsafeWorkspaceExports } from "./native-workspace-export-r
 import { hasPendingNativeChildCompletion } from "./native-child-completion-delivery.js";
 import { dismissAutomaticCompletionReviews, decisionHasRetiredAutomaticReview } from "./automatic-completion-reviews.js";
 import { logger } from "../../middleware/logger.js";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { createHash, randomUUID } from "node:crypto";
 import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, lt, lte, ne, not, notInArray, or, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
@@ -35,7 +36,7 @@ import {
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
-import { reportRunFailure } from "../run-failure-report.js";
+import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
 import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
@@ -489,6 +490,7 @@ export async function claimNativeSessionResumptions(input: {
         || (!!checkpoint && !checkpointHasProviderIdentity)
       ) {
         const failureCode = originalFailureCode;
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, row.run.companyId);
         await tx.update(nativeRunFinalizations).set({
           phase: "terminal_failure",
           leaseOwner: null,
@@ -519,9 +521,10 @@ export async function claimNativeSessionResumptions(input: {
         }).where(eq(heartbeatRuns.id, row.run.id)).returning();
         // Only a genuine transition into "failed" is a new terminal failure.
         // A candidate that is already "failed" (the filter above admits
-        // both "running" and "failed") must not send a second Sentry event.
+        // both "running" and "failed") must not send a second Sentry event,
+        // unless that earlier write was an unreported pending retry.
         terminalRunToEmit =
-          updatedRun && updatedRun.status !== row.run.status ? updatedRun : null;
+          updatedRun && isNewTerminalRunFailure(row.run, updatedRun) ? updatedRun : null;
         await issueService(tx as unknown as Db).update(
           row.coordinator.issueId,
           { status: "blocked" },

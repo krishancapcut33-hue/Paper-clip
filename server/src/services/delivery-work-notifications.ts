@@ -2,6 +2,9 @@ import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
 
 /** Topics for existing durable queues; register intent before their writes. */
 export const DELIVERY_QUEUES = {
+  budgetEnforcement: "budget-enforcement",
+  accounting: "cost-accounting",
+  agentLifecycle: "agent-lifecycle",
   chatBoardMessages: "chat-board-messages",
   chatTaskStarts: "chat-task-starts",
   chatReceiptReactions: "chat-receipt-reactions",
@@ -19,6 +22,10 @@ export const DELIVERY_QUEUES = {
   chatReceipts: "chat-slack-receipts",
   browser: "browser-use",
   email: "email-channels",
+  museMaintenance: "muse-maintenance",
+  mcpEvents: "mcp-events",
+  dotEvents: "dot-events",
+  skillSourceSync: "skill-source-sync",
   fastResponse: "fast-responses",
   feedback: "feedback-exports",
   chatCompletion: "chat-completions",
@@ -29,6 +36,7 @@ export const DELIVERY_QUEUES = {
   terminalWorkspaces: "terminal-workspaces",
   routineSchedules: "routine-schedules",
   issueMonitors: "issue-monitors",
+  caseHandoffs: "case-handoffs",
 } as const;
 export type DeliveryQueue = typeof DELIVERY_QUEUES[keyof typeof DELIVERY_QUEUES];
 

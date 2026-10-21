@@ -1,4 +1,5 @@
 import { connectionCheckpoints, connectionEvidencePasses, connectionRunSignals } from "./connection-evidence.js";
+import { STARTUP_REUSE_LAYERS, STARTUP_REUSE_REASONS } from "../../packages/adapter-utils/src/startup-reuse.js";
 import type { RunnerE2EResult } from "./types.js";
 
 type Rule = (value: unknown, at: string) => void;
@@ -215,6 +216,15 @@ const fields = {
   issueIdentifier: optional(nullable(string)),
   runIds: optional(array(string)),
   latencyProbes: optional(array(latencyProbe)),
+  startupReuse: optional(array(shape({
+    runId: string,
+    warmth: oneOf("cold", "warm", "partial_reuse", "unknown"),
+    providerLaunchCount: nullable(integer),
+    layers: shape(Object.fromEntries(STARTUP_REUSE_LAYERS.map(layer => [layer, shape({
+      state: oneOf("fresh", "reused", "unknown", "not_applicable"),
+      reason: oneOf(...STARTUP_REUSE_REASONS),
+    })]))),
+  }))),
   turnTimings: optional(
     array(
       shape({
