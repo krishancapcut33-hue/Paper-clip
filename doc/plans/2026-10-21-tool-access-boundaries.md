@@ -61,3 +61,50 @@ coverage pass before and after; the combined post-move run passes 506 tests.
 Server TypeScript checking passes. The first typecheck exposed that the public
 ToolConnection DTO allows absent config; the module now declares the required
 validated settings shape directly instead of adding internal fallback checks.
+
+## Third extraction
+
+OAuth protocol handling now has explicit owners for endpoint policy, metadata
+interpretation and discovery, client registration/token exchange, provider error
+normalization, and the public client metadata document. Each owner accepts
+settings or named request capabilities. None imports the database or the parent
+service. Connection URL normalization stays with connection-method settings.
+
+Registration returns validated client material before the coordinator stores it.
+Token exchange returns normalized token fields without the unused raw provider
+payload. The coordinator retains registration single-flight state, refresh
+leases, current membership and grant checks, secret writes, audit records,
+transaction ownership, and callback state validation. Endpoint policy reads the
+existing live private-endpoint setting through a callback. It does not snapshot
+options or create another cache.
+
+Thirty-seven moved function bodies match after syntax normalization. Registration
+request/validation and persistence statements match their original halves.
+Preflight takes explicit defaults and a clock callback. Remaining coordinator
+function bodies match except for these deliberate delegation points.
+
+The original service becomes 19,293 lines / 749,158 bytes, a reduction of 2,232
+lines across the stack. The seven OAuth modules total 1,697 lines; the largest
+has 582 lines. Connection-methods grows to 368 lines with URL normalization.
+
+A new route integration fixture uses a real local HTTP OAuth/MCP server and a
+disposable PostgreSQL database. It covers public and Basic-authenticated clients,
+discovery, registration, PKCE token exchange, callback completion, secret storage,
+catalog review, and connection activation. Both cases passed before and after
+the move. The combined post-move protocol/service run passed 508 tests.
+The first fixture run asserted a nonexistent catalog enabled field; the assertion
+now checks persisted active status and reviewer identity. An initial typecheck
+exposed optional method defaults across the extraction boundary; the coordinator
+passes the already-validated defaults explicitly. No runtime fallback was added.
+Repository-wide typechecking and module-boundary checks pass. The PR records
+the full test and build results for the batch handoff.
+
+## Next ownership cuts
+
+The service still coordinates grant lifecycle, profile resolution, token
+brokering, and app setup. Profile resolution/review is the next candidate because
+it can own scoped queries and projection without importing OAuth protocol code.
+Token brokering follows after its authorization, issuance audit, and locking
+contract is mapped. The large setup and callback functions should shrink through
+those ownership cuts rather than by distributing their local variables into a
+shared service context.

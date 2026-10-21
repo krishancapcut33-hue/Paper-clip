@@ -1,3 +1,4 @@
+import { parseRemoteHttpEndpoint } from "../remote-http-endpoint-guard.js";
 import type { AppDefinition, ConnectionMethodDef, ToolConnectionTransport } from "@paperclipai/shared";
 import {
   credentialConfigPath,
@@ -356,4 +357,12 @@ export function projectedConnectionToolInputSchema(
     connectionMethodForConnection(app, connection),
     inputSchema,
   );
+}
+
+export function remoteEndpoint(config: Record<string, unknown>): string {
+  const value = config.url ?? config.endpoint ?? config.remoteUrl;
+  const parsed = parseRemoteHttpEndpoint(value, (message, code) =>
+    badRequest(message, { code }),
+  );
+  return parsed.toString();
 }
