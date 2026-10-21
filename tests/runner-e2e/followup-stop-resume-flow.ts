@@ -86,9 +86,9 @@ export async function runFollowupStopResumeFlow(input: {
       load: async () => {
         await refresh();
         const run = runs[0];
-        if (runs.length !== 1 || !isActiveStopCheckpointRun(run)) return false;
+        if (runs.length !== 1 || !run || run.status !== "running") return false;
         const events = prpEvents(await runEvents(run.id), run.id);
-        if (!events.some(event => event.eventType === "turn.started" && event.sourceKind === "runner") || events.some(event => event.eventType === "run.result.accepted")) return false;
+        if (!isActiveStopCheckpointRun(run, events)) return false;
         const checkpoint = await readRegisteredArtifacts(api, issue!.id, run.id, [files.checkpoint])
           .then(([artifact]) => artifact).catch(error => {
             if (error instanceof RegisteredArtifactNotFoundError) return null;
@@ -111,7 +111,7 @@ export async function runFollowupStopResumeFlow(input: {
     observation.followup = { commentIds: followup.commentIds, runId: active.id, runStatus: active.status,
       acceptedResults: activeEvents.filter(event => event.eventType === "run.result.accepted").length,
       providerStarted: activeEvents.some(event => event.eventType === "turn.started"), observedAt: new Date().toISOString() };
-    if (runs.length !== 1 || active.status !== "running" || observation.followup.acceptedResults !== 0)
+    if (runs.length !== 1 || !isActiveStopCheckpointRun(active, activeEvents))
       throw new Error("Follow-up was not recorded before the original active Stop boundary");
     await persist("followup-during-work");
     await input.capture("before-stop", "Follow-up persisted during original active work", "before-stop.png");

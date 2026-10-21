@@ -66,9 +66,15 @@ describe("one task across follow-up, Stop and explicit resumption", () => {
   });
 });
 
-it("recognizes the production active-provider phase before checkpoint publication", () => {
-  expect(isActiveStopCheckpointRun({ status: "running", nativePhase: "provider_running" })).toBe(true);
-  for (const run of [undefined, { status: "queued", nativePhase: "provider_running" },
-    { status: "succeeded", nativePhase: "committed" }, { status: "running", nativePhase: "result_accepted" },
-    { status: "running", nativePhase: "workspace_finalizing" }]) expect(isActiveStopCheckpointRun(run)).toBe(false);
+it("observes the actual active provider through its durable turn rather than a finalization phase label", () => {
+  const run = { id: "run", status: "running", nativePhase: "observed" };
+  const started = { runId: "run", eventType: "turn.started", sourceKind: "runner" };
+  expect(isActiveStopCheckpointRun(run, [started])).toBe(true);
+  const prepared = { ...run, nativePhase: "provider_running" };
+  expect(isActiveStopCheckpointRun(prepared, [started])).toBe(true);
+  for (const candidate of [undefined, { ...run, status: "queued" }, { ...run, status: "succeeded" }])
+    expect(isActiveStopCheckpointRun(candidate, [started])).toBe(false);
+  for (const events of [[], [started, started], [{ ...started, runId: "foreign" }], [{ ...started, sourceKind: "control_plane" }],
+    ...["run.result.accepted", "run.terminal", "turn.completed", "turn.failed", "turn.cancelled"].map(eventType => [started, { runId: "run", eventType }])])
+    expect(isActiveStopCheckpointRun(run, events)).toBe(false);
 });

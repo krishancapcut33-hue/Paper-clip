@@ -25,8 +25,12 @@ export const followupStopTask: RunnerTaskFixture = {
     ].join("\n");
   }, buildMatchers: () => [],
 };
-export function isActiveStopCheckpointRun(run: { status?: string; nativePhase?: string | null } | undefined) {
-  return run?.status === "running" && run.nativePhase === "provider_running";
+export function isActiveStopCheckpointRun(run: { id?: string; status?: string } | undefined,
+  events: readonly { runId?: string; eventType?: string; sourceKind?: string }[]) {
+  if (!run?.id || run.status !== "running") return false;
+  const owned = events.filter(event => event.runId === run.id);
+  return owned.filter(event => event.eventType === "turn.started" && event.sourceKind === "runner").length === 1 &&
+    !owned.some(event => ["run.result.accepted", "run.terminal", "turn.completed", "turn.failed", "turn.cancelled"].includes(event.eventType ?? ""));
 }
 export function exactSyntheticJson(content: string, expected: Record<string, string>): boolean {
   let parsed: unknown;
