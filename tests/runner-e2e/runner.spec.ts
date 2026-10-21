@@ -1,3 +1,4 @@
+import { captureFollowupStopFailureApiState } from "./followup-stop-evidence.js";
 import { runFollowupStopResumeFlow } from "./followup-stop-resume-flow.js";
 import { runFinalizationRecoveryFlow } from "./finalization-recovery-flow.js";
 import type { FinalizationCrashBinding } from "./finalization-crash-boundary.js";
@@ -760,6 +761,13 @@ for (const execution of executions) {
 
     const captureFailureApiState = async () => {
       if (!fixtures) return;
+      if (execution.task.flow === "followup_stop_resume") {
+        const captured = await captureFollowupStopFailureApiState({ api, companyId: fixtures.company.id,
+          agentId: fixtures.agent.id, issueId: issue?.id,
+          evidence: (name, value) => writeSanitizedJson(snapshotsDir, name, value, secrets) });
+        if (captured) { issue = captured.issue as IssueRecord; selectedRuns = captured.runs as RunRecord[]; }
+        return;
+      }
       if (companyRunFlow && !issue) {
         const companyRuns = await api.get<RunRecord[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?limit=100`);
         selectedRuns = await Promise.all(companyRuns.map(run => api.get<RunRecord>(`/api/heartbeat-runs/${run.id}`)));

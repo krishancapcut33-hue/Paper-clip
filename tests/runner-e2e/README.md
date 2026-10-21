@@ -100,7 +100,7 @@ pnpm test:e2e:runner -- --id legacy-conversion.runner-codex.local.convert-and-de
 pnpm test:e2e:runner -- --id automatic-repository-configured-models.runner-codex.local.automatic-repository-resume --max-automatic-retries 0
 ```
 
-## Finalization recovery
+## Stop and task resumption
 
 The explicit-only `followup-stop-resume` suite has two local development cells
 using the configured Codex and Claude models and production hire instructions.
@@ -117,6 +117,14 @@ do not qualify staging subscription authentication, warm reuse, or Slack.
 pnpm test:e2e:runner -- --list --suite followup-stop-resume
 pnpm test:e2e:runner -- --id followup-stop-resume.runner-codex.local.followup-stop-resume --max-automatic-retries 0
 ```
+
+The checkpoint poll treats invalid, duplicate, corrupt, or unauthorized evidence
+as a permanent attempt failure. An artifact that is not registered yet may wait.
+The final result opens its actual attachment chip and downloads through the file
+tab. Both inner and outer failure captures use the same closed lifecycle fields.
+They do not put prompt, provider text, configuration, or logs into api-state.json.
+
+## Finalization recovery
 
 The explicit-only `finalization-recovery` suite has two development cells on
 Daytona: Codex `gpt-6.1-sol` and Claude `claude-opus-5-5`. It uses the production

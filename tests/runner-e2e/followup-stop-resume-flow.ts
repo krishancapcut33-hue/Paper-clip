@@ -9,6 +9,8 @@ import { readRegisteredArtifacts, RegisteredArtifactNotFoundError } from "./regi
 import { captureStockHarness, gradeStockHire } from "./stock-harness.js";
 import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { waitForRunDelivery } from "./run-delivery.js";
+import { followupStopApiState } from "./followup-stop-evidence.js";
+import { downloadTaskTextArtifact } from "./task-text-artifact-download.js";
 import { isActiveStopCheckpointRun, exactSyntheticJson, followupStopFiles, gradeFollowupStopResume, STOP_QUIET_WINDOW_MS, type FollowupStopObservation } from "./followup-stop-resume.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
@@ -54,11 +56,7 @@ export async function runFollowupStopResumeFlow(input: {
   }
   async function persist(phase: string) {
     await input.evidence("followup-stop-resume.json", { phase, observation, checks: gradeFollowupStopResume(observation) });
-    await input.evidence("api-state.json", { capturePhase: phase,
-      issue: issue ? { id: issue.id, companyId: issue.companyId, status: issue.status, executionRunId: issue.executionRunId,
-        executionWorkspaceId: issue.executionWorkspaceId } : null,
-      runs: runs.map(run => ({ id: run.id, companyId: run.companyId, agentId: run.agentId, nativeIssueId: run.nativeIssueId,
-        status: run.status, nativePhase: run.nativePhase, runtimeMode: run.runtimeMode, startedAt: run.startedAt, finishedAt: run.finishedAt })) });
+    await input.evidence("api-state.json", followupStopApiState(phase, issue, runs));
   }
   async function submit(body: string) {
     const before = await api.get<Row[]>(`/api/issues/${issue!.id}/comments`);
@@ -82,7 +80,7 @@ export async function runFollowupStopResumeFlow(input: {
       workMode: "standard", requireExplicitTitle: true });
     issue = await api.get<Row>(`/api/issues/${created.issueId}`);
     observation.binding.issueId = issue.id;
-    await pollUntil({ label: "verified checkpoint during active provider work", deadlineAt: input.deadlineAt, intervalMs: 250,
+    await pollUntil({ label: "verified checkpoint during active provider work", deadlineAt: input.deadlineAt, intervalMs: 250, retryOnError: () => false,
       load: async () => {
         await refresh();
         const run = runs[0];
@@ -157,11 +155,8 @@ export async function runFollowupStopResumeFlow(input: {
       api.get<Row>(`/api/issues/${issue.id}/workspace`), api.get<Row[]>(`/api/companies/${fixtures.company.id}/issues?limit=100`)]);
     if (allIssues.length !== 1 || await realpath(view.workspace.cwd) !== workspace) throw new Error("Explicit resumption changed its task or configured workspace");
     await page.goto(`/${fixtures.company.issuePrefix}/issues/${issue.identifier ?? issue.id}`);
-    const link = page.getByTestId("task-chat-agent-bubble").locator(`a[href*="${artifact!.attachmentId}"]`).last();
-    await expect(link).toBeVisible({ timeout: 30_000 });
-    const [download] = await Promise.all([page.waitForEvent("download"), link.click()]);
-    const downloadPath = await download.path();
-    if (!downloadPath || !exactSyntheticJson(await readFile(downloadPath, "utf8"), { reference: source.trimEnd(), label: files.finalLabel }))
+    const downloadPath = await downloadTaskTextArtifact(page, artifact!.attachmentId, files.result);
+    if (!exactSyntheticJson(await readFile(downloadPath, "utf8"), { reference: source.trimEnd(), label: files.finalLabel }))
       throw new Error("Browser download did not retain the independently seeded context and earlier follow-up");
     observation.final = { runIds: runs.map(run => run.id), resumedRunId: resumedRun.id, workspaceId: issue.executionWorkspaceId,
       sourceUnchanged: (await readFile(contextPath, "utf8")) === source,

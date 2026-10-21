@@ -1,6 +1,6 @@
 import { createHash } from "node:crypto";
 import { expect, it, vi } from "vitest";
-import type { RunnerApi } from "./api.js";
+import { pollUntil, type RunnerApi } from "./api.js";
 import { readRegisteredArtifacts, RegisteredArtifactNotFoundError } from "./registered-artifact.js";
 import { evaluateMatcher } from "./matchers.js";
 
@@ -69,4 +69,24 @@ it("distinguishes a checkpoint not yet registered from corrupt or unauthorized e
   await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.not.toBeInstanceOf(RegisteredArtifactNotFoundError);
   get.mockRejectedValue(new Error("read access revoked"));
   await expect(readRegisteredArtifacts(api, "issue", "run", ["proof.txt"])).rejects.toThrow("read access revoked");
+});
+
+
+it.each(["duplicate", "corrupt", "revoked"])("strict checkpoint polling retains a first %s observation instead of accepting a later replacement", async reason => {
+  const { api, product, attachment, get, download } = fixture();
+  let reads = 0;
+  get.mockImplementation(async (path: string) => {
+    if (!path.endsWith("work-products")) return [attachment];
+    reads++;
+    if (reads === 1 && reason === "revoked") throw new Error("read access revoked");
+    return reads === 1 && reason === "duplicate" ? [product, { ...product, id: "duplicate" }] : [product];
+  });
+  if (reason === "corrupt") download.mockResolvedValueOnce({ ok: () => true, body: async () => Buffer.from("bad bytes") });
+  await expect(pollUntil({ label: "strict checkpoint", deadlineAt: Date.now() + 1000, intervalMs: 1,
+    retryOnError: () => false,
+    load: () => readRegisteredArtifacts(api, "issue", "run", ["proof.txt"]).catch(error => {
+      if (error instanceof RegisteredArtifactNotFoundError) return [];
+      throw error;
+    }), accept: rows => rows.length === 1 })).rejects.toThrow();
+  expect(reads).toBe(1);
 });

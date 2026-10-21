@@ -78,7 +78,7 @@ export function gradeFollowupStopResume(value: FollowupStopObservation) {
 }
 export function followupStopDigest() {
   const hash = createHash("sha256");
-  for (const file of ["followup-stop-resume.ts", "followup-stop-resume-flow.ts", "run-delivery.ts", "user-actions.ts", "registered-artifact.ts", "stock-harness.ts", "runner.spec.ts"])
+  for (const file of ["followup-stop-resume.ts", "followup-stop-resume-flow.ts", "run-delivery.ts", "followup-stop-evidence.ts", "task-text-artifact-download.ts", "api.ts", "user-actions.ts", "registered-artifact.ts", "stock-harness.ts", "runner.spec.ts"])
     hash.update(file).update(readFileSync(new URL(file, import.meta.url)));
   return hash.digest("hex");
 }
