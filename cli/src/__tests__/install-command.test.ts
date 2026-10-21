@@ -11,6 +11,7 @@ import {
   resolveGitInstallWorkspacePackages,
   resolveNpmCommand,
   resolveNpmInstallRequest,
+  resolvePublishedVersion,
   runCommandWithDiagnostics,
   runNpmCommand,
 } from "../commands/install.js";
@@ -82,6 +83,15 @@ describe("managed install commands", () => {
     const runCommand = vi.fn(async () => ({ stdout: '"2026.929.0"\n', stderr: "" }));
     return runNpmCommand(["view", "paperclipai@canary", "version", "--json"], runCommand, undefined, windowsCommand)
       .then(() => expect(runCommand).toHaveBeenCalledWith(nodeExecutable, [npmCliPath, "view", "paperclipai@canary", "version", "--json"], undefined));
+  });
+
+  it("parses npm view version output from npm 11 and npm 12", async () => {
+    for (const stdout of ['"2026.916.1"\n', '[\n  "2026.916.1"\n]\n', "2026.916.1\n"]) {
+      const runCommand = vi.fn(async () => ({ stdout, stderr: "" }));
+      await expect(resolvePublishedVersion("latest", runCommand)).resolves.toBe("2026.916.1");
+    }
+    const multiple = vi.fn(async () => ({ stdout: '["2026.916.0","2026.916.1"]', stderr: "" }));
+    await expect(resolvePublishedVersion("latest", multiple)).rejects.toThrow("unexpected version response");
   });
 
   it("resolves branch, tag, full SHA, and short SHA refs through GitHub", async () => {
