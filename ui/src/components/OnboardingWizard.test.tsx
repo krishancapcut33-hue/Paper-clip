@@ -3163,6 +3163,87 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("restores an OpenCode Go setup with a key and no binding in API mode", async () => {
+      // A Go setup keeps its key in OPENCODE_API_KEY, not in the OpenRouter
+      // variable the harness defaults to. The restored provider therefore has
+      // to be settled before the credential chain reads a key: read under the
+      // default provider, the Go key goes unseen and the step asks for a
+      // credential the setup already carries.
+      mockAdapterRegistry.list = [
+        { type: "claude_local" },
+        { type: "codex_local" },
+        { type: "opencode_local" },
+      ];
+      mockAgentsApi.adapterModels.mockResolvedValue([
+        { id: "opencode-go/deepseek-v4-pro", label: "deepseek-v4-pro" },
+      ]);
+      const setupId = "00000000-0000-4000-8000-000000000089";
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "opencode_local", adapterConfig: { env: { OPENCODE_API_KEY: { type: "secret_ref", secretId: "go-key" } } },
+        runtimeConfig: {}, pauseReason: "setup", defaultEnvironmentId: "env-sandbox-1" } as never);
+      const { root } = await openStep4({ adapterType: "opencode_local", setupAgentId: setupId });
+      // No source is picked here: OpenCode is an API-only source, so answering
+      // the row would pose the mode itself and hide whether the restore found
+      // the key. OpenCode is also API-only for the step as a whole, so the
+      // effective mode reads "api" either way — the restored *choice* is what
+      // proves the Go key was read under the provider that holds it.
+      await vi.waitFor(() => expect(
+        JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!),
+        "the Go key is the restored answer, read under the provider that holds it",
+      ).toMatchObject({ credentialMode: "api", credentialModeChoice: "api", providerChoice: "opencode" }));
+      await act(async () => root.unmount());
+    });
+
+    it("keeps the restored OpenCode Go key instead of attaching another account", async () => {
+      // A managed account is offered for the provider and auto-selected, so the
+      // step holds a binding it could carry. The restored setup already keeps
+      // its Go key in `OPENCODE_API_KEY`: read under the harness's default
+      // provider that env misses the key, and the setup would then be saved
+      // against the managed account instead of the credential it resumed with.
+      mockAdapterRegistry.list = [
+        { type: "claude_local" },
+        { type: "codex_local" },
+        { type: "opencode_local" },
+      ];
+      mockAgentsApi.adapterModels.mockResolvedValue([
+        { id: "opencode-go/deepseek-v4-pro", label: "deepseek-v4-pro" },
+      ]);
+      const setupId = "00000000-0000-4000-8000-000000000090";
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",
+        adapterType: "opencode_local", adapterConfig: { env: { OPENCODE_API_KEY: { type: "secret_ref", secretId: "go-key" } } },
+        runtimeConfig: {}, pauseReason: "setup", defaultEnvironmentId: "env-sandbox-1" } as never);
+      const { root, queryClient } = await openStep4({ adapterType: "opencode_local", setupAgentId: setupId });
+      await act(async () => queryClient.setQueryData(["ai-connections", "company-new"], {
+        currentUserId: "user-1",
+        connections: [{ id: "go-account", grantId: "go-grant", companyId: "company-new", provider: "opencode",
+          method: "api_key", name: "Go account", ownership: "shared", status: "connected" }],
+      }));
+      const disclosure = [...document.body.querySelectorAll("button")].find(
+        (b) => b.textContent?.trim() === "More adapters",
+      );
+      expect(disclosure, "OpenCode is offered behind the disclosure").toBeTruthy();
+      await act(async () => {
+        disclosure!.dispatchEvent(new MouseEvent("click", { bubbles: true }));
+      });
+      for (let i = 0; i < 4; i++) await flushReact();
+      await pickSource(/OpenCode/);
+      await vi.waitFor(() => {
+        const body = mockAgentsApi.update.mock.calls.at(-1)?.[1] as {
+          runtimeConfig?: Record<string, unknown>;
+          adapterConfig?: { env?: Record<string, unknown> };
+        } | undefined;
+        expect(
+          body?.runtimeConfig,
+          "the resumed setup is saved against its own Go key, not another account",
+        ).not.toHaveProperty("aiConnection");
+        expect(
+          body?.adapterConfig?.env,
+          "the Go key the setup resumed with survives the snapshot",
+        ).toHaveProperty("OPENCODE_API_KEY");
+      });
+      await act(async () => root.unmount());
+    });
+
     it("tests restored redacted environment values using the setup record", async () => {
       const setupId = "00000000-0000-4000-8000-000000000086";
       mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general",

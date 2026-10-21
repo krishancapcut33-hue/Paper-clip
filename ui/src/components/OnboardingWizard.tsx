@@ -873,7 +873,7 @@ function OnboardingWizardInner({
       const savedEnv = restoredSetup?.companyId === createdCompanyId
         && agentHarnessType(restoredSetup.adapterType, restoredSetup.adapterConfig) === agentHarnessType(adapterType, {})
         ? restoredSetup.adapterConfig.env as Record<string, unknown> | undefined : undefined;
-      if (savedEnv?.[credentialMode === "api" ? apiKeyEnvKeyFor(adapterType) : "CODEX_HOME"]) return undefined;
+      if (savedEnv?.[credentialMode === "api" ? apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined) : "CODEX_HOME"]) return undefined;
     }
     if (credentialMode === "api") return selectedApiKey?.aiConnection ?? (
       !selectedApiKey && apiKeySecretRef.current?.companyId === createdCompanyId && apiKeySecretRef.current.envKey === apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined)
@@ -1525,22 +1525,20 @@ function OnboardingWizardInner({
             setUrl(typeof config.url === "string" ? config.url : "");
             setRunner(agent.adapterType === "paperclip_runner" ? "paperclip" : "legacy");
             const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
-            if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
-            else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
-            else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
-              || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
             // The provider behind the OpenCode harness is part of the restored
             // answer, not a detail of it: a Go setup restored on OpenRouter
             // would load the wrong catalog, and the step would then reject the
-            // model it had just restored. It is restored apart from the
-            // credential chain above, which stays one exclusive set of checks.
-            if (agentHarnessType(agent.adapterType, config) === "opencode_local") {
-              const restoredProvider = binding?.provider === "opencode" ? "opencode"
-                : binding?.provider === "openrouter" ? "openrouter"
-                : (config.env as Record<string, unknown> | undefined)?.[PROVIDER_ENV_KEYS.opencode] ? "opencode"
-                : undefined;
-              if (restoredProvider) setProviderChoice(restoredProvider);
-            }
+            // model it had just restored. It also decides which variable holds
+            // the key, so it is settled before the credential chain reads one.
+            const restoredProvider = binding?.provider === "opencode" ? "opencode"
+              : binding?.provider === "openrouter" ? "openrouter"
+              : (config.env as Record<string, unknown> | undefined)?.[PROVIDER_ENV_KEYS.opencode] ? "opencode"
+              : undefined;
+            if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
+            else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? restoredProvider : undefined)]) setCredentialMode("api");
+            else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
+              || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
+            if (agentHarnessType(agent.adapterType, config) === "opencode_local" && restoredProvider) setProviderChoice(restoredProvider);
             if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
           }
         }
@@ -2265,7 +2263,7 @@ function OnboardingWizardInner({
     // configuration with no credential — which the hire then blocks on — rather
     // than one that quietly falls back to embedding the value.
     if (!managedBindingForStep() && credentialMode === "api" && (bindApiKey || selectedApiKey)
-      && (!((savedConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)])
+      && (!((savedConfig.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType, adapterType === "opencode_local" ? providerChoice : undefined)])
         || selectedSavedKey || apiKey.trim())) {
       const env =
         typeof config.env === "object" && config.env !== null && !Array.isArray(config.env)
