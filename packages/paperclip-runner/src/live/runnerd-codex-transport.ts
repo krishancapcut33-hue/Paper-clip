@@ -850,11 +850,11 @@ async function awaitRunnerSuspensionBarrier(input: {
 }
 
 function runnerCloseGraceMs(options: Pick<CapabilityRunnerdCodexTransportOptions, "provider" | "acpxAgent" | "closeGraceMs">): number {
-  // Idle Pi retirement may consume its five-second RPC stop window. Keep a
-  // separate five-second drain round trip and the bounded suspension reserve.
+  // Native Pi retirement allows thirty seconds for snapshot cleanup and five
+  // for its lifetime fence. Keep a drain round trip and suspension reserve too.
   // Explicit caller deadlines remain authoritative; all settlement proofs stay
   // mandatory even when the provider already completed its task.
-  return options.closeGraceMs ?? (options.provider === "acpx" && options.acpxAgent === "pi" ? 15_000 : 10_000);
+  return options.closeGraceMs ?? (options.provider === "acpx" && options.acpxAgent === "pi" ? 45_000 : 10_000);
 }
 
 function runnerCloseDeadlines(

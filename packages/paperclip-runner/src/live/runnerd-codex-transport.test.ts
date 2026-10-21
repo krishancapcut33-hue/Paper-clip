@@ -1653,9 +1653,11 @@ it.each([
     const { preparationDeadline, closeDeadline } = runnerdRecoveryInternals.runnerCloseDeadlines(
       Date.now(), runnerdRecoveryInternals.runnerCloseGraceMs(options),
     );
-    // The retained restart failure spent 5.2s stopping idle Pi before its
-    // remote drain acknowledgement crossed the next command round trip.
-    await vi.advanceTimersByTimeAsync(5_200);
+    // Native Pi allows thirty seconds for snapshot cleanup and five seconds
+    // for its lifetime fence before the drain acknowledgement round trip.
+    const stopMs = options.provider === "acpx" && options.acpxAgent === "pi"
+      && options.closeGraceMs === undefined ? 35_200 : 5_200;
+    await vi.advanceTimersByTimeAsync(stopMs);
     const commands: { commandId: string; status: string; result?: unknown }[] = [];
     const result = runnerdRecoveryInternals.awaitProviderDrainBarrier({
       readProviderState: () => null,
@@ -1675,7 +1677,7 @@ it.each([
     await vi.advanceTimersByTimeAsync(5_000);
     expect(await result).toBe(drained);
     expect(closeDeadline - preparationDeadline).toBeLessThanOrEqual(2_500);
-    expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(15_000);
+    expect(runnerdRecoveryInternals.runnerCloseGraceMs(options)).toBeLessThanOrEqual(45_000);
   } finally { vi.useRealTimers(); }
 });
 
