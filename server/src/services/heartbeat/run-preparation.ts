@@ -1760,7 +1760,7 @@ export function enrichWakeContextSnapshot(input: {
   };
 }
 
-const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
+export const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionId",
   "interactionKind",
   "interactionStatus",

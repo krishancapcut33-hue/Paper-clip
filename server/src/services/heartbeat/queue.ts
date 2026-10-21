@@ -8,6 +8,7 @@ import {
   mergeCoalescedContextSnapshot,
   enrichWakeContextSnapshot,
   hasInteractionContinuationWakeContext,
+  INTERACTION_CONTINUATION_CONTEXT_KEYS,
   isInteractionResolutionWakePayload,
 } from "./run-preparation.js";
 import { resolveExecutionWorkspaceReuseRequestForIssue } from "./workspaces.js";
@@ -240,6 +241,28 @@ export function isDeferredExecutionOwnershipWait(payload: unknown): boolean {
     !isInteractionResolutionWakePayload(parsed) &&
     !hasInteractionContinuationWakeContext(context) &&
     !readNonEmptyString(context.nativeStatusWakeIntentId);
+}
+
+/**
+ * Select ownership receipts before applying a batch limit or changing retry
+ * timestamps. Other saved input may carry the same blocker cause, but belongs
+ * to a dedicated resume path. Keep the payload check above at mutation sites.
+ */
+export function deferredExecutionOwnershipWaitPredicate() {
+  const payload = agentWakeupRequests.payload;
+  const context = sql`${payload}->${DEFERRED_WAKE_CONTEXT_KEY}`;
+  return and(
+    eq(agentWakeupRequests.status, "deferred_issue_execution"),
+    sql`${payload}->'executionWait'->>'cause' = ${EXECUTION_OWNER_ACTIVE_CAUSE}`,
+    sql`${payload}->'executionWait'->>'recoveryActionId' is null`,
+    sql`${payload}->>'queuedCommentInterrupt' is null`,
+    sql`nullif(btrim(${payload}->>'commentId'), '') is null`,
+    sql`coalesce(nullif(${context}->'wakeCommentIds', 'null'::jsonb), '[]'::jsonb) = '[]'::jsonb`,
+    sql`btrim(${payload}->>'mutation') is distinct from 'interaction'`,
+    ...["wakeCommentId", "nativeStatusWakeIntentId", ...INTERACTION_CONTINUATION_CONTEXT_KEYS].map(
+      (key) => sql`nullif(btrim(${context}->>${key}), '') is null`,
+    ),
+  );
 }
 
 export const EXECUTION_PATH_HEARTBEAT_RUN_STATUSES = [
@@ -3218,11 +3241,8 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               // the newest context wins, as it does for an active execution.
               const [parked] = await tx.select().from(agentWakeupRequests).where(and(
                 eq(agentWakeupRequests.companyId, agent.companyId), eq(agentWakeupRequests.agentId, agentId),
-                eq(agentWakeupRequests.status, "deferred_issue_execution"),
                 sql`${agentWakeupRequests.payload}->>'issueId' = ${issue.id}`,
-                sql`${agentWakeupRequests.payload}->'executionWait'->>'cause' = ${EXECUTION_OWNER_ACTIVE_CAUSE}`,
-                sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
-                sql`${agentWakeupRequests.payload}->'queuedCommentInterrupt' is null`,
+                deferredExecutionOwnershipWaitPredicate(),
                 opts.requestedByActorType
                   ? eq(agentWakeupRequests.requestedByActorType, opts.requestedByActorType)
                   : isNull(agentWakeupRequests.requestedByActorType),
@@ -3230,7 +3250,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   ? eq(agentWakeupRequests.requestedByActorId, opts.requestedByActorId)
                   : isNull(agentWakeupRequests.requestedByActorId),
               )).orderBy(asc(agentWakeupRequests.requestedAt)).limit(1);
-              if (parked) {
+              if (parked && isDeferredExecutionOwnershipWait(parked.payload)) {
                 const parkedContext = parseObject(parseObject(parked.payload)[DEFERRED_WAKE_CONTEXT_KEY]);
                 await tx.update(agentWakeupRequests).set({
                   payload: {

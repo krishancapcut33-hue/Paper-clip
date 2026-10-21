@@ -1,7 +1,7 @@
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
 import {
   DEFERRED_WAKE_CONTEXT_KEY,
-  EXECUTION_OWNER_ACTIVE_CAUSE,
+  deferredExecutionOwnershipWaitPredicate,
   isDeferredExecutionOwnershipWait,
 } from "./queue.js";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
@@ -812,9 +812,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     const parked = await db.select({ wake: agentWakeupRequests }).from(agentWakeupRequests)
       .innerJoin(companies, and(eq(companies.id, agentWakeupRequests.companyId), eq(companies.status, "active")))
       .where(and(
-        eq(agentWakeupRequests.status, "deferred_issue_execution"),
-        sql`${agentWakeupRequests.payload}->'executionWait'->>'cause' = ${EXECUTION_OWNER_ACTIVE_CAUSE}`,
-        sql`${agentWakeupRequests.payload}->'executionWait'->>'recoveryActionId' is null`,
+        deferredExecutionOwnershipWaitPredicate(),
         scope
           ? and(eq(agentWakeupRequests.companyId, scope.companyId),
               sql`${agentWakeupRequests.payload}->>'issueId' = ${scope.issueId}`)
@@ -822,12 +820,13 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       ))
       .orderBy(asc(agentWakeupRequests.updatedAt), asc(agentWakeupRequests.requestedAt)).limit(50);
     for (const { wake } of parked) {
+      if (!isDeferredExecutionOwnershipWait(wake.payload)) continue;
       if (!scope) {
         // Advance the cursor so one damaged receipt cannot starve later ones
         // and concurrent sweeps do not revisit the same receipt.
         const [claimed] = await db.update(agentWakeupRequests).set({ updatedAt: new Date() }).where(and(
           eq(agentWakeupRequests.id, wake.id), eq(agentWakeupRequests.companyId, wake.companyId),
-          eq(agentWakeupRequests.status, "deferred_issue_execution"), lte(agentWakeupRequests.updatedAt, cadence),
+          deferredExecutionOwnershipWaitPredicate(), lte(agentWakeupRequests.updatedAt, cadence),
         )).returning({ id: agentWakeupRequests.id });
         if (!claimed) continue;
       }

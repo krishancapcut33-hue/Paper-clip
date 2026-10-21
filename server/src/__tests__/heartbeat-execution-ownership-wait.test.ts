@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, ne } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agentWakeupRequests, agents, companies, createDb, environmentLeases, heartbeatRuns, issues,
+  agentWakeupRequests, agents, companies, createDb, environmentLeases, heartbeatRuns, issueComments, issues,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
@@ -104,6 +104,26 @@ const support = await getEmbeddedPostgresTestSupport();
     return { heartbeat, parked: parked! };
   }
 
+  async function parkComment(f: Fixture) {
+    const [comment] = await db.insert(issueComments).values({
+      companyId: f.companyId, issueId: f.issueId, authorType: "user", authorUserId: "board",
+      body: "Preserve this input during the handoff.",
+    }).returning();
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.wakeup(f.nextAgentId, {
+      source: "on_demand", triggerDetail: "manual", reason: "issue_commented",
+      payload: { issueId: f.issueId, commentId: comment!.id },
+      contextSnapshot: { issueId: f.issueId, wakeCommentId: comment!.id },
+      requestedByActorType: "user", requestedByActorId: "board",
+    })).toBeNull();
+    const [parked] = await nextAgentWakes(f);
+    expect(parked).toMatchObject({ status: "deferred_issue_execution", payload: {
+      executionWait: { cause: "execution_owner_active" },
+      _paperclipWakeContext: { wakeReason: "issue_commented", wakeCommentIds: [comment!.id] },
+    } });
+    return { heartbeat, comment: comment!, parked: parked! };
+  }
+
   it("parks a stage handoff wake behind the outgoing lease and admits it once after the release", async () => {
     const f = await seed();
     const { heartbeat, parked } = await parkWake(f);
@@ -172,6 +192,93 @@ const support = await getEmbeddedPostgresTestSupport();
     await releaseLease(f);
     await heartbeat.resumeExecutionOwnershipWaits({ companyId: f.companyId, issueId: f.issueId });
     expect(await nextAgentIssueRuns(f)).toHaveLength(1);
+  });
+
+  it("keeps a handoff separate from the same user's saved comment until ordinary admission adopts both", async () => {
+    const f = await seed({ stage: false });
+    const { heartbeat, comment, parked } = await parkComment(f);
+    await heartbeat.wakeup(f.nextAgentId, f.wake);
+    await heartbeat.wakeup(f.nextAgentId, f.wake);
+    const wakes = await nextAgentWakes(f);
+    expect(wakes).toHaveLength(2);
+    expect(wakes.find(wake => wake.id === parked.id)).toEqual(parked);
+    const handoff = wakes.find(wake => wake.id !== parked.id)!;
+    expect(handoff).toMatchObject({ reason: "issue_assigned", coalescedCount: 1 });
+
+    await releaseLease(f);
+    await heartbeat.resumeExecutionOwnershipWaits({ companyId: f.companyId, issueId: f.issueId });
+    const runs = await nextAgentIssueRuns(f);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot).toMatchObject({
+      wakeReason: "issue_assigned", wakeCommentIds: [comment.id],
+      queuedCommentSourceWakeIds: expect.arrayContaining([parked.id, handoff.id]),
+    });
+    for (const id of [parked.id, handoff.id]) {
+      expect((await nextAgentWakes(f)).find(wake => wake.id === id))
+        .toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+    }
+    await heartbeat.resumeQueuedRuns();
+    expect(await nextAgentIssueRuns(f)).toHaveLength(1);
+  });
+
+  it("lets the interrupt sweep retry a saved comment after the ownership hold clears", async () => {
+    const f = await seed({ stage: false });
+    const { heartbeat, comment, parked } = await parkComment(f);
+    const requestedAt = new Date(Date.now() - 60_000);
+    await db.update(agentWakeupRequests).set({
+      payload: { ...parked.payload, queuedCommentInterrupt: { actorId: "board", requestedAt: requestedAt.toISOString() } },
+      updatedAt: requestedAt,
+    }).where(eq(agentWakeupRequests.id, parked.id));
+    await releaseLease(f);
+
+    await heartbeat.resumeQueuedRuns();
+    const runs = await nextAgentIssueRuns(f);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot).toMatchObject({ wakeReason: "issue_commented", wakeCommentIds: [comment.id] });
+    const wakes = await nextAgentWakes(f);
+    expect(wakes.find(wake => wake.id === parked.id)).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+    expect(wakes.find(wake => wake.status === "queued"))
+      .toMatchObject({ idempotencyKey: `queued-comment-interrupt:${parked.id}`, runId: runs[0]!.id });
+    await heartbeat.resumeQueuedRuns();
+    expect(await nextAgentIssueRuns(f)).toHaveLength(1);
+  });
+
+  it("keeps dedicated receipts out of the ownership sweep's batch and retry cadence", async () => {
+    const f = await seed({ stage: false });
+    const older = new Date(Date.now() - 120_000);
+    const dedicatedPayloads = [
+      { commentId: randomUUID() },
+      { _paperclipWakeContext: { wakeCommentId: randomUUID() } },
+      { _paperclipWakeContext: { wakeCommentIds: [randomUUID()] } },
+      { queuedCommentInterrupt: { actorId: "board", requestedAt: older.toISOString() } },
+      { mutation: "interaction", _paperclipWakeContext: { interactionId: randomUUID() } },
+      { _paperclipWakeContext: { continuationPolicy: "wake_assignee" } },
+      { _paperclipWakeContext: { nativeStatusWakeIntentId: randomUUID() } },
+    ];
+    const dedicated = await db.insert(agentWakeupRequests).values(Array.from({ length: 50 }, (_, index) => ({
+      companyId: f.companyId, agentId: f.nextAgentId, source: "automation", reason: "saved_input",
+      status: "deferred_issue_execution", requestedByActorType: "user", requestedByActorId: "board",
+      requestedAt: older, updatedAt: older,
+      payload: { issueId: f.issueId,
+        executionWait: { cause: "execution_owner_active", recoveryActionId: null, runId: f.runId },
+        ...dedicatedPayloads[index % dedicatedPayloads.length],
+      },
+    }))).returning();
+    const heartbeat = heartbeatService(db);
+    await heartbeat.wakeup(f.nextAgentId, f.wake);
+    const wakes = await nextAgentWakes(f);
+    expect(wakes).toHaveLength(51);
+    const handoff = wakes.find(wake => !dedicated.some(other => other.id === wake.id))!;
+    const due = new Date(Date.now() - 60_000);
+    await db.update(agentWakeupRequests).set({ updatedAt: due }).where(eq(agentWakeupRequests.id, handoff.id));
+
+    // Leave the lease held so ordinary admission does not yet adopt comments.
+    await heartbeat.resumeExecutionOwnershipWaits();
+    const after = await nextAgentWakes(f);
+    expect(after.find(wake => wake.id === handoff.id)!.updatedAt.getTime()).toBeGreaterThan(due.getTime());
+    for (const receipt of dedicated) {
+      expect(after.find(wake => wake.id === receipt.id)).toEqual(receipt);
+    }
   });
 
   it("is consumed by a later wake of the same agent instead of resuming as a second run", async () => {
