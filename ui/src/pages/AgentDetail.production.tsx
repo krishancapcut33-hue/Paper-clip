@@ -1,3 +1,8 @@
+import { useSelectedHeartbeatRun } from "../hooks/useSelectedHeartbeatRun";
+import { AgentCharacter } from "../components/AgentCharacter";
+import { characterStateForAgent } from "@paperclipai/shared";
+import { mergeRunLogChunks, readChunkSeq } from "../lib/run-log-chunks";
+import { getPageVisibility, usePageVisibility } from "../lib/page-visibility";
 import { useCallback, useEffect, useMemo, useState, useRef } from "react";
 import { useParams, useNavigate, Link, Navigate, useBeforeUnload, type NavigateFunction } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient, type QueryClient } from "@tanstack/react-query";
@@ -59,7 +64,8 @@ import { SourceResolvedFoldCallout } from "../components/SourceResolvedFoldCallo
 import { SourceResolvedFoldBadge } from "../components/SourceResolvedFoldBadge";
 import { readSourceResolvedWatchdogFold } from "../lib/source-resolved-watchdog-fold";
 import { buildSameOriginWebSocketUrl } from "../lib/websocket-url";
-import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd } from "../lib/utils";
+import { tryCreateWebSocket } from "../lib/websocket";
+import { formatCents, formatDate, relativeTime, formatTokens, visibleRunCostUsd, visibleRunTokenTotal } from "../lib/utils";
 import { cn } from "../lib/utils";
 import { describeRunRetryState } from "../lib/runRetryState";
 import { Button } from "@/components/ui/button";
@@ -89,7 +95,6 @@ import {
 import { Collapsible, CollapsibleTrigger, CollapsibleContent } from "@/components/ui/collapsible";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { Input } from "@/components/ui/input";
-import { AgentIcon, AgentIconPicker } from "../components/AgentIconPicker";
 import { RunTranscriptView, type TranscriptMode } from "../components/transcript/RunTranscriptView";
 import { AgentToolsTab } from "./AgentToolsTab";
 import { AgentChannelsPanel } from "../components/chat/AgentChannelsPanel";
@@ -376,13 +381,14 @@ function runMetrics(run: HeartbeatRun) {
     output,
     cached,
     cost,
-    totalTokens: input + output,
+    totalTokens: visibleRunTokenTotal(usage),
     provider,
     model,
   };
 }
 
 export type RunLogChunk = {
+  seq?: number;
   ts: string;
   stream: "stdout" | "stderr" | "system";
   chunk: string;
@@ -764,7 +770,8 @@ export function AgentDetail() {
   const navigate = useNavigate();
   const [actionError, setActionError] = useState<string | null>(null);
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
-  const { enabled: chatConnectorsEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
+  const { enabled: chatEnabled, githubEnabled, loaded: chatConnectorsLoaded } = useChatConnectorsEnabled();
+  const chatConnectorsEnabled = chatEnabled || githubEnabled;
   const activeView = urlRunId ? "runs" as AgentDetailView
     : urlTab === "channels" && !chatConnectorsEnabled ? "dashboard" : parseAgentDetailView(urlTab ?? null);
   const needsDashboardData = activeView === "dashboard";
@@ -930,6 +937,8 @@ export function AgentDetail() {
       metric: "billed_cents",
       windowKind: "calendar_month_utc",
       amount: budgetMonthlyCents,
+      unpricedEventCount: 0, pendingRunCount: 0,
+      unpricedUsagePolicy: "block",
       observedAmount: spentMonthlyCents,
       remainingAmount: Math.max(0, budgetMonthlyCents - spentMonthlyCents),
       utilizationPercent:
@@ -1280,14 +1289,7 @@ export function AgentDetail() {
       {/* Header */}
       <div className="flex items-center justify-between gap-2">
         <div className="flex items-center gap-3 min-w-0">
-          <AgentIconPicker
-            value={agent.icon}
-            onChange={(icon) => updateIcon.mutate(icon)}
-          >
-            <button className="shrink-0 flex items-center justify-center h-12 w-12 rounded-lg bg-accent hover:bg-accent/80 transition-colors">
-              <AgentIcon icon={agent.icon} className="h-6 w-6" />
-            </button>
-          </AgentIconPicker>
+          <AgentCharacter agent={agent} state={characterStateForAgent(agent.status)} size={96} trackingScope="page" />
           <div className="min-w-0">
             <div className="flex items-center gap-2">
               <h2 className="text-2xl font-bold truncate">{agent.name}</h2>
@@ -3152,7 +3154,7 @@ function RunListItem({ run, isSelected, agentId }: { run: HeartbeatRun; isSelect
   );
 }
 
-function RunsTab({
+export function RunsTab({
   runs,
   companyId,
   agentId,
@@ -3171,10 +3173,6 @@ function RunsTab({
 }) {
   const { isMobile } = useSidebar();
 
-  if (runs.length === 0) {
-    return <p className="text-sm text-muted-foreground">No runs yet.</p>;
-  }
-
   // Sort by created descending
   const sorted = [...runs].sort(
     (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime()
@@ -3182,7 +3180,16 @@ function RunsTab({
 
   // On mobile, don't auto-select so the list shows first; on desktop, auto-select latest
   const effectiveRunId = isMobile ? selectedRunId : (selectedRunId ?? sorted[0]?.id ?? null);
-  const selectedRun = sorted.find((r) => r.id === effectiveRunId) ?? null;
+  const selection = useSelectedHeartbeatRun(sorted, effectiveRunId, companyId, agentId);
+  const selectedRun = selection.run;
+  if (selectedRunId && !selectedRun) {
+    if (selection.loading) return <p className="text-sm text-muted-foreground">Loading run…</p>;
+    return <div role="alert">
+      <p className="text-sm text-destructive">{selection.error instanceof Error ? selection.error.message : "This run is unavailable for this agent."}</p>
+      {selection.error && <Button variant="outline" onClick={() => { void selection.retry(); }}>Try again</Button>}
+    </div>;
+  }
+  if (runs.length === 0 && !selectedRun) return <p className="text-sm text-muted-foreground">No runs yet.</p>;
 
   // Mobile: show either run list OR run detail with back button
   if (isMobile) {
@@ -3720,13 +3727,20 @@ function RunDetail({ run: initialRun, agentRouteId, adapterType, adapterConfig }
 
 /* ---- Log Viewer ---- */
 
-function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+export function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: string }) {
+  const { visible } = usePageVisibility();
   const [events, setEvents] = useState<HeartbeatRunEvent[]>([]);
-  const [logLines, setLogLines] = useState<Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }>>([]);
+  const [logLines, setLogLines] = useState<RunLogChunk[]>([]);
   const [loading, setLoading] = useState(true);
   const [logLoading, setLogLoading] = useState(!!run.logRef);
   const [logError, setLogError] = useState<string | null>(null);
-  const [logOffset, setLogOffset] = useState(0);
+  const [logOffset, setLogOffsetState] = useState(0);
+  const logOffsetRef = useRef(0);
+  const setLogOffset = useCallback((next: number | ((previous: number) => number)) => {
+    logOffsetRef.current = typeof next === "function" ? next(logOffsetRef.current) : next;
+    setLogOffsetState(logOffsetRef.current);
+  }, []);
+  const logMergeRefs = useRef({ seenChunkKeys: new Set<string>(), trimmedSeqFloorByRun: new Map<string, number>() });
   const [hasMoreLog, setHasMoreLog] = useState(false);
   const [loadingMoreLog, setLoadingMoreLog] = useState(false);
   const [isFollowing, setIsFollowing] = useState(false);
@@ -3753,6 +3767,12 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return err instanceof ApiError && err.status === 404;
   }
 
+  function appendLogLines(incoming: RunLogChunk[]) {
+    setLogLines((previous) => mergeRunLogChunks(run.id, previous, incoming.map((line) => ({
+      ...line, dedupeKey: `log:${run.id}:${line.ts}:${line.stream}:${line.chunk}`,
+    })), logMergeRefs.current, isLive ? MAX_LIVE_LOG_LINES : Number.POSITIVE_INFINITY).chunks);
+  }
+
   function appendLogContent(content: string, finalize = false) {
     if (!content && !finalize) return;
     const combined = `${pendingLogLineRef.current}${content}`;
@@ -3763,18 +3783,18 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       pendingLogLineRef.current = "";
     }
 
-    const parsed: Array<{ ts: string; stream: "stdout" | "stderr" | "system"; chunk: string }> = [];
+    const parsed: RunLogChunk[] = [];
     for (const line of split) {
       const trimmed = line.trim();
       if (!trimmed) continue;
       try {
-        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown };
+        const raw = JSON.parse(trimmed) as { ts?: unknown; stream?: unknown; chunk?: unknown; seq?: unknown };
         const stream =
           raw.stream === "stderr" || raw.stream === "system" ? raw.stream : "stdout";
         const chunk = typeof raw.chunk === "string" ? raw.chunk : "";
         const ts = typeof raw.ts === "string" ? raw.ts : new Date().toISOString();
         if (!chunk) continue;
-        parsed.push({ ts, stream, chunk });
+        parsed.push({ ts, stream, chunk, seq: readChunkSeq(raw.seq) });
       } catch {
         // ignore malformed lines
       }
@@ -3783,9 +3803,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     if (parsed.length > 0) {
       // Live runs stream forever, so cap the retained tail. Terminated runs are
       // paginated by the user via "Load more log" and keep their full history.
-      setLogLines((prev) =>
-        isLive ? appendCapped(prev, parsed, MAX_LIVE_LOG_LINES) : [...prev, ...parsed],
-      );
+      appendLogLines(parsed);
     }
   }
 
@@ -3883,17 +3901,23 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setIsFollowing((prev) => (prev ? prev : true));
   }, [events.length, logLines.length, isLive, getScrollContainer]);
 
-  // Fetch persisted shell log
+  // Reset only when the log source changes, never when visibility changes.
   useEffect(() => {
-    let cancelled = false;
     pendingLogLineRef.current = "";
+    logMergeRefs.current = { seenChunkKeys: new Set(), trimmedSeqFloorByRun: new Map() };
     seenProgressLogLineKeysRef.current = new Set();
     setLogLines([]);
     setLogOffset(0);
     setHasMoreLog(false);
     setLoadingMoreLog(false);
     setLogError(null);
+  }, [run.id, run.logRef, setLogOffset]);
 
+  // Fetch persisted shell log, retaining partial rows and offsets across hides.
+  useEffect(() => {
+    if (!visible) return;
+    let cancelled = false;
+    const offset = logOffsetRef.current;
     if (!run.logRef && !shouldPollShellLog) {
       setLogLoading(false);
       return () => {
@@ -3904,10 +3928,10 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     setLogLoading(true);
     const load = async () => {
       try {
-        const result = await heartbeatsApi.log(run.id, 0, RUN_LOG_PAGE_BYTES);
+        const result = await heartbeatsApi.log(run.id, offset, RUN_LOG_PAGE_BYTES);
         if (cancelled) return;
         appendLogContent(result.content, result.nextOffset === undefined);
-        const next = result.nextOffset ?? result.content.length;
+        const next = result.nextOffset ?? offset + result.content.length;
         setLogOffset(next);
         setHasMoreLog(!shouldPollShellLog && result.nextOffset !== undefined);
       } catch (err) {
@@ -3927,7 +3951,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
     return () => {
       cancelled = true;
     };
-  }, [run.id, run.logRef, run.logBytes, shouldPollShellLog]);
+  }, [visible, run.id, run.logRef, run.logBytes, shouldPollShellLog]);
 
   async function loadMorePersistedLog() {
     if (loadingMoreLog || !hasMoreLog) return;
@@ -3948,27 +3972,42 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
 
   // Poll for live updates
   useEffect(() => {
-    if (!isLive || isStreamingConnected) return;
+    if (!visible || !isLive || isStreamingConnected) return;
+    let pending = false;
+    let cancelled = false;
     const interval = setInterval(async () => {
+      if (pending || cancelled || !getPageVisibility().visible) return;
+      pending = true;
       const maxSeq = events.length > 0 ? Math.max(...events.map((e) => e.seq)) : 0;
       try {
         const newEvents = await heartbeatsApi.events(run.id, maxSeq, 100);
+        if (cancelled) return;
         if (newEvents.length > 0) {
           setEvents((prev) => appendCapped(prev, newEvents, MAX_LIVE_EVENTS));
         }
       } catch {
         // ignore polling errors
+      } finally {
+        pending = false;
       }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, isLive, isStreamingConnected, events]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [visible, run.id, isLive, isStreamingConnected, events]);
 
   // Poll shell log for running runs
   useEffect(() => {
-    if (!shouldPollShellLog || isStreamingConnected) return;
+    if (!visible || !shouldPollShellLog || isStreamingConnected) return;
+    let pending = false;
+    let cancelled = false;
     const interval = setInterval(async () => {
+      if (pending || cancelled || !getPageVisibility().visible) return;
+      pending = true;
       try {
         const result = await heartbeatsApi.log(run.id, logOffset, 256_000);
+        if (cancelled) return;
         if (result.content) {
           appendLogContent(result.content, result.nextOffset === undefined);
         }
@@ -3980,14 +4019,19 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       } catch (err) {
         if (isRunLogUnavailable(err)) return;
         // ignore polling errors
+      } finally {
+        pending = false;
       }
     }, 2000);
-    return () => clearInterval(interval);
-  }, [run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
+    return () => {
+      cancelled = true;
+      clearInterval(interval);
+    };
+  }, [visible, run.id, shouldPollShellLog, isStreamingConnected, logOffset]);
 
   // Stream live updates from websocket (primary path for running runs).
   useEffect(() => {
-    if (!isLive) return;
+    if (!visible || !isLive) return;
 
     let closed = false;
     let reconnectTimer: number | null = null;
@@ -4003,7 +4047,11 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
       const url = buildSameOriginWebSocketUrl(
         `/api/companies/${encodeURIComponent(run.companyId)}/events/ws`,
       );
-      socket = new WebSocket(url);
+      socket = tryCreateWebSocket(url);
+      if (!socket) {
+        scheduleReconnect();
+        return;
+      }
 
       socket.onopen = () => {
         setIsStreamingConnected(true);
@@ -4031,7 +4079,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const streamRaw = asNonEmptyString(payload.stream);
           const stream = streamRaw === "stderr" || streamRaw === "system" ? streamRaw : "stdout";
           const ts = asNonEmptyString((payload as Record<string, unknown>).ts) ?? event.createdAt;
-          setLogLines((prev) => appendCapped(prev, [{ ts, stream, chunk }], MAX_LIVE_LOG_LINES));
+          appendLogLines([{ ts, stream, chunk, seq: readChunkSeq(payload.seq) }]);
           return;
         }
 
@@ -4041,7 +4089,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
           const key = heartbeatProgressLogLineKey(line);
           if (seenProgressLogLineKeysRef.current.has(key)) return;
           seenProgressLogLineKeysRef.current.add(key);
-          setLogLines((prev) => appendCapped(prev, [line], MAX_LIVE_LOG_LINES));
+          appendLogLines([line]);
           return;
         }
 
@@ -4106,7 +4154,7 @@ function LogViewer({ run, adapterType }: { run: HeartbeatRun; adapterType: strin
         socket.close(1000, "run_detail_unmount");
       }
     };
-  }, [isLive, run.companyId, run.id, run.agentId]);
+  }, [visible, isLive, run.companyId, run.id, run.agentId]);
 
   const censorUsernameInLogs = useQuery({
     queryKey: queryKeys.instance.generalSettings,

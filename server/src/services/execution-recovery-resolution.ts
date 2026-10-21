@@ -1,8 +1,11 @@
+import { hasWorkspaceRestoreFailure } from "@paperclipai/shared";
 import { randomUUID } from "node:crypto";
+import { canonicalExecutionUuid } from "./execution-identity.js";
+import { claimedAdapterType, conversationRecoveryActionPredicate, getConversationOwnershipBlocker } from "./conversation-continuation.js";
 import { persistActivity } from "./activity-log.js";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
 import { logger } from "../middleware/logger.js";
-import { and, eq, inArray, isNull, or, sql } from "drizzle-orm";
+import { and, eq, inArray, isNull, not, or, sql } from "drizzle-orm";
 import {
   chatActions,
   environmentLeases,
@@ -19,6 +22,10 @@ import {
   type ExecutionReconciliation,
 } from "@paperclipai/shared";
 import { parseIssueExecutionState } from "./issue-execution-policy.js";
+import { isSupersededConversationRun } from "./agent-conversations.js";
+import { hasRequiredWorkspaceRecovery } from "./workspace-restore-recovery-state.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
+import { readSystemRecovery } from "./system-recovery-state.js";
 
 /** An operator records observed outcomes; this is not permission to blindly retry. */
 export async function validateExecutionReconciliation(input: {
@@ -28,9 +35,11 @@ export async function validateExecutionReconciliation(input: {
   agentId: string | null;
   sourceRunId: unknown;
   decision: ExecutionReconciliation | undefined;
+  /** Board-only source repair: never authorize a continuation of this run. */
+  workspaceRepairOnly?: boolean;
 }) {
   const { db, companyId, issueId, agentId, decision } = input;
-  if (!decision || decision.runId !== input.sourceRunId || !agentId) {
+  if (!decision || decision.runId !== input.sourceRunId || (!agentId && !input.workspaceRepairOnly)) {
     throw conflict(
       "Reconcile the recorded execution and its action outcomes before continuing this task.",
     );
@@ -56,22 +65,52 @@ export async function validateExecutionReconciliation(input: {
     review?.status === "pending" &&
     review.currentParticipant?.type === "agent" &&
     review.currentParticipant.agentId === run?.agentId;
+  const retainedWorkspace = hasRequiredWorkspaceRecovery(run?.resultJson);
+  const repairOnly = input.workspaceRepairOnly === true && retainedWorkspace;
+  const terminalRepairSource = ["failed", "interrupted", "timed_out", "cancelled"].includes(run?.status ?? "") ||
+    (repairOnly && run?.runtimeMode === "legacy" && run.status === "succeeded");
   if (
+    (input.workspaceRepairOnly && !retainedWorkspace) ||
     !run ||
     !task ||
-    task.assigneeAgentId !== agentId ||
-    (run.agentId !== agentId && !isCurrentReviewer) ||
+    (!repairOnly && (task.assigneeAgentId !== agentId || (run.agentId !== agentId && !isCurrentReviewer))) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
-    !["failed", "interrupted", "timed_out", "cancelled"].includes(run.status)
+    !terminalRepairSource
   ) {
     throw conflict(
       "The recovery source or task owner changed. Inspect the current execution before continuing.",
     );
   }
-  for (const pid of [
+  if (hasWorkspaceRestoreFailure(run.resultJson) &&
+      (!decision.workspaceRepairEvidence || decision.workspaceRepairEvidence.trim().length < 20)) {
+    throw conflict("Verify safe workspace staging or repair and record workspaceRepairEvidence before continuing this run.");
+  }
+  let checkLocalProcesses = true;
+  if (retainedWorkspace) {
+    const leases = await db.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    const recovery = run.resultJson!.workspaceRestoreRecovery as { leaseIds?: unknown };
+    const retainedIds = recovery.leaseIds;
+    // The terminal transaction records the exact source allocations. A release
+    // timestamp is written before stop dispatch, so only matching provider
+    // acknowledgements can establish that repair will not race active writes.
+    if (!Array.isArray(retainedIds) || !retainedIds.length ||
+        !retainedIds.every(id => typeof id === "string" && leases.some(lease =>
+          lease.id === id && hasRemoteTerminationReceipt(lease))) ||
+        leases.some(lease => lease.provider === "local"
+          ? !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed"
+          : !hasRemoteTerminationReceipt(lease))) {
+      throw conflict("The retained workspace environment has not confirmed that it stopped. Wait for cleanup before recording workspace repair.");
+    }
+    checkLocalProcesses = leases.some(lease => lease.provider === "local");
+  }
+  // A retained remote source's PIDs belong to its sandbox, not this server.
+  // Its exact lease receipts above replace host-local process probes.
+  for (const pid of checkLocalProcesses ? [
     run.processPid,
     run.processGroupId ? -run.processGroupId : null,
-  ]) {
+  ] : []) {
     if (!pid) continue;
     try {
       process.kill(pid, 0);
@@ -113,11 +152,11 @@ export async function validateExecutionReconciliation(input: {
     throw conflict(
       "The previous execution environment has not finished releasing its authority.",
     );
-  await buildExecutionContinuation({
+  if (!repairOnly) await buildExecutionContinuation({
     db,
     companyId,
     issueId,
-    agentId,
+    agentId: agentId!,
     context: { previousRunId: run.id },
     summary: null,
     exposeLowTrustRaw: false,
@@ -135,7 +174,11 @@ export async function markExecutionReconciliation(
   decision: ExecutionReconciliation,
   actorId: string,
   deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
+  options?: { workspaceRepairOnly?: boolean },
 ) {
+  if (options?.workspaceRepairOnly && (deliveryOwner || !hasRequiredWorkspaceRecovery(action.evidence))) {
+    throw conflict("Workspace repair must target the retained source without a continuation owner.");
+  }
   if (deliveryOwner) {
     const [retry] = await db
       .select()
@@ -180,7 +223,7 @@ export async function markExecutionReconciliation(
           actorId,
           recordedAt: new Date().toISOString(),
         },
-        continuationDelivery: deliveryOwner ? "delegated" : "pending",
+        continuationDelivery: options?.workspaceRepairOnly ? "not_requested" : deliveryOwner ? "delegated" : "pending",
         ...(deliveryOwner ? { continuationDeliveryOwner: deliveryOwner } : {}),
       },
     })
@@ -305,8 +348,48 @@ export async function settleUnrecoverableExecutions(
   now = new Date(),
   options: { failpoint?: (phase: "persisted") => void } = {},
 ) {
+  // Fold obsolete conversation holds without waking historical work on upgrade.
+  // Keep their evidence and record the policy change in the task's activity log.
+  const obsoleteConversationHold = and(
+    conversationRecoveryActionPredicate(),
+    sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
+    or(
+      inArray(issueRecoveryActions.status, ["active", "escalated"]),
+      sql`${issueRecoveryActions.evidence}->'automaticRecovery'->>'replay' = 'blocked'`,
+    ),
+  );
+  await db.transaction(async tx => {
+    const foldable = await tx.select().from(issueRecoveryActions).where(obsoleteConversationHold)
+      .limit(25).for("update", { skipLocked: true });
+    for (const candidate of foldable) {
+      if (await getConversationOwnershipBlocker(tx as unknown as Db, candidate.companyId, candidate.sourceIssueId)) continue;
+      const [action] = await tx.update(issueRecoveryActions).set({
+        status: "resolved",
+        outcome: "cancelled",
+        resolvedAt: now,
+        updatedAt: now,
+        nextAction: "Automatic attempts stopped. Send a new message to continue the conversation.",
+        resolutionNote: "Conversation continuation does not replay prior tool calls.",
+        wakePolicy: null,
+        monitorPolicy: null,
+        evidence: sql`case when ${issueRecoveryActions.evidence} ? 'automaticRecovery'
+          then jsonb_set(${issueRecoveryActions.evidence}, '{automaticRecovery,replay}', '"conversation_continuation"'::jsonb)
+          else ${issueRecoveryActions.evidence} end`,
+      }).where(and(obsoleteConversationHold, eq(issueRecoveryActions.id, candidate.id))).returning();
+      if (!action) continue;
+      await persistActivity(tx as unknown as Db, {
+        companyId: action.companyId,
+        actorType: "system",
+        actorId: "execution-recovery",
+        action: "issue.execution_recovery_settled",
+        entityType: "issue",
+        entityId: action.sourceIssueId,
+        details: { recoveryActionId: action.id, outcome: "cancelled", continuation: "conversation" },
+      });
+    }
+  });
   // Filter eligibility before applying the batch limit. A queue of sessions
-  // still awaiting safe replacement must not starve settled incidents behind it.
+  // awaiting replacement must not starve settled incidents behind it.
   const candidates = await db
     .select({ action: issueRecoveryActions })
     .from(issueRecoveryActions)
@@ -314,8 +397,11 @@ export async function settleUnrecoverableExecutions(
       heartbeatRuns,
       and(
         eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
-        sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`,
-        sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
+        eq(heartbeatRuns.id, canonicalExecutionUuid(sql`${issueRecoveryActions.evidence}->>'runId'`)),
+        or(
+          eq(heartbeatRuns.nativeIssueId, issueRecoveryActions.sourceIssueId),
+          and(isNull(heartbeatRuns.nativeIssueId), sql`${heartbeatRuns.contextSnapshot}->>'issueId' = ${issueRecoveryActions.sourceIssueId}::text`),
+        ),
       ),
     )
     .leftJoin(
@@ -327,6 +413,8 @@ export async function settleUnrecoverableExecutions(
     )
     .where(
       and(
+        not(conversationRecoveryActionPredicate()!),
+        sql`not (${issueRecoveryActions.evidence} ? 'systemRecovery')`,
         inArray(issueRecoveryActions.status, ["active", "escalated"]),
         eq(issueRecoveryActions.kind, "active_run_watchdog"),
         inArray(issueRecoveryActions.cause, [
@@ -409,6 +497,10 @@ export async function settleUnrecoverableExecutions(
           )
         )
           return;
+        // Adoption transfers maintenance to the retained-workspace owner.
+        // This compatibility resolver must not close its hold or relabel it
+        // as a user repair merely because old return-owner metadata is absent.
+        if (readSystemRecovery(action.evidence)) return;
         // Give durable native recovery its chance; never preempt a resume,
         // replacement, result finalizer, or still-owned execution.
         if (
@@ -422,16 +514,21 @@ export async function settleUnrecoverableExecutions(
         )
           return;
         const current =
+          !isSupersededConversationRun(task, run) &&
           action.returnOwnerAgentId !== null &&
           task.assigneeAgentId === action.returnOwnerAgentId &&
           !["done", "cancelled"].includes(task.status) &&
           (!task.executionRunId || task.executionRunId === run.id) &&
           (!task.checkoutRunId || task.checkoutRunId === run.id);
         const note = current
-          ? "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
+          ? hasWorkspaceRestoreFailure(run.resultJson)
+            ? "Workspace repair required. Verify safe staging or repair before continuing. Saved work and approval decisions remain in force."
+            : "Automatic recovery stopped. Recorded work is preserved; actions with unverified outcomes will not be repeated."
           : "Recovery closed because the task's owner, execution, or status changed. No work was replayed.";
-        if (current)
-          await tx
+        let nativeFailureBlock = action.evidence.nativeFailureBlock;
+        let nativeBootstrapFailureBlock = action.evidence.nativeBootstrapFailureBlock;
+        if (current) {
+          const [projected] = await tx
             .update(issues)
             .set({
               status: "blocked",
@@ -439,7 +536,17 @@ export async function settleUnrecoverableExecutions(
               checkoutRunId: null,
               updatedAt: now,
             })
-            .where(eq(issues.id, task.id));
+            .where(eq(issues.id, task.id)).returning();
+          // Only a transition owned by this failure grants a recovery receipt.
+          // An already-blocked task may have a separate human/dependency hold.
+          if (task.status !== "blocked" && run.runtimeMode === "native") {
+            nativeFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion };
+          }
+          if (task.status !== "blocked" && run.runtimeMode === "legacy" && !run.runtimeModeResolvedAt &&
+              run.errorCode === "server_shutdown_interrupted" && claimedAdapterType(run) === "paperclip_runner") {
+            nativeBootstrapFailureBlock = { runId: run.id, statusVersion: projected!.statusVersion, previousStatus: task.status };
+          }
+        }
         await tx
           .update(issueRecoveryActions)
           .set({
@@ -453,6 +560,8 @@ export async function settleUnrecoverableExecutions(
             monitorPolicy: null,
             evidence: {
               ...action.evidence,
+              ...(nativeFailureBlock ? { nativeFailureBlock } : {}),
+              ...(nativeBootstrapFailureBlock ? { nativeBootstrapFailureBlock } : {}),
               automaticRecovery: {
                 policy: "preserve_without_replay_v1",
                 runId: run.id,
