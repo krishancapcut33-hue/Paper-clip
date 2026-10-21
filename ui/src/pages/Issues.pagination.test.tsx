@@ -8,7 +8,7 @@ import type { Issue } from "@paperclipai/shared";
 import type { IssueListFilters } from "../api/issues";
 import { Issues } from "./Issues";
 
-const mocks = vi.hoisted(() => ({ listCompact: vi.fn() }));
+const mocks = vi.hoisted(() => ({ listCompact: vi.fn(), listRender: vi.fn() }));
 
 Object.assign(globalThis, { IS_REACT_ACT_ENVIRONMENT: true });
 
@@ -29,13 +29,16 @@ vi.mock("../api/issues", () => ({ issuesApi: mocks }));
 vi.mock("../api/agents", () => ({ agentsApi: { list: async () => [] } }));
 vi.mock("../api/projects", () => ({ projectsApi: { list: async () => [] } }));
 vi.mock("../components/IssuesList", () => ({
-  IssuesList: ({ issues, onStatusFilterChange, onLoadMoreIssues }: {
+  IssuesList: ({ issues, isLoading, onStatusFilterChange, onLoadMoreIssues }: {
     issues: Issue[];
+    isLoading?: boolean;
     onStatusFilterChange?: (status: string) => void;
     onLoadMoreIssues?: () => void;
   }) => {
+    mocks.listRender({ issues, isLoading });
     useEffect(() => { onStatusFilterChange?.("backlog,in_review"); }, [onStatusFilterChange]);
     return <div>
+      {isLoading ? "Loading tasks" : issues.length === 0 ? "No tasks match the current filters or search" : null}
       {issues.map((issue) => <span key={issue.id}>{issue.title}</span>)}
       <button onClick={() => onStatusFilterChange?.("done")}>Done</button>
       <button onClick={() => onStatusFilterChange?.("")}>All</button>
@@ -47,6 +50,41 @@ vi.mock("../components/IssuesList", () => ({
 afterEach(() => { vi.clearAllMocks(); });
 
 describe("Tasks status pagination", () => {
+  it("shows loading while saved statuses initialize and until the first page resolves", async () => {
+    let resolvePage!: (issues: Issue[]) => void;
+    mocks.listCompact.mockReturnValue(new Promise<Issue[]>((resolve) => { resolvePage = resolve; }));
+    const container = document.createElement("div");
+    document.body.append(container);
+    const root = createRoot(container);
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+    try {
+      await act(async () => {
+        root.render(<QueryClientProvider client={client}><Issues /></QueryClientProvider>);
+      });
+      expect(mocks.listRender).toHaveBeenCalled();
+      for (const [props] of mocks.listRender.mock.calls) {
+        expect(props.isLoading).toBe(true);
+      }
+      expect(container.textContent).toContain("Loading tasks");
+      expect(container.textContent).not.toContain("No tasks match");
+      expect(mocks.listCompact).toHaveBeenCalledTimes(1);
+      expect(mocks.listCompact).toHaveBeenCalledWith("company-1", expect.objectContaining({
+        status: "backlog,in_review", offset: 0,
+      }), expect.anything());
+
+      await act(async () => {
+        resolvePage([]);
+        await new Promise((resolve) => setTimeout(resolve, 20));
+      });
+      expect(container.textContent).not.toContain("Loading tasks");
+      expect(container.textContent).toContain("No tasks match the current filters or search");
+    } finally {
+      await act(async () => root.unmount());
+      client.clear();
+      container.remove();
+    }
+  });
+
   it("finds older open tasks on the first filtered page and resets pagination when statuses change", async () => {
     const tasks = [
       ...Array.from({ length: 200 }, (_, index) => ({ id: `done-${index}`, title: `Done ${index}`, status: "done" })),

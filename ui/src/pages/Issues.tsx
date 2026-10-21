@@ -313,7 +313,7 @@ function OrganizationIssues({
   return (
     <IssuesList
       issues={issues ?? []}
-      isLoading={isLoading}
+      isLoading={statusFilter === null || isLoading}
       isLoadingMoreIssues={isFetchingNextPage}
       error={error as Error | null}
       agents={agents}
