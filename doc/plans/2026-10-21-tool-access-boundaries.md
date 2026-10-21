@@ -44,3 +44,20 @@ The original service becomes 21,237 lines / 820,116 bytes; the new module is
 tests and 11 selected GitHub service cases using disposable PostgreSQL.
 The initial test attempt could not resolve the unbuilt plugin SDK; building
 the existing workspace prerequisites resolved that setup failure.
+
+## Second extraction
+
+Connection method selection, settings validation, and header/schema/argument
+projection now live in `tool-access/connection-methods.ts`. Inputs use a small
+settings shape with required config and transport, independent of database rows.
+The service and gateway retain their existing entry points. Provider policies
+remain in the Honcho, Google Chat, and Gmail modules and are called in the same
+order. No configuration snapshots or caches are added.
+
+All 11 moved function bodies and the private record parser match the baseline.
+The original service becomes 20,917 lines / 808,777 bytes; the new module is
+359 lines / 12,665 bytes. The full service suite (466 cases) and provider-policy
+coverage pass before and after; the combined post-move run passes 506 tests.
+Server TypeScript checking passes. The first typecheck exposed that the public
+ToolConnection DTO allows absent config; the module now declares the required
+validated settings shape directly instead of adding internal fallback checks.
