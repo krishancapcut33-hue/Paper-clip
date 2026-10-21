@@ -1394,7 +1394,12 @@ function OnboardingWizardInner({
     // pinned model; with two providers behind it and a discovered catalog, that
     // model was frequently one the chosen provider could not even route. The
     // customer answers this on the card instead, and the CTA waits for it.
-    if (id !== "codex_local") setModel("");
+    //
+    // Only when the source actually changes. Re-picking the source that is
+    // already selected is what a restored draft does, and the restored model
+    // is the answer to that draft — clearing it here would wipe the very model
+    // the restore brought back.
+    if (id !== adapterType && id !== "codex_local") setModel("");
     // Closed here rather than left as it was: the answer is in, and the
     // disclosure is out of the DOM from this beat on. Leaving the flag open
     // would hand a second visit — or the unwind back to the question — a row
