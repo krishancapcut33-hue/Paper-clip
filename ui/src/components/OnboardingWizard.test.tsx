@@ -2652,6 +2652,38 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("restores the OpenCode provider choice with the draft", async () => {
+      // The provider behind the OpenCode harness is a choice, not a secret, so
+      // it rides in the draft. A Go draft that reopened on OpenRouter would ask
+      // OpenRouter's catalog for the model it had saved, not find it there, and
+      // the step would then refuse to continue with a model it had just
+      // restored.
+      mockAdapterRegistry.list = [
+        { type: "claude_local" },
+        { type: "codex_local" },
+        { type: "opencode_local" },
+      ];
+      mockAgentsApi.adapterModels.mockResolvedValue([
+        { id: "opencode-go/deepseek-v4-pro", label: "deepseek-v4-pro" },
+      ]);
+      const { root } = await openStep4({
+        adapterType: "opencode_local",
+        providerChoice: "opencode",
+        model: "opencode-go/deepseek-v4-pro",
+      });
+      try {
+        await vi.waitFor(() => expect(mockAgentsApi.adapterModels).toHaveBeenCalledWith(
+          "company-new",
+          "opencode_local",
+          expect.objectContaining({ provider: "opencode" }),
+        ));
+        expect(
+          JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!),
+          "the choice is kept in the draft, so a reload keeps it",
+        ).toMatchObject({ providerChoice: "opencode" });
+      } finally { await act(async () => root.unmount()); }
+    });
+
     it("creates the OpenCode Go connection when the key card's provider is switched", async () => {
       // The harness runs on one of two providers and OpenRouter is only the
       // historical default, so the step has to ask. The answer is what the

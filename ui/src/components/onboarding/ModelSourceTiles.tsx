@@ -1,4 +1,4 @@
-import { useEffect, useRef, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
 import { AnimatePresence, motion } from "motion/react";
 
 import { cn } from "../../lib/utils";
@@ -189,12 +189,23 @@ export function ModelSourceTiles({
 }) {
   const tiles = useRef(new Map<string, HTMLButtonElement>());
   /**
-   * The frame waiting to move focus onto a tile the arrows have just picked.
+   * The frame waiting to move focus onto a tile the arrows have just walked to.
    *
    * Held so it can be dropped on unmount, and so a held-down arrow key does not
    * queue one focus per repeat behind the last.
    */
   const focusFrame = useRef<number | null>(null);
+  /**
+   * The tile the caret is on, held apart from the answer.
+   *
+   * The arrows walk the row; they do not answer it. Picking a source is a
+   * commitment — the row collapses and the sign-in starts — and a row of three
+   * tiles that committed on the first arrow press left the middle one out of
+   * reach: the caret could only find it by walking past the end and wrapping,
+   * by which time the row was gone. The caret is therefore held here, and
+   * Enter or Space commits the tile it is on.
+   */
+  const [focusedId, setFocusedId] = useState<string | null>(null);
 
   useEffect(
     () => () => {
@@ -204,32 +215,27 @@ export function ModelSourceTiles({
   );
 
   /**
-   * Arrow keys move the selection and the focus together, which is what a
-   * radio group is expected to do — without it the role would be announced and
-   * then not behave, which is worse than plain buttons. Selection wraps at both
-   * ends; three tiles is short enough that stopping at the edges just reads as
-   * the key having failed.
+   * The arrows move the caret along the row, without answering it.
+   *
+   * Focus lands on the next frame rather than here. The commit that follows a
+   * click is not a no-op for the node looked up above: the row moves under
+   * `AnimatePresence`'s `popLayout` mode, and answering from the second tier
+   * also takes the disclosure out from above the tiles. Focused here, the
+   * caret can end up on a node that commit has left behind — the tile then
+   * reads as chosen with nothing holding the keyboard, which is a keyboard
+   * user with nowhere to be.
+   *
+   * Nothing has been painted in between, so this costs a frame of the tile's
+   * travel rather than a frame of the caret sitting somewhere else.
    */
-  const moveSelection = (delta: number) => {
+  const moveFocus = (delta: number) => {
     if (sources.length === 0) return;
-    const current = sources.findIndex((source) => source.id === selectedId);
+    const current = sources.findIndex((source) => source.id === (focusedId ?? selectedId));
     // Nothing picked yet: either arrow enters the row from the near end.
     const from = current === -1 ? (delta > 0 ? -1 : 0) : current;
     const next = (from + delta + sources.length) % sources.length;
     const target = sources[next]!;
-    onSelect(target.id);
-    // Focus lands on the next frame rather than here. `onSelect` re-renders
-    // this row, and the commit that follows is not a no-op for the node looked
-    // up above: the row moves under `AnimatePresence`'s `popLayout` mode, and
-    // answering from the second tier also takes the disclosure out from above
-    // the tiles. Focused here, the caret can end up on a node that commit has
-    // left behind — the tile then reads as chosen with nothing holding the
-    // keyboard, which is a keyboard user with nowhere to be.
-    //
-    // Nothing has been painted in between, so this costs a frame of the tile's
-    // travel rather than a frame of the caret sitting somewhere else, and it is
-    // the same line for both rows: the recommended row remounts a picked tile
-    // as the second tier does.
+    setFocusedId(target.id);
     if (focusFrame.current !== null) cancelAnimationFrame(focusFrame.current);
     focusFrame.current = requestAnimationFrame(() => {
       focusFrame.current = null;
@@ -246,6 +252,17 @@ export function ModelSourceTiles({
    * and the arrows take it from there.
    */
   const rowHasSelection = shown.some((source) => source.id === selectedId);
+  /**
+   * The tile that holds the row's one stop on the Tab path.
+   *
+   * The caret's tile while the arrows have walked it, the answer's tile while
+   * there is one, and the first tile of a row that is still a question. The
+   * group stays a single stop — a radiogroup is one tab stop, and the arrows
+   * are how a keyboard user moves inside it.
+   */
+  const tabStopId = shown.some((source) => source.id === focusedId)
+    ? focusedId
+    : rowHasSelection ? selectedId : shown[0]?.id ?? null;
 
   return (
     <div
@@ -258,10 +275,10 @@ export function ModelSourceTiles({
         if (collapsed) return;
         if (event.key === "ArrowRight" || event.key === "ArrowDown") {
           event.preventDefault();
-          moveSelection(1);
+          moveFocus(1);
         } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
           event.preventDefault();
-          moveSelection(-1);
+          moveFocus(-1);
         }
       }}
     >
@@ -274,7 +291,7 @@ export function ModelSourceTiles({
         with two in the row, so the kept tile travels without also growing.
       */}
       <AnimatePresence initial={false} mode="popLayout">
-        {shown.map((source, index) => (
+        {shown.map((source) => (
           <motion.div
             key={source.id}
             layout
@@ -289,7 +306,7 @@ export function ModelSourceTiles({
               source={source}
               mode={source.credentialMode === undefined ? mode : source.credentialMode}
               selected={source.id === selectedId}
-              tabbable={source.id === selectedId || (!rowHasSelection && index === 0)}
+              tabbable={source.id === tabStopId}
               onSelect={() => onSelect(source.id)}
               settling={settling}
               buttonRef={(node) => {

@@ -135,19 +135,18 @@ async function flushFrame() {
 }
 
 describe("ModelSourceTiles keyboard navigation", () => {
-  it("moves the caret onto the tile an arrow just picked, from an unanswered row", async () => {
+  it("walks the caret onto a tile without answering the row", async () => {
     await render();
     expect(picked(), "the row opens unanswered").toBeNull();
 
     await pressArrow("ArrowRight");
 
-    expect(picked(), "either arrow enters the row from its near end").toBe(
-      "Claude Code Subscription",
-    );
-    // The caret is not there yet: it is posed from the frame after the commit
+    expect(
+      picked(),
+      "the arrows move the caret; the answer waits for Enter or Space",
+    ).toBeNull();
+    // The caret is not there yet: it is posed from the frame after the walk
     // above, so that `popLayout` cannot leave it on a tile the row replaced.
-    // Posed inside the handler, this is where a keyboard user would be left
-    // holding a node that commit has already moved out from under them.
     expect(document.activeElement).not.toBe(tiles()[0]);
 
     await flushFrame();
@@ -158,7 +157,54 @@ describe("ModelSourceTiles keyboard navigation", () => {
     );
   });
 
-  it("takes the caret with the selection when the arrows move along the row", async () => {
+  it("reaches every tile of the row, the middle one included", async () => {
+    // The row answers by collapsing, so an arrow that answered as it walked
+    // would take the rest of the row with it. The middle tile was the one to
+    // pay for it: the caret could only find it by walking past the end and
+    // wrapping, by which time the row was gone.
+    await render();
+
+    await pressArrow("ArrowRight");
+    await flushFrame();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "Claude Code Subscription",
+    );
+
+    await pressArrow("ArrowRight");
+    await flushFrame();
+    expect(document.activeElement?.getAttribute("aria-label")).toBe(
+      "OpenAI Subscription",
+    );
+
+    expect(picked(), "walking the row is not answering it").toBeNull();
+  });
+
+  it("keeps the row on one Tab stop, held by the tile the caret is on", async () => {
+    await render();
+
+    await pressArrow("ArrowRight");
+    await flushFrame();
+
+    const stops = tiles().filter((tile) => tile.getAttribute("tabindex") === "0");
+    expect(stops, "a radiogroup is one stop, not one per tile").toHaveLength(1);
+    expect(stops[0]).toBe(tiles()[0]);
+  });
+
+  it("answers with the tile the caret is on", async () => {
+    await render();
+
+    await pressArrow("ArrowRight");
+    await flushFrame();
+    await pressArrow("ArrowRight");
+    await flushFrame();
+
+    const target = tiles()[1]!;
+    await act(async () => target.click());
+
+    expect(picked()).toBe("OpenAI Subscription");
+  });
+
+  it("walks the caret along the row", async () => {
     await render("claude");
     await flushFrame();
 
@@ -173,6 +219,9 @@ describe("ModelSourceTiles keyboard navigation", () => {
 
     expect(document.activeElement).toBe(tiles()[2]);
     expect(document.activeElement?.getAttribute("aria-label")).toBe("Gemini Subscription");
+    expect(picked(), "the answer is still the one the row opened with").toBe(
+      "Claude Code Subscription",
+    );
   });
 
   it("wraps at the end of the row and keeps the caret on the wrapped-to tile", async () => {
@@ -202,12 +251,11 @@ describe("ModelSourceTiles keyboard navigation", () => {
       await pressArrow(key);
       await flushFrame();
 
-      expect(picked()).toBe(
-        key === "ArrowDown" ? "Claude Code Subscription" : "Gemini Subscription",
-      );
-      expect(document.activeElement).toBe(
-        tiles().find((tile) => tile.getAttribute("aria-checked") === "true"),
-      );
+      expect(
+        document.activeElement?.getAttribute("aria-label"),
+        key === "ArrowDown" ? "down steps forward" : "up steps back",
+      ).toBe(key === "ArrowDown" ? "Claude Code Subscription" : "Gemini Subscription");
+      expect(picked(), "the arrows do not answer the row").toBeNull();
     },
   );
 

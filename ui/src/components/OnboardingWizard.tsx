@@ -719,10 +719,15 @@ function OnboardingWizardInner({
    * OpenCode is the only source here with two providers behind one harness:
    * OpenRouter (the historical default) and the OpenCode Go gateway. The choice
    * feeds the connection that is created, the variable a typed key is stored
-   * under, and the key field's own label. It is kept in memory rather than in
-   * the draft, and only read while `opencode_local` is the selected source.
+   * under, and the key field's own label.
+   *
+   * It rides in the draft: it is a choice, not a secret, and a Go draft that
+   * reopened on OpenRouter would load the wrong provider's catalog — the
+   * restored model would not be in it, and the step would refuse to continue.
    */
-  const [providerChoice, setProviderChoice] = useState<OpenCodeProvider>("openrouter");
+  const [providerChoice, setProviderChoice] = useState<OpenCodeProvider>(
+    (saved?.providerChoice as OpenCodeProvider | undefined) ?? "openrouter",
+  );
   /**
    * Where the connect step's sign-in sequence is.
    *
@@ -1024,6 +1029,8 @@ function OnboardingWizardInner({
       onboardingCopilot: isCopilot,
       // The mode, never the key: this blob is localStorage.
       credentialMode, credentialModeChoice,
+      // The provider behind the OpenCode harness. A choice, not a secret.
+      providerChoice,
       createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
       createdCompanyGoalId, createdProjectId, createdIssueRef,
     };
@@ -1031,7 +1038,7 @@ function OnboardingWizardInner({
   }, [
     effectiveOnboardingOpen, step, companyName,
     agentName, agentAppearance, agentRole, adapterType, runner, cwd, model, command, args, url,
-    credentialMode, credentialModeChoice,
+    credentialMode, credentialModeChoice, providerChoice,
     createdCompanyId, createdCompanyPrefix, createdAgentId, setupAgentId,
     createdCompanyGoalId, createdProjectId, createdIssueRef,
   ]);
@@ -1520,6 +1527,17 @@ function OnboardingWizardInner({
             const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
             if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
             else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
+            // The provider behind the OpenCode harness is part of the restored
+            // answer, not a detail of it: a Go setup restored on OpenRouter
+            // would load the wrong catalog, and the step would then reject the
+            // model it had just restored.
+            if (agentHarnessType(agent.adapterType, config) === "opencode_local") {
+              const restoredProvider = binding?.provider === "opencode" ? "opencode"
+                : binding?.provider === "openrouter" ? "openrouter"
+                : (config.env as Record<string, unknown> | undefined)?.[PROVIDER_ENV_KEYS.opencode] ? "opencode"
+                : undefined;
+              if (restoredProvider) setProviderChoice(restoredProvider);
+            }
             else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
               || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
             if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
