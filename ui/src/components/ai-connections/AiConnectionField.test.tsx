@@ -5,7 +5,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { afterEach, beforeEach, expect, it, vi } from "vitest";
 import type { ComponentProps } from "react";
 import type { AiManagedConnectionSummary } from "@paperclipai/shared";
-import { AiConnectionField } from "./AiConnectionField";
+import { AiConnectionField, aiProviderForAdapter } from "./AiConnectionField";
 import type { AiConnectionCredentialStep } from "./AiConnectionCredentialStep";
 
 const mocks = vi.hoisted(() => ({ list: vi.fn(), setDefault: vi.fn() }));
@@ -146,4 +146,18 @@ it("uses the server's connection-manager permission for company-wide access", as
   await mount([], true);
   await click("Connect another account");
   expect(credentialProps).toMatchObject({ allAgents: true });
+});
+
+it("offers Pi account selection before choosing its required model", async () => {
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [], canManageConnections: true });
+  expect(aiProviderForAdapter("pi_local")).toBe("openrouter");
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Pi" adapterType="pi_local" model=""
+      value={{ provider: "openrouter", method: "api_key", mode: "responsible_user" }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(document.querySelector('[role="combobox"][aria-label="Connection"]')).not.toBeNull();
+  expect(container.textContent).not.toContain("does not support the current harness");
+  await click("Connect another account");
+  expect(document.body.textContent).toContain("Advanced provider setup");
 });

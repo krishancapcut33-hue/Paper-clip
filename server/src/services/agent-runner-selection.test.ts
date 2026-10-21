@@ -108,6 +108,9 @@ describe("server-owned Codex runner selection", () => {
     expect(resolveNewAgentRunner(input)).toEqual({ adapterType: input.adapterType, adapterConfig: input.adapterConfig });
     expect(() => resolveNewAgentRunner({ ...input, runner: "paperclip" })).toThrow("unavailable");
   });
+  it.each(["minimal", "medium", "xhigh"])("honors an explicit Legacy Pi thinking edit to %s when resuming a native draft", thinking => {
+    expect(resolveNewAgentRunner({ adapterType: "paperclip_runner", runner: "legacy", adapterConfig: { provider: "acpx", acpxAgent: "pi", model: "custom/model", piThinkingLevel: "max", thinking } })).toEqual({ adapterType: "pi_local", adapterConfig: { model: "custom/model", thinking } });
+  });
   it("honors disabled and overridden Pi adapters", () => {
     const input = { adapterType: "pi_local", target, adapterConfig: { model: "custom/model" } };
     state.overridden.add("pi_local");

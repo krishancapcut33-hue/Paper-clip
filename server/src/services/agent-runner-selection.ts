@@ -133,14 +133,14 @@ export function resolveNewAgentRunner(input: AgentRunnerSelection): { adapterTyp
   if (!useNative) {
     if (harness === "pi_local") {
       if (!native) return { adapterType, adapterConfig: config };
+      const thinking = config.thinking ?? config.piThinkingLevel ?? "low";
       const unsupported = [
         ...(config.acpxPermissionMode !== undefined && config.acpxPermissionMode !== "approve-all" ? ["acpxPermissionMode"] : []),
         ...(config.lifecycleMode !== undefined && config.lifecycleMode !== "per_turn" ? ["lifecycleMode"] : []),
         ...(config.acpxSessionMode !== undefined ? ["acpxSessionMode"] : []),
-        ...(config.piThinkingLevel !== undefined && !["off", "low", "high"].includes(String(config.piThinkingLevel)) ? ["piThinkingLevel"] : []),
+        ...(!["off", "minimal", "low", "medium", "high", "xhigh"].includes(String(thinking)) ? [config.thinking !== undefined ? "thinking" : "piThinkingLevel"] : []),
       ];
       if (unsupported.length) throw unprocessable(`Legacy Pi cannot honor these settings: ${unsupported.join(", ")}. Keep Paperclip Runner or explicitly choose compatible settings.`, { code: "agent_runner_config_incompatible", fields: unsupported });
-      const thinking = config.piThinkingLevel ?? "low";
       for (const key of ["provider", "acpxAgent", "acpxPermissionMode", "acpxSessionMode", "piThinkingLevel", "lifecycleMode", "idleTimeoutMs"]) delete config[key];
       return { adapterType: "pi_local", adapterConfig: { ...config, thinking } };
     }

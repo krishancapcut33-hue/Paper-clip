@@ -1941,7 +1941,10 @@ export function agentRoutes(
       throw unprocessable("Select a Paperclip Runner provider before converting this agent.");
     }
     const next = { ...defaults, ...input.nextAdapterConfig };
-    if (!asNonEmptyString(next.model)) next.model = defaults.model;
+    if (next.provider === "acpx" && next.acpxAgent === "pi") {
+      next.model = input.nextAdapterConfig.model
+        ?? (input.previousAdapterType === "pi_local" ? input.previousAdapterConfig.model : "");
+    } else if (!asNonEmptyString(next.model)) next.model = defaults.model;
     return normalizeLegacyRunnerProvider(next);
   }
 
@@ -5379,12 +5382,16 @@ export function agentRoutes(
     // it gets the selectable check; keeping the agent's current adapter (even
     // one since disabled) stays allowed, so a disabled harness does not make an
     // existing agent uneditable.
-    if (runner !== undefined) {
+    const requestedRunnerConfig = asRecord(patchData.adapterConfig) ?? {};
+    const convertingPi = existing.adapterType === "pi_local" && patchData.adapterType === "paperclip_runner"
+      && (requestedRunnerConfig.provider === undefined
+        || (requestedRunnerConfig.provider === "acpx" && [undefined, "pi"].includes(requestedRunnerConfig.acpxAgent as string | undefined)));
+    if (runner !== undefined || convertingPi) {
       await assertCanConfigureAgentSetup(req, existing);
       const config = hasOwn(patchData, "adapterConfig") ? { ...(replaceAdapterConfig ? {} : existing.adapterConfig), ...asRecord(patchData.adapterConfig) } : existing.adapterConfig;
       Object.assign(patchData, await resolveNewAgentRunnerForCompany(db, existing.companyId, {
-        adapterType: typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
-        adapterConfig: config, runner, setupOnly: existing.lifecycleHolds?.includes("setup"),
+        adapterType: convertingPi ? "pi_local" : typeof patchData.adapterType === "string" ? patchData.adapterType : existing.adapterType,
+        adapterConfig: config, runner: runner ?? "paperclip", setupOnly: existing.lifecycleHolds?.includes("setup"),
         defaultEnvironmentId: hasOwn(patchData, "defaultEnvironmentId") ? patchData.defaultEnvironmentId as string | null : existing.defaultEnvironmentId,
       }));
     }

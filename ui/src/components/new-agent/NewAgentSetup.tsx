@@ -174,7 +174,7 @@ function Setup({
   const [runtimeAiBinding, setRuntimeAiBinding] = useState<AiConnectionBinding | undefined>(() =>
     brandType === "copilot_runtime"
       ? { provider: "github", method: "api_key", mode: "responsible_user" }
-      : multiProvider
+      : brandType === "opencode_local"
       ? { provider: "openrouter", method: "api_key", mode: "responsible_user" }
       : undefined,
   );
@@ -201,6 +201,13 @@ function Setup({
     currentCreated ??
     (savedAgent.data?.companyId === companyId ? savedAgent.data : null);
   const completed = Boolean(created && created.pauseReason !== "setup");
+  useEffect(() => {
+    if (brandType !== "pi_local" || created?.adapterType !== "paperclip_runner"
+      || created.runtimeConfig.aiConnection) return;
+    const env = (created.adapterConfig.env ?? {}) as Record<string, unknown>;
+    if (Object.values(PROVIDER_ENV_KEYS).some(key => env[key] !== undefined)) return;
+    setRuntimeAiBinding(current => current ?? { provider: "openrouter", method: "api_key", mode: "responsible_user" });
+  }, [brandType, created?.id, created?.adapterType]);
   const savedNativeMultiProvider = multiProvider && (Boolean(setupAgentId) || runner === "legacy")
     && created?.adapterType === "paperclip_runner";
   const requestAdapterType = savedNativeMultiProvider || (preserveNativeHarness && runner === "paperclip")
@@ -462,7 +469,7 @@ function Setup({
       for (const key of ["dangerouslySkipPermissions", "opencodePermissionMode", "acpxPermissionMode", "acpxSessionMode", "lifecycleMode", "idleTimeoutMs"]) {
         if (saved[key] !== undefined) config[key] = saved[key];
       }
-      if (brandType === "pi_local" && created.adapterType === "paperclip_runner" && effort) {
+      if (brandType === "pi_local" && created.adapterType === "paperclip_runner" && runner !== "legacy" && effort) {
         config.piThinkingLevel = effort;
         delete config.thinking;
       }
