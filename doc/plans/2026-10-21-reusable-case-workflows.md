@@ -88,3 +88,10 @@ pages, rejecting edits with 409 before returning another page. The HTTP test
 covers a same-length edit and restarting with a four-byte window; compression
 preserves the fingerprint through its weak ETag prefix. No workflow version
 entity or stored field is added. Final check and review results live on the PR.
+
+The shared native execution prompt omits experimental Cases/workflow guidance,
+including the Mermaid diagram recommendation. Runtime-context prompt text lives
+in the CODEOWNERS-protected `runtime-context-prompts.ts` as exported strings;
+composition and snapshot validation remain in `runtime-context.ts`. Current
+prompt metadata advances to v7, while saved prompt snapshots remain readable.
+Copilot v57 binds both source files and retains historical v56 decoding.
