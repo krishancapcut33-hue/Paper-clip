@@ -1,3 +1,5 @@
+import type { PluginWorkspaceParams, PluginWorkspaceResult } from "./workspace-provider.js";
+import type { PluginEnvironmentTaskParams, PluginEnvironmentTaskResult } from "./environment-tasks.js";
 import type { PluginAgentRuntimeState } from "./types.js";
 import type { AgentLifecycleRequest, AgentLifecycleResult } from "@paperclipai/shared";
 import type { AiConnectionRouterRequest, AiConnectionRouterResult } from "@paperclipai/shared";
@@ -1393,6 +1395,8 @@ export interface HostToWorkerMethods {
     params: PluginEnvironmentValidateConfigParams,
     result: PluginEnvironmentValidationResult,
   ];
+  workspaceOperation: [params: PluginWorkspaceParams, result: PluginWorkspaceResult];
+  environmentTask: [params: PluginEnvironmentTaskParams, result: PluginEnvironmentTaskResult];
   environmentProbe: [
     params: PluginEnvironmentProbeParams,
     result: PluginEnvironmentProbeResult,
@@ -1513,6 +1517,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "handleApiRequest",
   "agentLifecycle",
   "resourceLifecycle",
+  "workspaceOperation",
   "getData",
   "performAction",
   "executeTool",
@@ -1521,6 +1526,7 @@ export const HOST_TO_WORKER_OPTIONAL_METHODS: readonly HostToWorkerMethodName[] 
   "resolveExternalObject",
   "refreshExternalObjects",
   "environmentValidateConfig",
+  "environmentTask",
   "environmentProbe",
   "environmentAcquireLease",
   "environmentResumeLease",

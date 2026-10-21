@@ -41,6 +41,11 @@ Execution containment and file preservation are independent facts:
   `isolated-workspace-attempts` namespace. It does not modify the original
   directory or satisfy that source's preservation/cleanup obligation.
 
+Fresh attempts currently require Core-managed storage. Plugin-owned storage
+does not yet support importing these preserved snapshots. Preparation stops
+before calling that provider or acquiring an environment. It retains the
+original workspace rather than reopening it as a fresh attempt.
+
 Valid native baselines use the existing merge. A bound historical source
 without a merge baseline is exported to configured storage as an immutable,
 verified snapshot. Upload operations have stable identities and manifests.

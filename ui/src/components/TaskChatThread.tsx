@@ -936,6 +936,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     errorsByRun: nativeTranscriptErrorsByRun,
     isInitialHydrating: nativeEventsAreInitiallyHydrating,
     hydratedRunIds: hydratedNativeRunIds,
+    terminalHydratedRunIds,
     retry: retryNativeEvents,
   } = useNativeRunTranscripts(nativeRuns);
   const logRuns = useMemo(() => runs.filter((run) =>
@@ -1602,6 +1603,9 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           )) &&
         !sourceAcceptedResponseWake;
       const sourceIsPaperclipRunner = isNativePaperclipRunnerRun(source);
+      const sourceAllowSummaryFallback = !sourceIsPaperclipRunner ||
+        terminalHydratedRunIds.has(source.id) ||
+        entries.some((entry) => entry.kind === "run_terminal");
       const decidedCommentId = presentationDecisionCommentId(meta?.resultJson);
       const progressCommentIds = semanticProgressCommentIds(meta?.resultJson);
       const sourcePresentationCommentId =
@@ -1796,8 +1800,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           settledRunIds.add(source.id);
           continue;
         }
+        if (sourceIsPaperclipRunner && !sourceAllowSummaryFallback) continue;
         if (
           isNativePaperclipRunnerRun(source) &&
+          sourceAllowSummaryFallback &&
           acceptedSummary &&
           !sourceHasPresentationComment
         ) {
@@ -1872,6 +1878,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
           : undefined;
       if (
         source.status === "succeeded" &&
+        sourceAllowSummaryFallback &&
         !sourceHasPresentationComment &&
         resolvedWithoutUserFacingResponse(meta?.resultJson) &&
         !sourceHasNativeResponse
@@ -1932,6 +1939,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
               runId: source.id,
               agentName: meta?.agentName,
               fallbackSummary: acceptedSummary,
+              allowFallback: sourceAllowSummaryFallback,
             })?.text)
           : undefined;
       const timelineItemsBySegment = sourceIsPaperclipRunner
@@ -1970,6 +1978,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                     segmentIndex === lastPopulatedSegmentIndex
                       ? acceptedSummary
                       : undefined,
+                  allowFallback: sourceAllowSummaryFallback,
                 })
             : undefined;
         const children = settledRunChildren(
@@ -2175,6 +2184,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     runs,
     liveRun,
     transcriptByRun,
+    terminalHydratedRunIds,
     linkedRunMetaById,
     lastCommentIdByRun,
     comments,
@@ -3113,7 +3123,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                             <>
                               {tailRunId || optimisticRunnerStartup ? (
                                 <div data-testid="task-chat-live-transcript">
-                                  {paperclipRunnerTail ||
+                                  {tailRunSource?.adapterType === "paperclip_runner" ||
                                   optimisticRunnerStartup ? (
                                     <TaskChatRunnerTurn
                                       runId={tailRunId}
@@ -3124,9 +3134,12 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                                       }
                                       agentName={visibleTailAgentName}
                                       agentIcon={visibleTailAgentIcon}
-                                agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
+                                      agent={tailAgent ?? (tailAgentId ? { id: tailAgentId } : undefined)}
                                       items={tailItems}
                                       preparationLabel={optimisticRunnerStartup && submissionTakingLonger ? "Taking longer than usual…" : undefined}
+                                      allowSummaryFallback={!paperclipRunnerTail ||
+                                        terminalHydratedRunIds.has(tailRunId ?? "") ||
+                                        tailEntries.some((entry) => entry.kind === "run_terminal")}
                                       status={
                                         optimisticRunnerStartup
                                           ? "queued"
@@ -3191,10 +3204,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 ) : null}
               </div>
             </div>
-            {assignedAgentForNotice?.status === "paused" ? (
+            {assignedAgentForNotice?.status === "paused" && !isTerminalIssueStatus(issueStatus) ? (
               <div className="mx-auto w-full max-w-(--tc-shell-max-w) px-4 pt-2">
                 <IssueAssigneePausedNotice
                   agent={assignedAgentForNotice}
+                  issueStatus={issueStatus}
                   onResume={onResumeAssignee}
                   resuming={resumeAssigneePending}
                 />

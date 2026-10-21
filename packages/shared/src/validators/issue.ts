@@ -1,3 +1,4 @@
+import { CHAT_PROVIDERS } from "../types/chat-channels.js";
 import { taskWorkspaceSelectionSchema } from "./task-workspace.js";
 import { z } from "zod";
 import { ISSUE_SUMMARIES_MAX_IDS } from "../constants.js";
@@ -1087,7 +1088,7 @@ export const issueCommentMetadataSchema = z
   .object({
     version: z.literal(1),
     recoveryResponsibility: z.enum(["system", "user"]).optional(),
-    sourceChannel: z.literal("imessage-photon").optional(),
+    sourceChannel: z.enum(CHAT_PROVIDERS).optional(),
     sourceRunId: z.string().guid().nullable().optional(),
     authorizationReason: z
       .string()

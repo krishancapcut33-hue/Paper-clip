@@ -1,3 +1,4 @@
+import type { ChatProvider } from "./chat-channels.js";
 import type { TaskWorkspaceIntent, TaskWorkspacePendingSelection } from "./task-workspace.js";
 import type { ExecutionProjection, ExecutionBlocker, TaskInterruptionPresentation } from "./execution-projection.js";
 import type {
@@ -190,6 +191,8 @@ export interface DocumentRevision {
   changeSummary: string | null;
   createdByAgentId: string | null;
   createdByUserId: string | null;
+  /** Writer provenance; reading a revision does not grant access to the run. */
+  createdByRunId?: string | null;
   createdAt: Date;
 }
 
@@ -1161,7 +1164,7 @@ export interface IssueCommentMetadata {
   /** Producer-classified diagnostics; task interruption UI owns system repair. */
   recoveryResponsibility?: "system" | "user";
   /** Inbound channel attribution; never an authorization input. */
-  sourceChannel?: "imessage-photon";
+  sourceChannel?: ChatProvider;
   sourceRunId?: string | null;
   sourceIdentityContextId?: string | null;
   authorizationReason?: string | null;
