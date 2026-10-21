@@ -24,6 +24,31 @@ import {
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
 
+function createConnector(event: {
+  id: string;
+  provider: "github";
+  event: string;
+  action: string;
+  installationId: string;
+  repositoryId: string | null;
+  createdAt: string;
+  bindingIds: string[];
+  payload: Record<string, unknown>;
+}) {
+  let poll = 0;
+  const connector = {
+    getCapabilities: vi.fn(async () => ["github.code" as const]),
+    startAuthorization: vi.fn(),
+    claim: vi.fn(),
+    refresh: vi.fn(),
+    revoke: vi.fn(),
+    setWebhookBinding: vi.fn(async () => undefined),
+    leaseEvents: vi.fn(async () => ({ leaseId: `lease-${++poll}`, events: [event] })),
+    acknowledgeEvents: vi.fn(async () => 1),
+  } as unknown as PaperclipCloudConnector;
+  return { connector };
+}
+
 describeEmbeddedPostgres("GitHub connection event delivery", () => {
   let db!: ReturnType<typeof createDb>;
   let tempDb: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | null = null;
@@ -330,7 +355,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     expect(product).toMatchObject({
       status: "merged",
       metadata: {
-        repo: "paperclipai/paperclip",
+        repo: "paperclip",
         number: 123,
         state: "closed",
         merged: true,
@@ -452,11 +477,11 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     expect(unchangedProduct).toMatchObject({ status: "open", metadata: { state: "open" } });
     const [unchangedSnapshot] = await db.select().from(externalObjects).where(eq(externalObjects.externalId, "paperclipai/paperclip#pull/123"));
     expect(unchangedSnapshot).toMatchObject({ statusKey: null, data: { marker: "preserved" } });
-    expect(connector.acknowledgeEvents).toHaveBeenCalledWith(expect.objectContaining({ deliveryIds: [] }));
+    expect(connector.acknowledgeEvents).not.toHaveBeenCalled();
 
     await db.execute(sql`DROP TRIGGER paperclip_test_reject_pr_work_product_projection ON issue_work_products`);
     await db.execute(sql`DROP FUNCTION paperclip_test_reject_pr_work_product_projection()`);
-    await expect(service.pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
+    await expect(githubConnectionEventService(db, { connector }).pollOnce()).resolves.toMatchObject({ processed: 1, failed: 0 });
     const [recoveredProduct] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, workProductId));
     expect(recoveredProduct).toMatchObject({ status: "merged", metadata: { mergeCommitSha: "c".repeat(40) } });
   });
