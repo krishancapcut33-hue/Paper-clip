@@ -1862,6 +1862,18 @@ status without an upstream. Ordinary HTTP requests cannot open this transport.
 
 The host pipes binary frames with socket backpressure, closes both ends on
 disconnect or worker shutdown, and limits each connection to five minutes.
-A visible viewer may reconnect; every reconnect repeats authorization and worker
+Clients may reconnect; every reconnect repeats authorization and worker
 resolution. The route's worker must resolve targets from its trusted resource
 bindings rather than accepting upstream addresses from browser parameters.
+
+The transport carries opaque text and binary WebSocket frames. For example,
+a plugin can declare `/channels/:channelId` for build output, metrics, or a
+remote tool protocol. The worker receives the route key and parameters and
+selects the upstream; Core does not interpret channel contents or require an
+agent resource. Query/body company resolution and entity-based resolution are
+independent of transport selection.
+
+Agent detail-tab contributions are also independent of WebSockets. Any plugin
+can mount a detail component, including a report or notes view backed by its
+normal JSON API or UI bridge. The sidebar and detail page select declared slots
+by plugin key and slot ID, with no knowledge of the component's subject.

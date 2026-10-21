@@ -75,6 +75,7 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasCompanyAccess,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
@@ -635,10 +636,10 @@ export function pluginRoutes(
       const id = params[resolution.param];
       if (!id) return null;
       const [agent] = await db.select({ id: agents.id, companyId: agents.companyId }).from(agents).where(eq(agents.id, id)).limit(1);
-      if (!agent) return null;
+      if (!agent || !hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
       assertCompanyAccess(req, agent.companyId);
       const decision = await authorizationService(db).decide({ actor: req.actor, action: "agent:read", resource: { type: "agent", companyId: agent.companyId, agentId: agent.id } });
-      if (!decision.allowed) return null;
+      if (!decision.allowed) throw notFound("Agent not found");
       return agent.companyId;
     }
 

@@ -494,10 +494,10 @@ describe("plugin scoped API routes", () => {
 describe("plugin browser WebSockets", () => {
   const companyId = "22222222-2222-4222-8222-222222222222";
   const pluginId = "11111111-1111-4111-8111-111111111111";
-  const apiRoutes = manifest([{ routeKey: "viewer", method: "GET", path: "/viewer", transport: "websocket", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } }]);
+  const apiRoutes = manifest([{ routeKey: "channel.connect", method: "GET", path: "/channels/:channelId", transport: "websocket", auth: "board", capability: "api.routes.register", companyResolution: { from: "query", key: "companyId" } }]);
   const plugin = { id: pluginId, pluginKey: apiRoutes.id, status: "ready", manifestJson: apiRoutes };
   const board = { type: "board", userId: "user-1", source: "local_implicit", isInstanceAdmin: true };
-  const endpoint = `/api/plugins/${pluginId}/api/viewer?companyId=${companyId}`;
+  const endpoint = `/api/plugins/${pluginId}/api/channels/build-output?companyId=${companyId}`;
   async function listen(server: Server) {
     server.listen(0, "127.0.0.1"); await once(server, "listening");
     return `http://127.0.0.1:${(server.address() as { port: number }).port}`;
@@ -527,22 +527,30 @@ describe("plugin browser WebSockets", () => {
     expect(response.text).not.toContain("fixture-secret");
     expect(workerManager.call).not.toHaveBeenCalled();
   });
-  it("pipes binary frames and only server-held credentials, then closes upstream on viewer disconnect", async () => {
+  it.each(["build-output", "metrics"])("proxies text and binary %s channels without resource or protocol assumptions", async (channelId) => {
     const upstream = createServer();
     const upstreamWs = new WebSocketServer({ noServer: true });
     let upstreamHeaders: Record<string, unknown> = {};
     upstream.on("upgrade", (req, socket, head) => { upstreamHeaders = req.headers; upstreamWs.handleUpgrade(req, socket, head, ws => upstreamWs.emit("connection", ws)); });
-    upstreamWs.on("connection", ws => { ws.on("message", bytes => ws.send(bytes)); });
+    upstreamWs.on("connection", ws => { ws.on("message", (bytes, isBinary) => ws.send(bytes, { binary: isBinary })); });
     const upstreamBase = await listen(upstream);
-    const { app } = await createApp({ actor: board, plugin, workerResult: { websocket: { url: upstreamBase.replace("http:", "wss:") + "/desktop", headers: { Authorization: "Bearer fixture-only" } } } });
+    const { app, workerManager } = await createApp({ actor: board, plugin, workerResult: { websocket: { url: upstreamBase.replace("http:", "wss:") + `/channels/${channelId}`, headers: { Authorization: "Bearer fixture-only" } } } });
     const server = createServer(app); setupPluginApiWebSocketServer(server, app);
     const base = await listen(server);
-    const ws = new WebSocket(`${base}${endpoint}`, { origin: "http://localhost:3100", headers: { Cookie: "browser=fixture", Authorization: "browser-only" } });
+    const ws = new WebSocket(`${base}${endpoint.replace("build-output", channelId)}`, { origin: "http://localhost:3100", headers: { Cookie: "browser=fixture", Authorization: "browser-only" } });
     try {
       await once(ws, "open");
       const payload = Buffer.from([0, 1, 127, 128, 255]);
       const reply = once(ws, "message"); ws.send(payload);
-      expect((await reply)[0]).toEqual(payload);
+      const binaryReply = await reply;
+      expect(binaryReply[0]).toEqual(payload);
+      expect(binaryReply[1]).toBe(true);
+      const event = JSON.stringify({ event: "progress", value: 42 });
+      const textReply = once(ws, "message"); ws.send(event);
+      const [text, isBinary] = await textReply;
+      expect(text.toString()).toBe(event);
+      expect(isBinary).toBe(false);
+      expect(workerManager.call).toHaveBeenCalledWith(pluginId, "handleApiRequest", expect.objectContaining({ routeKey: "channel.connect", params: { channelId }, companyId }));
       expect(upstreamHeaders.authorization).toBe("Bearer fixture-only");
       expect(upstreamHeaders.cookie).toBeUndefined();
       expect(upstreamHeaders.origin).toBeUndefined();
@@ -563,13 +571,20 @@ describe("plugin browser WebSockets", () => {
 
 it("agent-scoped plugin routes reuse agent:read and refuse denied access before worker dispatch", async () => {
   const agentId = "33333333-3333-4333-8333-333333333333", companyId = "22222222-2222-4222-8222-222222222222", pluginId = "11111111-1111-4111-8111-111111111111";
-  const chain = { from: () => chain, where: () => chain, limit: async () => [{ id: agentId, companyId }] };
+  const chain = { from: () => chain, where: () => chain, limit: vi.fn(async () => [{ id: agentId, companyId }]) };
   const apiRoutes = manifest([{ routeKey: "status", method: "GET", path: "/agents/:agentId/status", auth: "board", capability: "api.routes.register", companyResolution: { from: "agent", param: "agentId" } }]);
-  const { app, workerManager } = await createApp({ db: { select: () => chain }, actor: { type: "board", source: "local_implicit", userId: "user", isInstanceAdmin: true }, plugin: { id: pluginId, pluginKey: apiRoutes.id, status: "ready", manifestJson: apiRoutes } });
+  const actor: Record<string, unknown> = { type: "board", source: "local_implicit", userId: "user", isInstanceAdmin: true };
+  const { app, workerManager } = await createApp({ db: { select: () => chain }, actor, plugin: { id: pluginId, pluginKey: apiRoutes.id, status: "ready", manifestJson: apiRoutes } });
   mockAccess.decide.mockResolvedValue({ allowed: true });
   expect((await request(app).get(`/api/plugins/${pluginId}/api/agents/${agentId}/status`)).status).toBe(200);
   expect(mockAccess.decide).toHaveBeenCalledWith(expect.objectContaining({ action: "agent:read", resource: { type: "agent", companyId, agentId } }));
   workerManager.call.mockClear(); mockAccess.decide.mockResolvedValue({ allowed: false });
-  expect((await request(app).get(`/api/plugins/${pluginId}/api/agents/${agentId}/status`)).status).toBe(400);
+  expect((await request(app).get(`/api/plugins/${pluginId}/api/agents/${agentId}/status`)).status).toBe(404);
+  actor.source = "session"; actor.companyIds = ["another-company"];
+  const crossCompany = await request(app).get(`/api/plugins/${pluginId}/api/agents/${agentId}/status`);
+  chain.limit.mockResolvedValue([]);
+  const missing = await request(app).get(`/api/plugins/${pluginId}/api/agents/${agentId}/status`);
+  expect(crossCompany.status).toBe(404);
+  expect(crossCompany.body).toEqual(missing.body);
   expect(workerManager.call).not.toHaveBeenCalled();
 });
