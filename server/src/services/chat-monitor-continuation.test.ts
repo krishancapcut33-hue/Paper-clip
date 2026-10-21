@@ -64,6 +64,28 @@ if (!support.supported) console.warn(`Monitor publication database unavailable: 
     expect(publications[0]).toMatchObject({ conversationId: f.conversation.id, payload: { progressState: "working" } });
   });
 
+  it("retains the verified conversation after more than sixteen monitor admissions", async () => {
+    const f = await fixture();
+    let previous = f.successor;
+    for (let index = 0; index < 20; index += 1) {
+      const nextCheckAt = new Date(Date.now() + 120_000 + index * 1000).toISOString();
+      await db.update(heartbeatRuns).set({ status: "succeeded", resultJson: { semanticToolReceipts: {
+        schedule: { operationId: "set_task_monitor", result: { taskId: f.issue.id, monitor: { status: "scheduled", nextCheckAt } } },
+      } } }).where(eq(heartbeatRuns.id, previous.id));
+      const [next] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id,
+        nativeIssueId: f.issue.id, runtimeMode: "native", status: "running", responsibleUserId: "requester",
+        contextSnapshot: { source: "issue.monitor", issueId: f.issue.id, nextCheckAt },
+      }).returning();
+      await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+        source: "automation", reason: "issue_monitor_due", status: "claimed", runId: next.id,
+        idempotencyKey: `issue-monitor:${f.issue.id}:${nextCheckAt}`, payload: { issueId: f.issue.id, nextCheckAt },
+      });
+      previous = next;
+    }
+    expect(await f.bindings(previous.id)).toEqual(await f.bindings(f.source.id));
+    expect(await f.bindings(previous.id)).toHaveLength(1);
+  });
+
   it.each(["receipt", "wake", "requester", "agent", "schedule", "task"])("rejects broken %s lineage even with a claimed source id", async fault => {
     const f = await fixture();
     await db.update(heartbeatRuns).set({ contextSnapshot: { ...f.successor.contextSnapshot, sourceRunId: f.source.id } }).where(eq(heartbeatRuns.id, f.successor.id));
@@ -81,6 +103,23 @@ if (!support.supported) console.warn(`Monitor publication database unavailable: 
         ...f.receipt, result: { ...f.receipt.result, taskId: other.id },
       } } } }).where(eq(heartbeatRuns.id, f.source.id));
     }
+    expect(await f.bindings()).toEqual([]);
+  });
+
+  it("rejects a cycle of otherwise matching monitor receipts", async () => {
+    const f = await fixture();
+    const createdAt = new Date(Date.now() - 1000);
+    await db.update(heartbeatRuns).set({ createdAt }).where(eq(heartbeatRuns.companyId, f.company.id));
+    const nextCheckAt = new Date(Date.now() + 120_000).toISOString();
+    await db.update(heartbeatRuns).set({ contextSnapshot: { source: "issue.monitor", issueId: f.issue.id } })
+      .where(eq(heartbeatRuns.id, f.source.id));
+    await db.update(heartbeatRuns).set({ resultJson: { semanticToolReceipts: {
+      schedule: { operationId: "set_task_monitor", result: { taskId: f.issue.id, monitor: { status: "scheduled", nextCheckAt } } },
+    } } }).where(eq(heartbeatRuns.id, f.successor.id));
+    await db.insert(agentWakeupRequests).values({ companyId: f.company.id, agentId: f.agent.id,
+      source: "automation", reason: "issue_monitor_due", status: "claimed", runId: f.source.id,
+      idempotencyKey: `issue-monitor:${f.issue.id}:${nextCheckAt}`, payload: { issueId: f.issue.id, nextCheckAt },
+    });
     expect(await f.bindings()).toEqual([]);
   });
 
