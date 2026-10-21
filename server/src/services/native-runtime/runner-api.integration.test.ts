@@ -599,6 +599,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
     await server.db.insert(agentWakeupRequests).values({ id: intentId, companyId: fixture.companyId,
       agentId: fixture.agentId, runId: id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: fixture.responsibleUserId ?? "board",
       payload: { issueId: fixture.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: intentId,
         sourceRunId: fixture.runId, actorId: fixture.responsibleUserId ?? "board", strategy: "fresh_isolated_workspace" } } });
     if (fixture.responsibleUserId) await initializeRunIdentity(server.db, { companyId: fixture.companyId, runId: id,
@@ -614,7 +615,7 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).projects.filter(project => project.name === "Authorized on retry")).toHaveLength(1);
   });
 
-  it("a fresh retry reuses the completed effect and fences a different unresolved effect across run identities", async () => {
+  it.each(["task_retry", "automatic_successor"])("%s reuses the completed effect and fences a different unresolved effect across run identities", async mode => {
     const fixture = await server.fixture();
     const args = { operationId: "POST /api/companies/{companyId}/projects", body: { name: "Already created" } };
     const completed = await fixture.authority.execute({ tool: "call_api", callId: "first-publication", arguments: args });
@@ -624,15 +625,27 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
       resultJson: { ...original.resultJson, apiToolReceipts: { ...(original.resultJson?.apiToolReceipts as object),
         unresolved: { operationId: "POST /api/companies/{companyId}/routines", state: "pending", digest: "unknown" } } },
     }).where(eq(heartbeatRuns.id, fixture.runId));
-    const id = randomUUID(), intentId = randomUUID();
+    let id = randomUUID();
+    const intentId = randomUUID();
     await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
       status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId,
       contextSnapshot: { issueId: fixture.issueId, previousRunId: fixture.runId } });
     await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
     await server.db.insert(agentWakeupRequests).values({ id: intentId, companyId: fixture.companyId,
       agentId: fixture.agentId, runId: id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: fixture.responsibleUserId ?? "board",
       payload: { issueId: fixture.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: intentId,
         sourceRunId: fixture.runId, actorId: fixture.responsibleUserId ?? "board", strategy: "fresh_isolated_workspace" } } });
+    if (mode === "automatic_successor") {
+      const parentId = id;
+      id = randomUUID();
+      await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, parentId));
+      await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+        status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, retryOfRunId: parentId,
+        responsibleUserId: fixture.responsibleUserId, invocationSource: "automation", contextSnapshot: { issueId: fixture.issueId } });
+      await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    }
     if (fixture.responsibleUserId) await initializeRunIdentity(server.db, { companyId: fixture.companyId, runId: id,
       issueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId, cause: "instruction" });
     const authority = new PaperclipRunnerToolAuthority(server.db, { ...fixture, runId: id });

@@ -1,9 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, toolApplications, toolConnections, toolInvocations, applyPendingMigrations } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../__tests__/helpers/embedded-postgres.js";
-import { priorRecoveryApiReceipt } from "./recovery-effect-receipts.js";
+import { priorRecoveryApiReceipt, unresolvedRecoveryToolInvocation } from "./recovery-effect-receipts.js";
 import { requestTaskRetry } from "./task-retry.js";
 import { readFreshWorkspaceReadiness } from "./fresh-workspace-continuation.js";
 import { settleUnrecoverableExecutions } from "./execution-recovery-resolution.js";
@@ -209,6 +209,52 @@ describe("durable task Retry admission", () => {
     await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { receipt: { ...receipt,
       state: "pending", result: { ok: false, outcome: "unknown" } } } } }).where(eq(heartbeatRuns.id, earlier.id));
     expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state: "pending", result: { outcome: "unknown" } });
+  });
+
+  async function automaticSuccessorOfTaskRetry() {
+    const input = await seed();
+    const [source] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, input.observedRunId));
+    const intent = await requestTaskRetry(input);
+    const [retry] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, issueId: input.issueId,
+      agentId: source.agentId, runtimeMode: "native", status: "failed", createdAt: new Date(Date.now() + 1_000) }).returning();
+    await db.update(agentWakeupRequests).set({ status: "coalesced", runId: retry.id })
+      .where(eq(agentWakeupRequests.id, intent.requestId!));
+    const [automatic] = await db.insert(heartbeatRuns).values({ companyId: input.companyId, issueId: input.issueId,
+      agentId: source.agentId, runtimeMode: "native", status: "running", retryOfRunId: retry.id,
+      createdAt: new Date(Date.now() + 2_000) }).returning();
+    await db.insert(agentWakeupRequests).values({ companyId: input.companyId, agentId: source.agentId,
+      runId: automatic.id, source: "automation", reason: "transient_failure", status: "coalesced",
+      requestedByActorType: "system", payload: { issueId: input.issueId, retryOfRunId: retry.id } });
+    return { input, retry, automatic };
+  }
+
+  it.each(["completed", "pending"] as const)("automatic successors inherit %s API receipts after task Retry", async state => {
+    const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+    const receipt = { operationId: "POST /api/companies/{companyId}/projects", digest: "same-project", state,
+      result: state === "completed" ? { ok: true, status: 201 } : { ok: false, outcome: "unknown" } };
+    await db.update(heartbeatRuns).set({ resultJson: { apiToolReceipts: { receipt } } }).where(eq(heartbeatRuns.id, retry.id));
+    const call = { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+      operationId: receipt.operationId, digest: receipt.digest };
+    expect(await priorRecoveryApiReceipt(db, call)).toMatchObject({ state, result: receipt.result });
+    // A transcript predecessor is insufficient; the persisted run edge owns lineage.
+    await db.update(heartbeatRuns).set({ retryOfRunId: null, contextSnapshot: { previousRunId: retry.id } })
+      .where(eq(heartbeatRuns.id, automatic.id));
+    expect(await priorRecoveryApiReceipt(db, call)).toBeNull();
+  });
+
+  it("automatic successors retain uncertain upstream mutation fences after task Retry", async () => {
+    const { input, retry, automatic } = await automaticSuccessorOfTaskRetry();
+    const [application] = await db.insert(toolApplications).values({ companyId: input.companyId,
+      name: "Test API", type: "rest_api" }).returning();
+    const [connection] = await db.insert(toolConnections).values({ companyId: input.companyId, applicationId: application.id,
+      name: "Test API", uid: randomUUID(), transport: "rest_api" }).returning();
+    const [invocation] = await db.insert(toolInvocations).values({ companyId: input.companyId, issueId: input.issueId,
+      runId: retry.id, connectionId: connection.id, toolName: "create_project", riskLevel: "write",
+      status: "timed_out", startedAt: new Date() }).returning();
+    const call = { companyId: input.companyId, issueId: input.issueId, runId: automatic.id,
+      connectionId: connection.id, toolName: "create_project", risk: "write" };
+    expect(await unresolvedRecoveryToolInvocation(db, call)).toBe(invocation.id);
+    expect(await unresolvedRecoveryToolInvocation(db, { ...call, risk: "read" })).toBeNull();
   });
 
   it("retires a deferred Retry when newer work appears while dispatch waits for the issue lock", async () => {

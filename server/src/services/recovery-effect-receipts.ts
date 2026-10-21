@@ -1,7 +1,6 @@
 import { and, eq, sql, ne, or, inArray } from "drizzle-orm";
-import { agentWakeupRequests, heartbeatRuns, issueRecoveryActions, toolInvocations, type Db } from "@paperclipai/db";
+import { heartbeatRuns, toolInvocations, type Db } from "@paperclipai/db";
 import { getSecretProvider } from "../secrets/provider-registry.js";
-import { readTaskRetryIntent } from "./task-retry.js";
 import { recoveryRunAncestry } from "./recovery-run-ancestry.js";
 
 const record = (value: unknown): Record<string, unknown> =>
@@ -16,6 +15,9 @@ export async function unresolvedRecoveryToolInvocation(db: Db, input: {
   toolName: string; risk: string;
 }): Promise<string | null> {
   if (input.risk === "read") return null;
+  const ancestry = await recoveryRunAncestry({ db, companyId: input.companyId,
+    issueId: input.issueId, sourceRunIds: [input.runId] });
+  if (!ancestry.some(source => source.id !== input.runId)) return null;
   const [prior] = await db.select({ id: toolInvocations.id }).from(toolInvocations)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.id, toolInvocations.runId),
       eq(heartbeatRuns.companyId, input.companyId)))
@@ -27,13 +29,6 @@ export async function unresolvedRecoveryToolInvocation(db: Db, input: {
       sql`${toolInvocations.startedAt} is not null`,
       sql`${heartbeatRuns.createdAt} < (select created_at from heartbeat_runs
         where id = ${input.runId} and company_id = ${input.companyId})`,
-      sql`(exists (select 1 from ${agentWakeupRequests} w where w.company_id = ${input.companyId}
-        and w.run_id = ${input.runId} and w.reason = 'task_retry' and w.status = 'coalesced'
-        and w.payload->>'issueId' = ${input.issueId}
-        and w.payload#>>'{taskRetry,schema}' = 'paperclip.task-retry.v1')
-        or exists (select 1 from ${issueRecoveryActions} a where a.company_id = ${input.companyId}
-          and a.source_issue_id = ${input.issueId}
-          and a.evidence#>>'{explicitUserContinuation,runId}' = ${input.runId}))`,
     )).limit(1);
   return prior?.id ?? null;
 }
@@ -43,29 +38,12 @@ export async function unresolvedRecoveryToolInvocation(db: Db, input: {
 export async function priorRecoveryApiReceipt(db: Db, input: {
   companyId: string; issueId: string; runId: string; operationId: string; digest: string;
 }): Promise<Record<string, unknown> | null> {
-  const [run] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, input.companyId),
-    eq(heartbeatRuns.id, input.runId), sql`coalesce(${heartbeatRuns.nativeIssueId}::text,
-      ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${input.issueId}`));
-  if (!run) return null;
-  const [retryWake] = await db.select().from(agentWakeupRequests).where(and(
-    eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.runId, input.runId),
-    eq(agentWakeupRequests.status, "coalesced"), eq(agentWakeupRequests.reason, "task_retry"),
-    sql`${agentWakeupRequests.payload}->>'issueId' = ${input.issueId}`,
-  )).limit(1);
-  const actions = await db.select({ evidence: issueRecoveryActions.evidence }).from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, input.companyId), eq(issueRecoveryActions.sourceIssueId, input.issueId),
-    sql`${issueRecoveryActions.evidence}#>>'{explicitUserContinuation,runId}' = ${input.runId}`,
-  ));
-  const sourceIds = new Set<string>();
-  const retry = readTaskRetryIntent(retryWake?.payload);
-  if (retry) sourceIds.add(retry.sourceRunId);
-  for (const action of actions) {
-    const source = action.evidence.runId;
-    if (typeof source === "string") sourceIds.add(source);
-  }
-  if (!sourceIds.size) return null;
+  // Start at the current run so persisted automatic retry edges inherit the
+  // same protection as a deliberate Retry or explicit continuation receipt.
   const ancestry = new Set((await recoveryRunAncestry({ db, companyId: input.companyId,
-    issueId: input.issueId, sourceRunIds: [...sourceIds] })).map(source => source.id));
+    issueId: input.issueId, sourceRunIds: [input.runId] }))
+    .map(source => source.id).filter(id => id !== input.runId));
+  if (!ancestry.size) return null;
   const sources = await db.select({ id: heartbeatRuns.id, result: heartbeatRuns.resultJson }).from(heartbeatRuns).where(and(
     eq(heartbeatRuns.companyId, input.companyId),
     sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text,
