@@ -52,6 +52,8 @@ export interface GitHubChatConfiguration {
   responsibleUserId: string;
   memberAccess: "all_linked" | "selected";
   people: GitHubAllowedPerson[];
+  /** Every run of the assigned agent uses this bot's read-only App token for git and gh, never a person's, the host's or its own token. */
+  agentReadOnlyGitHub?: boolean;
   defaults: GitHubReviewPolicy;
   /** Keys are stable GitHub repository IDs; labels never grant access. */
   repositories: Record<string, Partial<GitHubReviewPolicy>>;

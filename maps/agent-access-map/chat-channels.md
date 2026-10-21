@@ -192,6 +192,16 @@ also verifies durable task binding for a later personal callback invocation.
 Failure replies cannot replace final answers inherited from an earlier run.
 These fixtures do not prove live provider delivery.
 
+A GitHub bot's board-only `agentReadOnlyGitHub` setting makes every run of its
+assigned agent export only a short-lived read-only installation token from the
+bot App for `gh` and git. The run skips the responsible person's grant, the
+agent's own account and the host login, and adapter `GITHUB_TOKEN`/`GH_TOKEN`
+bindings are stripped. A refused token exports nothing; an archived bot stops
+applying the setting. Gateway tools are unchanged. See
+[credential export](../../server/src/services/github-operation-credentials.ts)
+and the [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts)
+fixture; live GitHub permission checks need a real installation.
+
 Catalog authorization projection (2026-10-17): tool discovery uses the same live
 service-owned task, company, agent, requester, endpoint and credential checks as
 full authority resolution. It omits the revision digest and search-action token,

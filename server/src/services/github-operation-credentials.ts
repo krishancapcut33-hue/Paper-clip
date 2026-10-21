@@ -17,10 +17,12 @@ import {
 import { secretService } from "./secrets.js";
 import { resolveCoreTrustPreset } from "./trust-preset-resolver.js";
 import { isLowTrustQuarantined } from "./source-trust.js";
+import { githubReadOnlyAgentBotConnection } from "./chat-github-tools.js";
+import { githubBotReadOnlyToken } from "./chat-github-client.js";
 
 export type GitHubCredentialSummary = {
   status: "available" | "absent" | "unavailable";
-  source?: "personal" | "dedicated";
+  source?: "personal" | "dedicated" | "bot";
   login?: string;
   reason?: string;
   connectionId?: string;
@@ -111,6 +113,7 @@ export async function resolveGitHubOperationCredentials(
     agentId: string;
     runId: string;
   },
+  fetchImpl: typeof fetch = fetch,
 ) {
   const { run, context } = await captureRunIdentity(db, input);
   if (!context) throw forbidden("This run predates managed GitHub credentials");
@@ -138,25 +141,29 @@ export async function resolveGitHubOperationCredentials(
     };
   }
   try {
-    const resolved = await resolveManagedGitHubCredential(
-      db,
-      secretService(db),
-      input.companyId,
-      {
-        agentId: input.agentId,
-        heartbeatRunId: input.runId,
-        allowStandingDelegation: false,
-        responsibleUserId:
-          context?.cause === "company_default"
-            ? null
-            : (context?.responsibleUserId ?? null),
-        issueId:
-          typeof run.contextSnapshot?.issueId === "string"
-            ? run.contextSnapshot.issueId
-            : null,
-      },
-    );
-    if (resolved.credential) {
+    // The bot's switch outranks the agent's own account, which may be able to write.
+    const botConnectionId = await githubReadOnlyAgentBotConnection(db, input);
+    const resolved = botConnectionId
+      ? null
+      : await resolveManagedGitHubCredential(
+          db,
+          secretService(db),
+          input.companyId,
+          {
+            agentId: input.agentId,
+            heartbeatRunId: input.runId,
+            allowStandingDelegation: false,
+            responsibleUserId:
+              context?.cause === "company_default"
+                ? null
+                : (context?.responsibleUserId ?? null),
+            issueId:
+              typeof run.contextSnapshot?.issueId === "string"
+                ? run.contextSnapshot.issueId
+                : null,
+          },
+        );
+    if (resolved?.credential) {
       summary = {
         status: "available",
         source: resolved.credential.identitySource,
@@ -166,11 +173,20 @@ export async function resolveGitHubOperationCredentials(
         authenticationMode: "managed",
       };
       env = buildGitAuthInvocation(resolved.credential).env;
+    } else if (botConnectionId) {
+      const token = await githubBotReadOnlyToken(db, input.companyId, botConnectionId, input.agentId, fetchImpl);
+      summary = {
+        status: "available",
+        source: "bot",
+        connectionId: botConnectionId,
+        authenticationMode: "managed",
+      };
+      env = buildGitAuthInvocation({ token, source: "managed_connection", secretName: null }).env;
     } else {
       summary = {
-        status: resolved.configured ? "unavailable" : "absent",
-        source: resolved.identitySource ?? "personal",
-        reason: resolved.error ?? "No GitHub identity connected",
+        status: resolved?.configured ? "unavailable" : "absent",
+        source: resolved?.identitySource ?? "personal",
+        reason: resolved?.error ?? "No GitHub identity connected",
       };
     }
   } catch {

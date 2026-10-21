@@ -140,6 +140,19 @@ test drive is still the responsible user, not a separate GitHub actor. The PR au
 webhook sender are recorded independently. Follow-ups preserve task ownership
 while checking the current requester's authority.
 
+Turn on **Read-only GitHub for this agent** under **Agent GitHub access** to give
+every run of the assigned agent a short-lived token from the bot's GitHub App
+that can only read code, issues, pull requests and checks. This covers GitHub
+events, task assignments, routines and comments. Its `gh` and git then never use
+a person's account, the host's login, the agent's own GitHub account, or a
+`GITHUB_TOKEN` in the agent's settings. Each command gets a fresh token, so
+nothing expires during a run. If GitHub refuses the token, the command runs
+without credentials instead of falling back to another login. The token can read
+only what the App installation can read, so grant the App access to every
+repository the agent reads. An archived bot no longer applies the setting. The
+setting covers only `gh` and git; GitHub tools that the agent reaches through
+other connections keep their own access.
+
 ## Mentions and pushes
 
 Use **mentions only** for reviews initiated by an authorized `@your-bot` request.

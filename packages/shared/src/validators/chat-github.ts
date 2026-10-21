@@ -78,6 +78,7 @@ export const githubChatConfigurationSchema = z
     responsibleUserId: z.string().min(1),
     memberAccess: z.enum(["all_linked", "selected"]),
     people: z.array(githubAllowedPersonSchema).max(500),
+    agentReadOnlyGitHub: z.boolean().optional(),
     defaults: githubReviewPolicySchema,
     repositories: z
       .record(githubIdSchema, githubReviewPolicySchema.partial())
