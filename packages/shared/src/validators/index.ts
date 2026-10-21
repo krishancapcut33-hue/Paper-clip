@@ -387,14 +387,17 @@ export {
 } from "./agent.js";
 
 export {
+  projectDiscoverySchema,
   createProjectSchema,
   updateProjectSchema,
+  addProjectAccessMemberSchema,
   createProjectWorkspaceSchema,
   updateProjectWorkspaceSchema,
   projectExecutionWorkspacePolicySchema,
   projectWorkspaceRuntimeConfigSchema,
   type CreateProject,
   type UpdateProject,
+  type AddProjectAccessMember,
   type CreateProjectWorkspace,
   type UpdateProjectWorkspace,
   type ProjectExecutionWorkspacePolicy,
@@ -417,6 +420,7 @@ export {
 
 export {
   createIssueSchema,
+  issueSummariesQuerySchema,
   setIssueTitleSchema,
   type SetIssueTitle,
   createIssueInputSchema,
@@ -432,10 +436,16 @@ export {
   updateIssueSchema,
   stalledReviewDecisionSchema,
   issueExecutionPolicySchema,
+  issueExecutionMonitorPolicySchema,
   issueExecutionStateSchema,
   issueRecoveryActionReadModelSchema,
   resolveIssueRecoveryActionSchema,
+  isValidExistingBranchName,
   retryWorkspaceExportSchema,
+  recoverWorkspaceSchema,
+  taskRetrySchema,
+  reconstructWorkspaceSchema,
+  resumeWorkspaceFinalizationSchema,
   issueReviewRequestSchema,
   issueExecutionWorkspaceSettingsSchema,
   checkoutIssueSchema,
@@ -710,7 +720,7 @@ export {
 } from "./routine.js";
 
 export {
-  createCostEventSchema,
+  createCostEventSchema, createServiceCostEventSchema,
   updateBudgetSchema,
   type CreateCostEvent,
   type UpdateBudget,
@@ -729,26 +739,6 @@ export {
   type CreateAssetImageMetadata,
 } from "./asset.js";
 
-export {
-  pipelineAutomationRetryCleanupOptionsSchema,
-  pipelineAutomationRetryRequestSchema,
-  pipelineAutomationRetryScopeSchema,
-  pipelineStageAutomationSchema,
-  pipelineStageApproverSchema,
-  pipelineStageConfigSchema,
-  pipelineStageKindSchema,
-  pipelineStageOnEnterSchema,
-  pipelineStageVariableSchema,
-  type PipelineAutomationRetryCleanupOptions,
-  type PipelineAutomationRetryRequest,
-  type PipelineAutomationRetryScope,
-  type PipelineStageAutomationConfig,
-  type PipelineStageApprover,
-  type PipelineStageConfig,
-  type PipelineStageKind,
-  type PipelineStageOnEnter,
-  type PipelineStageVariable,
-} from "./pipeline.js";
 
 export {
   createCompanyInviteSchema,
@@ -990,3 +980,6 @@ export * from "./email.js";
 export { restoreAgentInstructionSchema } from "./agent.js";
 
 export * from "./skill-source.js";
+export * from "./agent-commentary.js";
+export * from "./task-workspace.js";
+export * from "./workspace-repository.js";
