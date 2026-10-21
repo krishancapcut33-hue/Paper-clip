@@ -1312,8 +1312,11 @@ The Core setup wizard creates its agent record when the user submits the agent
 name, before adapter selection, authentication, and runtime configuration.
 Until the adapter is chosen, the held record uses a provisional adapter
 (process with no command when enabled) and `metadata.setupAdapterPending: true`. Resuming such a record
-returns to adapter selection. Choosing an adapter updates the same record and
-clears that marker. `POST /companies/:companyId/agents` accepts a board-only `setupId`
+returns to adapter selection with automatic runner selection. Choosing an adapter
+updates the same record and clears that marker. Held Copilot records can select
+the adapter before connecting an account; account checks still apply at connection
+testing and final hire. Setup preserves server-assigned names, including numbered
+duplicates. Name-only lookup does not adopt another unfinished record. `POST /companies/:companyId/agents` accepts a board-only `setupId`
 (a UUID used as the agent ID). The record stays paused with a `setup` hold;
 repeating that request reuses the same unfinished record. It starts no lifecycle
 preparation and creates no hire approval. Instructions, task-assignment membership,

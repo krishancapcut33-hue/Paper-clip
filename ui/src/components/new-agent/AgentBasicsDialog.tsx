@@ -116,6 +116,7 @@ export function AgentBasicsDialog({
       if (!companyId) throw new Error("Select an organization to create an agent.");
       let agent = saved.current;
       if (!agent && setupAgentId) agent = await agentsApi.get(setupId.current, companyId);
+      const creatingRecord = !agent;
       if (!agent) {
         const existing = (await agentsApi.list(companyId)).filter(item => item.id !== setupId.current);
         const leader = existing.find(item => item.role === "ceo" && item.status !== "terminated");
@@ -131,11 +132,12 @@ export function AgentBasicsDialog({
           metadata: { setupAdapterPending: true },
           runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
         });
+        if (active.current) setName(agent.name);
       }
       saved.current = agent;
       const nextAdapter = ["openai_dot", "copilot_runtime"].includes(adapterType) ? "paperclip_runner" : adapterType;
       const nextProvider = adapterType === "copilot_runtime" ? "copilot" : adapterType === "openai_dot" ? "openai_dot" : adapterType === "paperclip_runner" ? runnerProvider : "codex";
-      if (step === "adapter" || agent.name !== name.trim()) {
+      if (step === "adapter" || (!creatingRecord && agent.name !== name.trim())) {
         agent = await agentsApi.update(agent.id, {
           name: name.trim(),
           ...(step === "adapter" ? {
@@ -143,6 +145,7 @@ export function AgentBasicsDialog({
             adapterConfig: nextAdapter === "paperclip_runner" ? {
               provider: ["claude", "grok", "copilot"].includes(nextProvider) ? "acpx" : nextProvider,
               ...(["claude", "grok", "copilot"].includes(nextProvider) ? { acpxAgent: nextProvider } : {}),
+              ...(nextProvider === "grok" ? { model: "grok-4.7" } : {}),
             } : {},
             metadata: { ...agent.metadata, setupAdapterPending: false },
           } : {}),
@@ -153,7 +156,7 @@ export function AgentBasicsDialog({
       void cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
       if (!active.current) return;
       if (step === "name") setStep("adapter");
-      else onContinue({ name: name.trim(), adapterType: nextAdapter, runnerProvider: nextProvider,
+      else onContinue({ name: agent.name, adapterType: nextAdapter, runnerProvider: nextProvider,
         runner: "auto", setupAgentId: agent.id });
     } catch (cause) {
       if (active.current) setSaveError(cause instanceof Error ? cause.message : "Could not save agent setup.");

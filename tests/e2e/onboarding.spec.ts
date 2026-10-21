@@ -421,6 +421,16 @@ test.describe("Onboarding wizard", () => {
       await route.fulfill({ response });
     });
 
+    // The synthetic sandbox only drives the login UI; persist configuration
+    // against the real local default so a failed fixture write cannot mask restore behavior.
+    await page.route("**/api/agents/*", async (route) => {
+      if (route.request().method() !== "PATCH") return route.continue();
+      const body = route.request().postDataJSON();
+      if (body.defaultEnvironmentId !== FAKE_SANDBOX_ENVIRONMENT_ID) return route.continue();
+      const response = await route.fetch({ postData: JSON.stringify({ ...body, defaultEnvironmentId: null }) });
+      await route.fulfill({ response });
+    });
+
     const SESSION_ID = "e2e-reload-setup-token-session";
     const AUTHORIZATION_URL = "https://claude.ai/oauth/authorize?code=true&client=e2e-reload";
     let startCalls = 0;
@@ -557,6 +567,7 @@ test.describe("Onboarding wizard", () => {
     const readDraft = () => page.evaluate(() => JSON.parse(localStorage.getItem("paperclip-onboarding-state") ?? "null"));
     await expect.poll(readDraft).toMatchObject(savedSelection);
     const { setupAgentId } = await readDraft();
+    await expect.poll(async () => (await (await page.request.get(`/api/agents/${setupAgentId}?companyId=${company.id}`)).json()).metadata?.setupAdapterPending).toBe(false);
     const setupResponse = await page.request.get(`/api/agents/${setupAgentId}?companyId=${company.id}`);
     expect(setupResponse.ok()).toBe(true);
     const setup = await setupResponse.json();
@@ -690,10 +701,36 @@ test.describe("Onboarding wizard", () => {
       expect(new URL(page.url()).searchParams.get("setupAgentId")).toBe(setup.id);
       const saved = await (await page.request.get(`/api/agents/${setup.id}?companyId=${company.id}`)).json();
       expect(saved).toMatchObject({ id: setup.id, adapterType: "paperclip_runner", pauseReason: "setup",
-        adapterConfig: { provider: "acpx", acpxAgent: "grok" }, metadata: { setupAdapterPending: false } });
+        adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" }, metadata: { setupAdapterPending: false } });
     } finally {
       await page.request.patch("/api/instance/settings/experimental", { data: { enableNativeRunner: previous.enableNativeRunner === true } });
     }
+  });
+
+  test("duplicate name drafts can select Copilot before connecting a GitHub account", async ({ page }) => {
+    const response = await page.request.post("/api/companies", { data: { name: `${COMPANY_NAME}-duplicate-copilot` } });
+    expect(response.ok()).toBe(true);
+    const company = await response.json();
+    await page.goto(`/${company.issuePrefix}/agents/all`);
+    let duplicate: { id: string; name: string };
+    for (let attempt = 0; attempt < 2; attempt++) {
+      await page.getByRole("toolbar", { name: "Agents controls" }).getByRole("button", { name: "New Agent", exact: true }).click();
+      await page.getByLabel("Agent name", { exact: true }).fill("Echo");
+      const setupResponse = page.waitForResponse(result => result.request().method() === "POST" && result.url().endsWith(`/api/companies/${company.id}/agents`));
+      await page.getByRole("button", { name: "Choose adapter", exact: true }).click();
+      duplicate = await (await setupResponse).json();
+      await expect(page.getByRole("heading", { name: "Choose an adapter", exact: true })).toBeVisible();
+      if (attempt === 0) await page.keyboard.press("Escape");
+    }
+    expect(duplicate!.name).toBe("Echo 2");
+    await expect(page.getByText("How should Echo 2 work?", { exact: true })).toBeVisible();
+    await page.locator("label").filter({ has: page.locator('input[name="new-agent-adapter"][value="copilot_runtime"]') }).click();
+    await page.getByRole("button", { name: "Configure agent", exact: true }).click();
+    await expect(page.getByRole("heading", { name: "Configure your agent", exact: true })).toBeVisible();
+    expect(new URL(page.url()).searchParams.get("setupAgentId")).toBe(duplicate!.id);
+    const saved = await (await page.request.get(`/api/agents/${duplicate!.id}?companyId=${company.id}`)).json();
+    expect(saved).toMatchObject({ id: duplicate!.id, name: "Echo 2", pauseReason: "setup", adapterConfig: { provider: "acpx", acpxAgent: "copilot" } });
+    expect(saved.runtimeConfig.aiConnection).toBeUndefined();
   });
 
 });

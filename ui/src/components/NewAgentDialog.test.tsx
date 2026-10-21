@@ -87,13 +87,13 @@ afterEach(async () => {
   cache.clear();
   container.remove();
 });
-async function name() {
+async function name(value = "Ada & Co") {
   const input = document.querySelector("input")!;
   await act(async () => {
     Object.getOwnPropertyDescriptor(
       HTMLInputElement.prototype,
       "value",
-    )!.set!.call(input, "Ada & Co");
+    )!.set!.call(input, value);
     input.dispatchEvent(new Event("input", { bubbles: true }));
   });
   await click("Choose adapter");
@@ -191,6 +191,27 @@ it("can save the name when the process adapter is disabled", async () => {
   expect(agents.create.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", metadata: { setupAdapterPending: true } });
   expect(document.querySelector('input[name="new-agent-adapter"]:checked')).toBeNull();
 });
+it("keeps the server-assigned name when a duplicate is numbered", async () => {
+  agents.create.mockImplementationOnce(async (_company, input) => ({ ...input, id: input.setupId, name: "Ada & Co 2" }));
+  await name();
+  expect(document.body.textContent).toContain("How should Ada & Co 2 work?");
+  expect(agents.update).not.toHaveBeenCalled();
+  await act(async () => document.querySelector<HTMLInputElement>('input[value="codex_local"]')!.click());
+  await click("Configure agent");
+  expect(agents.update.mock.calls[0][1].name).toBe("Ada & Co 2");
+  const query = new URL(state.navigate.mock.calls[0][0], "http://local").searchParams;
+  expect(query.get("name")).toBe("Ada & Co 2");
+});
+it("renames a numbered draft only after the user edits its name", async () => {
+  agents.create.mockImplementationOnce(async (_company, input) => ({ ...input, id: input.setupId, name: "Ada & Co 2" }));
+  await name();
+  expect(agents.update).not.toHaveBeenCalled();
+  await click("Back");
+  await name("Grace");
+  expect(agents.create).toHaveBeenCalledTimes(1);
+  expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, { name: "Grace" }, "company-1");
+  expect(document.body.textContent).toContain("How should Grace work?");
+});
 it("offers one Codex harness without a runner/provider tile", async () => {
   await name();
   expect(document.querySelector('input[value="paperclip_runner"]')).toBeNull();
@@ -221,7 +242,7 @@ it.each(["grok", "opencode"])("preserves explicit experimental %s creation in Ad
   expect(query.get("adapterType")).toBe("paperclip_runner");
   expect(query.get("runnerProvider")).toBe(provider);
   expect(agents.update).toHaveBeenCalledWith(agents.create.mock.calls[0][1].setupId, expect.objectContaining({
-    adapterType: "paperclip_runner", adapterConfig: provider === "grok" ? { provider: "acpx", acpxAgent: "grok" } : { provider: "opencode" },
+    adapterType: "paperclip_runner", adapterConfig: provider === "grok" ? { provider: "acpx", acpxAgent: "grok", model: "grok-4.7" } : { provider: "opencode" },
   }), "company-1");
 });
 it.each(["gate off", "disabled adapter"])("hides experimental native creation when %s", async reason => {

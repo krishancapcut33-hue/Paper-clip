@@ -1302,11 +1302,12 @@ function OnboardingWizardInner({
     let restoring = Boolean(setupAgentId);
     void (async () => {
       if (!setupAgentId) {
+        // Only a persisted setup ID identifies an unfinished record for reuse.
         const sameName = (await agentsApi.list(companyId)).filter(agent =>
-          agent.status !== "terminated" && agent.name.trim().toLowerCase() === agentName.trim().toLowerCase());
-        const existing = sameName.find(agent => agent.pauseReason === "setup" && agent.metadata?.setupAdapterPending === true)
-          ?? (sourceSelected ? sameName.find(agent => agentHarnessType(agent.adapterType, agent.adapterConfig)
-            === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {})) : undefined);
+          agent.status !== "terminated" && agent.pauseReason !== "setup"
+          && agent.name.trim().toLowerCase() === agentName.trim().toLowerCase());
+        const existing = sourceSelected ? sameName.find(agent => agentHarnessType(agent.adapterType, agent.adapterConfig)
+          === agentHarnessType(adapterType, isCopilot ? { provider: "acpx", acpxAgent: "copilot" } : {})) : undefined;
         if (existing) { restoring = true; return existing; }
         // A same-name record may already be complete; choose its provider before adopting it.
         if (!sourceSelected && sameName.length) {
@@ -1330,24 +1331,33 @@ function OnboardingWizardInner({
       if (!agent || !stillTheSameCompany(companyId)) return;
       if (agent.pauseReason === "setup" || agent.status === "pending_approval") {
         setSetupAgentId(agent.id);
+        if (!restoring && agent.name) setAgentName(current => current.trim() === agentName.trim() ? agent.name : current);
         if (restoring && agent.adapterConfig) {
           setRestoredSetup(agent);
           setAgentName(agent.name);
           setAgentRole(agent.role);
           setAgentAppearance(resolveAgentAppearance(agent.appearance, agent.id));
           const config = agent.adapterConfig;
-          setAdapterType(agentHarnessType(agent.adapterType, config) === "acpx:copilot" ? "paperclip_runner" : agentHarnessType(agent.adapterType, config) as AdapterType);
-          setModel(typeof config.model === "string" ? config.model : "");
-          setCommand(typeof config.command === "string" ? config.command : "");
-          setArgs(Array.isArray(config.args) ? config.args.join(" ") : "");
-          setUrl(typeof config.url === "string" ? config.url : "");
-          setRunner(agent.adapterType === "paperclip_runner" ? "paperclip" : "legacy");
-          const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
-          if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
-          else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
-          else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
-            || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
-          if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
+          if (agent.metadata?.setupAdapterPending === true) {
+            setRunner("auto");
+            setModel("");
+            setCommand("");
+            setArgs("");
+            setUrl("");
+          } else {
+            setAdapterType(agentHarnessType(agent.adapterType, config) === "acpx:copilot" ? "paperclip_runner" : agentHarnessType(agent.adapterType, config) as AdapterType);
+            setModel(typeof config.model === "string" ? config.model : "");
+            setCommand(typeof config.command === "string" ? config.command : "");
+            setArgs(Array.isArray(config.args) ? config.args.join(" ") : "");
+            setUrl(typeof config.url === "string" ? config.url : "");
+            setRunner(agent.adapterType === "paperclip_runner" ? "paperclip" : "legacy");
+            const binding = agent.runtimeConfig?.aiConnection as AiConnectionBinding | undefined;
+            if (binding) setCredentialMode(binding.method === "api_key" ? "api" : "subscription");
+            else if ((config.env as Record<string, unknown> | undefined)?.[apiKeyEnvKeyFor(adapterType)]) setCredentialMode("api");
+            else if ((config.env as Record<string, unknown> | undefined)?.[CLAUDE_OAUTH_TOKEN_ENV_KEY]
+              || (config.env as Record<string, unknown> | undefined)?.CODEX_HOME) setCredentialMode("subscription");
+            if (config.provider === "acpx" && config.acpxAgent === "copilot") setCopilotConnection(binding);
+          }
         }
       } else setCreatedAgentId(agent.id);
       setSetupPrepared(true);

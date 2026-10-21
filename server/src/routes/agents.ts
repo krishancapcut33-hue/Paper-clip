@@ -5512,6 +5512,7 @@ export function agentRoutes(
       }
     }
     if (!requestedRuntimeConfig?.aiConnection && !existing.runtimeConfig.aiConnection
+      && !(existing.lifecycleState === "paused" && existing.pauseReason === "setup")
       && requestedAdapterType === "paperclip_runner" && nextAiConfig.provider === "acpx"
       && nextAiConfig.acpxAgent === "copilot"
       && (touchesAdapterConfiguration || Object.prototype.hasOwnProperty.call(patchData, "defaultEnvironmentId"))) {

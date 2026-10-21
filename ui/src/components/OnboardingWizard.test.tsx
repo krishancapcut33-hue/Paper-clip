@@ -2514,6 +2514,32 @@ describe("OnboardingWizard restore-gate (stale localStorage across accounts)", (
       await act(async () => root.unmount());
     });
 
+    it("creates its own record instead of adopting another user's name-only setup", async () => {
+      mockAgentsApi.list.mockResolvedValue([{ id: "another-user-setup", companyId: "company-new", name: "Ada", pauseReason: "setup", createdByUserId: "other-user", adapterType: "process", adapterConfig: {}, metadata: { setupAdapterPending: true } } as never]);
+      mockAgentsApi.create.mockImplementationOnce(async (_company, input) => ({ ...input, id: input.setupId, name: "Ada 2", pauseReason: "setup" }));
+      const { root } = await openStep4();
+      expect(mockAgentsApi.create).toHaveBeenCalledTimes(1);
+      const setupId = mockAgentsApi.create.mock.calls[0][1].setupId;
+      expect(setupId).not.toBe("another-user-setup");
+      expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ agentName: "Ada 2", setupAgentId: setupId });
+      await pickSource(/OpenAI/);
+      expect(mockAgentsApi.update.mock.calls.every(([id]) => id === setupId)).toBe(true);
+      expect(mockAgentsApi.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ name: "Ada 2" }), "company-new");
+      await act(async () => root.unmount());
+    });
+
+    it("restores a name-only record without restoring its provisional runner or model", async () => {
+      const setupId = "00000000-0000-4000-8000-000000000094";
+      mockAgentsApi.create.mockResolvedValueOnce({ id: setupId, companyId: "company-new", name: "Ada", role: "general", adapterType: "process", adapterConfig: { model: "provisional-model" }, runtimeConfig: {}, pauseReason: "setup", metadata: { setupAdapterPending: true } } as never);
+      const { root } = await openStep4({ adapterType: "process", runner: "legacy", model: "stale-model", setupAgentId: setupId });
+      expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!)).toMatchObject({ runner: "auto", model: "", setupAgentId: setupId });
+      expect(document.body.querySelector('[role="radio"][aria-checked="true"]')).toBeNull();
+      await pickSource(/Claude/);
+      expect(JSON.parse(window.localStorage.getItem(ONBOARDING_STORAGE_KEY)!).runner).toBe("auto");
+      expect(mockAgentsApi.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ runner: "auto" }), "company-new");
+      await act(async () => root.unmount());
+    });
+
     it("creates and saves an inactive identity before starting sandbox sign-in", async () => {
       let finish!: (agent: { id: string; pauseReason: string }) => void;
       mockAgentsApi.create.mockReturnValueOnce(new Promise(resolve => { finish = resolve; }) as never);
