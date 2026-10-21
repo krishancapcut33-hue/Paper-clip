@@ -2,6 +2,8 @@
 
 Product map: [Connection setup](../feature-map/connection-setup.md).
 
+Feature ID: `connection-setup`.
+
 Review date: 2026-10-12. Source commit: `f981fa3cc10cb8663a87dec60345fbff46d54d0a`.
 
 This is a source-reviewed baseline of representative operations and known gaps.
@@ -15,6 +17,8 @@ and audience rules are the existing connection rules; saving a connection alone
 does not activate the service. See [service configuration](../../doc/prompt-injection-prevention.md).
 
 ## `catalog`
+
+Capability ID: `connection-setup/catalog`.
 
 Review: `baseline`.
 
@@ -41,6 +45,8 @@ administration.
 
 ## `identity-and-access`
 
+Capability ID: `connection-setup/identity-and-access`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -64,6 +70,8 @@ Gaps: Selecting account ownership/eligible agents is management; an agent can re
 the intended connection.
 
 ## `credentials`
+
+Capability ID: `connection-setup/credentials`.
 
 Review: `baseline`.
 
@@ -97,6 +105,8 @@ replaced by fixtures. Real provider authentication remains unqualified.
 
 ## `handoff`
 
+Capability ID: `connection-setup/handoff`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -120,6 +130,8 @@ own policy and access review.
 Gaps: OAuth/callback and addressed-user checks are deliberate separate boundaries.
 
 ## `draft-recovery`
+
+Capability ID: `connection-setup/draft-recovery`.
 
 Review: `baseline`.
 
@@ -147,6 +159,8 @@ agent API gap.
 
 ## `task-request`
 
+Capability ID: `connection-setup/task-request`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -171,6 +185,8 @@ Gaps: This is the existing agent bridge for human-required setup; do not invent 
 approval system.
 
 ## `channel-setup`
+
+Capability ID: `connection-setup/channel-setup`.
 
 Review: `baseline`.
 
@@ -202,6 +218,8 @@ cover recovery, rollback, retries and idle query silence; they do not establish
 live provider or agent access.
 
 ## `failure`
+
+Capability ID: `connection-setup/failure`.
 
 Review: `baseline`.
 

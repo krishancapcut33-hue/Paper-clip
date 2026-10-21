@@ -4576,6 +4576,10 @@ export async function materializePaperclipSkillCopy(
     skippedSymlinks: [],
   };
 
+  const sourceFingerprint = await hashSkillDirectory(sourceRoot);
+  if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint))
+    return result;
+
   const lockDir = `${targetRoot}.lock`;
   const releaseLock = await acquireMaterializeLock(lockDir);
   const tempRoot = `${targetRoot}.tmp-${process.pid}-${randomUUID()}`;
@@ -4621,7 +4625,6 @@ export async function materializePaperclipSkillCopy(
   }
 
   try {
-    const sourceFingerprint = await hashSkillDirectory(sourceRoot);
     if (
       await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)
     )
