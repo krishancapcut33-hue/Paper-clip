@@ -60,7 +60,7 @@ import {
   registerAdapterExecutionControl,
   waitForAdapterStop,
 } from "./adapter-execution-control.js";
-import { executionFailureRetryCount, executionRetryAttemptCount, accountingForScheduledRetry } from "./execution-recovery-attempt.js";
+import { executionFailureRetryCount, executionRetryAttemptCount, accountingForScheduledRetry, readDispositionRepairFailure } from "./execution-recovery-attempt.js";
 import { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 export { buildHeartbeatRunStatusLiveEventPayload } from "./heartbeat-run-status-payload.js";
 import { buildExecutionContinuation, StaleExecutionContinuationError } from "./execution-continuation.js";
@@ -15438,6 +15438,33 @@ export function heartbeatService(
       delayMs?: number;
     },
   ) {
+    const dispositionRepair = readDispositionRepairFailure(run);
+    if (dispositionRepair) {
+      await appendRunEvent(run, {
+        eventType: "lifecycle",
+        stream: "system",
+        level: "warn",
+        message: `Bounded retry exhausted after ${dispositionRepair.attempt} disposition repair attempts; no further automatic retry will be queued`,
+        payload: {
+          retryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+          scheduledRetryAttempt: dispositionRepair.attempt,
+          maxAttempts: dispositionRepair.maxAttempts,
+          repairAttempt: dispositionRepair.attempt,
+          repairMaxAttempts: dispositionRepair.maxAttempts,
+        },
+        retryExhaustion: {
+          retryReason: ISSUE_DISPOSITION_REPAIR_RETRY_REASON,
+          scheduledRetryAttempt: dispositionRepair.attempt,
+          maxAttempts: dispositionRepair.maxAttempts,
+        },
+      });
+      return {
+        outcome: "not_scheduled" as const,
+        reason: "Disposition repair failure does not use the generic transient retry lane.",
+        errorCode: "disposition_repair_failed" as const,
+        issueId: readNonEmptyString(run.contextSnapshot?.issueId),
+      };
+    }
     if (run.errorCode === "provider_tool_definition_invalid") {
       return { outcome: "not_scheduled" as const,
         reason: "Repair the invalid tool definitions before starting a new attempt.",

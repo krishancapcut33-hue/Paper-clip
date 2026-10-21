@@ -665,25 +665,30 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(promotedRun?.status).toBe("queued");
   });
 
-  it.each([1, 2])("ACCT-01 a failed disposition repair %s receives its own first infrastructure retry", async repairAttempt => {
+  it("does not transient-retry a failed disposition repair and records one terminal event", async () => {
     const f = await seedMaxTurnFixture();
-    const episode = { id: f.runId, attempt: repairAttempt, maxAttempts: 2 };
+    const episode = { id: f.runId, attempt: 1, maxAttempts: 2 };
     await db.update(heartbeatRuns).set({
-      scheduledRetryAttempt: repairAttempt === 1 ? 0 : repairAttempt, scheduledRetryReason: "issue_disposition_repair",
+      scheduledRetryReason: "issue_disposition_repair",
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } },
-      contextSnapshot: { issueId: f.issueId, legacyDispositionEpisode: episode,
-        legacyDispositionSourceRunId: f.runId, dispositionRepairAttempt: repairAttempt },
+      contextSnapshot: { issueId: f.issueId, retryReason: "issue_disposition_repair", legacyDispositionEpisode: episode,
+        legacyDispositionSourceRunId: f.runId, dispositionRepairAttempt: 1, dispositionRepairMaxAttempts: 2 },
     }).where(eq(heartbeatRuns.id, f.runId));
-    const scheduled = await heartbeat.scheduleBoundedRetry(f.runId, { now: f.now, random: () => 0.5 });
-    expect(scheduled.outcome).toBe("scheduled");
-    if (scheduled.outcome !== "scheduled") throw new Error("Missing infrastructure successor");
-    expect.soft(scheduled.attempt).toBe(1);
-    expect(scheduled.run.contextSnapshot).toMatchObject({ legacyDispositionEpisode: episode, dispositionRepairAttempt: repairAttempt });
-    expect(scheduled.run.retryOfRunId).toBe(f.runId);
-    expect(scheduled.run.scheduledRetryReason).toBe("transient_failure");
-    const replay = await heartbeatService(db).scheduleBoundedRetry(f.runId, { now: f.now, random: () => 0.5 });
-    expect(replay.outcome).toBe("scheduled");
-    if (replay.outcome === "scheduled") expect(replay.run.id).toBe(scheduled.run.id);
+
+    const result = await heartbeat.scheduleBoundedRetry(f.runId, { now: f.now });
+    expect(result).toMatchObject({ outcome: "not_scheduled", errorCode: "disposition_repair_failed" });
+    expect(await heartbeatService(db).scheduleBoundedRetry(f.runId, { now: f.now }))
+      .toMatchObject({ outcome: "not_scheduled", errorCode: "disposition_repair_failed" });
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, f.companyId)))
+      .toHaveLength(1);
+    const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, f.runId));
+    expect(events).toHaveLength(1);
+    expect(events[0]).toMatchObject({
+      eventType: "lifecycle",
+      message: "Bounded retry exhausted after 1 disposition repair attempts; no further automatic retry will be queued",
+      payload: { retryReason: "issue_disposition_repair", scheduledRetryAttempt: 1, maxAttempts: 2,
+        repairAttempt: 1, repairMaxAttempts: 2 },
+    });
   });
 
   it("ACCT-01 infrastructure failures do not spend the first productive max-turn continuation", async () => {

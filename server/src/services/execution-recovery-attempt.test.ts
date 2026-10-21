@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { executionFailureRetryCount } from "./execution-recovery-attempt.js";
+import { executionFailureRetryCount, readDispositionRepairFailure } from "./execution-recovery-attempt.js";
 
 describe("failure attempts across resource waits", () => {
   it("preserves prior failures through subscription waits without trusting unrelated context", () => {
@@ -41,5 +41,23 @@ describe("persisted independent accounting", () => {
     ]) expect(executionFailureRetryCount({ scheduledRetryReason: "transient_failure", scheduledRetryAttempt: 2,
       contextSnapshot: { executionRetryAccounting },
     })).toBe(2);
+  });
+});
+
+describe("disposition repair terminal classification", () => {
+  it("recognizes repair metadata regardless of legacy slot shape", () => {
+    expect(readDispositionRepairFailure({
+      scheduledRetryReason: "issue_disposition_repair",
+      scheduledRetryAttempt: 1,
+      contextSnapshot: { dispositionRepairAttempt: 1, dispositionRepairMaxAttempts: 2 },
+    })).toEqual({ attempt: 1, maxAttempts: 2 });
+    expect(readDispositionRepairFailure({
+      scheduledRetryReason: "transient_failure",
+      contextSnapshot: {
+        retryReason: "issue_disposition_repair",
+        legacyDispositionEpisode: { attempt: 2, maxAttempts: 2 },
+      },
+    })).toEqual({ attempt: 2, maxAttempts: 2 });
+    expect(readDispositionRepairFailure({ scheduledRetryReason: "transient_failure" })).toBeNull();
   });
 });

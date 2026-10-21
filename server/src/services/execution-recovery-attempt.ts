@@ -4,6 +4,22 @@ type RetryRun = {
   contextSnapshot?: Record<string, unknown> | null;
 };
 
+export function readDispositionRepairFailure(run: RetryRun) {
+  const context = run.contextSnapshot;
+  if (run.scheduledRetryReason !== "issue_disposition_repair" &&
+      context?.retryReason !== "issue_disposition_repair") return null;
+  const episode = context?.legacyDispositionEpisode;
+  const attempt = count(context?.dispositionRepairAttempt) ??
+    (episode && typeof episode === "object" && !Array.isArray(episode)
+      ? count((episode as Record<string, unknown>).attempt) : null);
+  const maxAttempts = count(context?.dispositionRepairMaxAttempts) ??
+    (episode && typeof episode === "object" && !Array.isArray(episode)
+      ? count((episode as Record<string, unknown>).maxAttempts) : null);
+  return attempt !== null && maxAttempts !== null
+    ? { attempt, maxAttempts }
+    : null;
+}
+
 /** Server-owned counts for one automatic continuation chain. Repair slots live
  * in legacyDispositionEpisode and are never charged to either counter here. */
 export interface ExecutionRetryAccounting {
