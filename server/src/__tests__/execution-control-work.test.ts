@@ -69,6 +69,16 @@ describe("execution-control lifecycle", () => {
     release(); await vi.advanceTimersByTimeAsync(1);
     expect(run).toHaveBeenCalledTimes(3); expect(c.nextWakeAt()).toBeNull();
   });
+  it.each([false, true])("does not start sweeps or inspect deadlines once server shutdown begins (notification=%s)", async notification => {
+    vi.useFakeTimers(); const owner = fakeOwner(); const c = coordinator(owner); let stopping = false;
+    const run = vi.fn(async () => {}), next = vi.fn(async () => Date.now() + 1000);
+    await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.executionStatus, run, next }], () => !stopping).ready;
+    stopping = true;
+    if (notification) await owner.transaction(tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.executionStatus));
+    await vi.advanceTimersByTimeAsync(30_000);
+    expect(run).toHaveBeenCalledTimes(1); expect(next).toHaveBeenCalledTimes(1);
+    await c.stop(); expect(c.nextWakeAt()).toBeNull();
+  });
   it("keeps other obligations responsive while one is waiting, and awaits shutdown", async () => {
     vi.useFakeTimers(); const owner = fakeOwner(); const c = coordinator(owner);
     let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });

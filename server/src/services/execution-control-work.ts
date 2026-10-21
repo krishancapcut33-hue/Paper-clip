@@ -13,6 +13,7 @@ export function registerExecutionControlWork(
     run: () => Promise<unknown>;
     next: () => Promise<number | null>;
   }>,
+  canRun: () => boolean = () => true,
 ) {
   const workers = duties.map(duty => {
     let requested = 1;
@@ -24,6 +25,7 @@ export function registerExecutionControlWork(
       onSettled: () => { requested += 1; },
       run: async () => {
         const generation = ++requested;
+        if (!canRun()) { next = null; return; }
         await duty.run();
         next = await duty.next();
         reconciled = generation;
