@@ -1189,6 +1189,16 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     definitionMetadata: { version: 1, definitionDigest: taskWorkspaceDefinitionDigest(), scheduling: "explicit-only", providerTurns: 3,
       attempts: 1, budgetMonthlyCents: 1000, project: "none", cwd: "unconfigured-task-default", oracle: "public-file-download-and-host-nested-git", remoteLifecycle: "per_turn" },
   },
+  ...([false, true] as const).map(conversion => ({
+    id: conversion ? "legacy-conversion" : "configured-repository",
+    label: conversion ? "Legacy conversion with verified delivery" : "Configured repository with verified delivery",
+    manualOnly: true, description: "Production instructions, retained configuration, and a downloaded result checked against an independent Git and file baseline.",
+    groups: [], profiles: repositoryModelProfiles.map(({ native, legacy }) => repositoryProofProfile(native, conversion ? legacy : undefined)),
+    environments: runnerEnvironments, tasks: repositoryProofTasks.filter(task => task.id === (conversion ? "convert-and-deliver" : "repository-output")), expectedMatrixSize: 4,
+    definitionMetadata: { version: 1, definitionDigest: repositoryProofDigest(), scheduling: "explicit-only", providerTurns: 1, attempts: 1,
+      budgetMonthlyCents: 1000, instructions: "production-default", surface: "paperclip", oracle: "registered-download-and-independent-configured-checkout",
+      target: "isolated-development-instance", authentication: "api-key", stagingAuthentication: "subscription", remoteLifecycle: "per_turn", stagingQualification: false },
+  })),
   {
     id: "followup-stop-resume", label: "Follow-up, Stop and retained-context resumption", manualOnly: true,
     description: "Send an ordinary follow-up during active work, Stop through the task composer, observe a quiet cancelled run, then explicitly resume and download retained context with the earlier direction.",
