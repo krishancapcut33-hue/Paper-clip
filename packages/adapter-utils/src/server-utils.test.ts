@@ -345,6 +345,41 @@ describe("materializePaperclipSkillCopy", () => {
     }
   });
 
+  it("does not lock an already-current materialized skill", async () => {
+    // Concurrent runs of one agent share the skills directory. A run that
+    // archives it lists the entries and then passes the names to tar, so a
+    // lock directory that comes and goes in between fails tar with
+    // "Cannot stat". An up-to-date copy must not create or wait on the lock.
+    const root = await fs.mkdtemp(
+      path.join(os.tmpdir(), "paperclip-skill-copy-"),
+    );
+    try {
+      const source = path.join(root, "source");
+      const skillsHome = path.join(root, "skills");
+      const target = path.join(skillsHome, "skill");
+      const lock = `${target}.lock`;
+      await fs.mkdir(source, { recursive: true });
+      await fs.writeFile(path.join(source, "SKILL.md"), "# skill\n", "utf8");
+      await materializePaperclipSkillCopy(source, target);
+
+      await fs.mkdir(lock);
+      const owner = path.join(lock, "owner.json");
+      await fs.writeFile(
+        owner,
+        JSON.stringify({ pid: process.pid, createdAt: new Date().toISOString() }),
+        "utf8",
+      );
+
+      await expect(
+        materializePaperclipSkillCopy(source, target),
+      ).resolves.toMatchObject({ copiedFiles: 0 });
+      await expect(fs.readdir(skillsHome)).resolves.toEqual(["skill", "skill.lock"]);
+      await expect(fs.readFile(owner, "utf8")).resolves.toContain(`"pid":${process.pid}`);
+    } finally {
+      await fs.rm(root, { recursive: true, force: true });
+    }
+  });
+
   it("breaks stale materialization locks left by dead processes", async () => {
     const root = await fs.mkdtemp(
       path.join(os.tmpdir(), "paperclip-skill-copy-"),
