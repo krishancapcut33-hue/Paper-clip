@@ -161,3 +161,22 @@ it("offers Pi account selection before choosing its required model", async () =>
   await click("Connect another account");
   expect(document.body.textContent).toContain("Advanced provider setup");
 });
+
+it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a matching saved Pi %s API-key account selectable", async provider => {
+  const saved = account({ provider, method: "api_key", name: "Pi provider account", status: "connected" });
+  mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [saved], canManageConnections: true });
+  flushSync(() => root.render(<QueryClientProvider client={client}>
+    <AiConnectionField companyId="company" agentId="agent" agentName="Pi" adapterType="pi_local" model={`${provider}/provider-model`}
+      value={{ provider, method: "api_key", mode: "delegated", connectionId: saved.id, grantId: saved.grantId }} onChange={onChange} />
+  </QueryClientProvider>));
+  await settle();
+  expect(container.textContent).toContain("Pi provider account");
+  expect(container.textContent).not.toContain("incompatible");
+  expect(container.textContent).not.toContain("does not support");
+  const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+  flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
+  await settle();
+  const choice = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.includes("Pi provider account"));
+  expect(choice).toBeDefined();
+  expect(choice?.getAttribute("aria-disabled")).not.toBe("true");
+});
