@@ -346,10 +346,6 @@ describe("materializePaperclipSkillCopy", () => {
   });
 
   it("does not lock an already-current materialized skill", async () => {
-    // Concurrent runs of one agent share the skills directory. A run that
-    // archives it lists the entries and then passes the names to tar, so a
-    // lock directory that comes and goes in between fails tar with
-    // "Cannot stat". An up-to-date copy must not create or wait on the lock.
     const root = await fs.mkdtemp(
       path.join(os.tmpdir(), "paperclip-skill-copy-"),
     );
@@ -373,7 +369,7 @@ describe("materializePaperclipSkillCopy", () => {
       await expect(
         materializePaperclipSkillCopy(source, target),
       ).resolves.toMatchObject({ copiedFiles: 0 });
-      await expect(fs.readdir(skillsHome)).resolves.toEqual(["skill", "skill.lock"]);
+      expect((await fs.readdir(skillsHome)).sort()).toEqual(["skill", "skill.lock"]);
       await expect(fs.readFile(owner, "utf8")).resolves.toContain(`"pid":${process.pid}`);
     } finally {
       await fs.rm(root, { recursive: true, force: true });

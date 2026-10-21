@@ -4563,11 +4563,6 @@ export async function materializePaperclipSkillCopy(
     skippedSymlinks: [],
   };
 
-  // Check before locking. Concurrent runs of one agent share the skills
-  // directory, and a run that archives it lists the entries before tar reads
-  // them. A lock directory created and removed in between fails that archive
-  // with "Cannot stat". The sentinel is written before the atomic rename, so a
-  // match means the copy is complete.
   const sourceFingerprint = await hashSkillDirectory(sourceRoot);
   if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint))
     return result;
