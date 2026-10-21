@@ -520,8 +520,6 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
     )) : [];
-    // Stop ends one response. Saved user input can enter ordinary admission
-    // once its executor settles; it does not need a manufactured crash incident.
     // The ordinary path still enforces task holds, ownership, and native session
     // cleanup before starting a provider.
     const stoppedNativeContinuation = currentRun && isAcknowledgedNativeStop(currentRun) &&

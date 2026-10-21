@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { runnerMatrix } from "./catalog.js";
-import { isActiveStopCheckpointRun, exactSyntheticJson, gradeFollowupStopResume, type FollowupStopObservation } from "./followup-stop-resume.js";
+import { stopRunBelongsToTask, isActiveStopCheckpointRun, exactSyntheticJson, gradeFollowupStopResume, type FollowupStopObservation } from "./followup-stop-resume.js";
 
 function fixture(): FollowupStopObservation {
   return { binding: { companyId: "company", issueId: "task", agentId: "agent" },
@@ -77,4 +77,17 @@ it("observes the actual active provider through its durable turn rather than a f
   for (const events of [[], [started, started], [{ ...started, runId: "foreign" }], [{ ...started, sourceKind: "control_plane" }],
     ...["run.result.accepted", "run.terminal", "turn.completed", "turn.failed", "turn.cancelled"].map(eventType => [started, { runId: "run", eventType }])])
     expect(isActiveStopCheckpointRun(run, events)).toBe(false);
+});
+
+
+it("keeps the recorded task binding during preparation without treating an absent native binding as foreign work", () => {
+  const binding = { companyId: "company", agentId: "agent", issueId: "task" };
+  const queued = { ...binding, nativeIssueId: null, contextSnapshot: { issueId: "task" }, runtimeMode: "legacy", runtimeModeResolvedAt: null };
+  expect(stopRunBelongsToTask(queued, binding)).toBe(true);
+  const selected = { ...queued, nativeIssueId: "task", runtimeMode: "native" };
+  expect(stopRunBelongsToTask(selected, binding)).toBe(true);
+  for (const run of [{ ...queued, companyId: "foreign" }, { ...queued, agentId: "foreign" },
+    { ...queued, issueId: "foreign" }, { ...queued, nativeIssueId: "foreign" },
+    { ...queued, contextSnapshot: { issueId: "foreign" } }, { ...queued, nativeIssueId: "" },
+    { ...queued, issueId: undefined, contextSnapshot: null }]) expect(stopRunBelongsToTask(run, binding)).toBe(false);
 });

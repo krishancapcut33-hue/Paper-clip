@@ -5,7 +5,7 @@ export function followupStopApiState(phase: string, issue: Row | null | undefine
   return { capturePhase: phase,
     issue: issue ? { id: issue.id, companyId: issue.companyId, status: issue.status, executionRunId: issue.executionRunId,
       executionWorkspaceId: issue.executionWorkspaceId } : null,
-    runs: runs.map(run => ({ id: run.id, companyId: run.companyId, agentId: run.agentId, nativeIssueId: run.nativeIssueId,
+    runs: runs.map(run => ({ id: run.id, companyId: run.companyId, agentId: run.agentId, issueId: run.issueId, nativeIssueId: run.nativeIssueId, contextIssueId: run.contextSnapshot?.issueId,
       status: run.status, nativePhase: run.nativePhase, runtimeMode: run.runtimeMode, startedAt: run.startedAt, finishedAt: run.finishedAt })) };
 }
 

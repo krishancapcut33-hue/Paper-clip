@@ -5,9 +5,9 @@ import { captureFollowupStopFailureApiState, followupStopApiState } from "./foll
 it("uses the same closed selection for outer failure capture without reading conversations or logs", async () => {
   const issue = { id: "task", companyId: "company", status: "in_progress", executionRunId: "run", executionWorkspaceId: "workspace",
     description: "PRIVATE PROMPT", title: "PRIVATE TITLE" };
-  const run = { id: "run", companyId: "company", agentId: "agent", nativeIssueId: "task", status: "cancelled", nativePhase: "terminal_failure",
+  const run = { id: "run", companyId: "company", agentId: "agent", issueId: "task", nativeIssueId: "task", status: "cancelled", nativePhase: "terminal_failure",
     runtimeMode: "native", startedAt: "2026-10-21T12:00:00Z", finishedAt: "2026-10-21T12:00:01Z",
-    contextSnapshot: { prompt: "PRIVATE PROMPT" }, resultJson: { summary: "PRIVATE PROVIDER TEXT" }, runnerProfileJson: { token: "PRIVATE CONFIG" } };
+    contextSnapshot: { issueId: "task", prompt: "PRIVATE PROMPT" }, resultJson: { summary: "PRIVATE PROVIDER TEXT" }, runnerProfileJson: { token: "PRIVATE CONFIG" } };
   const get = vi.fn(async (route: string) => {
     if (route === "/api/issues/task") return issue;
     if (route === "/api/companies/company/heartbeat-runs?agentId=agent&limit=20") return [run];
@@ -23,7 +23,7 @@ it("uses the same closed selection for outer failure capture without reading con
   expect(JSON.stringify(evidence.mock.calls)).not.toContain("PRIVATE");
   expect(evidence.mock.calls[0]![1]).toEqual({ capturePhase: "failure",
     issue: { id: "task", companyId: "company", status: "in_progress", executionRunId: "run", executionWorkspaceId: "workspace" },
-    runs: [{ id: "run", companyId: "company", agentId: "agent", nativeIssueId: "task", status: "cancelled", nativePhase: "terminal_failure",
+    runs: [{ id: "run", companyId: "company", agentId: "agent", issueId: "task", nativeIssueId: "task", contextIssueId: "task", status: "cancelled", nativePhase: "terminal_failure",
       runtimeMode: "native", startedAt: "2026-10-21T12:00:00Z", finishedAt: "2026-10-21T12:00:01Z" }] });
 });
 

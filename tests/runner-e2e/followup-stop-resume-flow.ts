@@ -11,7 +11,7 @@ import { createTaskThroughUi, submitTaskReply } from "./user-actions.js";
 import { waitForRunDelivery } from "./run-delivery.js";
 import { followupStopApiState } from "./followup-stop-evidence.js";
 import { downloadTaskTextArtifact } from "./task-text-artifact-download.js";
-import { isActiveStopCheckpointRun, exactSyntheticJson, followupStopFiles, gradeFollowupStopResume, STOP_QUIET_WINDOW_MS, type FollowupStopObservation } from "./followup-stop-resume.js";
+import { stopRunBelongsToTask, isActiveStopCheckpointRun, exactSyntheticJson, followupStopFiles, gradeFollowupStopResume, STOP_QUIET_WINDOW_MS, type FollowupStopObservation } from "./followup-stop-resume.js";
 import type { LiveFixtureValues } from "./live-fixtures.js";
 import type { MatrixExecution } from "./types.js";
 
@@ -41,7 +41,7 @@ export async function runFollowupStopResumeFlow(input: {
       api.get<Row[]>(`/api/companies/${fixtures.company.id}/heartbeat-runs?agentId=${fixtures.agent.id}&limit=20`)]);
     issue = current;
     runs = await Promise.all(listed.map(run => api.get<Row>(`/api/heartbeat-runs/${run.id}`)));
-    if (runs.some(run => run.companyId !== fixtures.company.id || run.agentId !== fixtures.agent.id || run.nativeIssueId !== issue!.id))
+    if (runs.some(run => !stopRunBelongsToTask(run, observation.binding)))
       throw new Error("Stop/resume admitted work outside its original task");
     input.observe(issue, runs, gradeFollowupStopResume(observation));
   }
@@ -84,7 +84,7 @@ export async function runFollowupStopResumeFlow(input: {
       load: async () => {
         await refresh();
         const run = runs[0];
-        if (runs.length !== 1 || !run || run.status !== "running") return false;
+        if (runs.length !== 1 || !run || run.status !== "running" || run.runtimeMode !== "native" || run.nativeIssueId !== issue!.id) return false;
         const events = prpEvents(await runEvents(run.id), run.id);
         if (!isActiveStopCheckpointRun(run, events)) return false;
         const checkpoint = await readRegisteredArtifacts(api, issue!.id, run.id, [files.checkpoint])

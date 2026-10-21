@@ -118,8 +118,11 @@ pnpm test:e2e:runner -- --list --suite followup-stop-resume
 pnpm test:e2e:runner -- --id followup-stop-resume.runner-codex.local.followup-stop-resume --max-automatic-retries 0
 ```
 
-The checkpoint poll treats invalid, duplicate, corrupt, or unauthorized evidence
-as a permanent attempt failure. An artifact that is not registered yet may wait.
+Before native selection, the observer verifies the existing task and context
+bindings while the native task ID is still unset. Every present task ID must
+agree. A checkpoint still requires the selected native run and its owned provider
+turn. The checkpoint poll treats invalid, duplicate, corrupt, or unauthorized
+evidence as a permanent attempt failure. An artifact that is not registered yet may wait.
 The final result opens its actual attachment chip and downloads through the file
 tab. Both inner and outer failure captures use the same closed lifecycle fields.
 They do not put prompt, provider text, configuration, or logs into api-state.json.
