@@ -37,6 +37,8 @@ export async function validateExecutionReconciliation(input: {
   decision: ExecutionReconciliation | undefined;
   /** Board-only source repair: never authorize a continuation of this run. */
   workspaceRepairOnly?: boolean;
+  /** Board-verified continuation by the task's new assignee. */
+  allowOwnerHandoff?: boolean;
 }) {
   const { db, companyId, issueId, agentId, decision } = input;
   if (!decision || decision.runId !== input.sourceRunId || (!agentId && !input.workspaceRepairOnly)) {
@@ -73,7 +75,8 @@ export async function validateExecutionReconciliation(input: {
     (input.workspaceRepairOnly && !retainedWorkspace) ||
     !run ||
     !task ||
-    (!repairOnly && (task.assigneeAgentId !== agentId || (run.agentId !== agentId && !isCurrentReviewer))) ||
+    (!repairOnly && (task.assigneeAgentId !== agentId ||
+      (run.agentId !== agentId && !isCurrentReviewer && !input.allowOwnerHandoff))) ||
     (run.nativeIssueId ?? run.contextSnapshot?.issueId) !== issueId ||
     !terminalRepairSource
   ) {
@@ -174,7 +177,10 @@ export async function markExecutionReconciliation(
   decision: ExecutionReconciliation,
   actorId: string,
   deliveryOwner?: { kind: "chat_failed_run_retry"; actionId: string },
-  options?: { workspaceRepairOnly?: boolean },
+  options?: { workspaceRepairOnly?: boolean; ownerHandoff?: {
+    sourceAgentId: string;
+    destinationAgentId: string;
+  } },
 ) {
   if (options?.workspaceRepairOnly && (deliveryOwner || !hasRequiredWorkspaceRecovery(action.evidence))) {
     throw conflict("Workspace repair must target the retained source without a continuation owner.");
@@ -215,9 +221,16 @@ export async function markExecutionReconciliation(
   await db
     .update(issueRecoveryActions)
     .set({
+      ...(options?.ownerHandoff ? { returnOwnerAgentId: options.ownerHandoff.destinationAgentId } : {}),
       evidence: {
         ...action.evidence,
         automaticRecovery: undefined,
+        ...(options?.ownerHandoff ? { ownerHandoff: {
+          ...options.ownerHandoff,
+          sourceRunId: decision.runId,
+          actorId,
+          recordedAt: new Date().toISOString(),
+        } } : {}),
         executionReconciliation: {
           ...decision,
           actorId,
