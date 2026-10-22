@@ -108,3 +108,50 @@ Token brokering follows after its authorization, issuance audit, and locking
 contract is mapped. The large setup and callback functions should shrink through
 those ownership cuts rather than by distributing their local variables into a
 shared service context.
+
+## Continued stack: coordinator below 5,000 lines
+
+The user authorized continuing the stack after PRs #17144, #17146, and #17147.
+All three remain open. Start each dependent PR from its predecessor; do not merge.
+The new baseline is `3dc46c132408556ecb31038a9b9621ac20aacefc`, at 19,293 lines.
+
+The next cuts follow ownership, with a measured target of fewer than 5,000 lines
+in the entry point. Reassess the estimates and ordering after each cut.
+
+| Boundary | Approximate reduction | Owner and contract | State and verification |
+| --- | ---: | --- | --- |
+| Profile management and effective assignments | 1,500 | Profile service owns scoped queries, mutations, review and summaries; assignment resolver consumes installed connections | Preserve caller transactions, lock ordering, precedence, exclusions, and lightweight reads |
+| Connection token broker | 1,700 | Authorized run and issuance request to credential lease; provider exchange separated from admission | Keep run/membership checks, rate limits, scope restriction, issuance audit and cleanup in one flow |
+| Runtime administration and diagnostics | 1,500 | Stdio templates, supervisor controls, health and activity projections | Same supervisor instance and live clock; public routes and real runtime controls |
+| Connection credentials and refresh | 2,800 | Current grant and actor to usable credentials; separate registration and refresh owners | Preserve process registration flights, per-service refresh flights, database leases and current authority checks |
+| OAuth authorization lifecycle | 2,700 | State admission, authorization request and provider-specific callback completion | Keep state consumption and callback finalization ordering; local HTTP OAuth/MCP integration and denial/revocation cases |
+| Catalog and provider discovery | 1,900 | Connection to normalized descriptors and reviewed catalog; aggregator inventory has its own owner | Preserve discovery caches, credential access, failure classification and catalog publication transactions |
+| Connection grants, installs and removal | 2,300 | Company-scoped connection lifecycle and audience operations | Preserve revocation/assignment lock ordering, current membership, teardown and secret ownership |
+| Example installation, if still needed | 600 | Reviewed examples to installed application/profile plus smoke results | Preserve idempotency, approved runtime and policy decisions |
+
+Shared support is limited to explicit actor/transaction types, stable identifiers,
+and assignment-lock functions. It must not become a service-context bag. The
+entry point should retain cross-domain app setup and access finalization, while
+subsystems own their implementation. Existing public imports remain compatible.
+
+Run the full public service baseline, then each boundary's meaningful tests
+before and after its move. Review normalized bodies and every wiring change.
+Run full typecheck/build at the batch handoff and require current-head CI gates.
+The prior batch's interrupted local full suite remains unverified; its passing
+isolated retry does not replace the missing full-run result.
+
+### Profile ownership extraction
+
+Profile management now takes only the database and clock. Pure projections and
+lightweight catalog columns live beside it. Effective assignment resolution has
+three explicit capabilities: validate the agent, load installed connections, and
+project full catalog entries. Shared assignment locks keep their bodies and call
+order. Transactions still enclose the same reads, locks and writes.
+
+The entry point is 17,752 lines / 698,511 bytes. The profile modules contain 1,370
+lines, with the largest at 886. All 329 pre-existing function and method bodies
+match normalized syntax across the move. The baseline and post-move runs pass
+466 public service cases plus 33 profile validation, assignment and publication
+cases. Server typechecking and the module-boundary gate pass. Existing tests
+exercise both full catalog DTOs and lightweight assignments; no new behavior or
+fixture-only test was added.
