@@ -155,3 +155,23 @@ match normalized syntax across the move. The baseline and post-move runs pass
 cases. Server typechecking and the module-boundary gate pass. Existing tests
 exercise both full catalog DTOs and lightweight assignments; no new behavior or
 fixture-only test was added.
+
+### Connection token broker extraction
+
+The broker owns run admission, explicit mint grants, rate limits, selected grant
+checks, issuance and audit. Configuration parsing, endpoint policy, exchange,
+and issuance storage are separate modules. The service receives the existing
+secret service, policy service, audit function, clock and two connection/grant
+operations. The issuance transaction still acquires the responsible membership
+lock before resolving the parent credential and performing the exchange. It
+stores only the token hash. Private-host policy still reads live environment
+values on each request. No resource, cache or timer is created by the factories.
+
+The entry point is 16,100 lines / 644,119 bytes. The six broker modules total
+1,721 lines; the largest is 755. All 294 pre-existing function/method bodies
+match normalized syntax. Two new public-route tests passed before production
+changes and after extraction. They use real HTTP and disposable PostgreSQL for
+Pages and RFC 8693 exchanges, plus a failing upstream request, and assert that
+issuance/audit rows contain no token material. The complete public service and
+HTTP rebinding run passes 495 cases. Server typechecking and module boundaries
+pass. These fixtures do not claim live third-party qualification.
