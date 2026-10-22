@@ -953,7 +953,12 @@ describe("Agents", () => {
     expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
   });
 
-  it.each([false, true])("keeps paused and left-membership agent names readable (mobile: %s)", async (isMobile) => {
+  it.each([
+    { mode: "streamlined", AgentList: Agents, isMobile: false },
+    { mode: "streamlined", AgentList: Agents, isMobile: true },
+    { mode: "production", AgentList: ProductionAgents, isMobile: false },
+    { mode: "production", AgentList: ProductionAgents, isMobile: true },
+  ])("keeps paused and left-membership agent names readable in $mode (mobile: $isMobile)", async ({ AgentList, isMobile }) => {
     mockSidebarState.isMobile = isMobile;
     mockAgentsApi.list.mockResolvedValue([
       makeAgent({ status: "paused", pausedAt: new Date("2026-01-02T00:00:00Z") }),
@@ -972,9 +977,11 @@ describe("Agents", () => {
 
     root = createRoot(container);
     await act(async () => {
-      renderAgentsView(root, queryClient);
+      root!.render(<QueryClientProvider client={queryClient}><ToastProvider><AgentList /></ToastProvider></QueryClientProvider>);
     });
     await flushReact();
+    await flushReact();
+    await act(async () => { container.querySelector<HTMLButtonElement>('button[aria-label="List view"]')?.click(); });
     await flushReact();
 
     const row = findAgentRow(container, "Alpha");
@@ -982,6 +989,7 @@ describe("Agents", () => {
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
     expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
     expect(row?.classList.contains("opacity-50")).toBe(false);
+    expect(row?.querySelector(".sm\\:hidden")?.textContent).toContain("paused");
   });
 
   it("keeps invalid-org-chain agents visible with a warning marker", async () => {

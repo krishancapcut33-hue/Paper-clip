@@ -393,8 +393,10 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         ) : (
           <AgentAvatar agent={agent} size={32} />
         )}
-        secondaryRow={(builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
+        secondaryRowClassName={cn("pl-11", !builtInCluster && !showEnvironmentColumn && !agent.lastHeartbeatAt && "sm:hidden")}
+        secondaryRow={(agent.status === "paused" || builtInCluster || showEnvironmentColumn || agent.lastHeartbeatAt) && (
           <div className="flex flex-wrap items-center gap-2">
+            {agent.status === "paused" && <span className="sm:hidden"><AgentStatusBadge status={agent.status} /></span>}
             {builtInCluster}
             {showEnvironmentColumn && <span className="text-xs text-muted-foreground" title={resolveRenderedEnvironment(agent.id).title}>
               {resolveRenderedEnvironment(agent.id).label} · {resolveRenderedEnvironment(agent.id).detail}
