@@ -54,7 +54,7 @@ export type GitRestorePointExpirationOptions = {
 };
 
 const RESTORE_POINT_RELAXABLE = new Set(["dirty_or_untracked_files", "unique_ignored_files", "unique_original_head",
-  "uncommitted_git_message", "unique_reflog_commits", "upstream_commit_unverified"]);
+  "unique_reflog_commits", "upstream_commit_unverified"]);
 
 async function restorePointBoundary(recipe: GitCacheRestoration, headOnRemote: boolean, auth: GitRemoteAuthProvider, signal?: AbortSignal) {
   if (headOnRemote) return [recipe.commit];

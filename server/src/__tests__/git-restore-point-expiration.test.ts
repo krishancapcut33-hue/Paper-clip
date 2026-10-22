@@ -136,6 +136,44 @@ describeEmbeddedPostgres("git restore point expiration", () => {
     expect(await fs.readFile(path.join(f.cwd, "notes", "todo.md"), "utf8")).toBe("later work\n");
   });
 
+  it("imports history-only commits on reopen even when the base no longer has them", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.cwd, "lost.txt"), "rewritten away\n");
+    git(f.cwd, "add", "lost.txt");
+    git(f.cwd, "commit", "-m", "rewritten away");
+    const lost = git(f.cwd, "rev-parse", "HEAD");
+    git(f.cwd, "reset", "-q", "--hard", "HEAD~1");
+    expect(await f.expire()).toMatchObject({ expired: true, restorePoint: true });
+    git(f.baseCwd, "reflog", "expire", "--expire=now", "--all");
+    git(f.baseCwd, "gc", "-q", "--prune=now");
+    expect(() => git(f.baseCwd, "cat-file", "-e", `${lost}^{commit}`)).toThrow();
+    expect(await f.reopen()).toMatchObject({ ok: true, reopened: true });
+    expect(git(f.baseCwd, "cat-file", "-t", lost)).toBe("commit");
+  });
+
+  it("keeps a worktree whose draft commit message a restore point cannot save", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.cwd, "marker.txt"), "staged edit\n");
+    git(f.cwd, "add", "marker.txt");
+    const gitDir = git(f.cwd, "rev-parse", "--absolute-git-dir");
+    await fs.writeFile(path.join(gitDir, "COMMIT_EDITMSG"), "Draft message from an aborted commit\n");
+    expect(await f.expire()).toMatchObject({ expired: false, skipReason: "uncommitted_git_message" });
+    expect(await exists(f.cwd)).toBe(true);
+    expect(await f.ledger()).toEqual([]);
+  });
+
+  it("marks a restore point for cleanup when its upload fails", async () => {
+    const f = await fixture();
+    await makeUnsavedWork(f.cwd);
+    const storage = getStorageService();
+    const failing = { ...storage, putFile: async () => { throw new Error("storage unavailable"); } };
+    expect(await f.expire({ restorePoint: { ...f.restorePoint(), storage: failing as typeof storage } }))
+      .toMatchObject({ expired: false });
+    expect(await exists(f.cwd)).toBe(true);
+    expect(await f.ledger()).toMatchObject([{ status: "superseded" }]);
+    expect((await f.row()).metadata?.gitCacheRestoration).toBeUndefined();
+  });
+
   it("does not expire unsaved work before the restore point delay", async () => {
     const f = await fixture();
     await makeUnsavedWork(f.cwd);

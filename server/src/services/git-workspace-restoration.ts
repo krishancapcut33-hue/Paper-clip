@@ -359,7 +359,12 @@ export async function assertReproducibleGitFiles(cwd: string, signal?: AbortSign
     const message = await fs.readFile(path.join(gitDir, "COMMIT_EDITMSG"), "utf8").catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return null; throw error;
     });
-    if (!options.restorePoint && message !== null && message.trim() !== (await gitCacheCommand(cwd, ["log", "-1", "--format=%B"], signal)).trim()) throw new Error("uncommitted_git_message");
+    if (message !== null && message.trim() !== (await gitCacheCommand(cwd, ["log", "-1", "--format=%B"], signal)).trim()) {
+      const saved = options.restorePoint
+        ? (await gitCacheCommand(cwd, ["log", "-g", "--format=%B%x00", "HEAD"], signal).catch(() => "")).split("\0").map(entry => entry.trim())
+        : [];
+      if (!saved.includes(message.trim())) throw new Error("uncommitted_git_message");
+    }
     const logs = await fs.readdir(path.join(gitDir, "logs")).catch((error: NodeJS.ErrnoException) => {
       if (error.code === "ENOENT") return []; throw error;
     });

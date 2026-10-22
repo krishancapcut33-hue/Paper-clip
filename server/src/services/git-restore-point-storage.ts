@@ -81,27 +81,35 @@ export async function storeGitRestorePoint(input: {
   const identity = { companyId: input.workspace.companyId, workspaceId: input.workspace.id, restorePointId: id, generation: input.generation };
   const sealed = await sealRestorePoint(captured.payload, identity);
   const objectKey = restorePointObjectKey(input.workspace.companyId, input.workspace.id, input.generation, id);
-  const [ledger] = await input.db.insert(executionWorkspaceRestorePoints).values({
-    companyId: input.workspace.companyId,
-    executionWorkspaceId: input.workspace.id,
-    sourceIssueId: input.workspace.sourceIssueId,
-    generation: input.generation,
-    objectKey,
-    sha256: sealed.sha256,
-    byteSize: sealed.ciphertext.length,
-    status: "pending",
-  }).returning({ id: executionWorkspaceRestorePoints.id });
-  await input.storage.putFile({
-    objectKey,
-    companyId: input.workspace.companyId,
-    namespace: NAMESPACE,
-    originalFilename: null,
-    contentType: "application/octet-stream",
-    body: sealed.ciphertext,
+  const [ledger] = await input.db.transaction(async (tx) => {
+    await notifyGitRestorePointWork(tx, `workspace:${input.workspace.id}`);
+    return tx.insert(executionWorkspaceRestorePoints).values({
+      companyId: input.workspace.companyId,
+      executionWorkspaceId: input.workspace.id,
+      sourceIssueId: input.workspace.sourceIssueId,
+      generation: input.generation,
+      objectKey,
+      sha256: sealed.sha256,
+      byteSize: sealed.ciphertext.length,
+      status: "pending",
+    }).returning({ id: executionWorkspaceRestorePoints.id });
   });
-  const stored = await readObject(input.storage, input.workspace.companyId, objectKey, input.signal);
-  if (createHash("sha256").update(stored).digest("hex") !== sealed.sha256) {
-    throw new RestorePointRestoreFailure("stored_restore_point_mismatch");
+  try {
+    await input.storage.putFile({
+      objectKey,
+      companyId: input.workspace.companyId,
+      namespace: NAMESPACE,
+      originalFilename: null,
+      contentType: "application/octet-stream",
+      body: sealed.ciphertext,
+    });
+    const stored = await readObject(input.storage, input.workspace.companyId, objectKey, input.signal);
+    if (createHash("sha256").update(stored).digest("hex") !== sealed.sha256) {
+      throw new RestorePointRestoreFailure("stored_restore_point_mismatch");
+    }
+  } catch (error) {
+    await abandonGitRestorePoint(input.db, ledger!.id).catch(() => undefined);
+    throw error;
   }
   const { manifest } = captured;
   return {
@@ -225,13 +233,13 @@ export async function applyGitRestorePointToWorktree(input: {
   signal?: AbortSignal;
 }) {
   const current = await currentRestorePointSnapshot(input.worktreePath, input.signal);
-  if (restorePointSnapshotMatches(input.ref, current)) return;
-  if (current.head !== input.ref.head || current.index !== null || current.worktree !== null || current.modes.length > 0) {
+  const matches = restorePointSnapshotMatches(input.ref, current);
+  if (!matches && (current.head !== input.ref.head || current.index !== null || current.worktree !== null || current.modes.length > 0)) {
     throw new RestorePointRestoreFailure("worktree_diverged_from_restore_point");
   }
   const { payload } = await loadGitRestorePoint(input);
   const manifest = await importRestorePoint({ repositoryCwd: input.repositoryCwd, payload, signal: input.signal });
-  await applyRestorePoint({ cwd: input.worktreePath, manifest, signal: input.signal });
+  if (!matches) await applyRestorePoint({ cwd: input.worktreePath, manifest, signal: input.signal });
 }
 
 export async function markGitRestorePointExpired(db: Db, restorePoint: { companyId: string; executionWorkspaceId: string; objectKey: string }) {

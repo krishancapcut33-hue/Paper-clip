@@ -102,7 +102,8 @@ unpushed commits, uncommitted or untracked files, or history-only commits, once 
 tree has been closed for `PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS` (default `3`).
 Before removal it saves a restore point:
 
-- a git bundle of commits the remote does not have, against a remote-verified base;
+- a git bundle of commits the remote does not have, against a remote-verified base,
+  including commits only reachable from the reflog or `ORIG_HEAD`;
 - deterministic snapshots of the index and working tree, including untracked files and
   non-default file modes. Ignored files are left out, and so are untracked `.env` and
   `.env.*` files, which provisioning recreates with current secrets.
@@ -120,7 +121,10 @@ does not come from `PAPERCLIP_SECRETS_MASTER_KEY`.
 
 Reopening the issue, or the next run that recreates the worktree, imports the bundle,
 re-adds the worktree at the saved commit, applies the restore point and verifies the
-result. A worktree that already matches is only marked applied, and a worktree that
+result. The bundle is always imported, so history-only commits are present again as
+objects in the repository; they are not recreated as branches or reflog entries, and the
+restore point keeps them until it expires. A draft commit message left by an aborted
+commit still keeps the worktree from expiring, because restore points do not save it. A worktree that already matches is only marked applied, and a worktree that
 diverged is never overwritten: the restore fails closed and can be retried. A missing,
 corrupt or expired restore point also fails closed.
 
