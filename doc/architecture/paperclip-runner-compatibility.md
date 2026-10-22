@@ -110,6 +110,13 @@ for a separately managed ACP server. Keep the ACP server and its Codex dependenc
 pinned in that installation. The setting is per agent. No API key is required
 when the agent uses a valid ChatGPT OAuth login.
 
+The shared executable-admission module is also bound into the immutable Copilot
+profile identity. The Codex runtime admission refresh therefore publishes Copilot
+profile v59, while retaining v58 as historical data. Only the shared guard source
+hash and profile-compatibility hash change in that declaration; Copilot model,
+permission, and tool policies do not change. A new identity requires fresh live
+Copilot qualification before claiming release qualification for that profile.
+
 ## Direct adapter boundary
 
 This rule applies to every built-in and plugin direct adapter. It includes:
