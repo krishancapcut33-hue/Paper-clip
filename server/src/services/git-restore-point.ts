@@ -236,17 +236,12 @@ async function unpreservedHistory(cwd: string, head: string, boundary: readonly 
   const original = await gitText(cwd, ["rev-parse", "--verify", "-q", "ORIG_HEAD^{commit}"], { signal }).catch(() => "");
   if (SHA.test(original)) candidates.add(original);
   candidates.delete(head);
-  if (candidates.size > MAX_PRESERVED_COMMITS) throw new RestorePointSkip("restore_point_history_too_large");
-  const preserved: string[] = [];
-  for (const commit of candidates) {
-    const reachable = await git(cwd, ["merge-base", "--is-ancestor", commit, head], { signal }).then(() => true, () => false);
-    if (reachable) continue;
-    let onUpstream = false;
-    for (const tip of boundary) {
-      if (await git(cwd, ["merge-base", "--is-ancestor", commit, tip], { signal }).then(() => true, () => false)) { onUpstream = true; break; }
-    }
-    if (!onUpstream) preserved.push(commit);
-  }
+  if (candidates.size === 0) return [];
+  const unreachable = new Set((await gitText(cwd, ["rev-list", "--stdin"], {
+    signal, input: [...candidates, `^${head}`, ...boundary.map((commit) => `^${commit}`)].join("\n") + "\n",
+  })).split("\n").filter((line) => SHA.test(line)));
+  const preserved = [...candidates].filter((commit) => unreachable.has(commit));
+  if (preserved.length > MAX_PRESERVED_COMMITS) throw new RestorePointSkip("restore_point_history_too_large");
   return preserved.sort();
 }
 

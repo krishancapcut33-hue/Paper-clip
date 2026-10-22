@@ -170,6 +170,21 @@ describe("git restore points", () => {
     expect(await read(restored, "notes.txt")).toBe("changed contents\n");
   });
 
+  it("captures a small edit despite a long ordinary history", async () => {
+    for (let index = 0; index < 60; index += 1) {
+      await write(work, "log.txt", `${index}\n`);
+      git(work, "commit", "-q", "-am", `history ${index}`, "--allow-empty");
+    }
+    git(work, "add", "-A");
+    git(work, "commit", "-q", "-m", "tracked log", "--allow-empty");
+    git(work, "push", "-q", "origin", "HEAD:master");
+    git(work, "fetch", "-q");
+    await write(work, "notes/todo.md", "small edit\n");
+    const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+    expect(captured!.manifest.preserved).toEqual([]);
+    expect(captured!.manifest.worktree).not.toBeNull();
+  });
+
   it("refuses to capture when history-only commits exceed the supported limit", async () => {
     git(work, "checkout", "-q", "-b", "feature");
     for (let index = 0; index < 51; index += 1) {
