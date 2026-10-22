@@ -4,7 +4,7 @@ import { z } from "zod";
 import { forbidden, unprocessable } from "../errors.js";
 import type { accessService } from "./access.js";
 import { authorizationDeniedDetails, type AuthorizationActor } from "./authorization.js";
-import { applyIssueMonitorPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, redactIssueMonitorExternalRef, setIssueExecutionPolicyMonitorScheduledBy } from "./issue-execution-policy.js";
+import { enforceMonitorMinimumInterval, applyIssueMonitorPolicyTransition, normalizeIssueExecutionPolicy, parseIssueExecutionState, redactIssueMonitorExternalRef, setIssueExecutionPolicyMonitorScheduledBy } from "./issue-execution-policy.js";
 
 type NormalizedExecutionPolicy = ReturnType<typeof normalizeIssueExecutionPolicy>;
 
@@ -133,9 +133,9 @@ export function prepareIssueMonitorUpdate(
     throw unprocessable("Monitor timeoutAt must be later than nextCheckAt");
   }
   const previousPolicy = normalizeIssueExecutionPolicy(issue.executionPolicy);
-  const policy = applyActorMonitorScheduledBy(normalizeIssueExecutionPolicy({
+  const policy = enforceMonitorMinimumInterval(applyActorMonitorScheduledBy(normalizeIssueExecutionPolicy({
     ...previousPolicy, monitor,
-  }), actor.type === "board" ? "user" : "agent");
+  }), actor.type === "board" ? "user" : "agent"), previousPolicy, now);
   const transition = applyIssueMonitorPolicyTransition({
     issue, policy, previousPolicy, requestedAssigneePatch: {},
     actor: { agentId: actor.agentId ?? null, userId: actor.userId ?? null },

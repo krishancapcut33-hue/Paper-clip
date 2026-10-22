@@ -1146,6 +1146,25 @@ function applyMonitorTransition(input: TransitionInput, stagePatch: Record<strin
   return patch;
 }
 
+export const MONITOR_MIN_INTERVAL_MS = 2 * 60 * 60 * 1000;
+
+export function enforceMonitorMinimumInterval<T extends { monitor?: { nextCheckAt: string; timeoutAt?: string | null } | null } | null>(
+  policy: T,
+  previous: { monitor?: { nextCheckAt: string } | null } | null,
+  now: Date = new Date(),
+): T {
+  const monitor = policy?.monitor;
+  if (!policy || !monitor?.nextCheckAt) return policy;
+  if (previous?.monitor?.nextCheckAt === monitor.nextCheckAt) return policy;
+  const earliest = now.getTime() + MONITOR_MIN_INTERVAL_MS;
+  const requested = Date.parse(monitor.nextCheckAt);
+  if (!Number.isFinite(requested) || requested >= earliest) return policy;
+  if (monitor.timeoutAt && Date.parse(monitor.timeoutAt) <= earliest) {
+    throw unprocessable("Monitor timeoutAt must be later than the minimum next check time");
+  }
+  return { ...policy, monitor: { ...monitor, nextCheckAt: new Date(earliest).toISOString() } };
+}
+
 export function buildInitialIssueMonitorFields(input: {
   policy: IssueExecutionPolicy | null;
   status: string;
