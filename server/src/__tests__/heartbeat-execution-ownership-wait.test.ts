@@ -1,12 +1,13 @@
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, ne } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agentWakeupRequests, agents, companies, createDb, environmentLeases, heartbeatRuns, issueComments, issues,
 } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { getExecutionBlocker } from "../services/execution-blocker.js";
 import { heartbeatService } from "../services/heartbeat.js";
+import { buildPaperclipWakePayload } from "../services/heartbeat/run-preparation.js";
 
 const support = await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("wakes parked behind an execution ownership hold", () => {
@@ -36,9 +37,10 @@ const support = await getEmbeddedPostgresTestSupport();
     ]);
     const participant = { type: "agent", agentId: nextAgentId, userId: null };
     const returnAssignee = { type: "agent", agentId: previousAgentId, userId: null };
+    const reviewRequest = { instructions: "Review the change; do not implement it. Report a verdict." };
     const executionState = {
       status: "pending", currentStageId: stageId, currentStageIndex: 0, currentStageType: "review",
-      currentParticipant: participant, returnAssignee, reviewRequest: null, completedStageIds: [],
+      currentParticipant: participant, returnAssignee, reviewRequest, completedStageIds: [],
       lastDecisionId: null, lastDecisionOutcome: null, changesRequestedCount: 0,
     };
     await db.insert(issues).values({
@@ -63,7 +65,7 @@ const support = await getEmbeddedPostgresTestSupport();
     // Occupy the next agent so admission queues its run without launching a provider.
     const [busy] = await db.insert(heartbeatRuns).values({ companyId, agentId: nextAgentId, status: "running" }).returning();
     const executionStage = {
-      stageId, wakeRole: "reviewer", stageType: "review", reviewRequest: null,
+      stageId, wakeRole: "reviewer", stageType: "review", reviewRequest,
       allowedActions: ["approve", "request_changes"], returnAssignee, currentParticipant: participant, lastDecisionOutcome: null,
     };
     const wake = stage
@@ -194,6 +196,51 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await nextAgentIssueRuns(f)).toHaveLength(1);
   });
 
+  it.each(["eligibility", "admission"] as const)("preserves a newer stage merged before the %s lock", async phase => {
+    const f = await seed();
+    const { heartbeat, parked } = await parkWake(f);
+    await releaseLease(f);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const nextStage = { ...f.wake.payload.executionStage!, stageId: randomUUID(),
+      reviewRequest: { instructions: "Review the revised change instead." } };
+    const transaction = db.transaction.bind(db);
+    let transactions = 0;
+    let merged = false;
+    // Commit the same row update as coalescing, after the sweep has selected
+    // its old snapshot, at each of the two issue-lock boundaries.
+    const spy = vi.spyOn(db, "transaction").mockImplementation(async (callback, config) => {
+      if (transactions++ === (phase === "eligibility" ? 0 : 1)) {
+        spy.mockRestore();
+        await transaction(async tx => {
+          await tx.update(issues).set({ executionState: {
+            ...issue!.executionState as Record<string, unknown>, currentStageId: nextStage.stageId,
+            reviewRequest: nextStage.reviewRequest,
+          } }).where(eq(issues.id, f.issueId));
+          await tx.update(agentWakeupRequests).set({ payload: {
+            ...parked.payload, executionStage: nextStage,
+            _paperclipWakeContext: { ...parked.payload!._paperclipWakeContext as Record<string, unknown>, executionStage: nextStage },
+          }, coalescedCount: 1, updatedAt: new Date() }).where(eq(agentWakeupRequests.id, parked.id));
+        });
+        merged = true;
+      }
+      return transaction(callback, config);
+    });
+    try {
+      await heartbeat.resumeExecutionOwnershipWaits({ companyId: f.companyId, issueId: f.issueId });
+    } finally { spy.mockRestore(); }
+    expect(merged).toBe(true);
+    if (phase === "admission") {
+      expect(await nextAgentIssueRuns(f)).toHaveLength(0);
+      expect((await nextAgentWakes(f)).find(wake => wake.id === parked.id)?.status).toBe("deferred_issue_execution");
+      await heartbeat.resumeExecutionOwnershipWaits({ companyId: f.companyId, issueId: f.issueId });
+    }
+    const runs = await nextAgentIssueRuns(f);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]!.contextSnapshot?.executionStage).toEqual(nextStage);
+    expect((await nextAgentWakes(f)).find(wake => wake.id === parked.id))
+      .toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+  });
+
   it("keeps a handoff separate from the same user's saved comment until ordinary admission adopts both", async () => {
     const f = await seed({ stage: false });
     const { heartbeat, comment, parked } = await parkComment(f);
@@ -292,10 +339,39 @@ const support = await getEmbeddedPostgresTestSupport();
       requestedByActorType: "user", requestedByActorId: "board",
     });
     expect(later).toMatchObject({ status: "queued" });
+    expect(later!.contextSnapshot?.executionStage).toEqual(f.wake.payload.executionStage);
+    const delivered = await buildPaperclipWakePayload({
+      db, companyId: f.companyId, agentId: f.nextAgentId, contextSnapshot: later!.contextSnapshot!,
+    });
+    expect(delivered?.executionStage).toEqual(f.wake.payload.executionStage);
+    expect((await nextAgentWakes(f)).find(wake => wake.id === later!.wakeupRequestId)?.payload?.executionStage)
+      .toEqual(f.wake.payload.executionStage);
     expect((await nextAgentWakes(f)).find(wake => wake.id === parked.id)).toMatchObject({ status: "coalesced", runId: later!.id });
     await heartbeat.resumeExecutionOwnershipWaits({ companyId: f.companyId, issueId: f.issueId });
     await heartbeat.resumeQueuedRuns();
     expect(await nextAgentIssueRuns(f)).toEqual([expect.objectContaining({ id: later!.id })]);
+  });
+
+  it.each(["stage", "participant", "completed"] as const)("does not adopt obsolete stage instructions (%s)", async change => {
+    const f = await seed();
+    const { heartbeat, parked } = await parkWake(f);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    await db.update(issues).set({ executionState: {
+      ...issue!.executionState as Record<string, unknown>,
+      ...(change === "stage" ? { currentStageId: randomUUID() }
+        : change === "participant" ? { currentParticipant: { type: "agent", agentId: f.previousAgentId, userId: null } }
+          : { status: "completed", currentStageId: null, currentParticipant: null }),
+    } }).where(eq(issues.id, f.issueId));
+    await releaseLease(f);
+    const later = await heartbeat.wakeup(f.nextAgentId, {
+      source: "on_demand", reason: "issue_commented", payload: { issueId: f.issueId },
+      contextSnapshot: { issueId: f.issueId }, requestedByActorType: "user", requestedByActorId: "board",
+    });
+    expect(later).toMatchObject({ status: "queued" });
+    expect(later!.contextSnapshot?.executionStage).toBeUndefined();
+    expect((await nextAgentWakes(f)).find(wake => wake.id === parked.id)?.status).toBe("deferred_issue_execution");
+    await heartbeat.resumeExecutionOwnershipWaits({ companyId: f.companyId, issueId: f.issueId });
+    expect((await nextAgentWakes(f)).find(wake => wake.id === parked.id)?.status).toBe("cancelled");
   });
 
   it("retires the receipt when a later run of the agent already started on the task", async () => {

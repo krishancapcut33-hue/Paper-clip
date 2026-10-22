@@ -58,6 +58,8 @@ import {
 import { agentService } from "../agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
+import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import {
   and,
   asc,
@@ -246,6 +248,25 @@ export function isDeferredExecutionOwnershipWait(payload: unknown): boolean {
     !isInteractionResolutionWakePayload(parsed) &&
     !hasInteractionContinuationWakeContext(context) &&
     !readNonEmptyString(context.nativeStatusWakeIntentId);
+}
+
+/** Eligibility is shared by resume and adoption, under the task's row lock. */
+export function executionOwnershipWaitAppliesToIssue(
+  payload: unknown,
+  issue: Pick<typeof issues.$inferSelect, "status" | "assigneeAgentId" | "executionState">,
+  agentId: string,
+): boolean {
+  if (["done", "cancelled"].includes(issue.status)) return false;
+  const stage = parseObject(parseObject(payload).executionStage);
+  const stageId = readNonEmptyString(stage.stageId);
+  if (!stageId) return issue.assigneeAgentId === agentId;
+  const state = parseIssueExecutionState(issue.executionState);
+  const executorWake = stage.wakeRole === "executor";
+  const principal = executorWake ? state?.returnAssignee : state?.currentParticipant;
+  const stageApplies = executorWake
+    ? state?.status === "changes_requested"
+    : state?.status === "pending" && state.currentStageId === stageId;
+  return stageApplies && principal?.type === "agent" && principal.agentId === agentId;
 }
 
 /**
@@ -2199,7 +2220,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       }
       payload = { ...payload, manualUserWake: true };
     }
-    if (opts.executionWaitResumeId && (opts.executionWaitResumeId !== executionWaitRequestId ||
+    if (opts.executionWaitResumeId && (!opts.executionWaitResumePayload || opts.executionWaitResumeId !== executionWaitRequestId ||
         opts.queuedCommentInterruptId || opts.queuedCommentRequestId || opts.taskRetryRequestId || opts.manualUserWake || opts.failedRunId ||
         opts.durableChatRequest || opts.durableDotRequest || opts.durableMuseRequest || opts.durableCaseHandoffRequest)) {
       throw conflict("An execution wait resume cannot carry another admission authority.");
@@ -2876,7 +2897,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             // The issue lock serializes cleanup callbacks and periodic workers.
             // An adopted, discarded, or edited receipt is no longer authority.
             if (!pending || (ownershipWaitResume
-                ? !isDeferredExecutionOwnershipWait(pending.payload)
+                ? !isDeferredExecutionOwnershipWait(pending.payload) || !isDeepStrictEqual(pending.payload, opts.executionWaitResumePayload)
                 : !opts.taskRetryRequestId && !(wakeCommentId && queuedCommentIdsFromWakePayload(pending.payload).includes(wakeCommentId)) &&
                   !(opts.queuedCommentInterruptId && await readQueuedInteractionResponse(tx as unknown as Db,
                     agent.companyId, issueId, pending.payload)))) {
@@ -3118,6 +3139,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               monitorWakeRequestedAt: issues.monitorWakeRequestedAt,
               executionRunId: issues.executionRunId,
               executionAgentNameKey: issues.executionAgentNameKey,
+              executionState: issues.executionState,
               createdAt: issues.createdAt,
             })
             .from(issues)
@@ -3129,6 +3151,10 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             )
             .then((rows) => rows[0] ?? null);
 
+          if (issue && opts.executionWaitResumeId &&
+              !executionOwnershipWaitAppliesToIssue(opts.executionWaitResumePayload, issue, agentId)) {
+            return { kind: "deferred" as const };
+          }
           if (!issue) {
             if (caseRequest) throw conflict("Case handoff task no longer exists");
             await tx.insert(agentWakeupRequests).values({
@@ -4331,10 +4357,20 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
             const deferredContext = parseObject(
               deferredPayload[DEFERRED_WAKE_CONTEXT_KEY],
             );
-            // This run reads the current task state, so a wake of this agent
-            // parked behind the released ownership hold is covered by it and
-            // must not resume as a second run.
-            if (wake.agentId === agentId && isDeferredExecutionOwnershipWait(deferredPayload)) return true;
+            if (wake.agentId === agentId && isDeferredExecutionOwnershipWait(deferredPayload)) {
+              if (!executionOwnershipWaitAppliesToIssue(deferredPayload, issue, agentId)) return false;
+              const stage = parseObject(deferredPayload.executionStage);
+              if (readNonEmptyString(stage.stageId)) {
+                // Deliver the stage contract with the adopting run. An incoming
+                // stage contract takes precedence over a different saved one.
+                const incoming = parseObject(enrichedContextSnapshot.executionStage);
+                if (Object.keys(incoming).length && !isDeepStrictEqual(incoming, stage)) return false;
+                enrichedContextSnapshot.executionStage = stage;
+                payload = { ...payload, executionStage: stage,
+                  [DEFERRED_WAKE_CONTEXT_KEY]: { ...parseObject(payload?.[DEFERRED_WAKE_CONTEXT_KEY]), executionStage: stage } };
+              }
+              return true;
+            }
             // Dedicated interaction wakes carry their own source and session
             // contract. ID-only adoption must not erase that continuation.
             return (
