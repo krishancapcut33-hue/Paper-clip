@@ -189,3 +189,10 @@ The entry point is 14,877 lines / 600,156 bytes. Five destination modules total
 match normalized syntax. The public service and unsigned review-queue coverage
 pass before and after (469 combined cases). Server typechecking and module
 boundaries pass. No new supervisor, background loop or runtime cache is created.
+
+### Credential ownership
+
+- Moved OAuth client settings, credential persistence, client registration, refresh leases, connection/grant refresh, GitHub continuity, Vercel credential access and credential selection behind named factories.
+- `tool-access.ts`: 14,877 → 12,019 lines. Registration single-flight remains process-wide; refresh maps and GitHub sweep state remain per service. The live cloud connector getter and existing secret client are passed through.
+- The real HTTP/PostgreSQL OAuth fixture now also proves concurrent refresh across two service instances, one token exchange, durable rotated credentials and authenticated use of the new token. Its two cases passed before the move.
+- After extraction, 470 public service/integration cases, server typecheck and module boundary checks pass. All 233 pre-existing function/method bodies match by normalized syntax comparison.

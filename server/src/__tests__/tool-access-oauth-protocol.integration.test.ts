@@ -7,8 +7,9 @@ import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { companies, companyMemberships, createDb, toolCatalogEntries, toolConnections, toolOauthStates } from "@paperclipai/db";
+import { companies, companyMemberships, createDb, connectionGrants, toolCatalogEntries, toolConnections, toolOauthStates } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
+import { toolAccessService } from "../services/tool-access.js";
 import { toolAccessRoutes } from "../routes/tool-access.js";
 import { errorHandler } from "../middleware/index.js";
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -45,6 +46,7 @@ describe("tool OAuth over local HTTP", () => {
     });
     const calls: Array<{ path: string; authorization?: string; body: string }> = [];
     let origin: string;
+    let currentAccessToken = "fixture-access";
     const provider = createServer(async (req, res) => {
       let body = "";
       for await (const chunk of req) body += chunk;
@@ -73,11 +75,13 @@ describe("tool OAuth over local HTTP", () => {
         });
       }
       if (path === "/token") {
-        return json({ access_token: "fixture-access", refresh_token: "fixture-refresh",
+        const refreshing = new URLSearchParams(body).get("grant_type") === "refresh_token";
+        if (refreshing) currentAccessToken = "fixture-access-rotated";
+        return json({ access_token: currentAccessToken, refresh_token: refreshing ? "fixture-refresh-rotated" : "fixture-refresh",
           expires_in: 3600, token_type: "Bearer", scope: "tools.read offline_access" });
       }
       if (path === "/mcp") {
-        if (req.headers.authorization !== "Bearer fixture-access") {
+        if (req.headers.authorization !== `Bearer ${currentAccessToken}`) {
           res.setHeader("www-authenticate", `Bearer resource_metadata="${origin}/.well-known/oauth-protected-resource/mcp"`);
           return json({}, 401);
         }
@@ -139,6 +143,35 @@ describe("tool OAuth over local HTTP", () => {
       expect(tokenBody.has("client_secret")).toBe(false);
       expect(calls.some((call) => call.path === "/mcp" && call.authorization === "Bearer fixture-access")).toBe(true);
       expect(calls.filter((call) => call.path === "/register")).toHaveLength(1);
+
+      const [grant] = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connection.id));
+      await db.update(connectionGrants).set({ providerTenant: {
+        ...grant.providerTenant,
+        oauth: { ...grant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
+      } }).where(eq(connectionGrants.id, grant.id));
+      const options = { deploymentMode: "local_trusted" as const, deploymentExposure: "private" as const, paperclipCloudConnector: null };
+      const first = toolAccessService(db, options);
+      const second = toolAccessService(db, options);
+      const refreshInput = { companyId: company.id, connectionId: connection.id, grantId: grant.id, actor: { actorType: "user" as const, actorId: userId } };
+      const refreshed = await Promise.all([
+        first.refreshOAuthGrantCredentials(refreshInput),
+        second.refreshOAuthGrantCredentials(refreshInput),
+      ]);
+      expect(refreshed.map(row => row.id)).toEqual([grant.id, grant.id]);
+      const exchanges = calls.filter(call => call.path === "/token");
+      expect(exchanges).toHaveLength(2);
+      const refreshBody = new URLSearchParams(exchanges[1].body);
+      expect(refreshBody.get("grant_type")).toBe("refresh_token");
+      expect(refreshBody.get("refresh_token")).toBe("fixture-refresh");
+      expect(refreshBody.get("resource")).toBe(`${origin}/mcp`);
+      expect(exchanges[1].authorization).toBe(tokenCall.authorization);
+      const [persistedGrant] = await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id));
+      expect(persistedGrant.providerTenant?.oauth).not.toHaveProperty("refreshLease");
+      expect(Date.parse(persistedGrant.providerTenant!.oauth!.accessTokenExpiresAt!)).toBeGreaterThan(Date.now());
+      expect(JSON.stringify(persistedGrant)).not.toMatch(/fixture-(access|refresh|secret)/);
+      await first.checkHealth(connection.id, { actorType: "user", actorId: userId });
+      expect(calls.some(call => call.path === "/mcp" && call.authorization === "Bearer fixture-access-rotated")).toBe(true);
+      expect(calls.filter(call => call.path === "/register")).toHaveLength(1);
     } finally {
       provider.closeAllConnections();
       await new Promise<void>((resolve, reject) => provider.close((error) => error ? reject(error) : resolve()));
