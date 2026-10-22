@@ -1,11 +1,9 @@
-@import "../../paper-mono.css";
-
 /*
   V1 MVP — values measured from the PCLP-Core mock "Art.Tab - mvp v1"
   (node 2129:133457). Scoped to the wrapper every frame puts around a kit slot.
 */
 [data-direction="d5-v1-mvp"] {
-  --v1-font-mono: "Paper Mono", var(--font-mono);
+  --v1-font-mono: var(--font-paper-mono, var(--font-mono)); /* index.css declares the face and the variable */
   /* Paper. The mock draws every sheet and print border in #FAFAFA on both
      stack backings, so it is one value, not a theme colour. */
   --v1-paper: #fafafa;

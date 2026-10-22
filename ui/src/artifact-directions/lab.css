@@ -1,15 +1,10 @@
-@import "./paper-mono.css";
-
 /*
  * Lab-wide type. Every monospace run in the lab — its toolbar, the sheet and
- * board labels, task identifiers in the frames, and the kits — is Paper Mono,
- * as on master. index.css defines `--font-mono` under `@theme inline`, so the
- * `font-mono` utility carries the system stack inlined rather than `var()`;
- * that is why the class is overridden here as well as the variable.
+ * board labels, task identifiers in the frames, and the kits — is Paper Mono.
+ * index.css declares the face and `--font-paper-mono`, and applies it to
+ * `--font-mono` only under the design-proposal theme; the lab applies it to
+ * its whole page.
  */
 :root {
-  --font-mono: "Paper Mono", ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace;
-}
-.font-mono {
-  font-family: var(--font-mono);
+  --font-mono: var(--font-paper-mono);
 }
