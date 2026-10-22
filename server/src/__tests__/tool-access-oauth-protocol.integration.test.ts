@@ -47,6 +47,7 @@ describe("tool OAuth over local HTTP", () => {
     const calls: Array<{ path: string; authorization?: string; body: string }> = [];
     let origin: string;
     let currentAccessToken = "fixture-access";
+    let currentRefreshToken = "fixture-refresh";
     const provider = createServer(async (req, res) => {
       let body = "";
       for await (const chunk of req) body += chunk;
@@ -76,8 +77,14 @@ describe("tool OAuth over local HTTP", () => {
       }
       if (path === "/token") {
         const refreshing = new URLSearchParams(body).get("grant_type") === "refresh_token";
-        if (refreshing) currentAccessToken = "fixture-access-rotated";
-        return json({ access_token: currentAccessToken, refresh_token: refreshing ? "fixture-refresh-rotated" : "fixture-refresh",
+        if (refreshing) {
+          if (new URLSearchParams(body).get("refresh_token") !== currentRefreshToken) {
+            return json({ error: "invalid_grant" }, 400);
+          }
+          currentAccessToken = "fixture-access-rotated";
+          currentRefreshToken = "fixture-refresh-rotated";
+        }
+        return json({ access_token: currentAccessToken, refresh_token: currentRefreshToken,
           expires_in: 3600, token_type: "Bearer", scope: "tools.read offline_access" });
       }
       if (path === "/mcp") {
@@ -171,6 +178,14 @@ describe("tool OAuth over local HTTP", () => {
       expect(JSON.stringify(persistedGrant)).not.toMatch(/fixture-(access|refresh|secret)/);
       await first.checkHealth(connection.id, { actorType: "user", actorId: userId });
       expect(calls.some(call => call.path === "/mcp" && call.authorization === "Bearer fixture-access-rotated")).toBe(true);
+      await db.update(connectionGrants).set({ providerTenant: {
+        ...persistedGrant.providerTenant,
+        oauth: { ...persistedGrant.providerTenant?.oauth, accessTokenExpiresAt: new Date(0).toISOString() },
+      } }).where(eq(connectionGrants.id, grant.id));
+      await second.refreshOAuthGrantCredentials(refreshInput);
+      const allExchanges = calls.filter(call => call.path === "/token");
+      expect(allExchanges).toHaveLength(3);
+      expect(new URLSearchParams(allExchanges[2].body).get("refresh_token")).toBe("fixture-refresh-rotated");
       expect(calls.filter(call => call.path === "/register")).toHaveLength(1);
     } finally {
       provider.closeAllConnections();
