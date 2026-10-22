@@ -828,22 +828,31 @@ describe("Agents", () => {
     expect(container.querySelector('select[aria-label="Group agents"]')).toBeNull();
   });
 
-  it("hides built-in agent surfaces while the experimental flag is disabled", async () => {
-    mockRouterState.pathname = "/agents/builtin";
+  it.each([
+    { mode: "streamlined", AgentList: Agents },
+    { mode: "production", AgentList: ProductionAgents },
+  ].flatMap(layout => ["active", "paused", "error", "builtin"].map(tab => ({ ...layout, tab }))))("redirects legacy /agents/$tab to the full $mode roster", async ({ tab, AgentList }) => {
+    mockRouterState.pathname = `/agents/${tab}`;
+    mockSidebarState.isMobile = true;
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({}), makeAgent({ id: "paused-agent", name: "Paused", status: "paused" }),
+      makeAgent({ id: "error-agent", name: "Error", status: "error" }),
+    ]);
 
     root = createRoot(container);
     await act(async () => {
-      renderAgentsView(root, queryClient);
+      root!.render(<QueryClientProvider client={queryClient}><ToastProvider><AgentList /></ToastProvider></QueryClientProvider>);
     });
     await flushReact();
     await flushReact();
 
     expect(mockBuiltInAgentsApi.list).not.toHaveBeenCalled();
     expect(container.textContent).not.toContain("Built-in");
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(3);
     expect(mockRouterState.navigate).toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 
-  it("shows and filters built-in agents when the experimental flag is enabled", async () => {
+  it("redirects the legacy built-in URL to all agents while loading enabled built-in metadata", async () => {
     mockRouterState.pathname = "/agents/builtin";
     mockInstanceSettingsApi.get.mockResolvedValue(makeInstanceSettings({ enableBuiltInAgents: true }));
     const builtInAgent = makeAgent({
@@ -884,12 +893,12 @@ describe("Agents", () => {
     await flushReact();
     await flushReact();
 
-    expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
+    expect(container.querySelectorAll("tbody tr")).toHaveLength(2);
     expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
     expect(container.textContent).toContain("Briefs Agent");
-    expect(container.textContent).not.toContain("Regular Agent");
+    expect(container.textContent).toContain("Regular Agent");
     expect(container.querySelector('[title="Ships with Paperclip"]')).toBeNull();
-    expect(mockRouterState.navigate).not.toHaveBeenCalledWith("/agents/all", { replace: true });
+    expect(mockRouterState.navigate).toHaveBeenCalledWith("/agents/all", { replace: true });
   });
 
   it("selects visible agents without navigating and exposes the harness edit action", async () => {
