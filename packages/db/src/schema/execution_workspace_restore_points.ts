@@ -4,6 +4,7 @@ import { bigint, index, integer, pgTable, text, timestamp, uniqueIndex, uuid } f
 export const EXECUTION_WORKSPACE_RESTORE_POINT_STATUSES = [
   "pending",
   "active",
+  "expiring",
   "superseded",
   "delete_requested",
   "deleted",

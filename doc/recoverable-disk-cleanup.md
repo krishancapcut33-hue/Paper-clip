@@ -99,7 +99,7 @@ Restore points are encrypted saves of the parts of a git worktree that its remot
 cannot reproduce: unpushed commits and uncommitted files. They let a closed issue's
 worktree be removed and restored later. The table `execution_workspace_restore_points`
 tracks each one with its storage key, hash, size and status
-(`pending`, `active`, `superseded`, `delete_requested`, `deleted`). The objects live in
+(`pending`, `active`, `expiring`, `superseded`, `delete_requested`, `deleted`). The objects live in
 the instance's configured file storage (`local_disk` or `s3`).
 
 An active restore point's `delete_after` is either its expiry time or empty while its
@@ -115,7 +115,9 @@ no recurring checks. At review it checks the source issue tree:
 - Tree still open: clear `delete_after` and wait for the next issue change.
 - Tree `done` or `cancelled`: expire `PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS`
   (default `90`, minimum `1`) after the tree's latest close, immediately if that time
-  has passed.
+  has passed. Expiry first moves the row to `expiring`, runs the expiry hook, and only
+  then requests deletion. An `expiring` row's object is never deleted; after a restart
+  or a hook failure the hook is retried, after 15 minutes when it failed.
 - Source issue gone: delete.
 
 Deleting an issue or a company marks its restore points `delete_requested` in the same

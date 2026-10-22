@@ -139,10 +139,33 @@ describeEmbeddedPostgres("git restore point retention", () => {
     expect(await reload(row.id)).toMatchObject({ status: "deleted" });
   });
 
-  it("does not delete when the expiry hook fails", async () => {
+  it("keeps a restore point expiring, and its object, until the expiry hook succeeds", async () => {
     const row = await seed({ closedDaysAgo: 91, deleteAfter: due() });
-    await expect(service({ beforeExpire: async () => { throw new Error("recipe busy"); } }).tick()).rejects.toThrow("recipe busy");
-    expect(await reload(row.id)).toMatchObject({ status: "active" });
+    expect(await service({ beforeExpire: async () => { throw new Error("recipe busy"); } }).tick()).toMatchObject({ failed: 1, expired: 0, deleted: 0 });
+    expect(await reload(row.id)).toMatchObject({ status: "expiring", lastError: "recipe busy" });
+    expect(await service().tick()).toMatchObject({ expired: 0, deleted: 0 });
+    expect(await service().nextDeadlineAt()).toBe((await reload(row.id)).updatedAt.getTime() + GIT_RESTORE_POINT_RETRY_MS);
+    const beforeExpire = vi.fn(async () => {});
+    const later = service({ at: new Date(now.getTime() + GIT_RESTORE_POINT_RETRY_MS + 1000), beforeExpire });
+    expect(await later.tick()).toMatchObject({ expired: 1, deleted: 1 });
+    expect(beforeExpire).toHaveBeenCalledOnce();
+    expect(deleted).toEqual([row.objectKey]);
+  });
+
+  it("resumes the expiry hook after a restart instead of deleting the object directly", async () => {
+    const row = await seed({ closedDaysAgo: 91, status: "active" });
+    await db.update(executionWorkspaceRestorePoints).set({ status: "expiring" }).where(eq(executionWorkspaceRestorePoints.id, row.id));
+    const beforeExpire = vi.fn(async () => {});
+    expect(await service().nextDeadlineAt()).toBe(now.getTime());
+    expect(await service({ beforeExpire }).tick()).toMatchObject({ expired: 1, deleted: 1 });
+    expect(beforeExpire).toHaveBeenCalledOnce();
+    expect(await reload(row.id)).toMatchObject({ status: "deleted" });
+  });
+
+  it("never deletes the object of an expiring restore point whose hook has not run", async () => {
+    const row = await seed({ closedDaysAgo: 91, status: "active" });
+    await db.update(executionWorkspaceRestorePoints).set({ status: "expiring" }).where(eq(executionWorkspaceRestorePoints.id, row.id));
+    await service({ beforeExpire: async () => { throw new Error("recipe busy"); } }).tick();
     expect(deleted).toEqual([]);
   });
 

@@ -80,9 +80,9 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
     const deleteAfter = !tree.exists || tree.open || !tree.closedAt ? null : new Date(tree.closedAt.getTime() + retentionMs);
     if (!tree.exists || (deleteAfter && deleteAfter.getTime() <= at.getTime())) {
       const claimed = await db.update(executionWorkspaceRestorePoints)
-        .set({ status: "delete_requested", updatedAt: at })
+        .set({ status: tree.exists ? "expiring" : "delete_requested", lastError: null, updatedAt: at })
         .where(unchanged)
-        .returning({ id: executionWorkspaceRestorePoints.id });
+        .returning();
       if (claimed.length === 0) {
         result.raced += 1;
         return;
@@ -91,15 +91,7 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
         result.orphaned += 1;
         return;
       }
-      try {
-        await options.beforeExpire?.(row);
-      } catch (error) {
-        await db.update(executionWorkspaceRestorePoints)
-          .set({ status: "active", updatedAt: at })
-          .where(and(eq(executionWorkspaceRestorePoints.id, row.id), eq(executionWorkspaceRestorePoints.status, "delete_requested")));
-        throw error;
-      }
-      result.expired += 1;
+      await finishExpiry(claimed[0]!, at, result);
       return;
     }
     const updated = await db.update(executionWorkspaceRestorePoints)
@@ -108,6 +100,30 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
       .returning({ id: executionWorkspaceRestorePoints.id });
     if (updated.length === 0) result.raced += 1;
     else result.scheduled += 1;
+  }
+
+  async function finishExpiry(row: RestorePoint, at: Date, result: GitRestorePointRetentionResult) {
+    try {
+      await options.beforeExpire?.(row);
+    } catch (error) {
+      await db.update(executionWorkspaceRestorePoints)
+        .set({ lastError: error instanceof Error ? error.message.slice(0, 500) : "expire_failed", updatedAt: at })
+        .where(and(eq(executionWorkspaceRestorePoints.id, row.id), eq(executionWorkspaceRestorePoints.status, "expiring")));
+      result.failed += 1;
+      return;
+    }
+    await db.update(executionWorkspaceRestorePoints)
+      .set({ status: "delete_requested", lastError: null, updatedAt: at })
+      .where(and(eq(executionWorkspaceRestorePoints.id, row.id), eq(executionWorkspaceRestorePoints.status, "expiring")));
+    result.expired += 1;
+  }
+
+  function retryable(status: "expiring" | "superseded" | "delete_requested" | Array<"superseded" | "delete_requested">, at: Date) {
+    return and(
+      Array.isArray(status) ? inArray(executionWorkspaceRestorePoints.status, status) : eq(executionWorkspaceRestorePoints.status, status),
+      or(isNull(executionWorkspaceRestorePoints.lastError),
+        lte(executionWorkspaceRestorePoints.updatedAt, new Date(at.getTime() - GIT_RESTORE_POINT_RETRY_MS))),
+    );
   }
 
   async function tick() {
@@ -127,10 +143,13 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
       .orderBy(asc(executionWorkspaceRestorePoints.deleteAfter), asc(executionWorkspaceRestorePoints.id)).limit(batchSize);
     for (const row of due) await evaluateActive(row, at, result);
 
+    const expiring = await db.select().from(executionWorkspaceRestorePoints)
+      .where(retryable("expiring", at))
+      .orderBy(asc(executionWorkspaceRestorePoints.updatedAt), asc(executionWorkspaceRestorePoints.id)).limit(batchSize);
+    for (const row of expiring) await finishExpiry(row, at, result);
+
     const doomed = await db.select().from(executionWorkspaceRestorePoints)
-      .where(and(inArray(executionWorkspaceRestorePoints.status, ["superseded", "delete_requested"]),
-        or(isNull(executionWorkspaceRestorePoints.lastError),
-          lte(executionWorkspaceRestorePoints.updatedAt, new Date(at.getTime() - GIT_RESTORE_POINT_RETRY_MS)))))
+      .where(retryable(["superseded", "delete_requested"], at))
       .orderBy(asc(executionWorkspaceRestorePoints.updatedAt), asc(executionWorkspaceRestorePoints.id)).limit(batchSize);
     for (const row of doomed) {
       try {
@@ -147,14 +166,15 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
         result.failed += 1;
       }
     }
-    result.truncated = abandoned.length === batchSize || due.length === batchSize || doomed.length === batchSize;
+    result.truncated = abandoned.length === batchSize || due.length === batchSize
+      || expiring.length === batchSize || doomed.length === batchSize;
     return result;
   }
 
   async function nextDeadlineAt(): Promise<number | null> {
     const [row] = await db.select({
-      deleteNow: sql<number>`count(*) FILTER (WHERE ${executionWorkspaceRestorePoints.status} IN ('superseded', 'delete_requested') AND ${executionWorkspaceRestorePoints.lastError} IS NULL)::int`,
-      retryFrom: sql<string | null>`min(${executionWorkspaceRestorePoints.updatedAt}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} IN ('superseded', 'delete_requested') AND ${executionWorkspaceRestorePoints.lastError} IS NOT NULL)`,
+      deleteNow: sql<number>`count(*) FILTER (WHERE ${executionWorkspaceRestorePoints.status} IN ('expiring', 'superseded', 'delete_requested') AND ${executionWorkspaceRestorePoints.lastError} IS NULL)::int`,
+      retryFrom: sql<string | null>`min(${executionWorkspaceRestorePoints.updatedAt}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} IN ('expiring', 'superseded', 'delete_requested') AND ${executionWorkspaceRestorePoints.lastError} IS NOT NULL)`,
       pendingFrom: sql<string | null>`min(${executionWorkspaceRestorePoints.createdAt}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} = 'pending')`,
       expiresAt: sql<string | null>`min(${executionWorkspaceRestorePoints.deleteAfter}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} = 'active')`,
     }).from(executionWorkspaceRestorePoints);
@@ -191,7 +211,7 @@ export async function requestRestorePointDeletion(
       "sourceIssueId" in scope
         ? eq(executionWorkspaceRestorePoints.sourceIssueId, scope.sourceIssueId)
         : eq(executionWorkspaceRestorePoints.companyId, scope.companyId),
-      inArray(executionWorkspaceRestorePoints.status, ["pending", "active"]),
+      inArray(executionWorkspaceRestorePoints.status, ["pending", "active", "expiring"]),
     ));
 }
 
