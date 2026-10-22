@@ -1,6 +1,9 @@
 import { randomUUID } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
-import { BROWSER_USE_TOOLS } from "@paperclipai/shared";
+import {
+  BROWSER_USE_TOOLS,
+  browserUseProxyCountryCodeSchema,
+} from "@paperclipai/shared";
 import {
   browserUseClient,
   browserUseCostCap,
@@ -89,6 +92,38 @@ describe("Browser Use v4 transport", () => {
         (t) => t.name,
       ),
     ).toEqual(["browser_status", "browser_sessions", "browser_profiles"]);
+  });
+  it("offers an optional proxy exit country and forwards it as a browser setting", async () => {
+    for (const name of ["browser_start", "browser_continue"]) {
+      const schema = BROWSER_USE_TOOLS.find((t) => t.name === name)!.inputSchema;
+      expect(schema.properties.proxyCountryCode).toMatchObject({
+        type: ["string", "null"],
+        pattern: "^[a-z]{2}$",
+      });
+      expect(schema.required).not.toContain("proxyCountryCode");
+    }
+    expect(browserUseProxyCountryCodeSchema.safeParse("ch").success).toBe(true);
+    for (const value of ["CH", "che", "c", "", "ch ", "switzerland"])
+      expect(browserUseProxyCountryCodeSchema.safeParse(value).success).toBe(
+        false,
+      );
+    const request = vi.fn(async (_url: string, init: RequestInit) => {
+      expect(JSON.parse(String(init.body)).browserSettings).toEqual({
+        record: false,
+        proxyCountryCode: "ch",
+      });
+      return Response.json({
+        id: randomUUID(),
+        sessionId: randomUUID(),
+        status: "queued",
+        model: "browser-use-default",
+      });
+    });
+    await browserUseClient({}, request).start({
+      task: "Read example.com",
+      browserSettings: { record: false, proxyCountryCode: "ch" },
+    });
+    expect(request).toHaveBeenCalledTimes(1);
   });
   it("uses per-connection Retry-After backoff and suppresses provider error bodies", async () => {
     const request = vi.fn(

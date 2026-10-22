@@ -51,6 +51,8 @@ export interface BrowserUseViewportState {
   /** True only when remote metrics changed (lease renewals do not create audit noise). */
   applied?: boolean;
 }
+/** Lower-case ISO 3166-1 alpha-2 code, as the v4 proxy option expects. */
+export const browserUseProxyCountryCodeSchema = z.string().regex(/^[a-z]{2}$/);
 export const browserUseSettingsSchema = z
   .object({
     allowedProfileIds: z.array(z.string().uuid()).max(100).default([]),
@@ -91,6 +93,12 @@ const task = {
   maxLength: 30000,
   description: "The browser task to delegate.",
 };
+const proxyCountryCode = {
+  type: ["string", "null"],
+  pattern: "^[a-z]{2}$",
+  description:
+    'Residential proxy exit country as a lower-case ISO 3166-1 alpha-2 code, for example "ch". Omit for the provider default; null disables the proxy. It applies when a browser is provisioned, so a continuation keeps the browser it already has.',
+};
 function tool(
   name: string,
   description: string,
@@ -125,6 +133,7 @@ export const BROWSER_USE_TOOLS = [
       task,
       profileId: { type: "string", format: "uuid" },
       maxCostUsd: { type: "number", exclusiveMinimum: 0 },
+      proxyCountryCode,
     },
     ["task"],
   ),
@@ -142,6 +151,7 @@ export const BROWSER_USE_TOOLS = [
       sessionId: session,
       task,
       maxCostUsd: { type: "number", exclusiveMinimum: 0 },
+      proxyCountryCode,
     },
     ["sessionId", "task"],
   ),
