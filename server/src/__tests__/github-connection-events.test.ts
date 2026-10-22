@@ -45,7 +45,13 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     await tempDb?.cleanup();
   });
 
-  it("applies a normalized merged PR once, updates the snapshot, and acknowledges Cloud", async () => {
+  it.each([
+    { url: "https://github.com/paperclipai/paperclip/pull/123", persistsUrl: true },
+    { url: "https://test-user@github.com/paperclipai/paperclip/pull/123", persistsUrl: false },
+    { url: "https://:fake-password@github.com/paperclipai/paperclip/pull/123", persistsUrl: false },
+    { url: "https://github.com/paperclipai/paperclip/pull/123?token=placeholder", persistsUrl: false },
+    { url: "https://github.com/paperclipai/paperclip/pull/123#placeholder", persistsUrl: false },
+  ])("applies a normalized merged PR once without persisting sensitive URL components (%s)", async ({ url, persistsUrl }) => {
     const companyId = randomUUID();
     const userId = `github-owner-${randomUUID()}`;
     const applicationId = randomUUID();
@@ -125,7 +131,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         merged: true,
         mergedAt: "2026-09-04T11:59:00.000Z",
         updatedAt: "2026-09-04T11:59:01.000Z",
-        url: "https://github.com/paperclipai/paperclip/pull/123",
+        url,
         headRef: "feature",
         headSha: "a".repeat(40),
         baseRef: "master",
@@ -178,13 +184,19 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         merged: true,
         mergedAt: "2026-09-04T11:59:00.000Z",
         updatedAt: "2026-09-04T11:59:01.000Z",
-        url: "https://github.com/paperclipai/paperclip/pull/123",
         headRef: "feature",
         headSha: "a".repeat(40),
         baseRef: "master",
         baseSha: "b".repeat(40),
       },
     });
+    if (persistsUrl) {
+      expect(receipt?.normalizedPayload).toMatchObject({ url });
+      expect(snapshot?.data).toMatchObject({ url });
+    } else {
+      expect(receipt?.normalizedPayload).not.toHaveProperty("url");
+      expect(snapshot?.data).not.toHaveProperty("url");
+    }
     expect(JSON.stringify(receipt)).not.toMatch(/private pull request|private review|ghu_|also-must-not/);
     const [activity] = await db.select().from(activityLog).where(eq(activityLog.action, "tool_connection.webhook_processed"));
     expect(activity?.details).toEqual({
