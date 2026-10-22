@@ -1217,6 +1217,15 @@
       "expectedMockState": "runtime_decision_record"
     },
     {
+      "id": "skill:skills/paperclip/references/issue-monitors.md:1",
+      "kind": "skill_heading",
+      "sourceAnchor": "skills/paperclip/references/issue-monitors.md#L1:monitors-and-watchers-say-only-what-you-actually-scheduled",
+      "heading": "Monitors and Watchers (say only what you actually scheduled)",
+      "primaryDisposition": "control_plane_owned",
+      "semanticOperation": "runtime_reconciliation",
+      "expectedMockState": "runtime_decision_record"
+    },
+    {
       "id": "skill:skills/paperclip/references/issue-workspaces.md:1",
       "kind": "skill_heading",
       "sourceAnchor": "skills/paperclip/references/issue-workspaces.md#L1:issue-workspace-runtime-controls",
