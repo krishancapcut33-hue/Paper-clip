@@ -9,7 +9,6 @@ export function isWorkspaceProvider(manifest: PaperclipPluginManifestV1) {
     manifest.resourceLifecycle?.includes("project"));
 }
 
-/** Installation/enablement select the provider; transient worker health must never change it. */
 type ProviderDb = Pick<Db, "select">;
 
 export async function listProjectWorkspaceProviders(db: ProviderDb, companyId: string) {
@@ -24,7 +23,6 @@ export async function listProjectWorkspaceProviders(db: ProviderDb, companyId: s
 
 type Provider = Awaited<ReturnType<typeof listProjectWorkspaceProviders>>[number];
 
-/** Keep stored policy separate from effective defaults so reads and edits never turn inheritance into an override. */
 export function resolveProjectWorkspaceProvider(
   rawPolicy: unknown,
   providers: Provider[],

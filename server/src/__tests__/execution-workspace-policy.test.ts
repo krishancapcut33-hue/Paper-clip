@@ -52,6 +52,14 @@ describe("execution workspace policy helpers", () => {
     expect(resolveEffectiveWorkspaceStrategyType(mode, config)).toBe("git_worktree");
   });
 
+  it.each(["shared_workspace", "operator_branch"] as const)("keeps the primary-source fallback for %s providers without a project strategy", mode => {
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: { workspaceStrategy: { type: "git_worktree", baseRef: "agent-branch" } },
+      issueSettings: null, mode, legacyUseProjectWorkspace: null,
+      projectPolicy: { enabled: true, storageProviderPluginId: "10000000-0000-4000-8000-000000000001" } });
+    expect(config.workspaceStrategy).toEqual({ type: "project_primary" });
+    expect(resolveEffectiveWorkspaceStrategyType(mode, config)).toBe("project_primary");
+  });
+
   it("prefers explicit issue mode over project policy and legacy overrides", () => {
     expect(
       resolveExecutionWorkspaceMode({

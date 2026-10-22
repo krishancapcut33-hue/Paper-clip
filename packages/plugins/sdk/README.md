@@ -1336,6 +1336,11 @@ an explicit project choice or disabling a conflicting provider. Worker health do
 not change the selected default: unavailable providers fail without local fallback.
 No company settings row means enabled, matching the normal plugin contract.
 
+New and imported tasks leave an unspecified project mode inherited. Provider-owned
+workspaces retain explicit project and task strategies in shared and operator-branch
+modes. If neither supplies a strategy, those modes use `project_primary`; an agent's
+Git strategy remains a fallback only for isolated mode.
+
 Project responses keep the stored `executionWorkspacePolicy` and expose the
 separate `workspaceProvider` configuration, including its source, effective policy,
 provider choices and configuration error. The project configuration UI supports

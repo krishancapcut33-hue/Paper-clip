@@ -345,7 +345,6 @@ export function resolveExecutionWorkspaceEnvironmentId(input: {
 export function defaultIssueExecutionWorkspaceSettingsForProject(
   projectPolicy: ProjectExecutionWorkspacePolicy | null,
 ): IssueExecutionWorkspaceSettings | null {
-  // An unspecified mode must keep inheriting the effective provider default.
   if (!projectPolicy?.enabled || projectPolicy.defaultMode === undefined) return null;
   return {
     mode:
@@ -460,7 +459,7 @@ export function buildExecutionWorkspaceAdapterConfig(input: {
       const strategy = issueStrategy && projectStrategy?.type === issueStrategy.type
         ? { ...projectStrategy, ...issueStrategy }
         : issueStrategy ?? projectStrategy ??
-        parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) ??
+        (input.mode === "isolated_workspace" ? parseExecutionWorkspaceStrategy(nextConfig.workspaceStrategy) : undefined) ??
         ({ type: input.mode === "isolated_workspace" ? "git_worktree" : "project_primary" } satisfies ExecutionWorkspaceStrategy);
       if (issueStrategy?.existingBranch && issueStrategy.branchTemplate === undefined && strategy !== issueStrategy) {
         delete strategy.branchTemplate;

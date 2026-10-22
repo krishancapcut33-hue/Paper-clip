@@ -185,7 +185,6 @@ export async function preparePluginWorkspace(
     existing?.metadata?.workspaceProviderRemoval
   )
     throw conflict("Workspace storage is retired or awaiting cleanup");
-  // A source-free task directory has no project storage to prepare. Existing bindings still require their owner.
   if (!existing && (!input.projectId || !input.projectWorkspaceId)) return null;
   const saved = readWorkspaceProviderBinding(existing?.metadata);
   const mode = existing?.mode ?? input.mode,
@@ -202,7 +201,6 @@ export async function preparePluginWorkspace(
           ),
         )
     : [];
-  // A project default can only select storage for a new workspace.
   if (existing && existing.providerType !== "plugin" && !saved && !existing.metadata?.workspaceProviderOwner) return null;
   const owner = saved?.pluginId ?? existing?.metadata?.workspaceProviderOwner ??
     (!existing && input.selectedProviderPluginId !== undefined ? input.selectedProviderPluginId :

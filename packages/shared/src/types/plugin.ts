@@ -698,7 +698,6 @@ export interface PaperclipPluginManifestV1 {
   workspaceProvider?: {
     modes: Array<"shared_workspace" | "isolated_workspace" | "operator_branch">;
     strategies: Array<"project_primary" | "git_worktree">;
-    /** Inherit this provider and these Git workspace defaults for projects without an explicit selection. */
     defaultForProjects?: {
       mode: "shared_workspace" | "isolated_workspace" | "operator_branch";
       strategy: "project_primary" | "git_worktree";

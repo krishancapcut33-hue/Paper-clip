@@ -164,7 +164,6 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
   });
   it("pins a resolved Core choice through source selection when a default appears during setup", async () => {
     const { input, source } = await fixture();
-    // The run resolved Core before installation; its policy and mode are already admitted.
     expect(input.policy.projectExecutionWorkspacePolicy).toBeNull();
     await installDefault();
     const call = vi.fn();

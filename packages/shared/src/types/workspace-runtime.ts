@@ -171,7 +171,6 @@ export interface ExecutionWorkspaceCloseReadiness {
 
 export interface ProjectExecutionWorkspacePolicy {
   enabled: boolean;
-  /** Omitted inherits the installed default; null explicitly selects Core/local. */
   storageProviderPluginId?: string | null;
   sharedWorkspaceConcurrency?: SharedWorkspaceConcurrency;
   defaultMode?: ProjectExecutionWorkspaceDefaultMode;
