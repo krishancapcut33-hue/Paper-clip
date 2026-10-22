@@ -23,7 +23,7 @@ function initialAgents(): Agent[] {
     const binding: AiConnectionBinding | undefined = connection ? { provider: connection.provider, method: connection.method, mode: "shared", connectionId: connection.id, grantId: connection.grantId } : undefined;
     return { ...storybookAgents[0], id: uuid(i + 201), urlKey: r.id, name: r.name, title: r.title, companyId,
       adapterType: r.harness === "external" ? "http" : harnesses[r.harness].adapter,
-      adapterConfig: { model: r.model, cwd: "/workspace" }, runtimeConfig: { heartbeat: { intervalSec: 900 }, ...(binding ? { aiConnection: binding } : {}) }, status: r.paused ? "paused" : "idle", pausedAt: null };
+      adapterConfig: { model: r.model, cwd: "/workspace" }, runtimeConfig: { heartbeat: { intervalSec: 900 }, ...(binding ? { aiConnection: binding } : {}) }, status: r.paused ? "paused" : "idle", pausedAt: r.paused ? new Date("2026-10-22T00:00:00Z") : null };
   });
 }
 
@@ -72,13 +72,30 @@ const meta = {
   component: BulkSettingsPage,
   parameters: { layout: "fullscreen", initialEntries: ["/PAP/agents/all"], paperclip: {
     capabilities: ["agents/organization", "agents/instructions"], implementation: "production", boundary: "fixtures",
-    notes: "Actual Agents page, bulk roster, sheet, account picker, model intersection and narrow PATCH client. HTTP accounts/catalogs/writes are synthetic, including one transient failure and an empty local Hermes catalog. Does not establish live provider credential validity or database persistence. The original approved proposal remains in Design proposals.",
+    notes: "Actual Agents page, filter icon/popover with preserved selection, bulk roster, sheet, account picker, model intersection and narrow PATCH client. Includes paused agents at normal contrast. HTTP accounts/catalogs/writes are synthetic, including one transient failure and an empty local Hermes catalog. Does not establish live provider credential validity or database persistence. The original approved proposal remains in Design proposals.",
   } },
 } satisfies Meta<typeof BulkSettingsPage>;
 export default meta;
 type Story = StoryObj<typeof meta>;
 export const Playground: Story = {};
 export const Light: Story = { globals: { theme: "light" } };
+
+export const FilterJourney: Story = { play: async ({ canvasElement }) => {
+  const page = within(canvasElement);
+  const screen = within(canvasElement.ownerDocument.body);
+  await userEvent.click(await page.findByRole("checkbox", { name: "Select Sage" }));
+  await userEvent.click(page.getByRole("button", { name: "Filter agents" }));
+  const filters = within(await screen.findByRole("dialog", { name: "Agent filters" }));
+  await userEvent.click(filters.getByRole("button", { name: "Codex" }));
+  await expect(page.queryByRole("checkbox", { name: "Select Sage" })).not.toBeInTheDocument();
+  await expect(page.getByText("1 hidden by filters")).toBeVisible();
+  await expect(page.getByRole("checkbox", { name: "Select Scout" })).toBeEnabled();
+  await userEvent.click(filters.getByRole("button", { name: "Clear" }));
+  await expect(await page.findByRole("checkbox", { name: "Select Sage" })).toBeChecked();
+  await userEvent.keyboard("{Escape}");
+  await expect(page.getByRole("button", { name: "Filter agents" })).toHaveFocus();
+  await userEvent.click(page.getByRole("button", { name: "Clear selection" }));
+} };
 
 async function selectCodex(canvasElement: HTMLElement, mixed = false) {
   const page = within(canvasElement);

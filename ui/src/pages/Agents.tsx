@@ -29,10 +29,6 @@ import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot } from "lucide-react";
 import { AGENT_ROLE_LABELS, type Agent, type Environment, type EnvironmentCapabilities } from "@paperclipai/shared";
-import {
-  resourceMembershipState,
-  useResourceMemberships,
-} from "../hooks/useResourceMemberships";
 import { usePublishSharedQueryData, useSharedPollingQuery } from "../hooks/useSharedPolling";
 
 import { agentDisplayAdapterType, getAdapterLabel } from "../adapters/adapter-display-registry";
@@ -288,7 +284,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
     refetchInterval: sharedRuns.refetchInterval,
   });
   usePublishSharedQueryData(sharedRuns, runs, runsUpdatedAt);
-  const membershipsQuery = useResourceMemberships(selectedCompanyId);
 
   // Map agentId -> first live run + live run count
   const liveRunByAgent = useMemo(() => {
@@ -392,11 +387,7 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
         subtitleClassName="truncate"
         subtitle={`${roleLabels[agent.role] ?? agent.role}${agent.title ? ` - ${agent.title}` : ""}`}
         to={agentUrl(agent)}
-        className={cn(
-          "group py-3",
-          agent.pausedAt && tab !== "paused" ? "opacity-50" : "",
-          resourceMembershipState(membershipsQuery.data, "agent", agent.id) === "left" ? "sm:text-foreground/55" : "",
-        )}
+        className="group py-3"
         leading={hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 text-amber-500" aria-label="Invalid reporting chain" />
         ) : (
@@ -505,8 +496,6 @@ function OrgTreeNode({
   environmentByAgentId,
   environmentDataLoading,
   showEnvironment,
-  tab,
-  memberships,
   builtInByAgentId,
   onConfigureBuiltIn,
 }: {
@@ -517,8 +506,6 @@ function OrgTreeNode({
   environmentByAgentId: Map<string, EnvironmentDescriptor>;
   environmentDataLoading: boolean;
   showEnvironment: boolean;
-  tab: FilterTab;
-  memberships: ReturnType<typeof useResourceMemberships>["data"];
   builtInByAgentId: Map<string, BuiltInAgentState>;
   onConfigureBuiltIn: (state: BuiltInAgentState) => void;
 }) {
@@ -526,17 +513,12 @@ function OrgTreeNode({
   const builtInState = builtInByAgentId.get(node.id);
   const showBuiltInLifecycle = builtInState?.status === "needs_setup" || builtInState?.status === "pending_approval";
   const hasInvalidOrgChain = Boolean(agent && agent.orgChainHealth?.status === "invalid_org_chain");
-  const membershipState = resourceMembershipState(memberships, "agent", node.id);
 
   return (
     <div style={{ paddingLeft: depth * 24 }}>
       <Link
         to={agent ? agentUrl(agent) : `/agents/${node.id}`}
-        className={cn(
-          "group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit",
-          agent?.pausedAt && tab !== "paused" && "opacity-50",
-          membershipState === "left" && "sm:text-foreground/55",
-        )}
+        className="group flex items-center gap-3 rounded-lg px-3 py-2 hover:bg-accent/50 transition-colors w-full text-left no-underline text-inherit"
       >
         {hasInvalidOrgChain ? (
           <AlertTriangle className="h-3.5 w-3.5 shrink-0 text-amber-500" aria-label="Invalid reporting chain" />
@@ -623,8 +605,6 @@ function OrgTreeNode({
               environmentByAgentId={environmentByAgentId}
               environmentDataLoading={environmentDataLoading}
               showEnvironment={showEnvironment}
-              tab={tab}
-              memberships={memberships}
               builtInByAgentId={builtInByAgentId}
               onConfigureBuiltIn={onConfigureBuiltIn}
             />

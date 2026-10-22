@@ -543,7 +543,7 @@ describe("Agents", () => {
     expect(row?.querySelector(".hidden.sm\\:flex")).not.toBeNull();
 
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
-    expect(row?.classList.contains("sm:text-foreground/55")).toBe(true);
+    expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
     const name = row?.querySelector("span[title='Paperclip Engineer With A Much Longer Display Name']");
     const subtitle = Array.from(row?.querySelectorAll("p") ?? []).find((node) =>
       node.textContent?.includes("Software Engineer With A Much Longer Specialty Title"),
@@ -953,8 +953,11 @@ describe("Agents", () => {
     expect(container.querySelector('[aria-label="Star Alpha"]')).toBeNull();
   });
 
-  it("does not dim left-membership agent names on mobile", async () => {
-    mockSidebarState.isMobile = true;
+  it.each([false, true])("keeps paused and left-membership agent names readable (mobile: %s)", async (isMobile) => {
+    mockSidebarState.isMobile = isMobile;
+    mockAgentsApi.list.mockResolvedValue([
+      makeAgent({ status: "paused", pausedAt: new Date("2026-01-02T00:00:00Z") }),
+    ]);
     mockResourceMembershipsApi.listMine.mockResolvedValue({
       projectMemberships: {},
       agentMemberships: {
@@ -977,7 +980,8 @@ describe("Agents", () => {
     const row = findAgentRow(container, "Alpha");
     expect(row).not.toBeNull();
     expect(row?.classList.contains("text-foreground/55")).toBe(false);
-    expect(row?.classList.contains("sm:text-foreground/55")).toBe(true);
+    expect(row?.classList.contains("sm:text-foreground/55")).toBe(false);
+    expect(row?.classList.contains("opacity-50")).toBe(false);
   });
 
   it("keeps invalid-org-chain agents visible with a warning marker", async () => {

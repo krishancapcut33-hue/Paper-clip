@@ -1,13 +1,14 @@
 import { lazy, Suspense, useState, type ReactNode } from "react";
 import { useQuery } from "@tanstack/react-query";
-import { Check, Pencil, X } from "lucide-react";
+import { Check, Filter, Pencil, X } from "lucide-react";
 import type { Agent } from "@paperclipai/shared";
 import { aiConnectionsApi } from "@/api/ai-connections";
 import { getAdapterLabel } from "@/adapters/adapter-display-registry";
 import { agentConnection, agentDefaultModel, bulkAgentDisabledReason, bulkAgentHarness, bulkConnectionName } from "@/lib/bulk-agent-settings";
 import { Button } from "@/components/ui/button";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { cn } from "@/lib/utils";
 
 const AgentBulkSettingsSheet = lazy(() => import("./AgentBulkSettingsSheet").then(m => ({ default: m.AgentBulkSettingsSheet })));
 
@@ -32,9 +33,28 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent 
 
   return <div className="space-y-4">
     <div className="flex flex-wrap items-center justify-between gap-3">
-      <Select value={filter} onValueChange={setFilter}><SelectTrigger aria-label="Filter by harness" className="w-44"><SelectValue /></SelectTrigger><SelectContent>
-        <SelectItem value="all">All harnesses</SelectItem>{harnesses.map(h => <SelectItem key={h} value={h}>{getAdapterLabel(h)}</SelectItem>)}
-      </SelectContent></Select>
+      <Popover>
+        <PopoverTrigger asChild>
+          <Button variant="ghost" size="icon" aria-label="Filter agents" title={filter === "all" ? "Filter" : `Filter: ${getAdapterLabel(filter)}`}
+            className={cn("relative h-8 w-8 shrink-0", filter !== "all" && "text-blue-600 dark:text-blue-400")}>
+            <Filter className="h-3.5 w-3.5" aria-hidden />
+            {filter !== "all" && <span aria-hidden className="absolute -right-1 -top-1 flex h-3.5 w-3.5 items-center justify-center rounded-full bg-blue-600 text-(length:--text-nano) font-bold text-white">1</span>}
+          </Button>
+        </PopoverTrigger>
+        <PopoverContent aria-label="Agent filters" align="start" className="w-64 space-y-3 p-3">
+          <div className="flex items-center justify-between">
+            <span className="text-sm font-medium">Filters</span>
+            {filter !== "all" && <button type="button" className="text-xs text-muted-foreground hover:text-foreground" onClick={() => setFilter("all")}>Clear</button>}
+          </div>
+          <div role="group" aria-label="Harness" className="space-y-1">
+            <div className="px-2 text-xs font-medium text-muted-foreground">Harness</div>
+            {["all", ...harnesses].map(h => <button key={h} type="button" aria-pressed={filter === h} onClick={() => setFilter(h)}
+              className={cn("flex w-full items-center justify-between rounded-sm px-2 py-1 text-left text-sm", filter === h ? "bg-accent/50 text-foreground" : "text-muted-foreground hover:bg-accent/50 hover:text-foreground")}>
+              {h === "all" ? "All harnesses" : getAdapterLabel(h)}{filter === h && <Check className="size-3.5" aria-hidden />}
+            </button>)}
+          </div>
+        </PopoverContent>
+      </Popover>
       <span className="text-xs text-muted-foreground">{visible.length} {visible.length === 1 ? "agent" : "agents"}</span>
     </div>
     {selectedAgents.length > 0 && <div role="region" aria-label="Bulk actions" className="sticky top-0 z-10 flex flex-wrap items-center gap-3 rounded-md border bg-muted p-3">
