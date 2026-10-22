@@ -1,3 +1,4 @@
+import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { canonicalRepositoryRoot } from "../execution-workspace-source-roots.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
 import { selectRestoredProjectRepositories, type GitWorkspaceContents } from "../git-workspace-contents.js";
@@ -3508,8 +3509,11 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
       }
       const [sourceProject] = projectWorkspaceRows.length ? await db.select({ policy: projects.executionWorkspacePolicy }).from(projects)
         .where(and(eq(projects.id, workspaceProjectId!), eq(projects.companyId, agent.companyId))) : [];
+      const storageProviderPluginId = sourceProject?.policy?.storageProviderPluginId ??
+        (sourceProject ? (await effectiveProjectWorkspacePolicy(db, agent.companyId, sourceProject.policy,
+          projectWorkspaceRows.some(workspace => Boolean(workspace.repoUrl))))?.storageProviderPluginId : null);
       for (const workspace of projectWorkspaceRows) {
-        if (sourceProject?.policy?.storageProviderPluginId) {
+        if (storageProviderPluginId) {
           return { cwd: `/workspaces/${workspace.id}`, source: "project_primary" as const,
             projectId: workspace.projectId, workspaceId: workspace.id, repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef, workspaceHints, warnings: [], baseCwdFallback: false, materializationFailures: [] };

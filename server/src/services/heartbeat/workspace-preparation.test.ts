@@ -25,7 +25,8 @@ import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js
 import { cleanupExecutionWorkspaceArtifacts } from "../workspace-runtime.js";
 import { buildProjectMentionHref } from "@paperclipai/shared";
 import { trace } from "@opentelemetry/api";
-import { buildExecutionWorkspaceAdapterConfig } from "../execution-workspace-policy.js";
+import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
+import { resolveExecutionWorkspaceMode, buildExecutionWorkspaceAdapterConfig } from "../execution-workspace-policy.js";
 import { createLocalDiskStorageProvider } from "../../storage/local-disk-provider.js";
 import { createStorageService } from "../../storage/service.js";
 import { InMemorySpanExporter, SimpleSpanProcessor, TracerProvider } from "@opentelemetry/sdk-trace";
@@ -53,7 +54,7 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
   });
   beforeEach(async () => {
     vi.restoreAllMocks();
-    await db.execute(sql`truncate table companies restart identity cascade`);
+    await db.execute(sql`truncate table companies, plugins restart identity cascade`);
     await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
   });
 
@@ -95,12 +96,20 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     };
     return { input, source, issue, run, envOrchestrator };
   }
-  it("prepares managed storage before acquisition without touching a Core checkout", async () => {
+  it.each([false, true])("prepares managed storage before acquisition (inherited default: %s) without touching a Core checkout", async inherited => {
     const { input, source, issue } = await fixture(true);
     const [plugin] = await db.insert(plugins).values({ pluginKey: "test.managed-storage", packageName: "test-storage", version: "1.0.0", apiVersion: 1, status: "ready", categories: ["workspace"],
       manifestJson: { id: "test.managed-storage", apiVersion: 1, version: "1.0.0", displayName: "Storage", description: "Storage", author: "Test", categories: ["workspace"],
-        workspaceProvider: { modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"] }, capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
-    await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: plugin.id } }).where(eq(projects.id, issue.projectId!));
+        workspaceProvider: { modes: ["isolated_workspace", "operator_branch"], strategies: ["git_worktree"], ...(inherited ? { defaultForProjects: { mode: "isolated_workspace" as const, strategy: "git_worktree" as const } } : {}) }, capabilities: ["workspaces.manage", "events.subscribe"], resourceLifecycle: ["project"], entrypoints: { worker: "./worker.js" } } }).returning();
+    if (!inherited) await db.update(projects).set({ executionWorkspacePolicy: { enabled: true, storageProviderPluginId: plugin.id } }).where(eq(projects.id, issue.projectId!));
+    if (inherited) {
+      const policy = await effectiveProjectWorkspacePolicy(db, input.agent.companyId, null, true);
+      const mode = resolveExecutionWorkspaceMode({ projectPolicy: policy, issueSettings: null, legacyUseProjectWorkspace: null });
+      input.policy.projectExecutionWorkspacePolicy = policy;
+      input.policy.requestedExecutionWorkspaceMode = mode;
+      input.policy.effectiveExecutionWorkspaceMode = mode;
+      input.config.mergedConfig = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy: policy, issueSettings: null, mode, legacyUseProjectWorkspace: null });
+    }
     await db.update(projectWorkspaces).set({ cwd: null, sourceType: "remote_managed", repoUrl: "https://github.com/example/repo.git" }).where(eq(projectWorkspaces.id, issue.projectWorkspaceId!));
     await rm(source, { recursive: true });
     const sequence: string[] = [];
@@ -124,7 +133,7 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     await expect(access(source)).rejects.toThrow();
     const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
     const [workspace] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, task.executionWorkspaceId!));
-    expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, branchName: "test-WSP-1" });
+    expect(workspace).toMatchObject({ providerType: "plugin", cwd: null, branchName: inherited ? "WSP-1-prepare-this-workspace" : "test-WSP-1" });
   });
   const readIssue = (id: string) => db.select().from(issues).where(eq(issues.id, id)).then(rows => rows[0]!);
   const readRun = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);

@@ -1,3 +1,4 @@
+import { effectiveProjectWorkspacePolicy } from "../project-workspace-provider.js";
 import { attachPreservedWorkspaceSnapshots } from "../workspace-recovery-snapshot.js";
 import { materializeFreshWorkspaceSeed } from "../fresh-workspace-seed.js";
 import { assertTaskWorkspaceExecutionAccess } from "../task-workspace-access.js";
@@ -382,7 +383,8 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     const sourceWorkspace = reusableExistingExecutionWorkspace ?? existingExecutionWorkspace;
     if (sourceWorkspace?.providerType === "plugin" ||
         readWorkspaceProviderBinding(sourceWorkspace?.metadata) ||
-        project?.policy?.storageProviderPluginId) {
+        project?.policy?.storageProviderPluginId ||
+        (project && !sourceWorkspace && (await effectiveProjectWorkspacePolicy(db, agent.companyId, project.policy, false))?.storageProviderPluginId)) {
       throw new WorkspaceValidationFailure("A fresh attempt is unavailable for this workspace storage provider. The existing workspace is retained.", {
         reason: "fresh_workspace_storage_unsupported",
       });
@@ -392,6 +394,7 @@ async function prepareHeartbeatWorkspaceLocked(db: Db, input: HeartbeatWorkspace
     companyId: agent.companyId, projectId: resolvedWorkspace.projectId, projectWorkspaceId: resolvedWorkspace.workspaceId,
     issueId, runId: run.id, agentId: agent.id, responsibleUserId,
     existingWorkspaceId: reusableExistingExecutionWorkspace?.id ?? issueRef?.executionWorkspaceId ?? null,
+    selectedProviderPluginId: projectExecutionWorkspacePolicy?.storageProviderPluginId,
     mode: requestedExecutionWorkspaceMode,
     strategy: resolveEffectiveWorkspaceStrategyType(requestedExecutionWorkspaceMode, mergedConfig),
     branchMode: typeof parseObject(mergedConfig.workspaceStrategy).existingBranch === "string" ? "existing" : "create",

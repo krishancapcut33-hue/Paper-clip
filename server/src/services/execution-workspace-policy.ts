@@ -130,7 +130,7 @@ export function parseProjectExecutionWorkspacePolicy(raw: unknown): ProjectExecu
   })();
   return {
     enabled,
-    ...(typeof parsed.storageProviderPluginId === "string" ? { storageProviderPluginId: parsed.storageProviderPluginId } : {}),
+    ...(typeof parsed.storageProviderPluginId === "string" || parsed.storageProviderPluginId === null ? { storageProviderPluginId: parsed.storageProviderPluginId } : {}),
     ...(sharedWorkspaceConcurrency ? { sharedWorkspaceConcurrency } : {}),
     ...(normalizedDefaultMode ? { defaultMode: normalizedDefaultMode } : {}),
     ...(allowIssueOverride !== undefined ? { allowIssueOverride } : {}),

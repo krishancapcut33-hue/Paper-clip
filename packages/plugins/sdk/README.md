@@ -1315,10 +1315,37 @@ implement `onResourceLifecycle` and `onWorkspaceOperation`. Project lifecycle
 creates and retains the storage; workspace operations manage task checkouts in
 that storage. Execution remains a separate environment driver contract.
 
-Set `project.executionWorkspacePolicy.storageProviderPluginId` to the installed
-plugin's UUID. Core then reserves an execution-workspace row and binds the task
-before it calls `onWorkspaceOperation`. Projects without this setting keep their
-current local behavior. Existing managed workspaces retain their original owner.
+Set `project.executionWorkspacePolicy.storageProviderPluginId` to an installed
+plugin's UUID for an explicit selection, or `null` for explicit Core/local storage.
+Omit the field to inherit the installed company-enabled default. A provider claims
+that default by declaring, for example:
+
+```ts
+workspaceProvider: {
+  modes: ["isolated_workspace", "operator_branch"],
+  strategies: ["git_worktree"],
+  defaultForProjects: { mode: "isolated_workspace", strategy: "git_worktree" },
+}
+```
+
+The declared defaults must be supported by the provider. Core applies missing mode
+and strategy settings to Git projects, including existing unconfigured projects,
+without writing their policy. Explicit settings remain intact; incompatible
+settings fail with a configuration error. Multiple enabled default claims require
+an explicit project choice or disabling a conflicting provider. Worker health does
+not change the selected default: unavailable providers fail without local fallback.
+No company settings row means enabled, matching the normal plugin contract.
+
+Project responses keep the stored `executionWorkspacePolicy` and expose the
+separate `workspaceProvider` configuration, including its source, effective policy,
+provider choices and configuration error. The project configuration UI supports
+inheritance, explicit plugins and Core/local storage. Conflicts remain readable so
+operators can resolve them through this flow.
+
+Core reserves an execution-workspace row and binds the task before calling
+`onWorkspaceOperation`. Existing workspaces, including local workspaces, retain
+their original owner. Changing defaults never migrates, resets or recreates them;
+normal retirement and cleanup gates still apply on disable/uninstall.
 
 The hook receives a company, project, source revision, execution-workspace ID,
 lifecycle generation, deadline, and stable operation ID. Run and agent IDs are
