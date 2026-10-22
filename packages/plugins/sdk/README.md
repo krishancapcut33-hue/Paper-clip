@@ -1343,8 +1343,9 @@ inheritance, explicit plugins and Core/local storage. Conflicts remain readable 
 operators can resolve them through this flow.
 
 Core reserves an execution-workspace row and binds the task before calling
-`onWorkspaceOperation`. Existing workspaces, including local workspaces, retain
-their original owner. Changing defaults never migrates, resets or recreates them;
+`onWorkspaceOperation`. Source-free task directories do not prepare project storage. The resolved provider
+choice, including Core/local, stays fixed through source resolution and preparation.
+Existing workspaces, including local workspaces, retain their original owner. Changing defaults never migrates, resets or recreates them;
 normal retirement and cleanup gates still apply on disable/uninstall.
 
 The hook receives a company, project, source revision, execution-workspace ID,
