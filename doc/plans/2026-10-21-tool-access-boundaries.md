@@ -208,3 +208,17 @@ boundaries pass. No new supervisor, background loop or runtime cache is created.
 - Separate guarded remote HTTP, descriptor risk policy, discovery, publication, default access, cached reads, health, attention and aggregator account synchronization.
 - `tool-access.ts`: 8,997 → 6,418 lines. New owners range from 39 to 492 lines. Remote options remain live; catalog flights and aggregator sync jobs retain per-service lifetime. Publication locks and transaction-scoped default access remain unchanged.
 - Before/after: 470 public service/HTTP integration cases plus 44 catalog-publication, HTTP rebinding and aggregator-sync cases pass. Server typecheck and module-boundary checks pass. All 157 previous function/method bodies match by normalized syntax comparison.
+
+### Connection access and removal; final target
+
+- Extract credential-reference validation, grant audiences/delegations, installations and removal. Each owner keeps its locks, audit writes and cleanup order. Removal uses the existing supervisor and secret client, retains the Slack mutation lease, and keeps access revocation with resumable secret cleanup.
+- `tool-access.ts`: 6,418 → **4,820 lines / 198,002 bytes**. The full stack started at 21,525 lines / 829,519 bytes. The four new modules have 75, 603, 350 and 658 lines.
+- Removal, grant resolution and the strengthened real HTTP OAuth journey passed before extraction (13 cases). The final combined public-path run passes 525 cases across seven suites. Full repository typecheck and build pass. Module-boundary and whitespace checks pass; all 94 previous function/method bodies match by normalized syntax comparison.
+- The earlier local full-suite attempt remains interrupted and unverified. PR descriptions retain that limitation and original CI failures alongside current-head CI outcomes.
+- The requested size target is met. App setup, finish/reconnect orchestration, local template definitions and examples remain in the coordinator; further extraction is outside this batch.
+
+### Merge integration
+
+- The first eight PRs landed on master. The catalog extraction was replayed after the Braintrust connector policy change in #17141. Risk classification and publication retain that policy in their extracted owners; setup retains its policy call.
+- The final entry point is 4,821 lines / 198,065 bytes. All 157 catalog and 94 connection-lifecycle method bodies match their updated bases by normalized syntax comparison.
+- The integrated stack passes 601 targeted cases across nine suites, including Braintrust lifecycle and connector-policy coverage. Server typecheck, module-boundary and whitespace checks pass. Fresh CI and reviews are required for both updated PR heads before merge.
