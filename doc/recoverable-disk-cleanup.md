@@ -102,13 +102,17 @@ tracks each one with its storage key, hash, size and status
 (`pending`, `active`, `superseded`, `delete_requested`, `deleted`). The objects live in
 the instance's configured file storage (`local_disk` or `s3`).
 
-Every active restore point carries a review time in `delete_after`. A retention worker
-on the shared delivery-work scheduler runs at startup and then only at real deadlines:
-the earliest review time, the end of an abandoned capture's grace period, or a failed
-deletion's retry. With nothing due, it schedules nothing. At a restore point's review
-time it checks the source issue tree:
+An active restore point's `delete_after` is either its expiry time or empty while its
+source issue tree is open. A database trigger on `issues` keeps this current: when an
+issue's status or parent changes, or an issue is deleted, it marks every active restore
+point whose source issue is that issue, its old or new parent, or any of their ancestors
+as due now, in the same transaction. A retention worker on the shared delivery-work
+scheduler runs at startup, when issue changes settle while restore points exist, and at
+real deadlines: the earliest expiry, the end of an abandoned capture's grace period, or
+a failed deletion's retry. With nothing due, it schedules nothing, and open trees cause
+no recurring checks. At review it checks the source issue tree:
 
-- Tree still open: review again in 30 days (or the retention period, if shorter).
+- Tree still open: clear `delete_after` and wait for the next issue change.
 - Tree `done` or `cancelled`: expire `PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS`
   (default `90`, minimum `1`) after the tree's latest close, immediately if that time
   has passed.

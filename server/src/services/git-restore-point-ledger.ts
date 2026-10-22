@@ -9,7 +9,6 @@ export const GIT_RESTORE_POINT_DEFAULT_RETENTION_DAYS = 90;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_PENDING_GRACE_MS = 60 * 60 * 1000;
 const DEFAULT_BATCH = 50;
-const OPEN_TREE_RECHECK_MS = 30 * DAY_MS;
 
 type RestorePoint = typeof executionWorkspaceRestorePoints.$inferSelect;
 
@@ -75,10 +74,8 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
       result.orphaned += 1;
       return;
     }
-    const deleteAfter = tree.open || !tree.closedAt
-      ? new Date(at.getTime() + Math.min(retentionMs, OPEN_TREE_RECHECK_MS))
-      : new Date(tree.closedAt.getTime() + retentionMs);
-    if (!tree.open && deleteAfter.getTime() <= at.getTime()) {
+    const deleteAfter = tree.open || !tree.closedAt ? null : new Date(tree.closedAt.getTime() + retentionMs);
+    if (deleteAfter && deleteAfter.getTime() <= at.getTime()) {
       await options.beforeExpire?.(row);
       await requestDeletion([row.id], at);
       result.expired += 1;
@@ -103,7 +100,7 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
 
     const due = await db.select().from(executionWorkspaceRestorePoints)
       .where(and(eq(executionWorkspaceRestorePoints.status, "active"),
-        or(isNull(executionWorkspaceRestorePoints.deleteAfter), lte(executionWorkspaceRestorePoints.deleteAfter, at))))
+        sql`${executionWorkspaceRestorePoints.deleteAfter} <= greatest(${at.toISOString()}::timestamptz, clock_timestamp())`))
       .orderBy(asc(executionWorkspaceRestorePoints.deleteAfter), asc(executionWorkspaceRestorePoints.id)).limit(batchSize);
     for (const row of due) await evaluateActive(row, at, result);
 
@@ -137,18 +134,23 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
       retryFrom: sql<string | null>`min(${executionWorkspaceRestorePoints.updatedAt}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} IN ('superseded', 'delete_requested') AND ${executionWorkspaceRestorePoints.lastError} IS NOT NULL)`,
       pendingFrom: sql<string | null>`min(${executionWorkspaceRestorePoints.createdAt}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} = 'pending')`,
       expiresAt: sql<string | null>`min(${executionWorkspaceRestorePoints.deleteAfter}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} = 'active')`,
-      unscheduled: sql<number>`count(*) FILTER (WHERE ${executionWorkspaceRestorePoints.status} = 'active' AND ${executionWorkspaceRestorePoints.deleteAfter} IS NULL)::int`,
     }).from(executionWorkspaceRestorePoints);
     const at = now().getTime();
     const deadlines: number[] = [];
-    if (row && (row.deleteNow > 0 || row.unscheduled > 0)) deadlines.push(at);
+    if (row && row.deleteNow > 0) deadlines.push(at);
     if (row?.retryFrom) deadlines.push(new Date(row.retryFrom).getTime() + GIT_RESTORE_POINT_RETRY_MS);
     if (row?.pendingFrom) deadlines.push(new Date(row.pendingFrom).getTime() + pendingGraceMs);
     if (row?.expiresAt) deadlines.push(new Date(row.expiresAt).getTime());
     return deadlines.length > 0 ? Math.min(...deadlines) : null;
   }
 
-  return { tick, nextDeadlineAt };
+  async function hasActive(): Promise<boolean> {
+    const [row] = await db.select({ id: executionWorkspaceRestorePoints.id }).from(executionWorkspaceRestorePoints)
+      .where(eq(executionWorkspaceRestorePoints.status, "active")).limit(1);
+    return Boolean(row);
+  }
+
+  return { tick, nextDeadlineAt, hasActive };
 }
 
 export function notifyGitRestorePointWork(transaction: object, hint?: string) {
@@ -176,15 +178,18 @@ export function registerGitRestorePointWork(
   onResult: (result: GitRestorePointRetentionResult) => void,
 ) {
   let next: number | null = null;
-  return coordinator.register(DELIVERY_QUEUES.gitRestorePoints, {
+  let tracksActive = true;
+  const worker = coordinator.register(DELIVERY_QUEUES.gitRestorePoints, {
     retryMs: GIT_RESTORE_POINT_RETRY_MS,
     run: async () => {
       next = null;
       const result = await service.tick();
       onResult(result);
       next = result.truncated ? Date.now() + 1000 : await service.nextDeadlineAt();
+      tracksActive = await service.hasActive();
     },
     hasPending: async () => false,
     nextRunAt: () => next,
   });
+  return { ...worker, issuesChanged: () => { if (tracksActive) worker.wake(); } };
 }

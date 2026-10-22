@@ -38,5 +38,7 @@ export const executionWorkspaceRestorePoints = pgTable(
     statusDeleteAfterIdx: index("execution_workspace_restore_points_status_delete_after_idx").on(table.status, table.deleteAfter),
     companyIdx: index("execution_workspace_restore_points_company_idx").on(table.companyId),
     sourceIssueIdx: index("execution_workspace_restore_points_source_issue_idx").on(table.companyId, table.sourceIssueId),
+    activeSourceIdx: index("execution_workspace_restore_points_active_source_idx").on(table.sourceIssueId)
+      .where(sql`${table.status} = 'active'`),
   }),
 );

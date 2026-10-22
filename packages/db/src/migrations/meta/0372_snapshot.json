@@ -1,5 +1,5 @@
 {
-  "id": "adc16abe-bb0f-4230-9a7e-492be41c3ffc",
+  "id": "c6ac6c95-4e58-4c50-961b-f342e61b0184",
   "prevId": "7caf727e-0913-40b3-b01c-842e9447666f",
   "version": "7",
   "dialect": "postgresql",
@@ -28669,6 +28669,22 @@
             }
           ],
           "isUnique": false,
+          "concurrently": false,
+          "method": "btree",
+          "with": {}
+        },
+        "execution_workspace_restore_points_active_source_idx": {
+          "name": "execution_workspace_restore_points_active_source_idx",
+          "columns": [
+            {
+              "expression": "source_issue_id",
+              "isExpression": false,
+              "asc": true,
+              "nulls": "last"
+            }
+          ],
+          "isUnique": false,
+          "where": "\"execution_workspace_restore_points\".\"status\" = 'active'",
           "concurrently": false,
           "method": "btree",
           "with": {}

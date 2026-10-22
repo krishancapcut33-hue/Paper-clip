@@ -112,16 +112,17 @@ describeEmbeddedPostgres("git restore point retention", () => {
     return row!;
   }
 
-  it("rechecks a restore point in 30 days while its tree is open", async () => {
-    const row = await seed({ openChild: true });
+  const due = () => new Date(now.getTime() - 1000);
+
+  it("waits without a deadline while its tree is open", async () => {
+    const row = await seed({ openChild: true, deleteAfter: due() });
     expect(await service().tick()).toMatchObject({ scheduled: 1, deleted: 0 });
-    const reloaded = await reload(row.id);
-    expect(reloaded).toMatchObject({ status: "active", treeClosedAt: null });
-    expect(reloaded.deleteAfter!.getTime()).toBe(now.getTime() + 30 * DAY_MS);
+    expect(await reload(row.id)).toMatchObject({ status: "active", treeClosedAt: null, deleteAfter: null });
+    expect(await service().nextDeadlineAt()).toBeNull();
   });
 
   it("schedules deletion 90 days after the tree closes", async () => {
-    const row = await seed({ closedDaysAgo: 10 });
+    const row = await seed({ closedDaysAgo: 10, deleteAfter: due() });
     await service().tick();
     const reloaded = await reload(row.id);
     expect(reloaded.status).toBe("active");
@@ -139,14 +140,14 @@ describeEmbeddedPostgres("git restore point retention", () => {
   });
 
   it("does not delete when the expiry hook fails", async () => {
-    const row = await seed({ closedDaysAgo: 91 });
+    const row = await seed({ closedDaysAgo: 91, deleteAfter: due() });
     await expect(service({ beforeExpire: async () => { throw new Error("recipe busy"); } }).tick()).rejects.toThrow("recipe busy");
     expect(await reload(row.id)).toMatchObject({ status: "active" });
     expect(deleted).toEqual([]);
   });
 
   it("deletes restore points whose source issue no longer exists at review", async () => {
-    const row = await seed({ withoutIssue: true });
+    const row = await seed({ withoutIssue: true, deleteAfter: due() });
     expect(await service().tick()).toMatchObject({ orphaned: 1, deleted: 1 });
     expect(await reload(row.id)).toMatchObject({ status: "deleted" });
   });
@@ -158,7 +159,7 @@ describeEmbeddedPostgres("git restore point retention", () => {
   });
 
   it("works through a backlog of due restore points in bounded batches", async () => {
-    for (let index = 0; index < 60; index += 1) await seed({ closedDaysAgo: 10 });
+    for (let index = 0; index < 60; index += 1) await seed({ closedDaysAgo: 10, deleteAfter: due() });
     expect(await service().tick()).toMatchObject({ scheduled: 50, truncated: true });
     expect(await service().tick()).toMatchObject({ scheduled: 10, truncated: false });
     expect(await service().tick()).toMatchObject({ scheduled: 0, truncated: false });
@@ -198,10 +199,12 @@ describeEmbeddedPostgres("git restore point retention", () => {
 
   it("reports the real next deadline, and none when idle", async () => {
     expect(await service().nextDeadlineAt()).toBeNull();
-    const unscheduled = await seed({ closedDaysAgo: 10 });
-    expect(await service().nextDeadlineAt()).toBe(now.getTime());
+    await seed({ openChild: true });
+    expect(await service().nextDeadlineAt()).toBeNull();
+    const reviewed = await seed({ closedDaysAgo: 10, deleteAfter: due() });
+    expect(await service().nextDeadlineAt()).toBe(due().getTime());
     await service().tick();
-    expect(await service().nextDeadlineAt()).toBe((await reload(unscheduled.id)).deleteAfter!.getTime());
+    expect(await service().nextDeadlineAt()).toBe((await reload(reviewed.id)).deleteAfter!.getTime());
     const pending = await seed({ status: "pending", createdHoursAgo: 0 });
     expect(await service().nextDeadlineAt()).toBe((await reload(pending.id)).createdAt.getTime() + 60 * 60 * 1000);
     await seed({ status: "delete_requested" });
@@ -242,8 +245,82 @@ describeEmbeddedPostgres("git restore point retention", () => {
     registerGitRestorePointWork(coordinator as never, service(), () => {});
     await task.run(new AbortController().signal);
     expect(task.nextRunAt?.()).toBeNull();
-    const row = await seed({ closedDaysAgo: 10 });
+    const row = await seed({ closedDaysAgo: 10, deleteAfter: due() });
     await task.run(new AbortController().signal);
     expect(task.nextRunAt?.()).toBe((await reload(row.id)).deleteAfter!.getTime());
+  });
+
+  it("wakes on issue changes only while restore points exist", async () => {
+    let task!: { run: (signal: AbortSignal) => Promise<unknown>; nextRunAt?: () => number | null };
+    const wake = vi.fn();
+    const coordinator = { register: (_queue: string, registered: typeof task) => { task = registered; return { ready: Promise.resolve(), wake }; } };
+    const worker = registerGitRestorePointWork(coordinator as never, service(), () => {});
+    await task.run(new AbortController().signal);
+    worker.issuesChanged();
+    expect(wake).not.toHaveBeenCalled();
+    await seed({ openChild: true });
+    await task.run(new AbortController().signal);
+    worker.issuesChanged();
+    expect(wake).toHaveBeenCalledOnce();
+  });
+
+  describe("issue tree trigger", () => {
+    async function child(parentId: string, companyId: string, status = "blocked") {
+      const [row] = await db.insert(issues).values({ companyId, title: "Child", status, parentId }).returning();
+      return row!;
+    }
+
+    it("marks a parent's restore point due when its last open child closes", async () => {
+      const row = await seed();
+      const open = await child(row.sourceIssueId!, row.companyId);
+      await db.update(executionWorkspaceRestorePoints).set({ deleteAfter: null }).where(eq(executionWorkspaceRestorePoints.id, row.id));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, open.id));
+      expect((await reload(row.id)).deleteAfter!.getTime()).toBeLessThanOrEqual(Date.now());
+    });
+
+    it("marks the former parent when a child is deleted or moved", async () => {
+      const deletedFrom = await seed();
+      const movedFrom = await seed();
+      const deleting = await child(deletedFrom.sourceIssueId!, deletedFrom.companyId);
+      const moving = await child(movedFrom.sourceIssueId!, movedFrom.companyId);
+      const [elsewhere] = await db.insert(issues).values({ companyId: movedFrom.companyId, title: "Other", status: "todo" }).returning();
+      await db.update(executionWorkspaceRestorePoints).set({ deleteAfter: null });
+      await db.delete(issues).where(eq(issues.id, deleting.id));
+      await db.update(issues).set({ parentId: elsewhere!.id }).where(eq(issues.id, moving.id));
+      expect((await reload(deletedFrom.id)).deleteAfter).not.toBeNull();
+      expect((await reload(movedFrom.id)).deleteAfter).not.toBeNull();
+    });
+
+    it("marks a restore point when its own source issue changes status", async () => {
+      const row = await seed({ issueStatus: "in_progress" });
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, row.sourceIssueId!));
+      expect((await reload(row.id)).deleteAfter).not.toBeNull();
+    });
+
+    it("leaves unrelated, inactive and already due restore points alone", async () => {
+      const unrelated = await seed({ issueStatus: "in_progress" });
+      const superseded = await seed({ status: "superseded", issueStatus: "in_progress" });
+      const alreadyDue = await seed({ issueStatus: "in_progress", deleteAfter: new Date(now.getTime() - DAY_MS) });
+      const [other] = await db.insert(issues).values({ companyId: unrelated.companyId, title: "Other", status: "todo" }).returning();
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, other!.id));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, superseded.sourceIssueId!));
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, alreadyDue.sourceIssueId!));
+      expect((await reload(unrelated.id)).deleteAfter).toBeNull();
+      expect((await reload(superseded.id)).deleteAfter).toBeNull();
+      expect((await reload(alreadyDue.id)).deleteAfter!.getTime()).toBe(now.getTime() - DAY_MS);
+    });
+
+    it("lets the worker schedule expiry once an open tree closes", async () => {
+      const row = await seed();
+      const open = await child(row.sourceIssueId!, row.companyId);
+      await db.update(executionWorkspaceRestorePoints).set({ deleteAfter: due() }).where(eq(executionWorkspaceRestorePoints.id, row.id));
+      const live = gitRestorePointRetentionService(db, { storage });
+      await live.tick();
+      expect((await reload(row.id)).deleteAfter).toBeNull();
+      await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, open.id));
+      await live.tick();
+      const reviewed = await reload(row.id);
+      expect(reviewed.deleteAfter!.getTime() - reviewed.treeClosedAt!.getTime()).toBe(90 * DAY_MS);
+    });
   });
 });
