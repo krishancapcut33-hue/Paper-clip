@@ -92,3 +92,30 @@ The rest of the session directory, including its control-plane state, is kept.
 
 Each batch that finds candidates logs them with candidate and reclaimed allocated
 bytes, cleared task sessions, and skip reasons.
+
+## Git workspace restore points
+
+Restore points are encrypted saves of the parts of a git worktree that its remote
+cannot reproduce: unpushed commits and uncommitted files. They let a closed issue's
+worktree be removed and restored later. The table `execution_workspace_restore_points`
+tracks each one with its storage key, hash, size and status
+(`pending`, `active`, `superseded`, `delete_requested`, `deleted`). The objects live in
+the instance's configured file storage (`local_disk` or `s3`).
+
+An hourly sweep, starting three minutes after readiness, applies retention:
+
+- An `active` restore point has no deadline while any issue in its source issue tree
+  is open. Once the whole tree is `done` or `cancelled`, it expires
+  `PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS` (default `90`, minimum `1`) after the
+  tree's latest close.
+- A restore point whose source issue no longer exists, including after the issue or
+  its company is deleted, is deleted on the next sweep.
+- A `pending` restore point older than one hour was abandoned mid-capture and is
+  deleted.
+- `superseded` and `delete_requested` restore points have their stored object removed,
+  then become `deleted`. A storage failure is recorded in `last_error` and retried on
+  the next sweep.
+
+Rows have no foreign keys, so they outlive a deleted workspace, issue or company long
+enough to remove the stored object. Each sweep that changes anything logs its counts.
+

@@ -12,6 +12,11 @@ import {
   NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS,
   nativeHarnessBackupExpirationService,
 } from "./services/native-runtime/native-harness-backup-expiration.js";
+import {
+  GIT_RESTORE_POINT_RETENTION_INTERVAL_MS,
+  GIT_RESTORE_POINT_RETENTION_STARTUP_DELAY_MS,
+  gitRestorePointRetentionService,
+} from "./services/git-restore-point-ledger.js";
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./services/budget-enforcement-worker.js";
@@ -1276,6 +1281,27 @@ async function startServerWithDatabaseTeardown(
   nativeHarnessBackupExpirationInterval.unref?.();
   const nativeHarnessBackupExpirationStartup = setTimeout(sweepNativeHarnessBackups, NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS);
   nativeHarnessBackupExpirationStartup.unref?.();
+  const gitRestorePointRetention = gitRestorePointRetentionService(db as any, {
+    storage: storageService,
+    retentionDays: config.gitRestorePointRetentionDays,
+  });
+  let gitRestorePointRetentionInFlight = false;
+  const sweepGitRestorePoints = () => {
+    if (gitRestorePointRetentionInFlight || isIdleTaskDrainActive() || heartbeatSchedulerStopped || isWarmStandby()) return;
+    gitRestorePointRetentionInFlight = true;
+    trackHeartbeatSchedulerWork(gitRestorePointRetention.tick()
+      .then((result) => {
+        if (Object.values(result).some((count) => count > 0)) logger.info(result, "git restore point retention");
+      })
+      .catch((err) => {
+        logger.error({ err }, "git restore point retention failed");
+      })
+      .finally(() => { gitRestorePointRetentionInFlight = false; }));
+  };
+  const gitRestorePointRetentionInterval = setInterval(sweepGitRestorePoints, GIT_RESTORE_POINT_RETENTION_INTERVAL_MS);
+  gitRestorePointRetentionInterval.unref?.();
+  const gitRestorePointRetentionStartup = setTimeout(sweepGitRestorePoints, GIT_RESTORE_POINT_RETENTION_STARTUP_DELAY_MS);
+  gitRestorePointRetentionStartup.unref?.();
   const externalObjects = externalObjectService(db as any, {
     pluginWorkerManager,
     enabled: async () => (await instanceSettingsService(db).getExperimental()).enableExternalObjects === true,
@@ -2046,6 +2072,8 @@ async function startServerWithDatabaseTeardown(
     clearInterval(nativeHarnessBackupExpirationInterval);
     clearTimeout(nativeHarnessBackupExpirationStartup);
     clearTimeout(nativeHarnessBackupExpirationContinuation);
+    clearInterval(gitRestorePointRetentionInterval);
+    clearTimeout(gitRestorePointRetentionStartup);
     await skillVersionRetention.dispose();
     await skillSourceSync.stop();
     unsubscribeChatCompletions();
