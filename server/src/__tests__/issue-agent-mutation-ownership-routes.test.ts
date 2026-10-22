@@ -3051,7 +3051,10 @@ describe("agent issue mutation checkout ownership", () => {
         transaction: async (callback: (tx: Record<string, never>) => Promise<unknown>) => callback({}),
         select: vi.fn((selection: Record<string, unknown> = {}) => ({
           from: vi.fn((table: Parameters<typeof getTableName>[0]) => getTableName(table) === "case_handoffs"
-            ? emptyCaseHandoffQuery() : buildQuery(selection)),
+            ? emptyCaseHandoffQuery()
+            : getTableName(table) === "chat_conversations"
+              ? { where: vi.fn(() => ({ limit: vi.fn(async () => []) })) }
+              : buildQuery(selection)),
         })),
       };
     }

@@ -348,7 +348,10 @@ import {
   type TrustPresetResolution,
 } from "../services/trust-preset-resolver.js";
 import { externalObjectService } from "../services/external-objects.js";
-import { getExternalChannelBindingSummary } from "../services/chat-channel-binding.js";
+import {
+  assertExternalChannelAssigneeChangeAllowed,
+  getExternalChannelBindingSummary,
+} from "../services/chat-channel-binding.js";
 import { deliverAgentUnblockNotification } from "../services/routable-blocked.js";
 import {
   assertIssueReviewVerdictActorAllowed,
@@ -14348,6 +14351,12 @@ export function issueRoutes(
           });
         }
       }
+
+      await assertExternalChannelAssigneeChangeAllowed(
+        db,
+        existing,
+        nextAssigneeAgentId,
+      );
 
       // Only this request may finish a mutation that intentionally stops its
       // own run (for example handing work to a signoff reviewer).
