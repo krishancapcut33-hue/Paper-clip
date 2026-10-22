@@ -2591,6 +2591,10 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     pendingComposerInputs.find((input) => input.key === selectedPendingKey) ??
     currentPendingInputs[0] ??
     null;
+  const selectedPendingInputKeyRef = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    selectedPendingInputKeyRef.current = selectedPendingInput?.key ?? null;
+  }, [selectedPendingInput?.key]);
   const interactionDraftKey = selectedPendingInput
     ? `paperclip:task-input:${issueId ?? "unknown"}:${selectedPendingInput.key}`
     : undefined;
@@ -2870,9 +2874,11 @@ export function TaskChatThread(props: TaskChatThreadProps) {
                 } else {
                   dismissInput(selectedPendingInput.key);
                 }
-                explicitlyOpenedInputRef.current = null;
-                setSelectedPendingKey(null);
-                setTakeoverMode("normal");
+                if (selectedPendingInputKeyRef.current === selectedPendingInput.key) {
+                  explicitlyOpenedInputRef.current = null;
+                  setSelectedPendingKey(null);
+                  setTakeoverMode("normal");
+                }
               } catch (error) {
                 setDismissError(error instanceof Error ? error.message : "Unable to dismiss this request. Try again.");
               }

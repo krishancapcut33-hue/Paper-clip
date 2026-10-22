@@ -3403,6 +3403,23 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(container.querySelector('[role="alert"]')?.textContent).toContain("Dismissal could not be saved");
   });
 
+  it("keeps the newly opened request visible when an earlier dismissal finishes saving", async () => {
+    const { genericPendingRequestConfirmationInteraction } = await import("@/fixtures/issueThreadInteractionFixtures");
+    const first = { ...genericPendingRequestConfirmationInteraction, id: "first-review", title: "First review" };
+    const second = { ...first, id: "second-review", title: "Second review" };
+    let finishDismiss!: () => void;
+    const onDismissInteraction = vi.fn(() => new Promise<void>(resolve => { finishDismiss = resolve; }));
+    render(<TaskChatThread {...props} comments={[]} interactions={[first, second]} onDismissInteraction={onDismissInteraction} />);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: First review"]')!.click());
+    await dismiss();
+    expect(onDismissInteraction).toHaveBeenCalledWith(first);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Second review"]')!.click());
+    expect(takeover()?.textContent).toContain("Second review");
+    await act(async () => finishDismiss());
+    expect(takeover()?.textContent).toContain("Second review");
+    expect(takeover()?.textContent).not.toContain("First review");
+  });
+
   it("opens the new question but can reopen the exact historical native question", async () => {
     const nativeOld = { ...old, sourceRunId: "old-run", payload: { ...old.payload, runtimeRequestId: "old-request" } } as IssueThreadInteraction;
     render(<TaskChatThread {...props} comments={movedOn} interactions={[nativeOld, newer]} />);
