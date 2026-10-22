@@ -6,7 +6,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { gitRestorePointRetentionService } from "../services/git-restore-point-ledger.ts";
+import { GIT_RESTORE_POINT_RETRY_MS, gitRestorePointRetentionService, registerGitRestorePointWork } from "../services/git-restore-point-ledger.ts";
 import type { StorageService } from "../storage/types.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -26,11 +26,13 @@ describeEmbeddedPostgres("git restore point retention", () => {
   const now = new Date();
   let deleted: string[];
   let failDeletes: boolean;
+  let silentlyKeep: boolean;
   const storage = {
     deleteObject: async (_companyId: string, objectKey: string) => {
       if (failDeletes) throw new Error("storage unavailable");
-      deleted.push(objectKey);
+      if (!silentlyKeep) deleted.push(objectKey);
     },
+    headObject: async (_companyId: string, objectKey: string) => ({ exists: silentlyKeep && !deleted.includes(objectKey) }),
   } as unknown as StorageService;
 
   beforeAll(async () => {
@@ -59,6 +61,7 @@ describeEmbeddedPostgres("git restore point retention", () => {
   } = {}) {
     deleted = [];
     failDeletes = false;
+    silentlyKeep = false;
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Restore", issuePrefix: `R${companyId.slice(0, 6)}` });
     const issueStatus = input.issueStatus ?? "done";
@@ -149,6 +152,54 @@ describeEmbeddedPostgres("git restore point retention", () => {
     const row = await seed({ status: "superseded" });
     await service().tick();
     expect(await reload(row.id)).toMatchObject({ status: "deleted" });
+  });
+
+  it("does not mark an object deleted when it is still present after deletion", async () => {
+    const row = await seed({ status: "delete_requested" });
+    silentlyKeep = true;
+    expect(await service().tick()).toMatchObject({ failed: 1, deleted: 0 });
+    expect(await reload(row.id)).toMatchObject({ status: "delete_requested", lastError: "restore_point_object_still_present" });
+  });
+
+  it("reports no deadline when nothing is due", async () => {
+    expect(await service().nextDeadlineAt()).toBeNull();
+    await seed({ openChild: true });
+    await service().tick();
+    expect(await service().nextDeadlineAt()).toBeNull();
+    expect(await service().awaitingTreeClose()).toBe(true);
+  });
+
+  it("reports the real next deadline for each obligation", async () => {
+    const closed = await seed({ closedDaysAgo: 10 });
+    await service().tick();
+    expect(await service().nextDeadlineAt()).toBe((await reload(closed.id)).deleteAfter!.getTime());
+    const pending = await seed({ status: "pending", createdHoursAgo: 0 });
+    expect(await service().nextDeadlineAt()).toBe((await reload(pending.id)).createdAt.getTime() + 60 * 60 * 1000);
+    await seed({ status: "delete_requested" });
+    expect(await service().nextDeadlineAt()).toBe(now.getTime());
+  });
+
+  it("schedules a failed deletion's retry instead of an immediate rescan", async () => {
+    const row = await seed({ status: "delete_requested" });
+    failDeletes = true;
+    await service().tick();
+    expect(await service().nextDeadlineAt()).toBe((await reload(row.id)).updatedAt.getTime() + GIT_RESTORE_POINT_RETRY_MS);
+  });
+
+  it("leaves no work scheduled when idle and wakes on tree changes only while a tree is open", async () => {
+    let task!: { run: (signal: AbortSignal) => Promise<unknown>; nextRunAt?: () => number | null };
+    const wake = vi.fn();
+    const coordinator = { register: (_queue: string, registered: typeof task) => { task = registered; return { ready: Promise.resolve(), wake }; } };
+    const worker = registerGitRestorePointWork(coordinator as never, service(), () => {});
+    await task.run(new AbortController().signal);
+    expect(task.nextRunAt?.()).toBeNull();
+    worker.issueTreeChanged();
+    expect(wake).not.toHaveBeenCalled();
+    await seed({ openChild: true });
+    await task.run(new AbortController().signal);
+    expect(task.nextRunAt?.()).toBeNull();
+    worker.issueTreeChanged();
+    expect(wake).toHaveBeenCalledOnce();
   });
 
   it("records storage failures and retries on the next sweep", async () => {

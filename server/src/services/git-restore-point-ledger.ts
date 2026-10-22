@@ -1,9 +1,10 @@
-import { and, asc, eq, inArray, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { executionWorkspaceRestorePoints, type Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 
-export const GIT_RESTORE_POINT_RETENTION_INTERVAL_MS = 60 * 60 * 1000;
-export const GIT_RESTORE_POINT_RETENTION_STARTUP_DELAY_MS = 3 * 60 * 1000;
+export const GIT_RESTORE_POINT_RETRY_MS = 15 * 60 * 1000;
 export const GIT_RESTORE_POINT_DEFAULT_RETENTION_DAYS = 90;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_PENDING_GRACE_MS = 60 * 60 * 1000;
@@ -18,6 +19,7 @@ export type GitRestorePointRetentionResult = {
   orphaned: number;
   deleted: number;
   failed: number;
+  truncated: boolean;
 };
 
 export type GitRestorePointRetentionOptions = {
@@ -67,7 +69,7 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
 
   async function tick(): Promise<GitRestorePointRetentionResult> {
     const at = now();
-    const result: GitRestorePointRetentionResult = { abandoned: 0, scheduled: 0, expired: 0, orphaned: 0, deleted: 0, failed: 0 };
+    const result: GitRestorePointRetentionResult = { abandoned: 0, scheduled: 0, expired: 0, orphaned: 0, deleted: 0, failed: 0, truncated: false };
 
     const abandoned = await db.select({ id: executionWorkspaceRestorePoints.id }).from(executionWorkspaceRestorePoints)
       .where(and(eq(executionWorkspaceRestorePoints.status, "pending"),
@@ -105,6 +107,7 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
     for (const row of doomed) {
       try {
         await options.storage.deleteObject(row.companyId, row.objectKey);
+        if ((await options.storage.headObject(row.companyId, row.objectKey)).exists) throw new Error("restore_point_object_still_present");
         await db.update(executionWorkspaceRestorePoints)
           .set({ status: "deleted", deletedAt: at, lastError: null, updatedAt: at })
           .where(eq(executionWorkspaceRestorePoints.id, row.id));
@@ -116,8 +119,53 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
         result.failed += 1;
       }
     }
+    result.truncated = abandoned.length === batchSize || active.length === batchSize || doomed.length === batchSize;
     return result;
   }
 
-  return { tick };
+  async function nextDeadlineAt(): Promise<number | null> {
+    const [row] = await db.select({
+      deleteNow: sql<number>`count(*) FILTER (WHERE ${executionWorkspaceRestorePoints.status} IN ('superseded', 'delete_requested') AND ${executionWorkspaceRestorePoints.lastError} IS NULL)::int`,
+      retryFrom: sql<string | null>`min(${executionWorkspaceRestorePoints.updatedAt}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} IN ('superseded', 'delete_requested') AND ${executionWorkspaceRestorePoints.lastError} IS NOT NULL)`,
+      pendingFrom: sql<string | null>`min(${executionWorkspaceRestorePoints.createdAt}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} = 'pending')`,
+      expiresAt: sql<string | null>`min(${executionWorkspaceRestorePoints.deleteAfter}) FILTER (WHERE ${executionWorkspaceRestorePoints.status} = 'active')`,
+    }).from(executionWorkspaceRestorePoints);
+    const at = now().getTime();
+    const deadlines: number[] = [];
+    if (row && row.deleteNow > 0) deadlines.push(at);
+    if (row?.retryFrom) deadlines.push(new Date(row.retryFrom).getTime() + GIT_RESTORE_POINT_RETRY_MS);
+    if (row?.pendingFrom) deadlines.push(new Date(row.pendingFrom).getTime() + pendingGraceMs);
+    if (row?.expiresAt) deadlines.push(new Date(row.expiresAt).getTime());
+    return deadlines.length > 0 ? Math.min(...deadlines) : null;
+  }
+
+  async function awaitingTreeClose(): Promise<boolean> {
+    const [row] = await db.select({ id: executionWorkspaceRestorePoints.id }).from(executionWorkspaceRestorePoints)
+      .where(and(eq(executionWorkspaceRestorePoints.status, "active"), isNull(executionWorkspaceRestorePoints.deleteAfter)))
+      .limit(1);
+    return Boolean(row);
+  }
+
+  return { tick, nextDeadlineAt, awaitingTreeClose };
+}
+
+export function registerGitRestorePointWork(
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  service: ReturnType<typeof gitRestorePointRetentionService>,
+  onResult: (result: GitRestorePointRetentionResult) => void,
+) {
+  let next: number | null = null;
+  let watchingTreeClose = false;
+  const worker = coordinator.register(DELIVERY_QUEUES.gitRestorePoints, {
+    retryMs: GIT_RESTORE_POINT_RETRY_MS,
+    run: async () => {
+      const result = await service.tick();
+      onResult(result);
+      next = result.truncated ? Date.now() + 1000 : await service.nextDeadlineAt();
+      watchingTreeClose = await service.awaitingTreeClose();
+    },
+    hasPending: async () => false,
+    nextRunAt: () => next,
+  });
+  return { ...worker, issueTreeChanged: () => { if (watchingTreeClose) worker.wake(); } };
 }

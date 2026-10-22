@@ -102,7 +102,12 @@ tracks each one with its storage key, hash, size and status
 (`pending`, `active`, `superseded`, `delete_requested`, `deleted`). The objects live in
 the instance's configured file storage (`local_disk` or `s3`).
 
-An hourly sweep, starting three minutes after readiness, applies retention:
+A retention worker on the shared delivery-work scheduler applies these rules. It runs
+once at startup to rebuild its state from the table, then only at real deadlines: the
+earliest expiry, the end of an abandoned capture's grace period, or a failed deletion's
+retry. When an issue changes and some restore point is still waiting for its tree to
+close, the worker also wakes after the terminal-workspace work settles. With nothing
+due, it schedules nothing:
 
 - An `active` restore point has no deadline while any issue in its source issue tree
   is open. Once the whole tree is `done` or `cancelled`, it expires
@@ -113,9 +118,9 @@ An hourly sweep, starting three minutes after readiness, applies retention:
 - A `pending` restore point older than one hour was abandoned mid-capture and is
   deleted.
 - `superseded` and `delete_requested` restore points have their stored object removed,
-  then become `deleted`. A storage failure is recorded in `last_error` and retried on
-  the next sweep.
+  then become `deleted` once the storage provider confirms the object is gone. A storage
+  failure is recorded in `last_error` and retried after 15 minutes.
 
 Rows have no foreign keys, so they outlive a deleted workspace, issue or company long
-enough to remove the stored object. Each sweep that changes anything logs its counts.
+enough to remove the stored object. Each run that changes anything logs its counts.
 
