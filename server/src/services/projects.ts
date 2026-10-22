@@ -979,7 +979,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       if (!existingProject) return null;
       if (projectData.executionWorkspacePolicy !== undefined &&
           projectData.executionWorkspacePolicy?.storageProviderPluginId !== existingProject.executionWorkspacePolicy?.storageProviderPluginId) {
-        await retireRemovedPluginWorkspaceDependents(db, id);
+        const providers = await listProjectWorkspaceProviders(db, existingProject.companyId);
+        const previousOwner = resolveProjectWorkspaceProvider(existingProject.executionWorkspacePolicy, providers, false).pluginId;
+        const nextOwner = resolveProjectWorkspaceProvider(projectData.executionWorkspacePolicy, providers, false).pluginId;
+        if (previousOwner !== nextOwner) await retireRemovedPluginWorkspaceDependents(db, id);
       }
       if (ids && ids.length > 0) {
         await assertGoalsBelongToCompany(db, existingProject.companyId, ids);

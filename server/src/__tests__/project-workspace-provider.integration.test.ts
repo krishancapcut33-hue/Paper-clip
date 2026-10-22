@@ -1,13 +1,17 @@
+import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { afterAll, beforeAll, beforeEach, describe, expect, it } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { companies, createDb, executionWorkspaces, pluginCompanySettings, plugins, projects } from "@paperclipai/db";
+import { companies, createDb, executionWorkspaces, heartbeatRuns, issues, pluginCompanySettings, plugins, projects } from "@paperclipai/db";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { effectiveProjectWorkspacePolicy, listProjectWorkspaceProviders, resolveProjectWorkspaceProvider } from "../services/project-workspace-provider.js";
 import { preparePluginWorkspace } from "../services/plugin-workspaces.js";
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
+import { issueService } from "../services/issues.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
+import { buildExecutionWorkspaceAdapterConfig, parseIssueExecutionWorkspaceSettings, resolveEffectiveWorkspaceStrategyType, resolveExecutionWorkspaceMode } from "../services/execution-workspace-policy.js";
 import { projectService } from "../services/projects.js";
 import { projectRoutes } from "../routes/projects.js";
 import { errorHandler } from "../middleware/index.js";
@@ -50,6 +54,45 @@ describe.skipIf(!support.supported)("installed project workspace defaults", () =
     const prepared = await preparePluginWorkspace(db, f.workers, f.input);
     expect(prepared).toMatchObject({ providerType: "plugin" });
     expect(f.calls[0].operation).toMatchObject({ mode: "isolated_workspace", strategy: "git_worktree" });
+  });
+
+  it.each(["create", "import"] as const)("%s leaves an unspecified task mode inherited from the effective provider", async method => {
+    const f = await fixture();
+    await instanceSettingsService(db).updateExperimental({ enableIsolatedWorkspaces: true });
+    await db.update(projects).set({ executionWorkspacePolicy: { enabled: true } }).where(eq(projects.id, f.input.projectId));
+    let issueId: string;
+    if (method === "create") {
+      const created = await issueService(db).create(f.companyId, { title: "Use inherited storage", projectId: f.input.projectId, assigneeAgentId: f.input.agentId });
+      issueId = created.id;
+    } else {
+      issueId = randomUUID();
+      await issueService(db).importIssues(f.companyId, [{ id: issueId, ref: "inherited", title: "Import inherited storage", projectId: f.input.projectId,
+        projectWorkspaceId: null, description: null, assigneeAgentId: f.input.agentId, status: "todo", priority: "medium", billingCode: null,
+        assigneeAdapterOverrides: null, executionWorkspaceSettings: null, labelIds: [], monitorNotes: null, monitorScheduledBy: null }]);
+    }
+    const [task] = await db.select().from(issues).where(eq(issues.id, issueId));
+    expect(task.executionWorkspaceSettings?.mode).toBeUndefined();
+    const policy = await effectiveProjectWorkspacePolicy(db, f.companyId, { enabled: true }, true);
+    const settings = parseIssueExecutionWorkspaceSettings(task.executionWorkspaceSettings);
+    const mode = resolveExecutionWorkspaceMode({ projectPolicy: policy, issueSettings: settings, legacyUseProjectWorkspace: null });
+    const config = buildExecutionWorkspaceAdapterConfig({ agentConfig: {}, projectPolicy: policy, issueSettings: settings, mode, legacyUseProjectWorkspace: null });
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.input.agentId,
+      issueId, scopeKind: "issue", status: "running", runtimeMode: "legacy" }).returning();
+    await preparePluginWorkspace(db, f.workers, { ...f.input, runId: run.id, issueId, mode, strategy: resolveEffectiveWorkspaceStrategyType(mode, config) });
+    expect(f.calls[0].operation).toMatchObject({ mode: "isolated_workspace", strategy: "git_worktree" });
+  });
+
+  it("pins and unpins the same effective owner without retiring its active workspace", async () => {
+    const f = await fixture();
+    const workspace = await preparePluginWorkspace(db, f.workers, f.input);
+    const svc = projectService(db);
+    expect((await svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId: f.pluginId } }))!.workspaceProvider)
+      .toMatchObject({ source: "project", pluginId: f.pluginId });
+    expect((await svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true } }))!.workspaceProvider)
+      .toMatchObject({ source: "default", pluginId: f.pluginId });
+    expect((await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace!.id)))[0]).toEqual(workspace);
+    await expect(svc.update(f.input.projectId, { executionWorkspacePolicy: { enabled: true, storageProviderPluginId: null } }))
+      .rejects.toThrow("Retire managed execution workspaces");
   });
 
   it("preserves explicit alternatives and the explicit Core/local choice", async () => {
