@@ -212,7 +212,7 @@ export function ProviderCatalogReview() {
   const preset = source ? aiProviderSetupPreset(source) : undefined;
   if (source) return <QueryClientProvider client={client}><AiProviderSetup
     companyId="company-storybook" initialProvider={preset?.provider ?? source as "openai" | "anthropic" | "xai"}
-    initialProtocol={preset?.protocol} providerLabel={preset?.label}
+    initialProtocol={preset?.protocol} initialBaseUrls={preset?.baseUrls} providerLabel={preset?.label}
     onCancel={() => setSource(undefined)} onComplete={() => setSource(undefined)}
   /></QueryClientProvider>;
   return <div className="space-y-5">

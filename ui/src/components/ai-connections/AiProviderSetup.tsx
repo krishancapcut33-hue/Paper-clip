@@ -71,6 +71,7 @@ export function AiProviderSetup({
   environmentId,
   initialProvider,
   initialProtocol,
+  initialBaseUrls,
   providerLabel,
   advancedOnly = false,
   reconnect,
@@ -82,6 +83,7 @@ export function AiProviderSetup({
   environmentId?: string;
   initialProvider?: ProviderChoice;
   initialProtocol?: AiProviderRouting["protocol"];
+  initialBaseUrls?: Readonly<Partial<Record<AiProviderRouting["protocol"], string>>>;
   providerLabel?: string;
   advancedOnly?: boolean;
   reconnect?: AiManagedConnectionSummary;
@@ -112,6 +114,7 @@ export function AiProviderSetup({
     reconnect?.routing?.auth ?? "bearer",
   );
   const [baseUrl, setBaseUrl] = useState(reconnect?.routing?.baseUrl ?? "");
+  const fixedBaseUrl = reconnect ? undefined : initialBaseUrls?.[protocol];
   const [region, setRegion] = useState(
     reconnect?.routing?.region ?? "us-east-1",
   );
@@ -179,7 +182,7 @@ export function AiProviderSetup({
           ...(provider === "bedrock"
             ? { region }
             : provider === "gateway" || provider === "local"
-              ? { baseUrl }
+              ? { baseUrl: fixedBaseUrl ?? baseUrl }
               : {}),
           models: models
             .split(",")
@@ -334,9 +337,9 @@ export function AiProviderSetup({
                       ? "http://localhost:11434/v1"
                       : "https://gateway.example.com/v1"
                   }
-                  value={baseUrl}
+                  value={fixedBaseUrl ?? baseUrl}
                   onChange={(e) => setBaseUrl(e.target.value)}
-                  disabled={Boolean(reconnect)}
+                  disabled={Boolean(reconnect) || Boolean(fixedBaseUrl)}
                 />
               </label>
               <label className="block space-y-2 text-xs text-muted-foreground">
@@ -379,7 +382,7 @@ export function AiProviderSetup({
               />
             </label>
           )}
-          {provider !== "openrouter" && (
+          {provider !== "openrouter" && !fixedBaseUrl && (
             <label className="block space-y-2 text-xs text-muted-foreground">
               Authentication
               <Select

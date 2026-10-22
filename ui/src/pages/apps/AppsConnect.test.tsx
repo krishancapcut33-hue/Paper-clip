@@ -1056,6 +1056,18 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     expect(container.textContent).not.toContain("Connect for tool access instead");
   });
 
+  it("opens the Mubit row with Mubit's Responses URL read-only", async () => {
+    mockSearch.value = "source=mubit";
+    const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+    client.setQueryData(["ai-connections", "company-1", undefined], { canManageConnections: true, connections: [] });
+    await render(client);
+    const url = container.querySelector<HTMLInputElement>('input[aria-label="Provider URL"]');
+    expect(container.textContent).toContain("Connect Mubit");
+    expect(url?.value).toBe("https://api.mubit.ai/openai/v1");
+    expect(url?.disabled).toBe(true);
+    expect(container.querySelector('[aria-label="Authentication"]')).toBeNull();
+  });
+
   it.each([false, true])("opens Copilot with visible personal defaults and shares only by explicit choice (%s)", async (share) => {
     mockSearch.value = "source=github&method=copilot-token";
     listGalleryMock.mockResolvedValue({ apps: [GITHUB] });

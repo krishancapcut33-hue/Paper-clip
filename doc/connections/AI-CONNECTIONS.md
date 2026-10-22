@@ -585,6 +585,13 @@ and all agents when the actor has permission; the existing Advanced disclosure
 contains the controls to narrow access, without a separate Access step. New-agent setup also offers the connection picker in its persistent
 **Advanced / Custom Gateway** tile.
 
+The **Mubit** row saves a custom gateway connection with Mubit's fixed
+endpoints. Choose the API format: Responses and Chat Completions use
+`https://api.mubit.ai/openai/v1`, and Messages uses
+`https://api.mubit.ai/anthropic`. The Mubit API key is sent as a bearer token.
+Each connection serves the harnesses of its API format. Gateway accounts on
+these endpoints are listed under the Mubit row.
+
 At **Agents → [agent] → Harness / Runtime**, **Connection** is a dropdown of
 compatible saved connections, including explicit personal accounts. The existing
 model picker uses that connection’s optional model IDs and accepts manual IDs.
