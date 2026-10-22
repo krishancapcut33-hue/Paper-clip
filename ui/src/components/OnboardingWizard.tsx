@@ -1,4 +1,5 @@
 import { COPILOT_MODEL_DISCOVERY_QUERY_OPTIONS } from "@/lib/copilot-task-model-catalog";
+import { LocaleSwitcher } from "./LocaleSwitcher";
 import type { AgentRunner, AgentRunnerChoice } from "@paperclipai/shared";
 import { needsClaudeSetupQualification, qualifyClaudeSetup } from "../lib/qualify-claude-setup";
 import { agentHarnessType } from "@paperclipai/shared";
@@ -2723,6 +2724,10 @@ function OnboardingWizardInner({
             scroll container. A plain div preserves the background without scroll-locking. */}
         <div className="fixed inset-0 z-50 bg-background" />
         {/* A deliberate hook for "the wizard mounted".
+
+          <div className="absolute top-4 right-4 z-10">
+            <LocaleSwitcher compact />
+          </div>
 
             The tests that assert it opens used to prove it by finding any text
             in the document — which, with the front door mocked to null in that

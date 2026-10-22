@@ -1,4 +1,5 @@
 import { useEffect, useState, type ReactNode } from "react";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AlertTriangle, FlaskConical, Lock, Play } from "lucide-react";
 import type {
@@ -103,7 +104,7 @@ function ExperimentalToggleCard({
             {isManaged ? <ManagedByCloudBadge /> : null}
           </div>
           <p className="max-w-2xl text-sm text-muted-foreground">{description}</p>
-          {footnote ? <p className="max-w-2xl text-xs text-muted-foreground">{footnote}</p> : null}
+          {footnote ? <p className="max-w-2xl text-xs text-muted-foreground">{typeof footnote === "string" ? translateUiLiteral(footnote) : footnote}</p> : null}
         </div>
         <ToggleSwitch
           checked={checked}

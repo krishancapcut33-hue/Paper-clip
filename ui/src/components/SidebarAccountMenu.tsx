@@ -1,4 +1,6 @@
 import { useState, type CSSProperties } from "react";
+import { LocaleSwitcher } from "./LocaleSwitcher";
+import { useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import {
   BookOpen,
@@ -145,6 +147,7 @@ export function SidebarAccountMenu({
     !hidesCompanyPage(hiddenSettings, "company.members") &&
     !hidesCompanyPage(hiddenSettings, "company.invites");
   const [internalOpen, setInternalOpen] = useState(false);
+  const { t } = useTranslation();
   const { isMobile, setSidebarOpen, collapsed, peeking } = useSidebar();
   const rail = collapsed && !peeking && !forceExpanded;
   const open = controlledOpen ?? internalOpen;
@@ -259,6 +262,7 @@ export function SidebarAccountMenu({
                 onClick={() => setOpen(false)}
               />
               <ThemeToggle variant="compact-menu-action" onAfterToggle={() => setOpen(false)} />
+              <LocaleSwitcher variant="compact-menu-action" />
               {deploymentMode === "authenticated" ? (
                 <button
                   type="button"

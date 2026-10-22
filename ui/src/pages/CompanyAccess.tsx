@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { translateUiLiteral } from "@/i18n/LegacyLiteralLocalizer";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   HUMAN_COMPANY_MEMBERSHIP_ROLE_LABELS,

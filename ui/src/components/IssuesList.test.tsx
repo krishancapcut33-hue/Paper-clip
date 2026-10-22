@@ -1,6 +1,7 @@
 // @vitest-environment jsdom
 
 import { createRoot } from "react-dom/client";
+import { i18n } from "@/i18n";
 import { flushSync } from "react-dom";
 import type { AnchorHTMLAttributes, ReactNode } from "react";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
@@ -341,7 +342,8 @@ function renderWithQueryClient(node: ReactNode, container: HTMLDivElement) {
 describe("IssuesList", () => {
   let container: HTMLDivElement;
 
-  beforeEach(() => {
+  beforeEach(async () => {
+    await i18n.changeLanguage("en");
     container = document.createElement("div");
     document.body.appendChild(container);
     dialogState.openNewIssue.mockReset();
@@ -1898,6 +1900,41 @@ describe("IssuesList", () => {
       expect(container.textContent).toContain("Done");
       expect(container.textContent).toContain("Alpha");
       expect(container.textContent).toContain("Beta");
+    });
+
+    act(() => {
+      root.unmount();
+    });
+  });
+
+  it("updates memoized status group labels after a locale change", async () => {
+    localStorage.setItem(
+      "paperclip:test-issues:company-1",
+      JSON.stringify({ groupBy: "status", sortField: "updated", sortDir: "desc" }),
+    );
+
+    const { root } = renderWithQueryClient(
+      <IssuesList
+        issues={[createIssue({ status: "todo" })]}
+        agents={[]}
+        projects={[]}
+        viewStateKey="paperclip:test-issues"
+        onUpdateIssue={() => undefined}
+      />,
+      container,
+    );
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("Todo");
+    });
+
+    await act(async () => {
+      await i18n.changeLanguage("zh-CN");
+    });
+
+    await waitForAssertion(() => {
+      expect(container.textContent).toContain("待办");
+      expect(container.textContent).not.toContain("Todo");
     });
 
     act(() => {

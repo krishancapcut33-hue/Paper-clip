@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
+import { t, useTranslation } from "@/i18n";
 import { useQuery } from "@tanstack/react-query";
 import type { Project } from "@paperclipai/shared";
 import { projectsApi } from "../api/projects";
@@ -73,10 +74,11 @@ export function Projects() {
   const [query, setQuery] = useState("");
   const [sortField, setSortField] = useState<ProjectSortField>("name");
   const [sortDir, setSortDir] = useState<ProjectSortDir>("asc");
+  const { t } = useTranslation();
 
   useEffect(() => {
-    setBreadcrumbs([{ label: "Projects" }]);
-  }, [setBreadcrumbs]);
+    setBreadcrumbs([{ label: t("nav.projects") }]);
+  }, [setBreadcrumbs, t]);
 
   const { data: allProjects, isLoading, error } = useQuery({
     queryKey: queryKeys.projects.list(selectedCompanyId!),
@@ -116,7 +118,7 @@ export function Projects() {
   }, [membershipsQuery.data, sortedProjects]);
 
   if (!selectedCompanyId) {
-    return <EmptyState icon={Hexagon} message="Select an organization to view projects." />;
+    return <EmptyState icon={Hexagon} message={t("pages.projects.selectCompany", { defaultValue: "Select an organization to view projects." })} />;
   }
 
   if (isLoading) {
@@ -133,8 +135,8 @@ export function Projects() {
       {!isLoading && projects.length === 0 && (
         <EmptyState
           icon={Hexagon}
-          message="No projects yet."
-          action="Add Project"
+          message={t("pages.projects.empty", { defaultValue: "No projects yet." })}
+          action={t("pages.projects.addProject", { defaultValue: "Add Project" })}
           onAction={openNewProject}
         />
       )}
@@ -144,8 +146,8 @@ export function Projects() {
       {sortedProjects.length > 0 && (
         <div className="space-y-6">
           {([
-            ["My Projects", groupedProjects.mine],
-            ["Other Projects", groupedProjects.other],
+            [t("pages.projects.myProjects", { defaultValue: "My Projects" }), groupedProjects.mine],
+            [t("pages.projects.otherProjects", { defaultValue: "Other Projects" }), groupedProjects.other],
           ] as const).map(([label, sectionProjects]) => {
             if (sectionProjects.length === 0) return null;
 
@@ -154,7 +156,11 @@ export function Projects() {
                 <div className="flex items-center justify-between">
                   <h2 className="text-sm font-medium">{label}</h2>
                   <span className="text-xs text-muted-foreground">
-                    {sectionProjects.length} project{sectionProjects.length === 1 ? "" : "s"}
+                    {t("pages.projects.projectCount", {
+                      defaultValue_one: "{{count}} project",
+                      defaultValue_other: "{{count}} projects",
+                      count: sectionProjects.length,
+                    })}
                   </span>
                 </div>
                 <Card className="block py-0 overflow-hidden divide-y divide-border">
@@ -166,6 +172,12 @@ export function Projects() {
                     const starPending = pending && membershipMutation.variables?.starred !== undefined;
                     const joinLeavePending = pending && membershipMutation.variables?.starred === undefined;
                     const starred = isStarred(membershipsQuery.data, "project", project.id);
+                    const taskCountLabel = t("pages.projects.taskCount", {
+                      defaultValue_one: "{{countFormatted}} task",
+                      defaultValue_other: "{{countFormatted}} tasks",
+                      count: project.taskCount ?? 0,
+                      countFormatted: formatNumber(project.taskCount ?? 0),
+                    });
                     return (
                       <EntityRow
                         key={project.id}
@@ -180,9 +192,9 @@ export function Projects() {
                             {project.visibility === "private" ? <Lock className="size-4 shrink-0 text-muted-foreground" aria-label="Private project" /> : null}
                             <span
                               className="hidden text-xs text-muted-foreground tabular-nums sm:inline"
-                              title={`${formatNumber(project.taskCount ?? 0)} task${(project.taskCount ?? 0) === 1 ? "" : "s"}`}
+                              title={taskCountLabel}
                             >
-                              {formatNumber(project.taskCount ?? 0)} task{(project.taskCount ?? 0) === 1 ? "" : "s"}
+                              {taskCountLabel}
                             </span>
                             {project.budget && (
                               <span className="hidden text-xs text-muted-foreground tabular-nums sm:inline">
