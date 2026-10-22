@@ -202,3 +202,9 @@ boundaries pass. No new supervisor, background loop or runtime cache is created.
 - Separate state validation/consumption, authorization initiation, direct OAuth callback, managed-cloud callback, Vercel callback, catalog completion and explicit identity promotion. Shared setup policy, personal identity checks and organization-grant persistence have explicit owners.
 - `tool-access.ts`: 12,019 → 8,997 lines. The largest new module is 700 lines. Callback-specific state consumption order, membership locks, transaction-scoped secret writes and promotion cleanup stay intact.
 - Before/after: all 470 public service and real HTTP/database integration cases pass. Server typecheck, module-boundary and whitespace checks pass; all 182 previous function/method bodies match by normalized syntax comparison.
+
+### Catalog ownership
+
+- Separate guarded remote HTTP, descriptor risk policy, discovery, publication, default access, cached reads, health, attention and aggregator account synchronization.
+- `tool-access.ts`: 8,997 → 6,418 lines. New owners range from 39 to 492 lines. Remote options remain live; catalog flights and aggregator sync jobs retain per-service lifetime. Publication locks and transaction-scoped default access remain unchanged.
+- Before/after: 470 public service/HTTP integration cases plus 44 catalog-publication, HTTP rebinding and aggregator-sync cases pass. Server typecheck and module-boundary checks pass. All 157 previous function/method bodies match by normalized syntax comparison.
