@@ -1,7 +1,7 @@
 import { appendWithByteCap, MAX_EXCERPT_BYTES, parseObject } from "../../adapters/utils.js";
 import { redactSensitiveText } from "../../redaction.js";
 
-const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
+export const MAX_PERSISTED_LOG_CHUNK_CHARS = 64 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_STRING_CHARS = 16 * 1024;
 const MAX_RUN_EVENT_PAYLOAD_ARRAY_ITEMS = 50;
 const MAX_RUN_EVENT_PAYLOAD_OBJECT_KEYS = 100;

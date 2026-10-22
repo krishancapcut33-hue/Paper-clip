@@ -6,8 +6,8 @@ import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js
 import { touchHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { publishLiveEvent } from "../live-events.js";
 import type { RunLogHandle, RunLogStore } from "../run-log-store.js";
-import { createRunLogLineBuffer } from "../run-log-line-buffer.js";
-import { appendExcerpt, compactRunLogChunk } from "./run-log.js";
+import { createRunLogLineBuffer, splitRedactedRunLogText } from "../run-log-line-buffer.js";
+import { appendExcerpt, compactRunLogChunk, MAX_PERSISTED_LOG_CHUNK_CHARS } from "./run-log.js";
 import { isHeartbeatRunRuntimeStatusActive, publishHeartbeatRunRuntimeProgress, type createHeartbeatLifecycle } from "./run-lifecycle.js";
 
 const MAX_LIVE_LOG_CHUNK_BYTES = 8 * 1024;
@@ -91,10 +91,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
 
     const currentUserRedactionOptions =
       await getCurrentUserRedactionOptions();
-    const appendIdentityRedactedLog = async (stream: "stdout" | "stderr", chunk: string) => {
-      const sanitizedChunk = compactRunLogChunk(
-        redactCurrentUserText(chunk, currentUserRedactionOptions),
-      );
+    const appendSanitizedLog = async (stream: "stdout" | "stderr", sanitizedChunk: string) => {
       if (stream === "stdout")
         stdoutExcerpt = appendExcerpt(stdoutExcerpt, sanitizedChunk);
       if (stream === "stderr")
@@ -165,6 +162,16 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
           truncated: payloadChunk.length !== sanitizedChunk.length,
         },
       });
+    };
+    // Redact whole lines first; splitting afterwards cannot expose a credential.
+    const appendIdentityRedactedLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      const redacted = compactRunLogChunk(
+        redactCurrentUserText(chunk, currentUserRedactionOptions),
+        Number.POSITIVE_INFINITY,
+      );
+      for (const sanitizedChunk of splitRedactedRunLogText(redacted, MAX_PERSISTED_LOG_CHUNK_CHARS)) {
+        await appendSanitizedLog(stream, sanitizedChunk);
+      }
     };
     const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
       for (const piece of runLogLineBuffer.take(stream, identityRedactor.chunk(stream, chunk))) {
