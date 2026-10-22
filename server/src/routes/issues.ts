@@ -17122,6 +17122,8 @@ export function issueRoutes(
             }
             await secretProposals.approve(issue.companyId, proposal.id, {
               resolvedByUserId,
+              // Binding cards often pair a still-pending secret proposal; omit → http_409.
+              cascade: true,
               assertCanResolve: (lockedProposal, txDb) =>
                 assertCanResolveProposal({
                   db: txDb,
