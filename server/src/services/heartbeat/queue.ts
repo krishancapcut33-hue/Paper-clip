@@ -142,6 +142,7 @@ import {
   isUnrunnableWorktreeCombo,
   parseIssueExecutionWorkspaceSettings,
   resolveEffectiveWorkspaceStrategyType,
+  resolveExecutionWorkspaceConflictNotice,
   resolveExecutionWorkspaceMode,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_CODE,
   WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE,
@@ -3714,9 +3715,13 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               resolvedMode,
               workspaceManagedConfig,
             );
-            const existingExecutionWorkspaceStatus = issue.executionWorkspaceId
+            const existingExecutionWorkspaceRow = issue.executionWorkspaceId
               ? await tx
-                  .select({ status: executionWorkspaces.status })
+                  .select({
+                    status: executionWorkspaces.status,
+                    mode: executionWorkspaces.mode,
+                    sourceIssueId: executionWorkspaces.sourceIssueId,
+                  })
                   .from(executionWorkspaces)
                   .where(
                     and(
@@ -3724,16 +3729,77 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                       eq(executionWorkspaces.companyId, issue.companyId),
                     ),
                   )
-                  .then((rows) => rows[0]?.status ?? null)
+                  .then((rows) => rows[0] ?? null)
               : null;
+            const existingExecutionWorkspaceStatus =
+              existingExecutionWorkspaceRow?.status ?? null;
             const reuseRequest = resolveExecutionWorkspaceReuseRequestForIssue({
               issueExecutionWorkspaceId: issue.executionWorkspaceId,
               issueExecutionWorkspacePreference:
                 issue.executionWorkspacePreference,
               existingExecutionWorkspaceStatus,
+              issueId: issue.id,
+              existingExecutionWorkspaceMode:
+                existingExecutionWorkspaceRow?.mode ?? null,
+              existingExecutionWorkspaceSourceIssueId:
+                existingExecutionWorkspaceRow?.sourceIssueId ?? null,
             });
             const hasResolvablePriorSessionWorkspace =
               await resolveHasResolvablePriorSessionWorkspace();
+
+            const conflictNotice = resolveExecutionWorkspaceConflictNotice({
+              conflictingWorkspaceOwnerIssueId: reuseRequest.conflictingWorkspaceOwnerIssueId,
+              executionWorkspacePreference: issue.executionWorkspacePreference,
+              requestedExecutionWorkspaceId: reuseRequest.requestedExecutionWorkspaceId,
+              executionWorkspaceId: issue.executionWorkspaceId,
+            });
+            if (conflictNotice.shouldNotify && conflictNotice.ownerIssueId) {
+              const ownerIssueId = conflictNotice.ownerIssueId;
+              const owner = await tx
+                .select({ identifier: issues.identifier })
+                .from(issues)
+                .where(
+                  and(
+                    eq(issues.id, ownerIssueId),
+                    eq(issues.companyId, issue.companyId),
+                  ),
+                )
+                .then((rows) => rows[0] ?? null);
+              const ownerLabel = owner?.identifier ?? ownerIssueId;
+              const marker = conflictNotice.marker;
+              const markerPattern = `%${marker.replace(/([%_\\])/g, "\\$1")}%`;
+              const alreadyNotified = await tx
+                .select({ id: issueComments.id })
+                .from(issueComments)
+                .where(
+                  and(
+                    eq(issueComments.companyId, issue.companyId),
+                    eq(issueComments.issueId, issue.id),
+                    isNull(issueComments.deletedAt),
+                    sql`${issueComments.body} like ${markerPattern} escape '\\'`,
+                  ),
+                )
+                .limit(1)
+                .then((rows) => rows.length > 0);
+              if (!alreadyNotified) {
+                const now = new Date();
+                await insertIssueComment(tx, {
+                  companyId: issue.companyId,
+                  issueId: issue.id,
+                  body: [
+                    `Paperclip refused to run ${issue.identifier} in the execution workspace it points at.`,
+                    "",
+                    `- That workspace is an isolated per-issue worktree owned by ${ownerLabel}.`,
+                    "- Isolation is per issue, not per tree: two issues sharing one worktree is the failure this refuses.",
+                    "- That workspace was not reused for this run.",
+                    "",
+                    `<!-- ${marker} -->`,
+                  ].join("\n"),
+                  createdAt: now,
+                  updatedAt: now,
+                });
+              }
+            }
 
             if (
               isUnrunnableWorktreeCombo({

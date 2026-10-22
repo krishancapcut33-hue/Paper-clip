@@ -373,6 +373,108 @@ export function issueExecutionWorkspaceModeForPersistedWorkspace(
   return "shared_workspace";
 }
 
+export type ExecutionWorkspaceInheritanceDecision = {
+  bindSourceWorkspace: boolean;
+  inheritSourceSettings: boolean;
+  reason:
+    | "explicit_override"
+    | "source_workspace_isolated_per_issue"
+    | "source_workspace_shared";
+};
+
+export function resolveExecutionWorkspaceInheritanceDecision(input: {
+  sourceWorkspaceMode: string | null | undefined;
+  hasExplicitExecutionWorkspaceOverride: boolean;
+}): ExecutionWorkspaceInheritanceDecision {
+  if (input.hasExplicitExecutionWorkspaceOverride) {
+    return {
+      bindSourceWorkspace: false,
+      inheritSourceSettings: false,
+      reason: "explicit_override",
+    };
+  }
+  if (input.sourceWorkspaceMode === "isolated_workspace") {
+    return {
+      bindSourceWorkspace: false,
+      inheritSourceSettings: true,
+      reason: "source_workspace_isolated_per_issue",
+    };
+  }
+  return {
+    bindSourceWorkspace: true,
+    inheritSourceSettings: true,
+    reason: "source_workspace_shared",
+  };
+}
+
+export function buildInheritedExecutionWorkspaceSettings(input: {
+  sourceSettings: Record<string, unknown> | null | undefined;
+  sourceWorkspaceMode: string | null | undefined;
+  bindSourceWorkspace: boolean;
+}): Record<string, unknown> {
+  const settings: Record<string, unknown> = { ...(input.sourceSettings ?? {}) };
+  settings.mode = issueExecutionWorkspaceModeForPersistedWorkspace(
+    input.sourceWorkspaceMode,
+  );
+  if (!input.bindSourceWorkspace) {
+    const strategy = parseObject(settings.workspaceStrategy);
+    if (typeof strategy.existingBranch === "string") {
+      const nextStrategy = { ...strategy };
+      delete nextStrategy.existingBranch;
+      if (Object.keys(nextStrategy).length > 0) {
+        settings.workspaceStrategy = nextStrategy;
+      } else {
+        delete settings.workspaceStrategy;
+      }
+    }
+  }
+  return settings;
+}
+
+export function resolveExecutionWorkspaceStrategyConfig(input: {
+  config: Record<string, unknown> | null | undefined;
+  conflictingWorkspaceOwnerIssueId: string | null | undefined;
+}): Record<string, unknown> {
+  const config = { ...(input.config ?? {}) };
+  if (!input.conflictingWorkspaceOwnerIssueId) return config;
+  const strategy = parseObject(config.workspaceStrategy);
+  if (typeof strategy.existingBranch !== "string") return config;
+  const nextStrategy = { ...strategy };
+  delete nextStrategy.existingBranch;
+  if (Object.keys(nextStrategy).length > 0) {
+    config.workspaceStrategy = nextStrategy;
+  } else {
+    delete config.workspaceStrategy;
+  }
+  return config;
+}
+
+export function resolveExecutionWorkspaceReuseWorkspaceId(input: {
+  reusableWorkspaceId: string | null | undefined;
+  requestedWorkspaceId: string | null | undefined;
+  conflictingWorkspaceOwnerIssueId: string | null | undefined;
+}): string | null {
+  if (input.reusableWorkspaceId) return input.reusableWorkspaceId;
+  if (input.conflictingWorkspaceOwnerIssueId) return null;
+  return input.requestedWorkspaceId ?? null;
+}
+
+export function resolveExecutionWorkspaceConflictNotice(input: {
+  conflictingWorkspaceOwnerIssueId: string | null | undefined;
+  executionWorkspacePreference: string | null | undefined;
+  requestedExecutionWorkspaceId: string | null | undefined;
+  executionWorkspaceId: string | null | undefined;
+}): { shouldNotify: boolean; ownerIssueId: string | null; marker: string } {
+  const ownerIssueId = input.conflictingWorkspaceOwnerIssueId ?? null;
+  const marker = `workspace_conflict:${input.executionWorkspaceId ?? "none"}`;
+  const shouldNotify = Boolean(
+    ownerIssueId &&
+      input.executionWorkspacePreference === "reuse_existing" &&
+      input.requestedExecutionWorkspaceId,
+  );
+  return { shouldNotify, ownerIssueId, marker };
+}
+
 export function resolveExecutionWorkspaceMode(input: {
   projectPolicy: ProjectExecutionWorkspacePolicy | null;
   issueSettings: IssueExecutionWorkspaceSettings | null;
