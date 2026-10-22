@@ -74,7 +74,12 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     await tempDb?.cleanup();
   });
 
-  it("applies a normalized merged PR once, updates the snapshot, and acknowledges Cloud", async () => {
+  it.each([
+    "https://leaked-user@github.com/paperclipai/paperclip/pull/123",
+    "https://:leaked-password@github.com/paperclipai/paperclip/pull/123",
+    "https://github.com/paperclipai/paperclip/pull/123?token=leaked-query",
+    "https://github.com/paperclipai/paperclip/pull/123#leaked-fragment",
+  ])("does not persist secret-bearing GitHub PR URLs (%s)", async (unsafeUrl) => {
     const companyId = randomUUID();
     const userId = `github-owner-${randomUUID()}`;
     const applicationId = randomUUID();
@@ -155,7 +160,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         mergedAt: "2026-09-04T11:59:00.000Z",
         merge_commit_sha: "c".repeat(40),
         updatedAt: "2026-09-04T11:59:01.000Z",
-        url: "https://github.com/paperclipai/paperclip/pull/123",
+        url: unsafeUrl,
         headRef: "feature",
         headSha: "a".repeat(40),
         baseRef: "master",
@@ -233,14 +238,15 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
         mergedAt: "2026-09-04T11:59:00.000Z",
         mergeCommitSha: "c".repeat(40),
         updatedAt: "2026-09-04T11:59:01.000Z",
-        url: "https://github.com/paperclipai/paperclip/pull/123",
         headRef: "feature",
         headSha: "a".repeat(40),
         baseRef: "master",
         baseSha: "b".repeat(40),
       },
     });
-    expect(JSON.stringify(receipt)).not.toMatch(/private pull request|private review|ghu_|also-must-not/);
+    expect(receipt?.normalizedPayload).not.toHaveProperty("url");
+    expect(snapshot?.data).not.toHaveProperty("url");
+    expect(JSON.stringify(receipt)).not.toMatch(/private pull request|private review|ghu_|also-must-not|leaked-user|leaked-password|leaked-query|leaked-fragment/);
     const [activity] = await db.select().from(activityLog).where(eq(activityLog.action, "tool_connection.webhook_processed"));
     expect(activity?.details).toEqual({
       provider: "github",
@@ -398,6 +404,7 @@ describeEmbeddedPostgres("GitHub connection event delivery", () => {
     const [product] = await db.select().from(issueWorkProducts).where(eq(issueWorkProducts.id, workProductId));
     expect(product).toMatchObject({
       status: "merged",
+      url: "https://github.com/paperclipai/paperclip/pull/123",
       metadata: {
         repo: "paperclip",
         number: 123,
