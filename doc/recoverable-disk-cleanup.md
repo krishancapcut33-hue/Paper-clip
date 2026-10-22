@@ -105,9 +105,10 @@ the instance's configured file storage (`local_disk` or `s3`).
 A retention worker on the shared delivery-work scheduler applies these rules. It runs
 once at startup to rebuild its state from the table, then only at real deadlines: the
 earliest expiry, the end of an abandoned capture's grace period, or a failed deletion's
-retry. When an issue changes and some restore point is still waiting for its tree to
-close, the worker also wakes after the terminal-workspace work settles. With nothing
-due, it schedules nothing:
+retry. While any restore point exists, issue changes reported by the terminal-workspace
+notifications wake it, and it re-evaluates only restore points whose source issue is a
+changed issue or one of its ancestors. The startup pass pages through every restore
+point once and then stops. With nothing due, it schedules nothing:
 
 - An `active` restore point has no deadline while any issue in its source issue tree
   is open. Once the whole tree is `done` or `cancelled`, it expires

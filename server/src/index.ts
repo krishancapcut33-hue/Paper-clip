@@ -1511,7 +1511,7 @@ async function startServerWithDatabaseTeardown(
       ...terminalWorkspaces,
       terminalWorkspaceWorkSettled: (hints) => {
         terminalWorkspaces.terminalWorkspaceWorkSettled?.(hints);
-        gitRestorePointWorker.issueTreeChanged();
+        gitRestorePointWorker.issueTreeChanged(hints);
       },
       sweepTerminalWorkspaces: async (limit, signal, options) => {
         const result = await terminalWorkspaces.sweepTerminalWorkspaces(limit, signal, options);

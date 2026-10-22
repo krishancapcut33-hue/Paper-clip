@@ -1,4 +1,4 @@
-import { and, asc, eq, inArray, isNull, lt, or, sql } from "drizzle-orm";
+import { and, asc, eq, gt, inArray, isNull, lt, lte, or, sql } from "drizzle-orm";
 import { executionWorkspaceRestorePoints, type Db } from "@paperclipai/db";
 import type { StorageService } from "../storage/types.js";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -9,6 +9,7 @@ export const GIT_RESTORE_POINT_DEFAULT_RETENTION_DAYS = 90;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const DEFAULT_PENDING_GRACE_MS = 60 * 60 * 1000;
 const DEFAULT_BATCH = 50;
+const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 
 type RestorePoint = typeof executionWorkspaceRestorePoints.$inferSelect;
 
@@ -67,9 +68,42 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
         inArray(executionWorkspaceRestorePoints.status, ["pending", "active"])));
   }
 
-  async function tick(): Promise<GitRestorePointRetentionResult> {
+  async function evaluateActive(row: RestorePoint, at: Date, result: GitRestorePointRetentionResult) {
+    const tree = await issueTreeState(row);
+    if (!tree.exists) {
+      await requestDeletion([row.id], at);
+      result.orphaned += 1;
+      return;
+    }
+    const deleteAfter = tree.open || !tree.closedAt ? null : new Date(tree.closedAt.getTime() + retentionMs);
+    if (deleteAfter && deleteAfter.getTime() <= at.getTime()) {
+      await options.beforeExpire?.(row);
+      await requestDeletion([row.id], at);
+      result.expired += 1;
+      return;
+    }
+    await db.update(executionWorkspaceRestorePoints)
+      .set({ treeClosedAt: tree.open ? null : tree.closedAt, deleteAfter, updatedAt: at })
+      .where(and(eq(executionWorkspaceRestorePoints.id, row.id), eq(executionWorkspaceRestorePoints.status, "active")));
+    result.scheduled += 1;
+  }
+
+  async function sourceIssuesAffectedBy(input: readonly string[]) {
+    const issueIds = input.filter((id) => UUID_PATTERN.test(id));
+    if (issueIds.length === 0) return [];
+    const rows = await db.execute<{ id: string }>(sql`
+      WITH RECURSIVE ancestors AS (
+        SELECT id, parent_id FROM issues WHERE id IN (${sql.join(issueIds.map((id) => sql`${id}::uuid`), sql`, `)})
+        UNION
+        SELECT parent.id, parent.parent_id FROM issues parent JOIN ancestors child ON child.parent_id = parent.id
+      ) SELECT id FROM ancestors`);
+    return [...new Set([...issueIds, ...rows.map((row) => row.id)])];
+  }
+
+  async function tick(input: { changedIssueIds?: readonly string[]; reevaluateAll?: boolean; cursor?: string | null } = {}) {
     const at = now();
     const result: GitRestorePointRetentionResult = { abandoned: 0, scheduled: 0, expired: 0, orphaned: 0, deleted: 0, failed: 0, truncated: false };
+    let cursor: string | null = null;
 
     const abandoned = await db.select({ id: executionWorkspaceRestorePoints.id }).from(executionWorkspaceRestorePoints)
       .where(and(eq(executionWorkspaceRestorePoints.status, "pending"),
@@ -78,31 +112,29 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
     await requestDeletion(abandoned.map((row) => row.id), at);
     result.abandoned = abandoned.length;
 
-    const active = await db.select().from(executionWorkspaceRestorePoints)
-      .where(eq(executionWorkspaceRestorePoints.status, "active"))
-      .orderBy(asc(executionWorkspaceRestorePoints.updatedAt), asc(executionWorkspaceRestorePoints.id)).limit(batchSize);
-    for (const row of active) {
-      const tree = await issueTreeState(row);
-      if (!tree.exists) {
-        await requestDeletion([row.id], at);
-        result.orphaned += 1;
-        continue;
-      }
-      const deleteAfter = tree.open || !tree.closedAt ? null : new Date(tree.closedAt.getTime() + retentionMs);
-      if (deleteAfter && deleteAfter.getTime() <= at.getTime()) {
-        await options.beforeExpire?.(row);
-        await requestDeletion([row.id], at);
-        result.expired += 1;
-        continue;
-      }
-      await db.update(executionWorkspaceRestorePoints)
-        .set({ treeClosedAt: tree.open ? null : tree.closedAt, deleteAfter, updatedAt: at })
-        .where(and(eq(executionWorkspaceRestorePoints.id, row.id), eq(executionWorkspaceRestorePoints.status, "active")));
-      result.scheduled += 1;
+    const due = await db.select().from(executionWorkspaceRestorePoints)
+      .where(and(eq(executionWorkspaceRestorePoints.status, "active"), lte(executionWorkspaceRestorePoints.deleteAfter, at)))
+      .orderBy(asc(executionWorkspaceRestorePoints.deleteAfter)).limit(batchSize);
+    for (const row of due) await evaluateActive(row, at, result);
+
+    let changed: RestorePoint[] = [];
+    if (input.reevaluateAll) {
+      changed = await db.select().from(executionWorkspaceRestorePoints)
+        .where(and(eq(executionWorkspaceRestorePoints.status, "active"),
+          input.cursor ? gt(executionWorkspaceRestorePoints.id, input.cursor) : undefined))
+        .orderBy(asc(executionWorkspaceRestorePoints.id)).limit(batchSize);
+      if (changed.length === batchSize) cursor = changed[changed.length - 1]!.id;
+    } else if (input.changedIssueIds?.length) {
+      const sources = await sourceIssuesAffectedBy(input.changedIssueIds);
+      changed = await db.select().from(executionWorkspaceRestorePoints)
+        .where(and(eq(executionWorkspaceRestorePoints.status, "active"), inArray(executionWorkspaceRestorePoints.sourceIssueId, sources)));
     }
+    for (const row of changed) await evaluateActive(row, at, result);
 
     const doomed = await db.select().from(executionWorkspaceRestorePoints)
-      .where(or(eq(executionWorkspaceRestorePoints.status, "superseded"), eq(executionWorkspaceRestorePoints.status, "delete_requested")))
+      .where(and(inArray(executionWorkspaceRestorePoints.status, ["superseded", "delete_requested"]),
+        or(isNull(executionWorkspaceRestorePoints.lastError),
+          lte(executionWorkspaceRestorePoints.updatedAt, new Date(at.getTime() - GIT_RESTORE_POINT_RETRY_MS)))))
       .orderBy(asc(executionWorkspaceRestorePoints.updatedAt), asc(executionWorkspaceRestorePoints.id)).limit(batchSize);
     for (const row of doomed) {
       try {
@@ -119,8 +151,8 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
         result.failed += 1;
       }
     }
-    result.truncated = abandoned.length === batchSize || active.length === batchSize || doomed.length === batchSize;
-    return result;
+    result.truncated = abandoned.length === batchSize || due.length === batchSize || doomed.length === batchSize;
+    return { result, cursor };
   }
 
   async function nextDeadlineAt(): Promise<number | null> {
@@ -139,14 +171,13 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
     return deadlines.length > 0 ? Math.min(...deadlines) : null;
   }
 
-  async function awaitingTreeClose(): Promise<boolean> {
+  async function hasActive(): Promise<boolean> {
     const [row] = await db.select({ id: executionWorkspaceRestorePoints.id }).from(executionWorkspaceRestorePoints)
-      .where(and(eq(executionWorkspaceRestorePoints.status, "active"), isNull(executionWorkspaceRestorePoints.deleteAfter)))
-      .limit(1);
+      .where(eq(executionWorkspaceRestorePoints.status, "active")).limit(1);
     return Boolean(row);
   }
 
-  return { tick, nextDeadlineAt, awaitingTreeClose };
+  return { tick, nextDeadlineAt, hasActive };
 }
 
 export function registerGitRestorePointWork(
@@ -155,17 +186,34 @@ export function registerGitRestorePointWork(
   onResult: (result: GitRestorePointRetentionResult) => void,
 ) {
   let next: number | null = null;
-  let watchingTreeClose = false;
+  let tracksActive = true;
+  let reevaluateAll = true;
+  let cursor: string | null = null;
+  const changedIssueIds = new Set<string>();
   const worker = coordinator.register(DELIVERY_QUEUES.gitRestorePoints, {
     retryMs: GIT_RESTORE_POINT_RETRY_MS,
     run: async () => {
-      const result = await service.tick();
+      const issues = [...changedIssueIds];
+      changedIssueIds.clear();
+      const full = reevaluateAll;
+      reevaluateAll = false;
+      const { result, cursor: nextCursor } = await service.tick({ changedIssueIds: issues, reevaluateAll: full, cursor });
+      cursor = nextCursor;
+      if (cursor) reevaluateAll = true;
       onResult(result);
-      next = result.truncated ? Date.now() + 1000 : await service.nextDeadlineAt();
-      watchingTreeClose = await service.awaitingTreeClose();
+      next = result.truncated || cursor ? Date.now() + 1000 : await service.nextDeadlineAt();
+      tracksActive = await service.hasActive();
     },
     hasPending: async () => false,
     nextRunAt: () => next,
   });
-  return { ...worker, issueTreeChanged: () => { if (watchingTreeClose) worker.wake(); } };
+  return {
+    ...worker,
+    issueTreeChanged: (hints?: ReadonlySet<string>) => {
+      if (!tracksActive) return;
+      if (!hints) reevaluateAll = true;
+      else for (const hint of hints) if (hint.startsWith("issue:")) changedIssueIds.add(hint.slice("issue:".length));
+      if (reevaluateAll || changedIssueIds.size > 0) worker.wake();
+    },
+  };
 }
