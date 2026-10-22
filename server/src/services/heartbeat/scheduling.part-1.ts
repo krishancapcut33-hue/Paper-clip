@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
-  activityLog, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
-  completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults,
+  agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,10 +12,6 @@ import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatScheduling, type HeartbeatSchedulingDependencies } from "./scheduling.js";
 import { readIdleSleepSafety } from "../idle-sleep-safety.js";
-import { PaperclipRunnerToolAuthority } from "../native-runtime/paperclip-runner-tool-authority.js";
-import { finalizeNativeRun } from "../native-runtime/native-run-finalizer.js";
-import { nativeCompletionFeedback } from "../native-runtime/native-completion-feedback.js";
-import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 type Run = typeof heartbeatRuns.$inferSelect;
 const now = new Date("2026-10-09T12:00:00.000Z");

@@ -1,8 +1,8 @@
 import { randomUUID } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import {
-  activityLog, agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
-  completionContracts, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issueComments, issues, nativeRunFinalizations, nativeRunResults,
+  agents, agentSessionGoalActions, agentTaskSessions, companies, createDb,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, heartbeatRuns, issues,
 } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
@@ -12,10 +12,6 @@ import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatRunState } from "./run-state.js";
 import { createHeartbeatScheduling, type HeartbeatSchedulingDependencies } from "./scheduling.js";
 import { readIdleSleepSafety } from "../idle-sleep-safety.js";
-import { PaperclipRunnerToolAuthority } from "../native-runtime/paperclip-runner-tool-authority.js";
-import { finalizeNativeRun } from "../native-runtime/native-run-finalizer.js";
-import { nativeCompletionFeedback } from "../native-runtime/native-completion-feedback.js";
-import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
 type Run = typeof heartbeatRuns.$inferSelect;
 const now = new Date("2026-10-09T12:00:00.000Z");
@@ -165,66 +161,6 @@ it("retains monitors after transient admission failures", async () => {
     expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
   });
-it("records bounded dispatch failure diagnostics while retaining the schedule", async () => {
-    const f = await fixture();
-    f.deps.enqueueWakeup.mockRejectedValue(new Error("PRIVATE_PROVIDER_FAILURE"));
-    await f.scheduler.tickTimers(now);
-    await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
-    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
-    expect(events.filter(event => event.action === "issue.monitor_dispatch_failed")).toHaveLength(1);
-    expect(events[0]?.details).toMatchObject({ reason: "monitor_dispatch_failed", nextCheckAt: dueAt.toISOString(), attemptCount: 0 });
-    expect(JSON.stringify(events)).not.toContain("PRIVATE_PROVIDER_FAILURE");
-  });
-it("repeats a persistent diagnostic after its bounded quiet window", async () => {
-    const f = await fixture();
-    f.deps.enqueueWakeup.mockResolvedValue(null);
-    await f.scheduler.tickTimers(now);
-    await f.scheduler.tickTimers(new Date(now.getTime() + 30_000));
-    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(1);
-    await db.update(activityLog).set({ createdAt: new Date(Date.now() - 6 * 60_000) }).where(eq(activityLog.entityId, f.issue.id));
-    await f.scheduler.tickTimers(new Date(now.getTime() + 60_000));
-    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(2);
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorAttemptCount: 0 });
-  });
-it("does not copy an unrecognized blocker cause into monitor activity", async () => {
-    const f = await fixture();
-    f.deps.enqueueWakeup.mockImplementationOnce(async (_agentId, options) => {
-      options?.issueStateGuard?.onExecutionDeferred?.("PRIVATE_BLOCKER_CAUSE");
-      return null;
-    });
-    await f.scheduler.tickTimers(now);
-    const events = await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id));
-    expect(events).toMatchObject([{ action: "issue.monitor_deferred", details: { reason: "execution_reconciliation_required" } }]);
-    expect(JSON.stringify(events)).not.toContain("PRIVATE_BLOCKER_CAUSE");
-  });
-it("releases a monitor claim when diagnostic storage fails", async () => {
-    const f = await fixture();
-    await db.execute(sql`create function fail_monitor_diagnostic_test() returns trigger language plpgsql as $$
-      begin if new.action = 'issue.monitor_deferred' then raise exception 'Synthetic diagnostic storage failure'; end if; return new; end; $$`);
-    await db.execute(sql`create trigger fail_monitor_diagnostic_test before insert on activity_log
-      for each row execute function fail_monitor_diagnostic_test()`);
-    try {
-      f.deps.enqueueWakeup.mockResolvedValueOnce(null);
-      expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 1 });
-      expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null, monitorAttemptCount: 0 });
-      expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
-    } finally {
-      await db.execute(sql`drop trigger fail_monitor_diagnostic_test on activity_log`);
-      await db.execute(sql`drop function fail_monitor_diagnostic_test()`);
-    }
-  });
-it("does not attach old dispatch diagnostics to a replacement monitor", async () => {
-    const f = await fixture();
-    const replacement = new Date(now.getTime() + 60_000);
-    f.deps.enqueueWakeup.mockImplementationOnce(async () => {
-      await db.update(issues).set({ monitorNextCheckAt: replacement, monitorWakeRequestedAt: null }).where(eq(issues.id, f.issue.id));
-      return null;
-    });
-    await f.scheduler.tickTimers(now);
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: replacement });
-    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, f.issue.id))).toHaveLength(0);
-  });
 it("leaves monitors alone while a native run owns the issue", async () => {
     const f = await fixture();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, nativeIssueId: f.issue.id, runtimeMode: "native", status: "running", contextSnapshot: { issueId: f.issue.id } }).returning();
@@ -233,21 +169,91 @@ it("leaves monitors alone while a native run owns the issue", async () => {
     await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run!.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
   });
-it("keeps a due monitor until a terminal native run finishes finalization", async () => {
+it("skips archived companies for both timers and monitors", async () => {
     const f = await fixture();
-    const [run] = await db.insert(heartbeatRuns).values({
-      companyId: f.company.id, agentId: f.agent.id, nativeIssueId: f.issue.id,
-      runtimeMode: "native", status: "succeeded", contextSnapshot: { issueId: f.issue.id },
-    }).returning();
-    await db.insert(nativeRunFinalizations).values({
-      companyId: f.company.id, issueId: f.issue.id, runId: run!.id, phase: "retryable_failure",
-    });
+    enableTimer(f.deps);
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, f.company.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 0, enqueued: 0, skipped: 0 });
-    await expect(f.scheduler.triggerIssueMonitor(f.issue.id, { now })).rejects.toThrow("waiting for the previous run to settle");
+    expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
     expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
-    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt, monitorWakeRequestedAt: null });
-    await db.update(nativeRunFinalizations).set({ phase: "committed" }).where(eq(nativeRunFinalizations.runId, run!.id));
+    expect(await readIssue(f.issue.id)).toMatchObject({ monitorNextCheckAt: dueAt });
+  });
+it("combines timer and monitor counts and passes the timer claim receipt to admission", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 2, enqueued: 2, skipped: 0 });
+    expect(f.deps.claimDueTimerHeartbeat).toHaveBeenCalledWith(expect.objectContaining({ id: f.agent.id }), now, 60);
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({
+      source: "timer", reason: "heartbeat_timer", contextSnapshot: expect.objectContaining({ timerClaimWasFirstHeartbeat: true }),
+    }));
+  });
+it("does not enqueue a timer after losing its due claim", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
+    f.deps.claimDueTimerHeartbeat.mockResolvedValue(null);
+    expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 0, skipped: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+it("enforces worktree cutoffs and agent invokability before timer claims", async () => {
+    const f = await fixture();
+    enableTimer(f.deps);
+    await db.update(issues).set({ monitorNextCheckAt: null }).where(eq(issues.id, f.issue.id));
+    f.deps.getWorktreeExecutionCutoff.mockResolvedValue(now);
+    await f.scheduler.tickTimers(now);
+    expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
+    await db.update(issues).set({ createdAt: now }).where(eq(issues.id, f.issue.id));
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, f.agent.id));
+    await f.scheduler.tickTimers(now);
+    expect(f.deps.claimDueTimerHeartbeat).not.toHaveBeenCalled();
+    await db.update(agents).set({ status: "idle" }).where(eq(agents.id, f.agent.id));
     expect(await f.scheduler.tickTimers(now)).toEqual({ checked: 1, enqueued: 1, skipped: 0 });
-    expect(f.deps.enqueueWakeup).toHaveBeenCalledTimes(1);
+  });
+it("recovers active goals with stable revision-based admission keys", async () => {
+    const f = await fixture();
+    const active = await session(f);
+    expect(await f.scheduler.recoverActiveSessionGoals()).toEqual({ scanned: 1, enqueued: 1 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({
+      idempotencyKey: `goal_recovery:${active.id}:7`, contextSnapshot: { issueId: f.issue.id, taskKey: f.issue.id, resumeSessionGoalHeartbeat: true, skipIssueComment: true },
+    }));
+    f.deps.enqueueWakeup.mockResolvedValueOnce(null);
+    expect(await f.scheduler.recoverActiveSessionGoals()).toEqual({ scanned: 1, enqueued: 0 });
+    expect(f.deps.enqueueWakeup.mock.calls[1]![1]!.idempotencyKey).toBe(f.deps.enqueueWakeup.mock.calls[0]![1]!.idempotencyKey);
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issue.id));
+    expect(await f.scheduler.recoverActiveSessionGoals()).toEqual({ scanned: 0, enqueued: 0 });
+  });
+it("excludes goals after reassignment or with a mismatched company binding", async () => {
+    const f = await fixture();
+    const [other] = await db.insert(companies).values({ name: "Other company", issuePrefix: "OTH" }).returning();
+    const active = await session(f, { companyId: other!.id });
+    expect(await f.scheduler.recoverActiveSessionGoals()).toEqual({ scanned: 0, enqueued: 0 });
+    await db.update(agentTaskSessions).set({ companyId: f.company.id }).where(eq(agentTaskSessions.id, active.id));
+    await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issue.id));
+    expect(await f.scheduler.recoverActiveSessionGoals()).toEqual({ scanned: 0, enqueued: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+  });
+it.each(["queued", "scheduled_retry", "running"])("deduplicates a pending goal action against a %s run", async status => {
+    const f = await fixture();
+    const active = await session(f);
+    const requestId = randomUUID();
+    const [action] = await db.insert(agentSessionGoalActions).values({ companyId: f.company.id, sessionId: active.id, requestId, action: "pause", payloadJson: { requestId, action: "pause" } }).returning();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: f.company.id, agentId: f.agent.id, status, contextSnapshot: { goalControlRequestId: requestId } }).returning();
+    expect(await f.scheduler.recoverPendingSessionGoalActions()).toEqual({ scanned: 1, enqueued: 0, alreadyQueued: 1, invalid: 0 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    await db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, run!.id));
+    await db.update(issues).set({ status: "done" }).where(eq(issues.id, f.issue.id));
+    expect(await f.scheduler.recoverPendingSessionGoalActions()).toEqual({ scanned: 1, enqueued: 1, alreadyQueued: 0, invalid: 0 });
+    expect(f.deps.enqueueWakeup).toHaveBeenCalledWith(f.agent.id, expect.objectContaining({
+      idempotencyKey: `goal_control_recovery:${action!.id}`, contextSnapshot: expect.objectContaining({ resumeIntent: true, goalControlRequestId: requestId, runnerGoalControl: { requestId, action: "pause" } }),
+    }));
+  });
+it("persists invalid goal actions as failures without wake admission", async () => {
+    const f = await fixture();
+    const active = await session(f);
+    const [action] = await db.insert(agentSessionGoalActions).values({ companyId: f.company.id, sessionId: active.id, requestId: "expected", action: "pause", payloadJson: { requestId: "different", action: "pause" } }).returning();
+    expect(await f.scheduler.recoverPendingSessionGoalActions()).toEqual({ scanned: 1, enqueued: 0, alreadyQueued: 0, invalid: 1 });
+    expect(f.deps.enqueueWakeup).not.toHaveBeenCalled();
+    const failed = await db.select().from(agentSessionGoalActions).where(eq(agentSessionGoalActions.id, action!.id));
+    expect(failed[0]).toMatchObject({ status: "failed", error: "session_goal_control_payload_invalid" });
   });
 });

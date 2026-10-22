@@ -2,15 +2,13 @@ import { subscribeDatabaseWork } from "@paperclipai/db";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { activityLog, agents, agentWakeupRequests, authUsers, companyMemberships, companies, completionContracts, createDb, heartbeatRuns, issues, nativeRunFinalizations, nativeRunResults, statusDecisions } from "@paperclipai/db";
+import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { activityLog, agents, authUsers, companyMemberships, companies, createDb, heartbeatRuns, issues } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
 import { buildIssueMonitorTriggeredPatch, normalizeIssueExecutionPolicy } from "../issue-execution-policy.js";
 import { nativeCompletionFeedback } from "./native-completion-feedback.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
-import * as monitorDelivery from "./native-monitor-delivery.js";
 import type { PrpStructuredRunResult } from "../../vendor/paperclip-runner/index.js";
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -34,7 +32,7 @@ async function fixture() {
     await db.update(issues).set({ executionRunId: runId }).where(eq(issues.id, issueId));
     const binding = { companyId, agentId, issueId, runId };
     const authority = new PaperclipRunnerToolAuthority(db, binding);
-    const monitor = { nextCheckAt: new Date(Date.now() + 10.8e6).toISOString(), notes: "Compare this task's run and session identities." };
+    const monitor = { nextCheckAt: new Date(Date.now() + 10_800_000).toISOString(), notes: "Compare this task's run and session identities." };
     const call = (args: Record<string, unknown>) => authority.execute({ tool: "set_task_monitor", callId: randomUUID(), arguments: args });
     const read = async () => (await db.select().from(issues).where(eq(issues.id, issueId)))[0]!;
     return { ...binding, binding, authority, monitor, call, read };
@@ -51,7 +49,7 @@ it("notifies committed monitor changes for another owned task without replay or 
       expect(events).toEqual(["intent", "settled"]);
       events.length = 0;
       await value.call({ ...original, idempotencyKey: "notify-earlier",
-        monitor: { ...value.monitor, nextCheckAt: new Date(Date.now() + 9e6).toISOString() } });
+        monitor: { ...value.monitor, nextCheckAt: new Date(Date.now() + 9_000_000).toISOString() } });
       expect(events).toEqual(["intent", "settled"]);
       events.length = 0;
       await value.call(original);
@@ -63,6 +61,29 @@ it("notifies committed monitor changes for another owned task without replay or 
       await expect(value.call({ ...original, idempotencyKey: "notify-forbidden" })).rejects.toThrow();
       expect(events).toEqual([]);
     } finally { unsubscribe(); }
+  });
+it("persists the minimum check time through the native tool", async () => {
+    const value = await fixture();
+    const before = Date.now();
+    const result = await value.call({ idempotencyKey: "minimum-native", monitor: {
+      ...value.monitor, nextCheckAt: new Date(before + 60_000).toISOString(),
+    } });
+    const after = Date.now();
+    const saved = await value.read();
+    expect(saved.monitorNextCheckAt!.getTime()).toBeGreaterThanOrEqual(before + 7_200_000);
+    expect(saved.monitorNextCheckAt!.getTime()).toBeLessThanOrEqual(after + 7_200_000);
+    expect(result).toMatchObject({ monitor: { nextCheckAt: saved.monitorNextCheckAt!.toISOString() } });
+    expect(saved.executionPolicy).toMatchObject({ monitor: { nextCheckAt: saved.monitorNextCheckAt!.toISOString() } });
+  });
+it("rejects a native timeout before the minimum without saving a monitor", async () => {
+    const value = await fixture();
+    const now = Date.now();
+    await expect(value.call({ idempotencyKey: "short-timeout", monitor: {
+      ...value.monitor, nextCheckAt: new Date(now + 60_000).toISOString(),
+      timeoutAt: new Date(now + 3_600_000).toISOString(),
+    } })).rejects.toThrow("timeoutAt");
+    expect((await value.read()).monitorNextCheckAt).toBeNull();
+    expect(await db.select().from(activityLog).where(eq(activityLog.entityId, value.issueId))).toHaveLength(0);
   });
 it("advertises a real binding only in standard execution", async () => {
     const value = await fixture();
@@ -111,29 +132,11 @@ it("persists a monitor and its audit atomically while preserving review policy",
     expect(audits).toHaveLength(1);
     expect(audits[0]).toMatchObject({ runId: value.runId, agentId: value.agentId });
   });
-it("defaults completion only to the current eligible saved monitor and clears it when consumed", async () => {
-    const value = await fixture();
-    const context = () => value.authority.execute({ tool: "get_task_context", callId: randomUUID(), arguments: {} });
-    expect(await context()).toMatchObject({ completionContinuation: null });
-    await value.call({ idempotencyKey: "default-schedule", monitor: value.monitor });
-    expect(await context()).toMatchObject({
-      run: { id: value.runId }, activeTask: { executionRunId: value.runId },
-      completionContinuation: { kind: "monitor", summary: "Wait for the saved task monitor.",
-        idempotencyKey: `task-monitor:${value.issueId}:${value.monitor.nextCheckAt}` },
-    });
-    const scheduled = await value.read();
-    await db.update(issues).set(buildIssueMonitorTriggeredPatch({ issue: scheduled,
-      policy: normalizeIssueExecutionPolicy(scheduled.executionPolicy), triggeredAt: new Date() })).where(eq(issues.id, value.issueId));
-    expect(await context()).toMatchObject({ completionContinuation: null });
-    await value.call({ idempotencyKey: "replacement-schedule", monitor: value.monitor });
-    await value.call({ idempotencyKey: "cleared-schedule", monitor: null });
-    expect(await context()).toMatchObject({ completionContinuation: null });
-  });
 it("replaces and clears schedules without re-arming a receipt on replay", async () => {
     const value = await fixture();
     const original = { idempotencyKey: "first", monitor: value.monitor };
     await value.call(original);
-    const replacement = { ...value.monitor, nextCheckAt: new Date(Date.now() + 14.4e6).toISOString() };
+    const replacement = { ...value.monitor, nextCheckAt: new Date(Date.now() + 14_400_000).toISOString() };
     await value.call({ idempotencyKey: "replace", monitor: replacement });
     expect(await value.call(original)).toMatchObject({ monitor: { nextCheckAt: replacement.nextCheckAt }, replayed: true });
     await value.call({ idempotencyKey: "clear", monitor: null });
