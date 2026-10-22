@@ -65,6 +65,7 @@ export function AppsConnect({ byoOnly = false, credentialSource = "paperclip_vau
       reconnect={aiReconnect}
       initialProvider={preset?.provider}
       initialProtocol={preset?.protocol}
+      initialBaseUrls={preset?.baseUrls}
       providerLabel={preset?.label}
       onCancel={() => navigate("/apps")}
       onComplete={binding => navigate(`/apps/${binding.connectionId}/permissions`)}

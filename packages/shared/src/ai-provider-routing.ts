@@ -134,9 +134,16 @@ export function aiRoutingModel(
   return model.startsWith(`${prefix}/`) ? model : `${prefix}/${model}`;
 }
 
+const MUBIT_BASE_URLS: Readonly<Partial<Record<AiProviderRouting["protocol"], string>>> = Object.freeze({
+  responses: "https://api.mubit.ai/openai/v1",
+  messages: "https://api.mubit.ai/anthropic",
+  chat: "https://api.mubit.ai/openai/v1",
+});
+
 /** Catalog identity is derived from routing, including accounts saved before these rows existed. */
-export function aiConnectionCatalogSlug(provider: string, routing?: Pick<AiProviderRouting, "kind" | "protocol">): string {
+export function aiConnectionCatalogSlug(provider: string, routing?: Pick<AiProviderRouting, "kind" | "protocol" | "baseUrl">): string {
   if (routing?.kind === "gateway") {
+    if (routing.baseUrl && routing.baseUrl.replace(/\/+$/, "") === MUBIT_BASE_URLS[routing.protocol]) return "mubit";
     return routing.protocol === "messages" ? "messages-api"
       : routing.protocol === "chat" ? "chat-completions-api" : "responses-api";
   }
@@ -148,11 +155,13 @@ export function aiProviderSetupPreset(source: string | null): {
   provider: "openrouter" | "bedrock" | "gateway" | "local" | "google";
   protocol?: AiProviderRouting["protocol"];
   label?: string;
+  baseUrls?: Readonly<Partial<Record<AiProviderRouting["protocol"], string>>>;
 } | undefined {
   switch (source) {
     case "responses-api": return { provider: "gateway", protocol: "responses", label: "Responses API" };
     case "messages-api": return { provider: "gateway", protocol: "messages", label: "Messages API" };
     case "chat-completions-api": return { provider: "gateway", protocol: "chat", label: "Chat Completions API" };
+    case "mubit": return { provider: "gateway", label: "Mubit", baseUrls: MUBIT_BASE_URLS };
     case "google-ai": return { provider: "google" };
     case "google": case "openrouter": case "bedrock": case "gateway": case "local": return { provider: source };
     default: return undefined;

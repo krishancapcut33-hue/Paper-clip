@@ -98,6 +98,52 @@ it("saves the default organization grant and all-agent installation from the dir
   }
 });
 
+it("opens Mubit with its Responses endpoint and a selectable API format", async () => {
+  const preset = aiProviderSetupPreset("mubit")!;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider={preset.provider} initialProtocol={preset.protocol} initialBaseUrls={preset.baseUrls} providerLabel={preset.label} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    expect(container.textContent).toContain("Connect Mubit");
+    expect(container.querySelector<HTMLInputElement>('input[aria-label="Provider URL"]')!.value).toBe("https://api.mubit.ai/openai/v1");
+    expect(container.querySelector('[aria-label="API format"]')!.hasAttribute("disabled")).toBe(false);
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
+it.each([
+  ["responses", "openai", "https://api.mubit.ai/openai/v1"],
+  ["messages", "anthropic", "https://api.mubit.ai/anthropic"],
+  ["chat", "openai", "https://api.mubit.ai/openai/v1"],
+] as const)("saves Mubit's fixed %s endpoint with bearer authentication", async (protocol, provider, baseUrl) => {
+  const preset = aiProviderSetupPreset("mubit")!;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider={preset.provider} initialProtocol={protocol} initialBaseUrls={preset.baseUrls} providerLabel={preset.label} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    const url = container.querySelector<HTMLInputElement>('input[aria-label="Provider URL"]')!;
+    expect(url.value).toBe(baseUrl);
+    expect(url.disabled).toBe(true);
+    expect(container.querySelector('[aria-label="Authentication"]')).toBeNull();
+    const input = container.querySelector('input[aria-label="API key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "synthetic-mubit-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(aiConnectionsApi.create).toHaveBeenLastCalledWith("company", expect.objectContaining({ provider, method: "api_key", name: "Company Mubit", apiKey: "synthetic-mubit-key", routing: { kind: "gateway", protocol, baseUrl, auth: "bearer", models: [] } }));
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
 
 it("allows an ordinary member to save a personal gateway before the agent exists", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });

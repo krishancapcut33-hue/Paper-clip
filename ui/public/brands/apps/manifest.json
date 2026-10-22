@@ -530,6 +530,12 @@
       "darkAsset": "/brands/apps/openrouter-dark.svg"
     },
     {
+      "slug": "mubit",
+      "provider": "Mubit",
+      "catalogVisible": true,
+      "localAsset": "/brands/apps/mubit.svg"
+    },
+    {
       "slug": "xai",
       "provider": "Grok",
       "catalogVisible": true,

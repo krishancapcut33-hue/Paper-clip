@@ -1966,6 +1966,7 @@ const aiCatalogEntries = [
   { slug: "messages-api", name: "Messages API", provider: "anthropic", envKey: "ANTHROPIC_API_KEY", description: "Connect any compatible harness to an Anthropic Messages-compatible provider or gateway." },
   { slug: "chat-completions-api", name: "Chat Completions API", provider: "openai", envKey: "OPENAI_API_KEY", description: "Connect any compatible harness to a Chat Completions-compatible provider or gateway." },
   { slug: "local", name: "Local endpoint", provider: "openai", envKey: "OPENAI_API_KEY", description: "Use a local model server in the agent’s execution environment." },
+  { slug: "mubit", name: "Mubit", provider: "openai", envKey: "OPENAI_API_KEY", url: "https://api.mubit.ai/*", description: "Connect Codex, Claude, OpenCode, and Hermes agents to the Mubit model gateway." },
 ];
 for (const { slug, name, provider, subscription, envKey, url, description } of aiCatalogEntries) {
   let app = apps.find(a => a.slug === slug);
