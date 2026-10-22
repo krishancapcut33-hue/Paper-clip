@@ -11,6 +11,7 @@ CREATE TABLE "execution_workspace_restore_points" (
 	"activated_at" timestamp with time zone,
 	"tree_closed_at" timestamp with time zone,
 	"delete_after" timestamp with time zone,
+	"review_generation" integer DEFAULT 0 NOT NULL,
 	"deleted_at" timestamp with time zone,
 	"last_error" text,
 	"created_at" timestamp with time zone DEFAULT now() NOT NULL,
@@ -33,9 +34,10 @@ BEGIN
     starts := ARRAY[NEW.id, OLD.parent_id, NEW.parent_id];
   END IF;
   UPDATE execution_workspace_restore_points
-  SET delete_after = now(), updated_at = now()
+  SET delete_after = CASE WHEN delete_after IS NULL OR delete_after > now() THEN now() ELSE delete_after END,
+    review_generation = review_generation + 1,
+    updated_at = now()
   WHERE status = 'active'
-    AND (delete_after IS NULL OR delete_after > now())
     AND source_issue_id IN (
       WITH RECURSIVE ancestors(id, parent_id, depth) AS (
         SELECT i.id, i.parent_id, 0 FROM issues i WHERE i.id = ANY(starts)

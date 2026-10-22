@@ -25,6 +25,7 @@ export const executionWorkspaceRestorePoints = pgTable(
     activatedAt: timestamp("activated_at", { withTimezone: true }),
     treeClosedAt: timestamp("tree_closed_at", { withTimezone: true }),
     deleteAfter: timestamp("delete_after", { withTimezone: true }),
+    reviewGeneration: integer("review_generation").notNull().default(0),
     deletedAt: timestamp("deleted_at", { withTimezone: true }),
     lastError: text("last_error"),
     createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),

@@ -310,6 +310,38 @@ describeEmbeddedPostgres("git restore point retention", () => {
       expect((await reload(alreadyDue.id)).deleteAfter!.getTime()).toBe(now.getTime() - DAY_MS);
     });
 
+    it("keeps a restore point due when its tree closes between the worker's read and write", async () => {
+      const row = await seed({ deleteAfter: due() });
+      const open = await child(row.sourceIssueId!, row.companyId);
+      const racing = gitRestorePointRetentionService(db, {
+        storage,
+        afterTreeRead: async () => {
+          await db.update(issues).set({ status: "done", completedAt: new Date() }).where(eq(issues.id, open.id));
+        },
+      });
+      expect(await racing.tick()).toMatchObject({ raced: 1, scheduled: 0 });
+      const stillDue = await reload(row.id);
+      expect(stillDue.deleteAfter!.getTime()).toBeLessThanOrEqual(Date.now());
+      await gitRestorePointRetentionService(db, { storage }).tick();
+      const reviewed = await reload(row.id);
+      expect(reviewed.deleteAfter!.getTime() - reviewed.treeClosedAt!.getTime()).toBe(90 * DAY_MS);
+    });
+
+    it("does not expire a restore point whose tree reopens between the worker's read and write", async () => {
+      const row = await seed({ closedDaysAgo: 120, deleteAfter: due() });
+      const racing = gitRestorePointRetentionService(db, {
+        storage,
+        afterTreeRead: async () => {
+          await db.update(issues).set({ status: "todo", completedAt: null }).where(eq(issues.id, row.sourceIssueId!));
+        },
+      });
+      expect(await racing.tick()).toMatchObject({ raced: 1, expired: 0, deleted: 0 });
+      expect(await reload(row.id)).toMatchObject({ status: "active" });
+      await gitRestorePointRetentionService(db, { storage }).tick();
+      expect(await reload(row.id)).toMatchObject({ status: "active", deleteAfter: null });
+      expect(deleted).toEqual([]);
+    });
+
     it("lets the worker schedule expiry once an open tree closes", async () => {
       const row = await seed();
       const open = await child(row.sourceIssueId!, row.companyId);

@@ -19,6 +19,7 @@ export type GitRestorePointRetentionResult = {
   orphaned: number;
   deleted: number;
   failed: number;
+  raced: number;
   truncated: boolean;
 };
 
@@ -29,6 +30,7 @@ export type GitRestorePointRetentionOptions = {
   batchSize?: number;
   now?: () => Date;
   beforeExpire?: (restorePoint: RestorePoint) => Promise<void>;
+  afterTreeRead?: (restorePoint: RestorePoint) => Promise<void>;
 };
 
 type TreeState = { exists: boolean; open: boolean; closedAt: Date | null };
@@ -69,27 +71,48 @@ export function gitRestorePointRetentionService(db: Db, options: GitRestorePoint
 
   async function evaluateActive(row: RestorePoint, at: Date, result: GitRestorePointRetentionResult) {
     const tree = await issueTreeState(row);
-    if (!tree.exists) {
-      await requestDeletion([row.id], at);
-      result.orphaned += 1;
-      return;
-    }
-    const deleteAfter = tree.open || !tree.closedAt ? null : new Date(tree.closedAt.getTime() + retentionMs);
-    if (deleteAfter && deleteAfter.getTime() <= at.getTime()) {
-      await options.beforeExpire?.(row);
-      await requestDeletion([row.id], at);
+    await options.afterTreeRead?.(row);
+    const unchanged = and(
+      eq(executionWorkspaceRestorePoints.id, row.id),
+      eq(executionWorkspaceRestorePoints.status, "active"),
+      eq(executionWorkspaceRestorePoints.reviewGeneration, row.reviewGeneration),
+    );
+    const deleteAfter = !tree.exists || tree.open || !tree.closedAt ? null : new Date(tree.closedAt.getTime() + retentionMs);
+    if (!tree.exists || (deleteAfter && deleteAfter.getTime() <= at.getTime())) {
+      const claimed = await db.update(executionWorkspaceRestorePoints)
+        .set({ status: "delete_requested", updatedAt: at })
+        .where(unchanged)
+        .returning({ id: executionWorkspaceRestorePoints.id });
+      if (claimed.length === 0) {
+        result.raced += 1;
+        return;
+      }
+      if (!tree.exists) {
+        result.orphaned += 1;
+        return;
+      }
+      try {
+        await options.beforeExpire?.(row);
+      } catch (error) {
+        await db.update(executionWorkspaceRestorePoints)
+          .set({ status: "active", updatedAt: at })
+          .where(and(eq(executionWorkspaceRestorePoints.id, row.id), eq(executionWorkspaceRestorePoints.status, "delete_requested")));
+        throw error;
+      }
       result.expired += 1;
       return;
     }
-    await db.update(executionWorkspaceRestorePoints)
+    const updated = await db.update(executionWorkspaceRestorePoints)
       .set({ treeClosedAt: tree.open ? null : tree.closedAt, deleteAfter, updatedAt: at })
-      .where(and(eq(executionWorkspaceRestorePoints.id, row.id), eq(executionWorkspaceRestorePoints.status, "active")));
-    result.scheduled += 1;
+      .where(unchanged)
+      .returning({ id: executionWorkspaceRestorePoints.id });
+    if (updated.length === 0) result.raced += 1;
+    else result.scheduled += 1;
   }
 
   async function tick() {
     const at = now();
-    const result: GitRestorePointRetentionResult = { abandoned: 0, scheduled: 0, expired: 0, orphaned: 0, deleted: 0, failed: 0, truncated: false };
+    const result: GitRestorePointRetentionResult = { abandoned: 0, scheduled: 0, expired: 0, orphaned: 0, deleted: 0, failed: 0, raced: 0, truncated: false };
 
     const abandoned = await db.select({ id: executionWorkspaceRestorePoints.id }).from(executionWorkspaceRestorePoints)
       .where(and(eq(executionWorkspaceRestorePoints.status, "pending"),

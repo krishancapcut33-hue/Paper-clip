@@ -1,5 +1,5 @@
 {
-  "id": "c6ac6c95-4e58-4c50-961b-f342e61b0184",
+  "id": "9c1b4cac-52f1-4c6e-89b3-c9a7816016c7",
   "prevId": "7caf727e-0913-40b3-b01c-842e9447666f",
   "version": "7",
   "dialect": "postgresql",
@@ -28550,6 +28550,13 @@
           "type": "timestamp with time zone",
           "primaryKey": false,
           "notNull": false
+        },
+        "review_generation": {
+          "name": "review_generation",
+          "type": "integer",
+          "primaryKey": false,
+          "notNull": true,
+          "default": 0
         },
         "deleted_at": {
           "name": "deleted_at",
