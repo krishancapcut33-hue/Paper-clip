@@ -196,3 +196,9 @@ boundaries pass. No new supervisor, background loop or runtime cache is created.
 - `tool-access.ts`: 14,877 → 12,019 lines. Registration single-flight remains process-wide; refresh maps and GitHub sweep state remain per service. The live cloud connector getter and existing secret client are passed through.
 - The real HTTP/PostgreSQL OAuth fixture now also proves concurrent refresh across two service instances, one token exchange, durable rotated credentials and authenticated use of the new token. Its two cases passed before the move.
 - After extraction, 470 public service/integration cases, server typecheck and module boundary checks pass. All 233 pre-existing function/method bodies match by normalized syntax comparison.
+
+### Authorization lifecycle
+
+- Separate state validation/consumption, authorization initiation, direct OAuth callback, managed-cloud callback, Vercel callback, catalog completion and explicit identity promotion. Shared setup policy, personal identity checks and organization-grant persistence have explicit owners.
+- `tool-access.ts`: 12,019 → 8,997 lines. The largest new module is 700 lines. Callback-specific state consumption order, membership locks, transaction-scoped secret writes and promotion cleanup stay intact.
+- Before/after: all 470 public service and real HTTP/database integration cases pass. Server typecheck, module-boundary and whitespace checks pass; all 182 previous function/method bodies match by normalized syntax comparison.
