@@ -102,25 +102,25 @@ tracks each one with its storage key, hash, size and status
 (`pending`, `active`, `superseded`, `delete_requested`, `deleted`). The objects live in
 the instance's configured file storage (`local_disk` or `s3`).
 
-A retention worker on the shared delivery-work scheduler applies these rules. It runs
-once at startup to rebuild its state from the table, then only at real deadlines: the
-earliest expiry, the end of an abandoned capture's grace period, or a failed deletion's
-retry. While any restore point exists, issue changes reported by the terminal-workspace
-notifications wake it, and it re-evaluates only restore points whose source issue is a
-changed issue or one of its ancestors. The startup pass pages through every restore
-point once and then stops. With nothing due, it schedules nothing:
+Every active restore point carries a review time in `delete_after`. A retention worker
+on the shared delivery-work scheduler runs at startup and then only at real deadlines:
+the earliest review time, the end of an abandoned capture's grace period, or a failed
+deletion's retry. With nothing due, it schedules nothing. At a restore point's review
+time it checks the source issue tree:
 
-- An `active` restore point has no deadline while any issue in its source issue tree
-  is open. Once the whole tree is `done` or `cancelled`, it expires
-  `PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS` (default `90`, minimum `1`) after the
-  tree's latest close.
-- A restore point whose source issue no longer exists, including after the issue or
-  its company is deleted, is deleted on the next sweep.
-- A `pending` restore point older than one hour was abandoned mid-capture and is
-  deleted.
-- `superseded` and `delete_requested` restore points have their stored object removed,
-  then become `deleted` once the storage provider confirms the object is gone. A storage
-  failure is recorded in `last_error` and retried after 15 minutes.
+- Tree still open: review again in 30 days (or the retention period, if shorter).
+- Tree `done` or `cancelled`: expire `PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS`
+  (default `90`, minimum `1`) after the tree's latest close, immediately if that time
+  has passed.
+- Source issue gone: delete.
+
+Deleting an issue or a company marks its restore points `delete_requested` in the same
+transaction and notifies the worker, so their objects are removed promptly. A
+`pending` restore point older than one hour was abandoned mid-capture and is deleted.
+`superseded` and `delete_requested` restore points have their stored object removed,
+then become `deleted` once the storage provider confirms the object is gone. A
+storage failure is recorded in `last_error` and retried after 15 minutes. Work is
+processed in batches of 50; a full batch continues immediately.
 
 Rows have no foreign keys, so they outlive a deleted workspace, issue or company long
 enough to remove the stored object. Each run that changes anything logs its counts.
