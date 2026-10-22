@@ -134,11 +134,11 @@ API: `present` — POST /api/issues/{id}/interactions/{interactionId}/dismiss.
 
 Agent access: `restricted` — board-only; an agent cannot dismiss its own pending request. Authorized agents can read dismissal in interaction/task context.
 
-Policy: Task/company access and resolver audience apply. Saves dismissal under task/interaction locks without resolving, executing, or waking. Ordinary requests stop gating completion. Tool/secret/connection/document/company-policy and configured review gates retain authority, with no repeated reminder. Raw runtime dismissal remains a browser preference.
+Policy: Task/company read access and resolver audience apply. Current issue review policy is rechecked under the task lock; an excluded review requester cannot defer the review. Saves dismissal under task/interaction locks without resolving, executing, or waking. Ordinary requests stop gating completion. Tool/secret/connection/document/company-policy and configured review gates retain authority, with no repeated reminder. Raw runtime dismissal remains a browser preference.
 
 Evidence: `source-only` — [route](../../server/src/routes/issues.ts), [service](../../server/src/services/issue-thread-interactions.ts), [completion predicate](../../server/src/services/issue-question-context.ts), and [task thread](../../ui/src/components/TaskChatThread.tsx).
 
-Verification: `not-run` — Dismiss, reload, reopen the original request; verify persisted dismissal with no answer, approval, or wake. Reject agents, foreign tasks, and wrong audiences. Check ordinary completion review and protected tool action separately.
+Verification: `not-run` — Dismiss, reload, reopen the original request; verify persisted dismissal with no answer, approval, or wake. Reject agents, foreign or unreadable private tasks, wrong audiences, and review requesters excluded by current policy. Check ordinary completion review and protected tool action separately.
 
 Gaps: Browser drafts and raw runtime request dismissal do not synchronize across devices.
 

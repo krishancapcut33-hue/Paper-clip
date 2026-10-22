@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
-  agents, agentWakeupRequests, approvals, companies, completionContracts, createDb, heartbeatRuns, issueApprovals,
+  activityLog, agents, agentWakeupRequests, approvals, companies, completionContracts, createDb, heartbeatRuns, issueApprovals,
   issueComments, issueQuestionResponseDeliveries, issueThreadInteractions, issueWorkProducts, issues, statusDecisions,
 } from "@paperclipai/db";
 import { startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -118,6 +118,32 @@ describe("historical task questions", () => {
     const feedback = await nativeCompletionFeedback(db, f.runId, done);
     expect(feedback).toContain("Dismissal does not authorize");
     expect(feedback).not.toContain("Tell the user");
+  });
+
+  it.each(["request_confirmation", "request_checkbox_confirmation"])("enforces the current issue review policy when dismissing a %s", async kind => {
+    const f = await fixture();
+    await db.update(issues).set({ status: "in_review", reviewPolicy: "not_creator", createdByUserId: "original-author" })
+      .where(eq(issues.id, f.issueId));
+    await db.update(issueThreadInteractions).set({ kind, createdByAgentId: null, createdByUserId: "review-requester",
+      payload: kind === "request_confirmation"
+        ? { version: 1, prompt: "Review completed work", target: { type: "custom", key: "native_completion_review" } }
+        : { version: 1, prompt: "Review completed work", options: [{ id: "verified", label: "Verified" }] },
+    }).where(eq(issueThreadInteractions.id, f.question.id));
+    await db.insert(activityLog).values({ companyId: f.companyId, actorType: "user", actorId: "review-requester",
+      action: "issue.updated", entityType: "issue", entityId: f.issueId,
+      details: { status: "in_review", _previous: { status: "in_progress" }, reviewInteractionId: f.question.id },
+    });
+    const service = issueThreadInteractionService(db);
+    const staleTask = { id: f.issueId, companyId: f.companyId, status: "in_progress", reviewPolicy: "anyone" };
+    await expect(service.dismissInteraction(staleTask, f.question.id, { userId: "review-requester" }))
+      .rejects.toMatchObject({ status: 403, details: { code: "review_policy_denied" } });
+    expect((await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, f.question.id)))[0])
+      .toMatchObject({ dismissedAt: null, status: "pending", resolvedAt: null, result: null });
+    expect(await gate(f)).toEqual({ kind: "interaction", id: f.question.id });
+    expect(await service.dismissInteraction(staleTask, f.question.id, { userId: "original-author" }))
+      .toMatchObject({ dismissedByUserId: "original-author", status: "pending", resolvedAt: null, result: null });
+    expect(await gate(f)).toBeNull();
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
   });
 
   it("keeps a real current question gated without commanding another reminder", async () => {

@@ -261,11 +261,10 @@ function createIssue(overrides: Record<string, unknown> = {}) {
   };
 }
 
-function loadAppModules() {
-  return Promise.all([
-    import("../routes/issues.js"),
-    import("../middleware/index.js"),
-  ]);
+async function loadAppModules() {
+  const routes = await import("../routes/issues.js");
+  const middleware = await import("../middleware/index.js");
+  return [routes, middleware] as const;
 }
 
 async function createApp(actor: Record<string, unknown> = {
@@ -627,6 +626,23 @@ describe("issue thread interaction routes", () => {
     mockInteractionService.dismissInteraction.mockClear();
     expect((await request(await createApp({ type: "agent", agentId: CREATED_AGENT_ID, companyId: "company-1", runId: RUN_1 })).post(path).send({})).status).toBe(403);
     expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+  });
+
+  it("hides private task requests from same-company members without task access before dismissal", async () => {
+    mockAccessDecide.mockResolvedValue({ allowed: false, action: "issue:read", reason: "deny_issue_private",
+      explanation: "Task access was revoked.",
+    });
+    const app = await createApp({ type: "board", userId: "same-company-member", companyIds: ["company-1"],
+      source: "session", isInstanceAdmin: false,
+    });
+    const result = await request(app)
+      .post("/api/issues/aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa/interactions/request-1/dismiss").send({});
+    expect(result.status).toBe(404);
+    expect(result.body).toEqual({ error: "Issue not found" });
+    expect(mockInteractionService.dismissInteraction).not.toHaveBeenCalled();
+    expect(mockInteractionService.getForIssue).not.toHaveBeenCalled();
+    expect(mockLogActivity).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
   it("normalizes a canonical-only mixed question form at the HTTP boundary", async () => {

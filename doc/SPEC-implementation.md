@@ -1891,7 +1891,8 @@ at their original position in the feed. Dismissing any composer request clears
 its form and pending reminder, including completion reviews, confirmations,
 checkbox choices, suggested tasks, item verdicts, and runtime requests. Saved
 interactions persist `dismissedAt` and `dismissedByUserId` through a board-only,
-company-scoped endpoint with resolver-audience checks and an activity record.
+company-scoped endpoint with task-access, resolver-audience, and current review-policy
+checks and an activity record. Review policy is checked under the task-row lock.
 Dismissal never creates an answer, decision, execution, or continuation wake.
 Raw runtime requests retain browser-local dismissal; reopening restores the
 original request and draft. A failed save leaves the request open with an error.

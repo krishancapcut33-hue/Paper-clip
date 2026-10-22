@@ -17691,6 +17691,7 @@ export function issueRoutes(
       assertBoard(req);
       const issue = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Issue not found");
       if (!issue) return;
+      if (!(await assertIssueReadAllowed(req, res, issue))) return;
       const actor = getActorInfo(req);
       const interaction = await issueThreadInteractionService(db).dismissInteraction(
         issue, req.params.interactionId as string,
