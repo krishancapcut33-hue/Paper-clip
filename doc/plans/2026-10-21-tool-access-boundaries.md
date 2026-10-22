@@ -175,3 +175,17 @@ Pages and RFC 8693 exchanges, plus a failing upstream request, and assert that
 issuance/audit rows contain no token material. The complete public service and
 HTTP rebinding run passes 495 cases. Server typechecking and module boundaries
 pass. These fixtures do not claim live third-party qualification.
+
+### Runtime and activity ownership extraction
+
+Slot persistence and operator controls share the existing runtime supervisor.
+The health reader receives the same live deployment options, clock and trusted
+host getter. Activity projections and company-scoped history/usage reads live
+separately from the action review queue. The queue retains its existing unsigned
+request grace period and invalid-signature cancellation writes.
+
+The entry point is 14,877 lines / 600,156 bytes. Five destination modules total
+1,282 lines, with no module larger than 426 lines. All 256 pre-existing bodies
+match normalized syntax. The public service and unsigned review-queue coverage
+pass before and after (469 combined cases). Server typechecking and module
+boundaries pass. No new supervisor, background loop or runtime cache is created.
