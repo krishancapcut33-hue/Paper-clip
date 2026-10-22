@@ -2580,6 +2580,12 @@ Environment overrides:
   negative, empty, or non-numeric value falls back to the default.
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED=false` turns expiry off, and
   `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_DRY_RUN=true` only reports candidates.
+- `PAPERCLIP_GIT_RESTORE_POINTS_ENABLED=true` lets git cache expiration remove closed
+  worktrees with unpushed or uncommitted work after saving an encrypted restore point
+  (see `doc/recoverable-disk-cleanup.md`). It is off by default.
+  `PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS=<days>` sets how long the issue tree
+  must be closed first. The default is `3`. A negative, empty, or non-numeric value falls
+  back to the default.
 - `PAPERCLIP_GIT_RESTORE_POINT_RETENTION_DAYS=<days>` sets how long a git workspace
   restore point is kept after its issue tree closes (see
   `doc/recoverable-disk-cleanup.md`). The default is `90` and the minimum is `1`. A
