@@ -175,7 +175,6 @@ export interface HeartbeatRuntimeExecutionInput {
     onAdapterEvent: NonNullable<AdapterExecutionContext["onEvent"]>;
     onAdapterMeta: AdapterExecutionContext["onMeta"];
     identityRedactor: ReturnType<typeof createAgentIdentityRedactor>;
-    appendIdentityRedactedLog: AdapterExecutionContext["onLog"];
     flushHeldLog: () => Promise<void>;
   };
   services: Pick<RunState, "upsertTaskSession" | "getRun"> &
