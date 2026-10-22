@@ -72,7 +72,7 @@ const meta = {
   component: BulkSettingsPage,
   parameters: { layout: "fullscreen", initialEntries: ["/PAP/agents/all"], paperclip: {
     capabilities: ["agents/organization", "agents/instructions"], implementation: "production", boundary: "fixtures",
-    notes: "Actual Agents page, filter icon/popover with preserved selection, bulk roster, sheet, account picker, model intersection and narrow PATCH client. Includes paused agents at normal contrast. HTTP accounts/catalogs/writes are synthetic, including one transient failure and an empty local Hermes catalog. Does not establish live provider credential validity or database persistence. The original approved proposal remains in Design proposals.",
+    notes: "Actual Agents page, filter icon/popover with preserved selection, bulk roster, sheet, account picker, model intersection and narrow PATCH client. Includes paused agents at normal contrast. The roster has no status selector or persistent selection hint. HTTP accounts/catalogs/writes are synthetic, including one transient failure and an empty local Hermes catalog. Does not establish live provider credential validity or database persistence. The original approved proposal remains in Design proposals.",
   } },
 } satisfies Meta<typeof BulkSettingsPage>;
 export default meta;

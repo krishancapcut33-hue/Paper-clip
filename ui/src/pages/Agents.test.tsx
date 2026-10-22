@@ -493,8 +493,6 @@ describe("Agents", () => {
     expect(orgViewport?.parentElement?.classList.contains("flex-1")).toBe(true);
     expect(orgViewport?.parentElement?.classList.contains("md:min-h-0")).toBe(true);
     expect(orgViewport?.parentElement?.classList.contains("h-(--sz-calc-38)")).toBe(false);
-    expect(orgViewport?.closest('[data-slot="tabs"]')?.classList.contains("h-full")).toBe(true);
-    expect(orgViewport?.closest('[role="tabpanel"]')?.classList.contains("flex-1")).toBe(true);
     expect(orgViewport?.parentElement?.parentElement?.classList.contains("min-h-0")).toBe(true);
     expect(container.querySelector('[aria-label="Zoom in"]')).not.toBeNull();
     expect(container.querySelector('[aria-label="Zoom out"]')).not.toBeNull();
@@ -888,7 +886,6 @@ describe("Agents", () => {
 
     expect(container.querySelectorAll("tbody tr")).toHaveLength(1);
     expect(mockBuiltInAgentsApi.list).toHaveBeenCalledWith("company-1");
-    expect(container.textContent).toContain("Built-in");
     expect(container.textContent).toContain("Briefs Agent");
     expect(container.textContent).not.toContain("Regular Agent");
     expect(container.querySelector('[title="Ships with Paperclip"]')).toBeNull();

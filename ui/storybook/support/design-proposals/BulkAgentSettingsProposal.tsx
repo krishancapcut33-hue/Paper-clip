@@ -2,6 +2,7 @@ import { useState } from "react";
 import { ArrowRight, Check, Loader2, Pencil, X } from "lucide-react";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { AgentsToolbar } from "@/components/AgentsToolbar";
+import { PageTabBar } from "@/components/PageTabBar";
 import { ModelDropdown } from "@/components/AgentConfigForm";
 import { AiConnectionSelect } from "@/components/ai-connections/AiConnectionSelect";
 import { bindingProblem, type AiConnectionBinding } from "@/components/ai-connections/model";
@@ -169,8 +170,8 @@ function Proposal({ selection = "none", editor = "closed", failOne = false }: Bu
     <DesignPageShell title="Agents" sidebarStorageKey="paperclip.proposal.bulk-agents.sidebar" sidebar={<DesignSidebar onNewTask={() => setNotice("This preview focuses on bulk agent settings.")} />}
       headerActions={<span className="text-xs text-muted-foreground">Interactive proposal · sample data</span>}>
       <Tabs value={status} onValueChange={setStatus} className="gap-4">
-        <AgentsToolbar query={query} onQueryChange={setQuery} tab={status} items={[{ value: "all", label: "All" }, { value: "active", label: "Active" }, { value: "paused", label: "Paused" }]}
-          onTabChange={setStatus} view="list" onViewChange={() => {}} hideViewToggle onNewAgent={() => setNotice("Agent creation is outside this preview.")} />
+        <AgentsToolbar query={query} onQueryChange={setQuery} view="list" onViewChange={() => {}} hideViewToggle onNewAgent={() => setNotice("Agent creation is outside this preview.")} />
+        <PageTabBar items={[{ value: "all", label: "All" }, { value: "active", label: "Active" }, { value: "paused", label: "Paused" }]} value={status} onValueChange={setStatus} align="start" />
         <TabsContent value={status} className="space-y-4">
           <div className="flex flex-wrap items-center justify-between gap-3">
             <Select value={filter} onValueChange={setFilter}><SelectTrigger aria-label="Filter by harness" className="w-44"><SelectValue /></SelectTrigger><SelectContent>

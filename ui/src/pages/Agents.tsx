@@ -24,7 +24,6 @@ import { EmptyState } from "../components/EmptyState";
 import { PageSkeleton } from "../components/PageSkeleton";
 import { OrgChart } from "./OrgChart";
 import { relativeTime, cn, agentRouteRef, agentUrl } from "../lib/utils";
-import { Tabs, TabsContent } from "@/components/ui/tabs";
 import { AgentsToolbar } from "../components/AgentsToolbar";
 import { Button } from "@/components/ui/button";
 import { AlertTriangle, Bot } from "lucide-react";
@@ -46,14 +45,6 @@ const ConfigureBuiltInAgentModal = lazy(() =>
 import { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
 export { AGENT_FILTER_TABS } from "../lib/agent-filter-tabs";
 type FilterTab = (typeof AGENT_FILTER_TABS)[number];
-
-const AGENT_FILTER_TAB_ITEMS: { value: FilterTab; label: string }[] = [
-  { value: "all", label: "All" },
-  { value: "active", label: "Active" },
-  { value: "paused", label: "Paused" },
-  { value: "error", label: "Error" },
-  { value: "builtin", label: "Built-in" },
-];
 
 function isFilterTab(value: string): value is FilterTab {
   return (AGENT_FILTER_TABS as readonly string[]).includes(value);
@@ -221,11 +212,6 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   });
   const builtInAgentsEnabled = instanceSettings?.experimental.enableBuiltInAgents === true;
   const tab: FilterTab = requestedTab === "builtin" && !builtInAgentsEnabled ? "all" : requestedTab;
-  const visibleTabItems = useMemo(
-    () => AGENT_FILTER_TAB_ITEMS.filter((item) => item.value !== "builtin" || builtInAgentsEnabled),
-    [builtInAgentsEnabled],
-  );
-
   const { data: builtInAgents } = useQuery({
     queryKey: queryKeys.builtInAgents.list(selectedCompanyId!),
     queryFn: () => builtInAgentsApi.list(selectedCompanyId!),
@@ -426,17 +412,14 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
   };
 
   return (
-    <Tabs value={tab} onValueChange={value => navigate(`/agents/${value}`)} className={cn(
-      "@container",
-      effectiveView === "org"
-        ? "flex h-full min-h-0 flex-col gap-4"
-        : "gap-4",
+    <div className={cn(
+      "flex flex-col gap-4 @container",
+      effectiveView === "org" && "h-full min-h-0",
     )}>
-      <AgentsToolbar query={query} onQueryChange={setQuery} tab={tab} items={visibleTabItems}
-        onTabChange={value => navigate(`/agents/${value}`)} view={effectiveView} onViewChange={setView}
+      <AgentsToolbar query={query} onQueryChange={setQuery} view={effectiveView} onViewChange={setView}
         hideViewToggle={forceListView} onNewAgent={openNewAgent} />
 
-      <TabsContent value={tab} className={cn("min-h-0 space-y-4", effectiveView === "org" && "flex flex-1 flex-col")}>
+      <div className={cn("min-h-0 space-y-4", effectiveView === "org" && "flex flex-1 flex-col")}>
       {error && <p className="text-sm text-destructive">{error.message}</p>}
 
       {agents && agents.length === 0 && (
@@ -485,8 +468,8 @@ export function Agents({ initialView = "list" }: { initialView?: AgentsView } = 
           />
         </Suspense>
       )}
-      </TabsContent>
-    </Tabs>
+      </div>
+    </div>
   );
 }
 

@@ -81,7 +81,6 @@ export function AgentBulkRoster({ companyId, agents, visibleAgents, renderAgent 
       </tr>)}</tbody>
     </table></div>
     {!visible.length && <p className="py-8 text-center text-sm text-muted-foreground">No agents match these filters.</p>}
-    {!selectedAgents.length && <p className="text-xs text-muted-foreground">Select agents to update their connection or default model.</p>}
     {editing && <Suspense fallback={<p role="status" className="text-sm text-muted-foreground">Loading editor…</p>}><AgentBulkSettingsSheet companyId={companyId} agents={editing} totalSelected={selectedAgents.length} onClose={(updatedIds, complete) => {
       setEditing(null);
       if (updatedIds.length) {

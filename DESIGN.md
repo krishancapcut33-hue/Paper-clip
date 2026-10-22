@@ -932,13 +932,12 @@ labelled primitive compositions with local state. Page navigation and
 collection filters remain in Tabs. This comparison does not migrate app styles
 or certify backend behavior or keyboard accessibility.
 
-Agents and Connectors compose the same `ToolbarSearch` with canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
+Agents and Connectors compose the same `ToolbarSearch`. Connectors also use canonical Standard filled tabs. `AgentsToolbar` is shared by the roster page and
 toolbar references; `ConnectorsToolbar` is shared by Browse and toolbar references. Keep search
-first, status/source selection next, and view/actions last where present.
+first, source selection next where present, and view/actions last. The agent roster uses a harness filter icon without a status selector.
 Connector source choices use radio semantics and preserve Browse's existing
 automatic search expansion; they do not switch separate content panels.
-Agents status navigation retains route-backed Tabs with its associated roster
-panel. Agent search intersects the chosen status/built-in filter, matches name,
+Existing agent status and built-in URLs remain supported. Agent search intersects that route filter, matches name,
 role and title words, and retains ancestor context for matching org-chart nodes.
 
 Projects uses `ProjectsToolbar` for shared search, the existing name/updated/
