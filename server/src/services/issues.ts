@@ -114,6 +114,7 @@ import type {
   IssueWatchdogSummary,
   LowTrustBoundary,
   SuccessfulRunHandoffState,
+  HostWatcherAgentKeyScope,
 } from "@paperclipai/shared";
 import {
   clampIssueRequestDepth,
@@ -162,6 +163,7 @@ import {
 import {
   applyIssueExecutionPolicyTransition,
   buildInitialIssueMonitorFields,
+  executionPolicyOutsideMonitorEqual,
   normalizeIssueExecutionPolicy,
 } from "./issue-execution-policy.js";
 import { instanceSettingsService } from "./instance-settings.js";
@@ -1977,6 +1979,7 @@ async function assertExecutionTaskParent(db: Db, companyId: string, parentId?: s
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type IssueCreateInput = Omit<typeof issues.$inferInsert, "companyId" | "title" | "titleNeedsGeneration" | "workspaceSelection"> & {
+  hostWatcherScope?: HostWatcherAgentKeyScope;
   workspaceSelection?: TaskWorkspaceSelection;
   workspaceSelectionSource?: "explicit" | "channel";
   workspaceSelectionActor?: AuthorizationActor;
@@ -9921,6 +9924,7 @@ export function issueService(db: Db) {
         allowDuplicate,
         assertCanReuseIssue,
         onDeduplicated,
+        hostWatcherScope,
         ...issueData
       } = data;
       const explicitTitle = issueData.title?.trim();
@@ -9961,6 +9965,21 @@ export function issueService(db: Db) {
       }
       const persist = async (tx: DbTransaction) => {
         await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`issue-privacy-tree:${companyId}`}, 0))`);
+        if (hostWatcherScope) {
+          // The HTTP guard reads the parent before this transaction. Lock it
+          // here so a board close or project move cannot race the child insert.
+          const [parent] = await tx.select({
+            id: issues.id, projectId: issues.projectId, status: issues.status,
+          }).from(issues).where(and(
+            eq(issues.id, hostWatcherScope.issueId), eq(issues.companyId, companyId),
+          )).for("update");
+          if (hostWatcherScope.service !== "fleet_hourly"
+            || !parent || parent.projectId !== hostWatcherScope.projectId
+            || parent.status === "done" || parent.status === "cancelled"
+            || issueData.parentId !== parent.id) {
+            throw conflict("Fleet watcher parent changed before issue creation");
+          }
+        }
         await assertExecutionTaskParent(tx as unknown as Db, companyId, issueData.parentId);
         if (issueData.conversationAgentId && issueData.conversationUserId) {
           const identity = `conversation:${companyId}:${issueData.conversationAgentId}:${issueData.conversationUserId}`;
@@ -10828,6 +10847,8 @@ export function issueService(db: Db) {
         actorRunStopId?: string | null;
         actorUserId?: string | null;
         companyGuard?: string;
+        hostWatcherScope?: HostWatcherAgentKeyScope;
+        cronWatchdogMonitorRequest?: { policy: unknown; issueUpdatedAt: Date };
         workspaceSelectionActor?: AuthorizationActor;
         expectedExecutionPolicy?: typeof issues.$inferInsert.executionPolicy;
         expectedStatusVersion?: number;
@@ -10879,6 +10900,8 @@ export function issueService(db: Db) {
         actorRunStopId,
         actorUserId,
         companyGuard,
+        hostWatcherScope,
+        cronWatchdogMonitorRequest,
         workspaceSelectionActor,
         expectedExecutionPolicy,
         expectedStatusVersion,
@@ -11143,6 +11166,31 @@ export function issueService(db: Db) {
           .then((rows: Array<typeof issues.$inferSelect>) => rows[0] ?? null);
         if (!receiptExisting) return null;
         if (actorRunId) await assertNoCaseHandoffMutation(tx, actorRunId, id);
+        if (cronWatchdogMonitorRequest && (
+          !companyGuard || receiptExisting.companyId !== companyGuard
+          || receiptExisting.updatedAt.getTime() !== cronWatchdogMonitorRequest.issueUpdatedAt.getTime()
+          || !executionPolicyOutsideMonitorEqual(
+            cronWatchdogMonitorRequest.policy,
+            receiptExisting.executionPolicy,
+          )
+        )) {
+          throw conflict("Cron watchdog monitor target changed before the issue update");
+        }
+        if (hostWatcherScope) {
+          const isDiskGuard = hostWatcherScope.service === "disk_guard";
+          const expectedStatus = isDiskGuard ? "todo"
+            : hostWatcherScope.service === "pr_923" ? "todo" : "in_progress";
+          if (!companyGuard || receiptExisting.companyId !== companyGuard
+            || receiptExisting.id !== hostWatcherScope.issueId
+            || receiptExisting.assigneeAgentId !== hostWatcherScope.assigneeAgentId
+            || hostWatcherScope.service === "fleet_hourly"
+            || issueData.status !== expectedStatus
+            || (isDiskGuard
+              ? ["done", "cancelled", "in_review"].includes(receiptExisting.status)
+              : receiptExisting.status !== "blocked")) {
+            throw conflict("Host watcher target changed before the issue update");
+          }
+        }
         if (expectedStatusVersion !== undefined && (
           receiptExisting.statusVersion !== expectedStatusVersion || receiptExisting.status !== "backlog"
         )) {

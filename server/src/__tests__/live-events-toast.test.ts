@@ -1,3 +1,4 @@
+import { randomUUID } from "node:crypto";
 import { createServer } from "node:http";
 import { once } from "node:events";
 import { getTableName, type SQL } from "drizzle-orm";
@@ -155,6 +156,15 @@ describe("authenticated activity notifications", () => {
       await second;
       expect(messages[1].payload).toMatchObject({ actorName: "Coder", actorType: "agent", actorId: "agent", actorAppearance: { paletteId: "bubblegum-sky" } });
       expect(messages[1].payload).not.toHaveProperty("details");
+      const commentId = randomUUID();
+      const third = once(socket, "message");
+      publishLiveEvent({ companyId: "company", type: "activity.logged", payload: {
+        action: "issue.comment_added", entityType: "issue", entityId: "visible", actorType: "agent", actorId: "agent",
+        details: { commentId, body: "private comment" },
+      } });
+      await third;
+      expect(messages[2].payload).toMatchObject({ details: { commentId } });
+      expect(messages[2].payload.details).toEqual({ commentId });
     } finally {
       socket.terminate();
       await new Promise<void>((resolve) => server.close(() => resolve()));

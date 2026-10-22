@@ -1,6 +1,6 @@
 import { hireApprovalService as approvalRecords, type HireDecisionTarget } from "./adapters/approvals.js";
 import { agents } from "@paperclipai/db";
-import { inArray, sql } from "drizzle-orm";
+import { eq, inArray, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import type { LifecycleEffects } from "./adapters/effects.js";
 export type { LifecycleEffects } from "./adapters/effects.js";
@@ -12,6 +12,7 @@ import { assertRootDatabase, createLifecycleStore } from "./adapters/postgres.js
 import { hasCompanyHoldMismatch, projectCompanyHolds } from "./adapters/company-policy.js";
 import { createLifecycleWorker } from "./application/worker.js";
 import type { LifecycleDriver } from "./application/ports.js";
+import { AgentLifecycleConflict } from "./domain/policy.js";
 
 export { applyAgentPolicyHoldsInTransaction } from "./adapters/postgres.js";
 export { companyHoldMismatch, fenceActiveCompanyAgentStopsInTransaction } from "./adapters/company-policy.js";
@@ -85,7 +86,21 @@ export function createAgentLifecycle(db: Db, effects: LifecycleEffects) {
       const existing = await records.getById(id);
       if (!existing) return null;
       const agent = await effects.transaction(db, existing.companyId, async (tx, publications) => {
+        if (options?.watchdogRecovery) {
+          // The HTTP scope guard observes status before this transaction. Repeat
+          // its boundary under the write lock so a later board pause wins.
+          const [current] = await tx.select().from(agents).where(eq(agents.id, id)).for("update");
+          if (!current || command !== "resume" || current.lifecycleState !== "ready" ||
+              !["error", "offline", "crashed"].includes(current.status)) {
+            throw new AgentLifecycleConflict("Watchdog can recover only error, offline, or crashed agents");
+          }
+        }
         await updateAgentConfiguration(tx, effects, id, data, options, publications);
+        if (options?.watchdogRecovery) {
+          // A ready lifecycle has no resume transition. Clear only the failed
+          // execution status; the guard above forbids clearing a pause.
+          await tx.update(agents).set({ status: "idle" }).where(eq(agents.id, id));
+        }
         await createLifecycleStore(tx, effects).change(id, command, { reason: command === "resume" ? "user" : "manual" });
         return agentRecords(tx, effects).getById(id);
       });
