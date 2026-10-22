@@ -3420,6 +3420,18 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(takeover()?.textContent).not.toContain("First review");
   });
 
+  it("keeps a reopened dismissed review visible when a delayed human comment refresh arrives", async () => {
+    const { genericPendingRequestConfirmationInteraction } = await import("@/fixtures/issueThreadInteractionFixtures");
+    const review = { ...genericPendingRequestConfirmationInteraction, title: "Reopened review" };
+    const show = (comments = movedOn.slice(0, 0)) => render(<TaskChatThread {...props} comments={comments} interactions={[review]} />);
+    show();
+    await dismiss();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Reopened review"]')!.click());
+    expect(takeover()?.textContent).toContain("Reopened review");
+    await act(async () => show(movedOn));
+    expect(takeover()?.textContent).toContain("Reopened review");
+  });
+
   it("opens the new question but can reopen the exact historical native question", async () => {
     const nativeOld = { ...old, sourceRunId: "old-run", payload: { ...old.payload, runtimeRequestId: "old-request" } } as IssueThreadInteraction;
     render(<TaskChatThread {...props} comments={movedOn} interactions={[nativeOld, newer]} />);
