@@ -51,7 +51,7 @@ export type RestorePointManifest = {
   modes: Array<{ path: string; mode: number }>;
 };
 
-export type RestorePointSnapshot = { head: string; index: string | null; worktree: string | null };
+export type RestorePointSnapshot = { head: string; index: string | null; worktree: string | null; modes: Array<{ path: string; mode: number }> };
 
 export type RestorePointIdentity = { companyId: string; workspaceId: string; restorePointId: string; generation: number };
 
@@ -142,6 +142,7 @@ async function copyIndex(cwd: string, target: string) {
 async function scanChangedPaths(cwd: string, limits: RestorePointLimits, signal?: AbortSignal) {
   const changed = new Set([
     ...nulList(await git(cwd, ["ls-files", "-z", "--modified"], { signal })),
+    ...nulList(await git(cwd, ["diff", "--cached", "--name-only", "--no-renames", "-z", "HEAD"], { signal })),
     ...nulList(await git(cwd, ["ls-files", "-z", "--others", "--exclude-standard", "--", ".", ...EXCLUDED_UNTRACKED], { signal })),
   ]);
   if (changed.size > limits.maxFiles) throw new RestorePointSkip("restore_point_too_large");
@@ -181,6 +182,7 @@ async function snapshotTrees(cwd: string, env: Record<string, string>, temporary
   const worktreeIndex = path.join(temporary, "worktree-index");
   const worktreeEnv = { ...env, GIT_INDEX_FILE: worktreeIndex };
   await git(cwd, ["read-tree", "HEAD"], { env: worktreeEnv, signal });
+  await git(cwd, ["add", "-u", "--", "."], { env: worktreeEnv, signal });
   await git(cwd, ["add", "-A", "--", ".", ...EXCLUDED_UNTRACKED], { env: worktreeEnv, signal });
   const worktreeTree = await gitText(cwd, ["write-tree"], { env: worktreeEnv, signal });
   const gitlinks = await gitText(cwd, ["ls-tree", "-r", worktreeTree], { env, signal });
@@ -188,21 +190,31 @@ async function snapshotTrees(cwd: string, env: Record<string, string>, temporary
   return { indexTree, worktreeTree };
 }
 
-async function snapshotCommits(cwd: string, env: Record<string, string>, temporary: string, signal?: AbortSignal): Promise<RestorePointSnapshot> {
+async function snapshotCommits(cwd: string, env: Record<string, string>, temporary: string, modes: RestorePointSnapshot["modes"], signal?: AbortSignal): Promise<RestorePointSnapshot> {
   const head = await gitText(cwd, ["rev-parse", "--verify", "HEAD^{commit}"], { signal });
   const headTree = await gitText(cwd, ["rev-parse", "HEAD^{tree}"], { signal });
   const { indexTree, worktreeTree } = await snapshotTrees(cwd, env, temporary, signal);
-  if (indexTree === headTree && worktreeTree === headTree) return { head, index: null, worktree: null };
+  if (indexTree === headTree && worktreeTree === headTree) return { head, index: null, worktree: null, modes: [] };
   const index = await gitText(cwd, ["commit-tree", indexTree, "-p", head, "-m", "paperclip restore point index"], { env, signal });
   const worktree = await gitText(cwd, ["commit-tree", worktreeTree, "-p", head, "-p", index, "-m", "paperclip restore point worktree"], { env, signal });
-  return { head, index, worktree };
+  return { head, index, worktree, modes };
 }
 
-export async function currentRestorePointSnapshot(cwd: string, signal?: AbortSignal): Promise<RestorePointSnapshot> {
+const UNBOUNDED_LIMITS: RestorePointLimits = {
+  maxFiles: Number.POSITIVE_INFINITY,
+  maxFileBytes: Number.POSITIVE_INFINITY,
+  maxTotalBytes: Number.POSITIVE_INFINITY,
+  maxCommits: Number.POSITIVE_INFINITY,
+  maxBundleBytes: Number.POSITIVE_INFINITY,
+};
+
+export async function currentRestorePointSnapshot(input: string, signal?: AbortSignal): Promise<RestorePointSnapshot> {
+  const cwd = await fs.realpath(input);
+  const { modes } = await scanChangedPaths(cwd, UNBOUNDED_LIMITS, signal);
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-restore-point-"));
   try {
     const { env } = await snapshotStore(cwd, temporary);
-    return await snapshotCommits(cwd, env, temporary, signal);
+    return await snapshotCommits(cwd, env, temporary, modes, signal);
   } finally {
     await fs.rm(temporary, { recursive: true, force: true });
   }
@@ -224,6 +236,7 @@ async function unpreservedHistory(cwd: string, head: string, boundary: readonly 
   const original = await gitText(cwd, ["rev-parse", "--verify", "-q", "ORIG_HEAD^{commit}"], { signal }).catch(() => "");
   if (SHA.test(original)) candidates.add(original);
   candidates.delete(head);
+  if (candidates.size > MAX_PRESERVED_COMMITS) throw new RestorePointSkip("restore_point_history_too_large");
   const preserved: string[] = [];
   for (const commit of candidates) {
     const reachable = await git(cwd, ["merge-base", "--is-ancestor", commit, head], { signal }).then(() => true, () => false);
@@ -233,7 +246,6 @@ async function unpreservedHistory(cwd: string, head: string, boundary: readonly 
       if (await git(cwd, ["merge-base", "--is-ancestor", commit, tip], { signal }).then(() => true, () => false)) { onUpstream = true; break; }
     }
     if (!onUpstream) preserved.push(commit);
-    if (preserved.length >= MAX_PRESERVED_COMMITS) break;
   }
   return preserved.sort();
 }
@@ -283,7 +295,7 @@ export async function captureRestorePoint(input: {
   const temporary = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-restore-point-"));
   try {
     const { store, env } = await snapshotStore(cwd, temporary);
-    const snapshot = await snapshotCommits(cwd, env, temporary, input.signal);
+    const snapshot = await snapshotCommits(cwd, env, temporary, modes, input.signal);
     const boundary = await existingCommits(cwd, input.upstreamCommits, input.signal);
     const preserved = await unpreservedHistory(cwd, snapshot.head, boundary, input.signal);
     const headOnUpstream = await (async () => {
@@ -315,7 +327,7 @@ export async function captureRestorePoint(input: {
       worktree: snapshot.worktree,
       preserved,
       prerequisites,
-      modes,
+      modes: snapshot.modes,
     };
     return { payload: encodePayload(manifest, bundle), manifest };
   } finally {
@@ -364,7 +376,7 @@ export async function applyRestorePoint(input: { cwd: string; manifest: RestoreP
   const head = await gitText(cwd, ["rev-parse", "--verify", "HEAD^{commit}"], { signal: input.signal });
   if (head !== manifest.head) throw new RestorePointRestoreFailure("head_mismatch");
   if (manifest.index && manifest.worktree) {
-    const diff = await git(cwd, ["diff", "--binary", "--no-color", "--no-ext-diff", "--no-renames", "HEAD", manifest.worktree], { signal: input.signal });
+    const diff = await git(cwd, ["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", manifest.worktree], { signal: input.signal });
     if (diff.length > 0) await git(cwd, ["apply", "--binary", "--whitespace=nowarn", "-"], { input: diff, signal: input.signal });
     await git(cwd, ["read-tree", `${manifest.index}^{tree}`], { signal: input.signal });
   }
@@ -375,7 +387,8 @@ export async function applyRestorePoint(input: { cwd: string; manifest: RestoreP
     if (stat?.isFile()) await fs.chmod(target, entry.mode);
   }
   const restored = await currentRestorePointSnapshot(cwd, input.signal);
-  if (restored.head !== manifest.head || restored.index !== manifest.index || restored.worktree !== manifest.worktree) {
+  if (restored.head !== manifest.head || restored.index !== manifest.index || restored.worktree !== manifest.worktree
+    || JSON.stringify(restored.modes) !== JSON.stringify(manifest.modes)) {
     throw new RestorePointRestoreFailure("restored_contents_mismatch");
   }
 }

@@ -96,7 +96,7 @@ describe("git restore points", () => {
     const { payload, manifest } = captured!;
     expect(manifest.head).toBe(git(work, "rev-parse", "HEAD"));
     expect(manifest.prerequisites).toEqual(upstream());
-    expect(await currentRestorePointSnapshot(work)).toEqual({ head: manifest.head, index: manifest.index, worktree: manifest.worktree });
+    expect(await currentRestorePointSnapshot(work)).toEqual({ head: manifest.head, index: manifest.index, worktree: manifest.worktree, modes: manifest.modes });
 
     const restored = await freshClone("restored");
     expect(() => git(restored, "cat-file", "-e", `${manifest.head}^{commit}`)).toThrow();
@@ -116,6 +116,70 @@ describe("git restore points", () => {
     await expect(fs.access(path.join(restored, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(path.join(restored, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(path.join(restored, "config/.env.local"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it("captures edits to tracked environment files", async () => {
+    await write(work, ".env.example", "TOKEN=\n");
+    git(work, "add", ".env.example");
+    git(work, "commit", "-q", "-m", "example env");
+    git(work, "push", "-q", "origin", "HEAD:master");
+    git(work, "fetch", "-q");
+    await write(work, ".env.example", "TOKEN=\nOTHER=\n");
+    const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+    expect(captured).not.toBeNull();
+    const restored = await freshClone("restored");
+    await importRestorePoint({ repositoryCwd: restored, payload: captured!.payload });
+    await applyRestorePoint({ cwd: restored, manifest: captured!.manifest });
+    expect(await read(restored, ".env.example")).toBe("TOKEN=\nOTHER=\n");
+  });
+
+  it("applies safeguards and modes to staged files whose contents match the index", async () => {
+    await write(work, "private/staged.txt", "staged secret\n", 0o600);
+    git(work, "add", "private/staged.txt");
+    await expect(captureRestorePoint({ cwd: work, upstreamCommits: upstream(), limits: { maxFiles: 0 } }))
+      .rejects.toMatchObject({ reason: "restore_point_too_large" });
+    const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+    expect(captured!.manifest.modes).toEqual([{ path: "private/staged.txt", mode: 0o600 }]);
+    const restored = await freshClone("restored");
+    await importRestorePoint({ repositoryCwd: restored, payload: captured!.payload });
+    await applyRestorePoint({ cwd: restored, manifest: captured!.manifest });
+    expect((await fs.stat(path.join(restored, "private/staged.txt"))).mode & 0o777).toBe(0o600);
+    expect(git(restored, "status", "--porcelain", "--", "private/staged.txt")).toBe("A  private/staged.txt");
+  });
+
+  it("detects permission-only changes after capture", async () => {
+    await write(work, "private/key.txt", "secret\n", 0o600);
+    const before = await currentRestorePointSnapshot(work);
+    await fs.chmod(path.join(work, "private/key.txt"), 0o644);
+    expect(await currentRestorePointSnapshot(work)).not.toEqual(before);
+  });
+
+  it("restores exact bytes when the repository configures a diff text conversion", async () => {
+    await write(work, ".gitattributes", "*.txt diff=upper\n");
+    await write(work, "notes.txt", "original\n");
+    git(work, "add", ".gitattributes", "notes.txt");
+    git(work, "commit", "-q", "-m", "textconv");
+    git(work, "push", "-q", "origin", "HEAD:master");
+    git(work, "fetch", "-q");
+    await write(work, "notes.txt", "changed contents\n");
+    const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+    const restored = await freshClone("restored");
+    git(restored, "config", "diff.upper.textconv", "tr a-z A-Z <");
+    await importRestorePoint({ repositoryCwd: restored, payload: captured!.payload });
+    await applyRestorePoint({ cwd: restored, manifest: captured!.manifest });
+    expect(await read(restored, "notes.txt")).toBe("changed contents\n");
+  });
+
+  it("refuses to capture when history-only commits exceed the supported limit", async () => {
+    git(work, "checkout", "-q", "-b", "feature");
+    for (let index = 0; index < 51; index += 1) {
+      await write(work, `scratch/${index}.txt`, `${index}\n`);
+      git(work, "add", "-A");
+      git(work, "commit", "-q", "-m", `scratch ${index}`);
+      git(work, "reset", "-q", "--hard", "origin/master");
+    }
+    await expect(captureRestorePoint({ cwd: work, upstreamCommits: upstream() }))
+      .rejects.toMatchObject({ reason: "restore_point_history_too_large" });
   });
 
   it("keeps capture objects out of the repository", async () => {
