@@ -666,6 +666,38 @@ impl AcpxDurableState {
         Ok(())
     }
 
+    fn push_streaming(&mut self, event: NormalizedProviderEvent) -> Result<(), DurableRunnerError> {
+        if event.event_type == "item.delta"
+            && event.priority == EventPriority::P2
+            && matches!(
+                event.payload.get("kind").and_then(Value::as_str),
+                Some("agentMessage" | "reasoning")
+            )
+        {
+            if let Some(previous) = self.pending_events.back_mut() {
+                if previous.event_type == event.event_type && previous.priority == event.priority {
+                    if let (Some(left), Some(right)) = (
+                        previous.payload.get("text").and_then(Value::as_str),
+                        event.payload.get("text").and_then(Value::as_str),
+                    ) {
+                        if !left.is_empty()
+                            && !right.is_empty()
+                            && left.len() + right.len() <= 4_000
+                        {
+                            let mut metadata = previous.payload.clone();
+                            metadata["text"] = event.payload["text"].clone();
+                            if metadata == event.payload {
+                                previous.payload["text"] = json!(format!("{left}{right}"));
+                                return Ok(());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.push(event)
+    }
+
     fn push(&mut self, event: NormalizedProviderEvent) -> Result<(), DurableRunnerError> {
         if self.pending_events.len() >= MAX_PENDING_EVENTS {
             return Err(DurableRunnerError::invalid(
@@ -1805,7 +1837,8 @@ impl AcpxCommandExecutor {
         let result: ToolResult = serde_json::from_value(payload.clone()).map_err(|error| {
             DurableRunnerError::invalid(format!("semantic tool result is invalid: {error}"))
         })?;
-        self.session
+        let delivery = self
+            .session
             .as_mut()
             .ok_or_else(|| DurableRunnerError::invalid("ACPX session is unavailable"))?
             .deliver_tool_result(&result)
@@ -1815,7 +1848,11 @@ impl AcpxCommandExecutor {
                 ))
             })?;
         Ok(CommandExecution::result(json!({
-            "status": "delivered",
+            "status": match delivery {
+                crate::acpx_provider_session::AcpxToolDelivery::Delivered => "delivered",
+                crate::acpx_provider_session::AcpxToolDelivery::Expired => "expired",
+                crate::acpx_provider_session::AcpxToolDelivery::AlreadyRecorded => "already_recorded",
+            },
             "callId": result.call_id,
         })))
     }
@@ -1980,6 +2017,7 @@ impl AcpxCommandExecutor {
         {
             return Ok(());
         }
+        let mut received = false;
         for _ in 0..MAX_EVENTS_PER_POLL {
             let events = self
                 .session
@@ -2013,6 +2051,7 @@ impl AcpxCommandExecutor {
                 }
             };
             let Some(events) = events else { break };
+            received = true;
             let mut provider_turn_settled = false;
             for event in events {
                 let provider_process_lost = matches!(
@@ -2070,7 +2109,7 @@ impl AcpxCommandExecutor {
                     if event.event_type == "run.result.proposed" {
                         state.semantic_result = Some(event.payload.clone());
                     }
-                    state.push(event)?;
+                    state.push_streaming(event)?;
                 }
                 if let Some(event_type) = terminal {
                     state.active_turn_id = None;
@@ -2133,9 +2172,12 @@ impl AcpxCommandExecutor {
             if provider_turn_settled {
                 self.context.provider_turn_id = None;
             }
-            self.save_state()?;
         }
-        Ok(())
+        if received {
+            self.save_state()
+        } else {
+            Ok(())
+        }
     }
 }
 
@@ -2238,7 +2280,10 @@ impl CommandExecutor for AcpxCommandExecutor {
         {
             return Ok(Vec::new());
         }
-        self.poll_provider()?;
+        if let Err(error) = self.poll_provider() {
+            self.save_state()?;
+            return Err(error);
+        }
         self.retained_events()
     }
 
@@ -2616,6 +2661,112 @@ mod tests {
             attested_pending_runtime_requests(&pending, &provider, &live, "durable-turn-1")
                 .is_empty()
         );
+    }
+
+    #[test]
+    fn streaming_burst_preserves_text_and_tools_without_token_sized_journal_entries() {
+        let operations = Vec::new();
+        let mut state = AcpxDurableState::new(
+            serde_json::from_value(descriptor("codex")).unwrap(),
+            AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.into(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            "test".into(),
+        );
+        for _ in 0..128 {
+            state.push_streaming(NormalizedProviderEvent {
+                event_type: "item.delta".into(), priority: EventPriority::P2,
+                payload: json!({"itemId":"message-1","kind":"reasoning","channel":"summary","text":"片"}),
+            }).unwrap();
+        }
+        state.push_streaming(NormalizedProviderEvent {
+            event_type: "semantic_tool.input".into(), priority: EventPriority::P0,
+            payload: json!({"semantic_tool":{"callId":"write-plan","operationId":"write_document"}}),
+        }).unwrap();
+        assert_eq!(state.pending_events.len(), 2);
+        assert_eq!(state.pending_events[0].payload["text"], "片".repeat(128));
+        assert_eq!(state.pending_events[1].event_type, "semantic_tool.input");
+    }
+
+    #[test]
+    fn streaming_merge_respects_utf8_byte_limit_and_metadata_boundaries() {
+        let operations = Vec::new();
+        let empty = AcpxDurableState::new(
+            serde_json::from_value(descriptor("codex")).unwrap(),
+            AuthorizedToolSet {
+                schema: TOOL_SET_SCHEMA.into(),
+                schema_version: 1,
+                catalog_digest: authorized_tool_catalog_digest(&operations).unwrap(),
+                operations,
+            },
+            "test".into(),
+        );
+        for (name, left, right, changed, merged) in [
+            ("ASCII at limit", "a".repeat(3_999), "b", None, true),
+            ("ASCII above limit", "a".repeat(4_000), "b", None, false),
+            ("UTF-8 at limit", "片".repeat(1_333), "a", None, true),
+            ("UTF-8 above limit", "片".repeat(1_333), "片", None, false),
+            (
+                "item identity",
+                "first".into(),
+                "second",
+                Some(("itemId", "message-2")),
+                false,
+            ),
+            (
+                "item kind",
+                "first".into(),
+                "second",
+                Some(("kind", "agentMessage")),
+                false,
+            ),
+            (
+                "output channel",
+                "first".into(),
+                "second",
+                Some(("channel", "final")),
+                false,
+            ),
+        ] {
+            let mut state = empty.clone();
+            let first =
+                json!({"itemId":"message-1","kind":"reasoning","channel":"summary","text":left});
+            let mut second = first.clone();
+            second["text"] = json!(right);
+            if let Some((field, value)) = changed {
+                second[field] = json!(value);
+            }
+            for payload in [&first, &second] {
+                state
+                    .push_streaming(NormalizedProviderEvent {
+                        event_type: "item.delta".into(),
+                        priority: EventPriority::P2,
+                        payload: payload.clone(),
+                    })
+                    .unwrap();
+            }
+            if merged {
+                let mut expected = first.clone();
+                expected["text"] = json!(format!("{left}{right}"));
+                assert_eq!(state.pending_events.len(), 1, "{name}");
+                assert_eq!(state.pending_events[0].payload, expected, "{name}");
+                assert_eq!(
+                    state.pending_events[0].payload["text"]
+                        .as_str()
+                        .unwrap()
+                        .len(),
+                    4_000,
+                    "{name}"
+                );
+            } else {
+                assert_eq!(state.pending_events.len(), 2, "{name}");
+                assert_eq!(state.pending_events[0].payload, first, "{name}");
+                assert_eq!(state.pending_events[1].payload, second, "{name}");
+            }
+        }
     }
 
     #[test]
