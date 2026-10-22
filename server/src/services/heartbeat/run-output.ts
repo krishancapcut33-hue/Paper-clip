@@ -217,7 +217,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       });
     };
 
-    return { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, flushHeldLog, onAdapterMeta, onAdapterEvent };
+    return { currentUserRedactionOptions, onLog, flushHeldLog, onAdapterMeta, onAdapterEvent };
   }
 
   return {
