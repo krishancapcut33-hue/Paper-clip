@@ -22,6 +22,7 @@ describe("tool app gallery URL matching", () => {
     expect(getAppDefinitionForUrl("not a url")).toBeNull();
     expect(getAppDefinitionForUrl("https://example.com/mcp")).toBeNull();
     expect(getAppDefinitionForUrl("https://docs.googleapis.com/drive/v3/files")).toBeNull();
+    expect(getAppDefinitionForUrl("https://api.mubit.ai/v2/control/query")).toBeNull();
   });
 
   it("lists each reviewed Google Workspace MCP endpoint independently", () => {
@@ -62,7 +63,7 @@ describe("tool app gallery URL matching", () => {
   });
 
   it("offers region and custom model connections without claiming arbitrary URLs", () => {
-    for (const slug of ["bedrock", "responses-api", "messages-api", "chat-completions-api", "local"]) {
+    for (const slug of ["bedrock", "responses-api", "messages-api", "chat-completions-api", "local", "mubit"]) {
       const app = CONNECTABLE_APP_DEFINITIONS.find(app => app.slug === slug);
       expect(app?.methods.every(method => method.purpose === "ai")).toBe(true);
       expect(app?.urlPatterns).toEqual([]);

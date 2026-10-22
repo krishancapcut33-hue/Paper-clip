@@ -9,9 +9,7 @@
   "branding": {
     "logoUrl": "/brands/apps/mubit.svg"
   },
-  "urlPatterns": [
-    "https://api.mubit.ai/*"
-  ],
+  "urlPatterns": [],
   "methods": [
     {
       "key": "ai-api_key",

@@ -176,6 +176,7 @@ describe("provider routing", () => {
     const preset = aiProviderSetupPreset("mubit")!;
     expect(preset).toMatchObject({ provider: "gateway", label: "Mubit" });
     expect(preset.protocol).toBeUndefined();
+    for (const source of ["responses-api", "messages-api", "chat-completions-api"]) expect(aiProviderSetupPreset(source)?.baseUrls, source).toBeUndefined();
     const route = (protocol: "responses" | "messages" | "chat") =>
       aiProviderRoutingSchema.parse({ kind: preset.provider, protocol, baseUrl: preset.baseUrls?.[protocol] });
     const key = "synthetic-mubit-key";
