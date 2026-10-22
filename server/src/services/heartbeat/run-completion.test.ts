@@ -147,6 +147,7 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     expect(await db.select().from(costEvents).where(eq(costEvents.heartbeatRunId, f.run.id))).toHaveLength(1);
     expect((await f.deps.getTaskSession(f.agent.companyId, f.agent.id, f.agent.adapterType, "completion-task"))?.sessionDisplayId).toBe("provider-session");
     expect(f.input.output.outputProgressState.pending?.bytes).toBe(123);
+    expect(f.input.output.flushHeldLog).toHaveBeenCalledBefore(f.deps.runLogStore.finalize);
     expect(f.input.onProviderTraceFinalized).toHaveBeenCalledOnce();
     expect(f.deps.setWakeupStatus).toHaveBeenCalledWith(f.wake.id, "completed", expect.any(Object));
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();
@@ -311,6 +312,7 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     expect(run).toMatchObject({ status: "failed", errorCode: "adapter_failed", logBytes: 123, resultJson: { workspaceRestoreFailure: { reason: "missing_base" } } });
     expect(run.error).not.toContain("private-identity-material");
     expect((await f.deps.getTaskSession(f.agent.companyId, f.agent.id, f.agent.adapterType, "completion-task"))?.sessionDisplayId).toBe("checkpoint");
+    expect(f.input.output.flushHeldLog).toHaveBeenCalledBefore(f.deps.runLogStore.finalize);
     expect(f.deps.finalizeAgentStatus).toHaveBeenCalledOnce();
   });
 
@@ -318,6 +320,7 @@ describe.skipIf(!support.supported)("heartbeat run completion boundary", () => {
     const f = await fixture();
     f.deps.runLogStore.finalize.mockRejectedValueOnce(new Error("log unavailable"));
     f.input.output.flushOutputProgress = vi.fn(async () => { throw new Error("progress unavailable"); });
+    f.input.output.flushHeldLog = vi.fn(async () => { throw new Error("held log unavailable"); });
     await f.completion.failRun(f.failure(new Error("adapter failed")));
     expect((await read(f.run.id)).status).toBe("failed");
     expect(f.deps.releaseIssueExecutionAndPromote).toHaveBeenCalledOnce();

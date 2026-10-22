@@ -167,8 +167,9 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       });
     };
     const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
-      const completeLines = runLogLineBuffer.take(stream, identityRedactor.chunk(stream, chunk));
-      if (completeLines) await appendIdentityRedactedLog(stream, completeLines);
+      for (const piece of runLogLineBuffer.take(stream, identityRedactor.chunk(stream, chunk))) {
+        await appendIdentityRedactedLog(stream, piece);
+      }
     };
     flushHeldRunLog = async () => {
       const heldByStream = new Map(runLogLineBuffer.drain().map((held) => [held.stream, held.text]));
