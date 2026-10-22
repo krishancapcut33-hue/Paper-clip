@@ -6,6 +6,7 @@ import type { createAgentIdentityRedactor } from "../agent-identity-redaction.js
 import { touchHeartbeatRunRuntimeStatus } from "../heartbeat-run-runtime-status.js";
 import { publishLiveEvent } from "../live-events.js";
 import type { RunLogHandle, RunLogStore } from "../run-log-store.js";
+import { createRunLogLineBuffer } from "../run-log-line-buffer.js";
 import { appendExcerpt, compactRunLogChunk } from "./run-log.js";
 import { isHeartbeatRunRuntimeStatusActive, publishHeartbeatRunRuntimeProgress, type createHeartbeatLifecycle } from "./run-lifecycle.js";
 
@@ -20,7 +21,7 @@ export interface HeartbeatRunOutputInput {
   runId: string;
   issueId: string | null;
   runLogStore: Pick<RunLogStore, "begin" | "append">;
-  identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "chunk" | "redact">;
+  identityRedactor: Pick<ReturnType<typeof createAgentIdentityRedactor>, "chunk" | "finish" | "redact">;
   secretKeys: Set<string>;
   appendRunEvent: ReturnType<typeof createHeartbeatLifecycle>["appendRunEvent"];
   getCurrentUserRedactionOptions: () => Promise<CurrentUserRedactionOptions>;
@@ -32,6 +33,9 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
   let handle: RunLogHandle | null = null;
   let stdoutExcerpt = "";
   let stderrExcerpt = "";
+  const runLogLineBuffer = createRunLogLineBuffer();
+  let flushHeldRunLog = async () => {};
+  const flushHeldLog = () => flushHeldRunLog();
   let outputSeq = Number(run.lastOutputSeq ?? 0);
   let lastOutputFlushAt: Date | null = run.lastOutputAt ?? null;
   let lastLogRuntimeStatusTouchMs = 0;
@@ -162,8 +166,17 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
         },
       });
     };
-    const onLog = (stream: "stdout" | "stderr", chunk: string) =>
-      appendIdentityRedactedLog(stream, identityRedactor.chunk(stream, chunk));
+    const onLog = async (stream: "stdout" | "stderr", chunk: string) => {
+      const completeLines = runLogLineBuffer.take(stream, identityRedactor.chunk(stream, chunk));
+      if (completeLines) await appendIdentityRedactedLog(stream, completeLines);
+    };
+    flushHeldRunLog = async () => {
+      const heldByStream = new Map(runLogLineBuffer.drain().map((held) => [held.stream, held.text]));
+      for (const stream of ["stdout", "stderr"] as const) {
+        const remaining = (heldByStream.get(stream) ?? "") + identityRedactor.finish(stream);
+        if (remaining) await appendIdentityRedactedLog(stream, remaining);
+      }
+    };
     const onAdapterMeta = async (meta: AdapterInvocationMeta) => {
       meta = identityRedactor.redact(meta);
       if (meta.env && secretKeys.size > 0) {
@@ -196,7 +209,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
       });
     };
 
-    return { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onAdapterMeta, onAdapterEvent };
+    return { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, flushHeldLog, onAdapterMeta, onAdapterEvent };
   }
 
   return {
@@ -204,6 +217,7 @@ export function createHeartbeatRunOutput(db: Db, input: HeartbeatRunOutputInput)
     get handle() { return handle; },
     outputProgressState,
     flushOutputProgress,
+    flushHeldLog,
     // Finalization awaits I/O and can receive more output before persisting excerpts.
     get stdoutExcerpt() { return stdoutExcerpt; },
     get stderrExcerpt() { return stderrExcerpt; },

@@ -83,6 +83,7 @@ interface RunCompletionOutput {
   handle: RunLogHandle | null;
   outputProgressState: { pending: { bytes: number } | null };
   flushOutputProgress: (options?: { force?: boolean }) => Promise<void>;
+  flushHeldLog: () => Promise<void>;
   // Getters in the executor retain output that arrives while finalization awaits I/O.
   readonly stdoutExcerpt: string;
   readonly stderrExcerpt: string;
@@ -504,6 +505,7 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       sha256?: string | null;
       compressed: boolean;
     } | null = null;
+    await output.flushHeldLog();
     if (handle) {
       logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));
     }
@@ -1102,6 +1104,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       sha256?: string | null;
       compressed: boolean;
     } | null = null;
+    await output.flushHeldLog().catch((flushErr) =>
+      logger.warn({ err: flushErr, runId }, "failed to flush held run log after error"),
+    );
     if (handle) {
       try {
         logSummary = await measureRunPhase("completion.output", () => runLogStore.finalize(handle));

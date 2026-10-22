@@ -3148,7 +3148,7 @@ export function heartbeatService(
           message: "run started",
         });
 
-        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onAdapterMeta, onAdapterEvent } =
+        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, flushHeldLog, onAdapterMeta, onAdapterEvent } =
           await timePreparation("run_output", () => runOutput.begin(currentRun));
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
@@ -3380,6 +3380,7 @@ export function heartbeatService(
           output: {
             identityRedactor,
             appendIdentityRedactedLog,
+            flushHeldLog,
             onLog,
             onAdapterEvent,
             onAdapterMeta,
