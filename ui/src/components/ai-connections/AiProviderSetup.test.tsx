@@ -145,6 +145,37 @@ it.each([
 });
 
 
+it("switches the Mubit form from Responses to Messages and saves the Messages endpoint", async () => {
+  const preset = aiProviderSetupPreset("mubit")!;
+  const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
+  client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: true, connections: [] });
+  client.setQueryData(["agents", "company", "provider-access"], []);
+  const container = document.createElement("div");
+  const root = createRoot(container);
+  try {
+    await act(async () => root.render(<QueryClientProvider client={client}><AiProviderSetup companyId="company" initialProvider={preset.provider} initialProtocol={preset.protocol} initialBaseUrls={preset.baseUrls} providerLabel={preset.label} onCancel={() => {}} onComplete={() => {}} /></QueryClientProvider>));
+    const url = () => container.querySelector<HTMLInputElement>('input[aria-label="Provider URL"]')!;
+    expect(url().value).toBe("https://api.mubit.ai/openai/v1");
+    const format = Array.from(container.querySelectorAll<HTMLSelectElement>("select")).find((select) => Array.from(select.options).some((option) => option.value === "messages"))!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLSelectElement.prototype, "value")!.set!.call(format, "messages");
+      format.dispatchEvent(new Event("change", { bubbles: true }));
+    });
+    expect(url().value).toBe("https://api.mubit.ai/anthropic");
+    expect(url().disabled).toBe(true);
+    expect(container.querySelector('[aria-label="Authentication"]')).toBeNull();
+    const input = container.querySelector('input[aria-label="API key"]')!;
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "synthetic-mubit-key");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await act(async () => container.querySelector("form")!.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true })));
+    expect(aiConnectionsApi.create).toHaveBeenLastCalledWith("company", expect.objectContaining({ provider: "anthropic", method: "api_key", name: "Company Mubit", apiKey: "synthetic-mubit-key", routing: { kind: "gateway", protocol: "messages", baseUrl: "https://api.mubit.ai/anthropic", auth: "bearer", models: [] } }));
+  } finally {
+    await act(async () => root.unmount()); client.clear();
+  }
+});
+
 it("allows an ordinary member to save a personal gateway before the agent exists", async () => {
   const client = new QueryClient({ defaultOptions: { queries: { retry: false, staleTime: Infinity } } });
   client.setQueryData(["ai-connections", "company", undefined], { canManageConnections: false, connections: [] });
