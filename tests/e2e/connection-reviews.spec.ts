@@ -251,6 +251,10 @@ for (const journey of [
         await queue.reload();
         await expect(
           page.getByRole("button", { name: "Approve & run", exact: true }),
+        ).not.toBeVisible();
+        await page.getByRole("button", { name: "Review request", exact: true }).click();
+        await expect(
+          page.getByRole("button", { name: "Approve & run", exact: true }),
         ).toBeVisible();
         expect(calls()).toBe(0);
       }
