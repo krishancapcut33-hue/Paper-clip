@@ -1,3 +1,4 @@
+import { interactionLocationPath } from "./interaction-location-openapi.js";
 import { createGrokInvitationSchema, configureGrokRoutineSchema, verifyGrokRoutineSchema, recoverGrokRoutineSchema, pairGrokBindingSchema, stopGrokWorkSchema, retryGrokDeliverySchema } from "@paperclipai/shared";
 import { updateFastResponseSchema } from "@paperclipai/shared";
 import { slackTestMessageSchema, slackTestMessageResultSchema, slackManagerAuthorizationSchema, slackSetupOptionsSchema, slackManagedProvisionSchema, slackManagedResultSchema, slackRegistrationSchema, slackSetupActionSchema, slackInstallAuthorizationSchema, slackRegistrationStateSchema, slackAppConfigurationSchema, slackAvatarStateSchema, slackAccountStateSchema } from "@paperclipai/shared";
@@ -4866,14 +4867,7 @@ registry.registerPath({
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
-registry.registerPath({
-  method: "get",
-  path: "/api/companies/{companyId}/interaction-locations/{interactionId}",
-  tags: ["issues"],
-  summary: "Find the issue that owns an interaction",
-  request: { params: z.object({ companyId: z.string(), interactionId: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
-});
+registry.registerPath(interactionLocationPath(r));
 
 registry.registerPath({
   method: "post",
