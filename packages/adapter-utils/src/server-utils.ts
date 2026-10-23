@@ -13,6 +13,7 @@ import {
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
+import { reapRunOrphansForTerminalRun, RUN_ORPHAN_REAPER_METRIC } from "./run-orphan-reaper.js";
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
@@ -4730,6 +4731,11 @@ export async function runChildProcess(
     localProcessSandbox?: LocalProcessSandboxOptions | null;
   },
 ): Promise<RunProcessResult> {
+  // A run id can cover several invocations (for example a model probe and the
+  // real adapter process). The per-invocation token keeps the orphan reaper
+  // from treating a later invocation of the same run as an orphan left by an
+  // earlier one.
+  const runProcessToken = randomUUID();
   const onLogError =
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -4768,6 +4774,9 @@ export async function runChildProcess(
         for (const [key, value] of Object.entries(childEnv)) {
           if (value === undefined) delete childEnv[key];
         }
+        // Always override: PAPERCLIP_* is a reserved runtime namespace, so a
+        // stale inherited or adapter-configured value must never carry over.
+        childEnv.PAPERCLIP_RUN_PROCESS_TOKEN = runProcessToken;
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,
           env: childEnv,
@@ -4963,7 +4972,7 @@ export async function runChildProcess(
               void Promise.resolve()
                 .then(() => target.cleanup?.())
                 .finally(() => {
-                  resolve({
+                  const result: RunProcessResult = {
                     exitCode: code,
                     signal,
                     timedOut,
@@ -4982,7 +4991,32 @@ export async function runChildProcess(
                           forceKilled: terminalCleanupForceKilled,
                         }
                       : null,
-                  });
+                  };
+                  // The handle and process group are gone or signaled by now.
+                  // A descendant that escaped the group with `setsid` still
+                  // carries the run marker, so reap it for every terminal
+                  // status. The reaper is a supplement: it never changes the
+                  // exit code or signal the caller already observed.
+                  void reapRunOrphansForTerminalRun({
+                    runId,
+                    processToken: runProcessToken,
+                    processGroupId,
+                    graceMs: Math.max(1, opts.graceSec) * 1000,
+                    processGroupHandled: timedOut || terminalCleanupStarted,
+                  })
+                    .then((reaped) => {
+                      // Keep the reaper's own audit record in the run output, not
+                      // only on the server stderr stream. Operators can then see
+                      // which run left descendants and which PIDs were stopped.
+                      if (reaped.found === 0) return;
+                      const separator = result.stderr.length > 0 && !result.stderr.endsWith("\n") ? "\n" : "";
+                      const pids = reaped.processes.map((process) => process.pid).join(",");
+                      result.stderr +=
+                        `${separator}[paperclip] Reaped ${reaped.found} orphaned run process(es) ` +
+                        `(metric=${RUN_ORPHAN_REAPER_METRIC}, pids=${pids}).\n`;
+                    })
+                    .catch(() => undefined)
+                    .finally(() => resolve(result));
                 });
             });
           },
