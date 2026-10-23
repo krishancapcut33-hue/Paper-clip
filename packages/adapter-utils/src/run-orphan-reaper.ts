@@ -274,46 +274,111 @@ async function collectAncestors(
 }
 
 async function readCommand(procRoot: string, pid: number): Promise<string> {
+  let handle: fs.FileHandle | null = null;
   try {
-    const raw = await fs.readFile(path.join(procRoot, String(pid), "cmdline"));
+    handle = await fs.open(path.join(procRoot, String(pid), "cmdline"), "r");
+    // The command line is attacker-controlled and can be megabytes long. Read
+    // only a bounded prefix, then redact before truncating for the audit log.
+    const buffer = Buffer.alloc(4_096);
+    const { bytesRead } = await handle.read(buffer, 0, buffer.length, 0);
     const command = redactCommandText(
-      raw.toString("utf8").replace(/\0/g, " ").replace(/\s+/g, " ").trim(),
+      buffer.subarray(0, bytesRead).toString("utf8").replace(/\0/g, " ").replace(/\s+/g, " ").trim(),
     );
     return command.slice(0, 200) || "<unknown>";
   } catch {
     return "<unknown>";
+  } finally {
+    await handle?.close().catch(() => undefined);
   }
 }
 
-/**
- * List processes in this PID namespace whose env carries the exact
- * `PAPERCLIP_RUN_ID=<runId>` marker. Pure read-only selection: this function
- * never signals anything. It excludes the caller and its ancestors, refuses to
- * run as root, and only considers processes owned by the same uid.
- */
-export async function listRunOrphanProcesses(
-  input: ListRunOrphanProcessesInput,
+interface ProcMarkers {
+  runId: string | null;
+  processToken: string | null;
+}
+
+function entryStartsWith(raw: Buffer, start: number, stop: number, prefix: string): boolean {
+  if (stop - start < prefix.length) return false;
+  for (let index = 0; index < prefix.length; index += 1) {
+    if (raw[start + index] !== prefix.charCodeAt(index)) return false;
+  }
+  return true;
+}
+
+/** Read only the two run markers from an environ buffer, once per process. */
+function readProcMarkers(raw: Buffer): ProcMarkers {
+  const runIdPrefix = "PAPERCLIP_RUN_ID=";
+  const tokenPrefix = "PAPERCLIP_RUN_PROCESS_TOKEN=";
+  let runId: string | null = null;
+  let processToken: string | null = null;
+  let offset = 0;
+  while (offset < raw.length) {
+    const end = raw.indexOf(0, offset);
+    const stop = end === -1 ? raw.length : end;
+    if (runId === null && entryStartsWith(raw, offset, stop, runIdPrefix)) {
+      runId = raw.toString("utf8", offset + runIdPrefix.length, stop);
+    } else if (
+      processToken === null &&
+      entryStartsWith(raw, offset, stop, tokenPrefix)
+    ) {
+      processToken = raw.toString("utf8", offset + tokenPrefix.length, stop);
+    }
+    if (runId !== null && processToken !== null) break;
+    if (end === -1) break;
+    offset = end + 1;
+  }
+  return { runId, processToken };
+}
+
+interface RunMarkerSelector {
+  runId: string;
+  processToken?: string | null;
+}
+
+interface ScanRunOrphanProcessesInput extends RunOrphanReaperDependencies {
+  selectors: RunMarkerSelector[];
+  maxProcessesPerRun?: number;
+}
+
+async function scanRunOrphanProcesses(
+  input: ScanRunOrphanProcessesInput,
 ): Promise<{
   supported: boolean;
   reason: string | null;
-  processes: RunOrphanProcessInfo[];
+  byRun: Map<string, RunOrphanProcessInfo[]>;
 }> {
+  const empty = new Map<string, RunOrphanProcessInfo[]>();
   if (resolvePlatform(input) !== "linux") {
-    return { supported: false, reason: "the run orphan reaper requires Linux /proc", processes: [] };
+    return { supported: false, reason: "the run orphan reaper requires Linux /proc", byRun: empty };
   }
   const uid = resolveUid(input);
   if (uid === null) {
-    return { supported: false, reason: "the current uid is unavailable", processes: [] };
+    return { supported: false, reason: "the current uid is unavailable", byRun: empty };
   }
   if (uid === 0) {
     // Never signal from a root process: a root-owned marker scan could reach
     // processes outside the run's own uid, and the run itself is unprivileged.
-    return { supported: false, reason: "refusing to reap run orphans as root", processes: [] };
+    return { supported: false, reason: "refusing to reap run orphans as root", byRun: empty };
+  }
+
+  const byToken = new Map<string, RunMarkerSelector>();
+  const byRunOnly = new Map<string, RunMarkerSelector>();
+  for (const selector of input.selectors) {
+    if (!selector.runId) continue;
+    if (selector.processToken) {
+      byToken.set(`${selector.runId}\u0000${selector.processToken}`, selector);
+    } else {
+      byRunOnly.set(selector.runId, selector);
+    }
+  }
+  if (byToken.size === 0 && byRunOnly.size === 0) {
+    return { supported: true, reason: null, byRun: empty };
   }
 
   const procRoot = resolveProcRoot(input);
   const selfPid = resolveSelfPid(input);
-  const maxProcesses = Math.max(1, input.maxProcesses ?? DEFAULT_MAX_PROCESSES);
+  const maxProcessesPerRun = Math.max(1, input.maxProcessesPerRun ?? DEFAULT_MAX_PROCESSES);
+  const totalCap = (byToken.size + byRunOnly.size) * maxProcessesPerRun;
   const excluded = new Set<number>([selfPid]);
   for (const pid of await collectAncestors(procRoot, selfPid)) excluded.add(pid);
 
@@ -324,12 +389,14 @@ export async function listRunOrphanProcesses(
     return {
       supported: false,
       reason: `/proc could not be listed: ${error instanceof Error ? error.message : String(error)}`,
-      processes: [],
+      byRun: empty,
     };
   }
-  const processes: RunOrphanProcessInfo[] = [];
+
+  const byRun = new Map<string, RunOrphanProcessInfo[]>();
+  let matched = 0;
   for (const pid of pids) {
-    if (processes.length >= maxProcesses) break;
+    if (matched >= totalCap) break;
     if (pid <= 1 || excluded.has(pid)) continue;
     let ownerUid: number;
     try {
@@ -350,22 +417,50 @@ export async function listRunOrphanProcesses(
     } catch {
       continue;
     }
-    if (!environmentHasExactMarker(environ, "PAPERCLIP_RUN_ID", input.runId)) continue;
-    if (
-      input.processToken &&
-      !environmentHasExactMarker(environ, "PAPERCLIP_RUN_PROCESS_TOKEN", input.processToken)
-    ) {
-      continue;
-    }
+    const markers = readProcMarkers(environ);
+    if (!markers.runId) continue;
+    const selector =
+      byToken.get(`${markers.runId}\u0000${markers.processToken ?? ""}`) ??
+      byRunOnly.get(markers.runId);
+    if (!selector) continue;
 
-    processes.push({
+    const runProcesses = byRun.get(selector.runId) ?? [];
+    if (runProcesses.length >= maxProcessesPerRun) continue;
+    runProcesses.push({
       pid,
       ppid: stat.ppid,
       startTime: stat.startTime,
       command: await readCommand(procRoot, pid),
     });
+    byRun.set(selector.runId, runProcesses);
+    matched += 1;
   }
-  return { supported: true, reason: null, processes };
+  return { supported: true, reason: null, byRun };
+}
+
+/**
+ * List processes in this PID namespace whose env carries the exact
+ * `PAPERCLIP_RUN_ID=<runId>` marker. Pure read-only selection: this function
+ * never signals anything. It excludes the caller and its ancestors, refuses to
+ * run as root, and only considers processes owned by the same uid.
+ */
+export async function listRunOrphanProcesses(
+  input: ListRunOrphanProcessesInput,
+): Promise<{
+  supported: boolean;
+  reason: string | null;
+  processes: RunOrphanProcessInfo[];
+}> {
+  const scan = await scanRunOrphanProcesses({
+    ...input,
+    selectors: [{ runId: input.runId, processToken: input.processToken ?? null }],
+    maxProcessesPerRun: input.maxProcesses,
+  });
+  return {
+    supported: scan.supported,
+    reason: scan.reason,
+    processes: scan.byRun.get(input.runId) ?? [],
+  };
 }
 
 function pidOrderValue(pid: number): number {
@@ -689,54 +784,68 @@ export async function sweepRecentlyTerminalRuns(
   const result: SweepRunOrphanResult = { scanned: 0, found: 0, terminated: 0, killed: 0 };
   const kill = resolveKill(deps);
 
-  for (const [runId, entry] of [...recentTerminalRuns.entries()]) {
+  const entries: Array<[string, RecentTerminalRun]> = [];
+  for (const [runId, entry] of recentTerminalRuns.entries()) {
     if (now >= entry.expiresAt) {
       recentTerminalRuns.delete(runId);
       continue;
     }
-    result.scanned += 1;
+    entries.push([runId, entry]);
+  }
+  if (entries.length === 0) {
+    stopSweepTimerIfIdle();
+    return result;
+  }
 
-    const listed = await listRunOrphanProcesses({
-      ...deps,
+  // One /proc pass serves every tracked run. A per-run scan would multiply the
+  // enumeration cost by the number of recent terminal runs.
+  const scan = await scanRunOrphanProcesses({
+    ...deps,
+    selectors: entries.map(([runId, entry]) => ({
       runId,
       processToken: entry.processToken,
-      maxProcesses: DEFAULT_MAX_PROCESSES,
-    });
-    if (listed.supported && listed.processes.length > 0) {
-      result.found += listed.processes.length;
-      const newAlerts = listed.processes.filter((process) => !entry.alertedPids.has(process.pid));
-      if (newAlerts.length > 0) {
-        for (const process of listed.processes) entry.alertedPids.add(process.pid);
-        const alert = buildAlert(runId, newAlerts, "sweep");
-        writeStructuredAlert(alert, deps);
+    })),
+    maxProcessesPerRun: DEFAULT_MAX_PROCESSES,
+  });
+
+  for (const [runId, entry] of entries) {
+    result.scanned += 1;
+    const listed = scan.supported ? scan.byRun.get(runId) ?? [] : [];
+    if (listed.length === 0) continue;
+
+    result.found += listed.length;
+    const newAlerts = listed.filter((process) => !entry.alertedPids.has(process.pid));
+    if (newAlerts.length > 0) {
+      for (const process of listed) entry.alertedPids.add(process.pid);
+      const alert = buildAlert(runId, newAlerts, "sweep");
+      writeStructuredAlert(alert, deps);
+    }
+    for (const process of listed) {
+      const key = `${process.pid}:${process.startTime}`;
+      const signaledAt = entry.signaled.get(key);
+      const signal = signaledAt === undefined ? "SIGTERM" : now - signaledAt >= entry.graceMs ? "SIGKILL" : null;
+      if (!signal) continue;
+      // Recheck the marker, uid, and start time immediately before the
+      // signal. The list above can be stale if a selected process exited and
+      // its number was reused during the scan.
+      if (
+        !(await processStillMatches(
+          { ...deps, runId, processToken: entry.processToken },
+          process,
+          resolveProcRoot(deps),
+          resolveUid(deps),
+        ))
+      ) {
+        continue;
       }
-      for (const process of listed.processes) {
-        const key = `${process.pid}:${process.startTime}`;
-        const signaledAt = entry.signaled.get(key);
-        const signal = signaledAt === undefined ? "SIGTERM" : now - signaledAt >= entry.graceMs ? "SIGKILL" : null;
-        if (!signal) continue;
-        // Recheck the marker, uid, and start time immediately before the
-        // signal. The list above can be stale if a selected process exited and
-        // its number was reused during the scan.
-        if (
-          !(await processStillMatches(
-            { ...deps, runId, processToken: entry.processToken },
-            process,
-            resolveProcRoot(deps),
-            resolveUid(deps),
-          ))
-        ) {
-          continue;
+      if (signal === "SIGTERM") {
+        if (signalOne(process.pid, signal, kill)) {
+          entry.signaled.set(key, now);
+          result.terminated += 1;
         }
-        if (signal === "SIGTERM") {
-          if (signalOne(process.pid, signal, kill)) {
-            entry.signaled.set(key, now);
-            result.terminated += 1;
-          }
-        } else if (signalOne(process.pid, signal, kill)) {
-          entry.signaled.delete(key);
-          result.killed += 1;
-        }
+      } else if (signalOne(process.pid, signal, kill)) {
+        entry.signaled.delete(key);
+        result.killed += 1;
       }
     }
   }

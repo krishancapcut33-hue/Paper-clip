@@ -580,6 +580,35 @@ describe.skipIf(!linuxNonRoot)("sweepRecentlyTerminalRuns", () => {
     }
   });
 
+  it("reaps multiple tracked runs in one sweep pass", async () => {
+    const firstRun = randomUUID();
+    const secondRun = randomUUID();
+    const now = Date.now();
+    registerRecentTerminalRun({ runId: firstRun, graceMs: 0, windowMs: 10_000, now });
+    registerRecentTerminalRun({ runId: secondRun, graceMs: 0, windowMs: 10_000, now });
+
+    const spawnRunChild = (runId: string) =>
+      spawn(process.execPath, ["-e", "setInterval(() => {}, 1000);"], {
+        detached: true,
+        stdio: "ignore",
+        env: { ...process.env, PAPERCLIP_RUN_ID: runId },
+      });
+    const first = spawnRunChild(firstRun);
+    const second = spawnRunChild(secondRun);
+    first.unref();
+    second.unref();
+    try {
+      const result = await sweepRecentlyTerminalRuns(now + 10);
+      expect(result.scanned).toBe(2);
+      expect(result.found).toBeGreaterThanOrEqual(2);
+      expect(await waitForPidExit(first.pid as number)).toBe(true);
+      expect(await waitForPidExit(second.pid as number)).toBe(true);
+    } finally {
+      await forceKill(first.pid as number);
+      await forceKill(second.pid as number);
+    }
+  });
+
   it("drops a run after its window expires", async () => {
     const runId = randomUUID();
     const now = Date.now();
