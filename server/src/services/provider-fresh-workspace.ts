@@ -6,8 +6,8 @@ import { lstat, mkdir, realpath, rename, rm } from "node:fs/promises";
 import path from "node:path";
 import { pipeline } from "node:stream/promises";
 import { Transform } from "node:stream";
-import { and, eq } from "drizzle-orm";
-import { executionWorkspaces, heartbeatRuns, issues, workspaceOperations, type Db } from "@paperclipai/db";
+import { and, asc, eq } from "drizzle-orm";
+import { executionWorkspaces, heartbeatRuns, issues, projectWorkspaces, workspaceOperations, type Db } from "@paperclipai/db";
 import { freshWorkspaceSchema, type PluginFreshWorkspace } from "@paperclipai/plugin-sdk";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { getStorageService } from "../storage/index.js";
@@ -102,10 +102,19 @@ export async function reserveFreshPluginTaskWorkspace(input: {
       eq(heartbeatRuns.companyId, input.companyId)));
     if (!task || !run || run.agentId !== input.agentId || run.status !== "running" ||
         ![run.issueId, run.nativeIssueId].includes(input.issueId)) throw forbidden("Workspace preparation no longer has an active run");
-    await assertTaskWorkspaceExecutionAccess(tx, { type: "agent", source: "agent_jwt",
+    const actor = { type: "agent" as const, source: "agent_jwt" as const,
       companyId: input.companyId, agentId: input.agentId, runId: input.runId,
-      onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId,
-    }, input.companyId, { issueId: input.issueId, projectWorkspaceId: source.projectWorkspaceId });
+      onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId };
+    if (!task.projectWorkspaceId && task.projectId && task.projectId === source.projectId && source.projectWorkspaceId) {
+      await assertTaskWorkspaceExecutionAccess(tx, actor, input.companyId, { issueId: input.issueId });
+      const [defaultSource] = await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(and(
+        eq(projectWorkspaces.companyId, input.companyId), eq(projectWorkspaces.projectId, task.projectId)))
+        .orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id)).limit(1);
+      if (defaultSource?.id === source.projectWorkspaceId) await tx.update(issues).set({ projectWorkspaceId: defaultSource.id })
+        .where(eq(issues.id, task.id));
+    }
+    await assertTaskWorkspaceExecutionAccess(tx, actor, input.companyId, {
+      issueId: input.issueId, projectWorkspaceId: source.projectWorkspaceId });
     const [reserved] = await tx.select().from(executionWorkspaces).where(and(
       eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.sourceIssueId, input.issueId),
       eq(executionWorkspaces.id, input.fresh.attemptId)));

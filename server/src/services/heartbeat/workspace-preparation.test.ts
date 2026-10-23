@@ -177,9 +177,17 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     expect(call).not.toHaveBeenCalled();
   });
 
-  it.each([false, true])("keeps a fresh task reservation stable through repeated preparation (project: %s)", async project => {
+  it.each([
+    { project: false, savedSource: false },
+    { project: true, savedSource: true },
+    { project: true, savedSource: false },
+  ])("keeps a fresh task reservation stable through repeated preparation (project: $project, saved source: $savedSource)", async ({ project, savedSource }) => {
     const { input, issue, envOrchestrator } = await fixture();
     if (!project) await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    else if (!savedSource) {
+      await db.update(issues).set({ projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+      input.task.issueRef = { ...input.task.issueRef!, projectWorkspaceId: null };
+    }
     const pluginKey = "test.fresh-task";
     await db.insert(plugins).values({ pluginKey, packageName: "test-tasks", version: "1.0.0", apiVersion: 1,
       status: "ready", categories: ["workspace"], manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
@@ -208,6 +216,8 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
       metadata: { runnerTaskFreshWorkspace: { attemptId: input.run.id } } });
     const rows = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId));
     expect(rows).toHaveLength(1);
+    const [task] = await db.select().from(issues).where(eq(issues.id, issue.id));
+    expect(task.projectWorkspaceId).toBe(project ? issue.projectWorkspaceId : null);
   });
   const readIssue = (id: string) => db.select().from(issues).where(eq(issues.id, id)).then(rows => rows[0]!);
   const readRun = (id: string) => db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, id)).then(rows => rows[0]!);
