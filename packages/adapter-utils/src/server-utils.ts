@@ -5020,12 +5020,30 @@ export async function runChildProcess(
           // pipes can hold it open forever, so start the marker scan here. The
           // close handler awaits the same promise.
           void startTerminalReaper(exitCode, exitSignal)
-            .then((reaped) => {
+            .then(async (reaped) => {
               // A preserved same-group descendant can inherit the stdio pipes
               // and hold "close" open forever. Close our read ends only when
               // the reaper actually saw such a descendant, so a run with no
               // marker descendant keeps the normal close semantics.
               if (reaped.preservedSameGroup === 0) return;
+              // The data handlers pause each stream while async onLog writes
+              // drain. Wait for that work and for a quiet buffer before closing
+              // the pipes, or the direct child's final output is lost.
+              const deadline = Date.now() + 1_000;
+              let previousChain: Promise<void> | null = null;
+              let quietTicks = 0;
+              while (Date.now() < deadline) {
+                const chain = logChain;
+                await chain.catch(() => undefined);
+                const quiet =
+                  chain === previousChain &&
+                  (child.stdout?.readableLength ?? 0) === 0 &&
+                  (child.stderr?.readableLength ?? 0) === 0;
+                previousChain = chain;
+                quietTicks = quiet ? quietTicks + 1 : 0;
+                if (quietTicks >= 3) break;
+                await new Promise((resolve) => setTimeout(resolve, 10));
+              }
               child.stdout?.destroy();
               child.stderr?.destroy();
             })

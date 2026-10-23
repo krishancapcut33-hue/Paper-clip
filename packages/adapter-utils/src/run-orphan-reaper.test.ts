@@ -374,6 +374,53 @@ describe.skipIf(!linuxNonRoot)("runChildProcess terminal reaping", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "drains the direct child output before closing inherited pipes",
+    async () => {
+      const runId = randomUUID();
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-delayed-log-"));
+      const pidFile = path.join(dir, "pid");
+      let descendantPid = 0;
+      try {
+        const result = await runChildProcess(
+          runId,
+          process.execPath,
+          [
+            "-e",
+            [
+              "const fs = require('node:fs');",
+              "const { spawn } = require('node:child_process');",
+              "for (let index = 0; index < 8; index += 1) process.stdout.write('chunk-' + index + '\\n');",
+              "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: false, stdio: 'inherit', env: process.env });",
+              "child.unref();",
+              `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+            ].join(" "),
+          ],
+          {
+            cwd: process.cwd(),
+            env: { PAPERCLIP_RUN_ID: runId },
+            timeoutSec: 5,
+            graceSec: 1,
+            onLog: async (stream, chunk) => {
+              await new Promise((resolve) => setTimeout(resolve, 40));
+            },
+          },
+        );
+
+        expect(result.timedOut).toBe(false);
+        expect(result.exitCode).toBe(0);
+        for (let index = 0; index < 8; index += 1) {
+          expect(result.stdout).toContain(`chunk-${index}`);
+        }
+        descendantPid = Number.parseInt(await fs.readFile(pidFile, "utf8"), 10);
+        expect(isPidAlive(descendantPid)).toBe(true);
+      } finally {
+        await forceKill(descendantPid);
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "leaves a same-group marker descendant to platform settlement on a clean exit",
     async () => {
       const runId = randomUUID();
