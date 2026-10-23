@@ -5015,6 +5015,10 @@ export async function runChildProcess(
         });
 
         child.on("exit", (exitCode: number | null, exitSignal: NodeJS.Signals | null) => {
+          // The direct child has exited. The remaining drain is cleanup work,
+          // not run time, so the wall-clock timeout must not fire during it and
+          // signal a preserved background worker.
+          if (timeout) clearTimeout(timeout);
           maybeArmTerminalResultCleanup();
           // "close" waits for every stdio pipe. A descendant that inherited the
           // pipes can hold it open forever, so start the marker scan here. The
