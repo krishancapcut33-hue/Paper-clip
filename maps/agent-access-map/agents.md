@@ -44,6 +44,18 @@ bypass hiring authorization. Source: [runner resolver](../../server/src/services
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
 
+The early wizard record (`setupId` on create) and completion of that record
+(`setupAgentId` on hire) require a board actor and company-scoped creation
+permission. Its creator can finish their own inactive setup with that permission;
+changing another person's setup requires configuration permission.
+Creation retries reuse only records owned by the caller. Returning a completed
+record also requires the normal agent-read and configuration-read checks.
+An unfinished record stays paused with a
+`setup` hold and cannot receive API keys or authenticate with keys or JWTs.
+Its standard grants apply at hire. Authorized completion retries recover the
+same record and approval without changing the submitted configuration.
+Normal agent-authored hiring keeps its existing approval policy.
+
 The creation boundary resolves the request-level runner before adapter validation
 and credential normalization. Omitted/automatic new Codex selection uses the
 qualified target's default; explicit Legacy is retained. Disabled adapters and
@@ -93,12 +105,27 @@ API: `present` — representative operation IDs:
 
 - `GET /api/agents/{id}/instructions-bundle/file`.
 - `PUT /api/agents/{id}/instructions-bundle/file`.
+- `PATCH /api/agents/{id}` with an explicit `runner: "paperclip"` upgrade.
+- `PATCH /api/agents/{id}` with `runtimeSettings: { harness, model?, aiConnection?, expected: { model, aiConnection } }` for a narrow roster edit. Each request handles one agent; the UI batches at most four writes and collects per-agent outcomes.
 
 Agent access: `available` — Native read/update/history/restore instruction tools; REST /
 CLI.
 
 Policy: Agent creation/configuration uses action grants, resource policies and change
 consent; some controls require a board actor.
+
+The roster intent preserves unrelated settings, rejects stale model/connection
+previews and harness changes, and checks the full execution configuration under
+the lifecycle write lock. It uses the same configuration, company, credential,
+environment, and consent checks as other edits. It adds no agent permission or
+credential fallback. Pool and externally managed agents use their existing
+configuration surfaces. Board browser verification does not qualify agent access.
+
+The existing-agent upgrade notice uses this configuration PATCH. It does not
+grant configuration, account, or environment access. The server resolves the
+saved settings under normal company/configuration authorization and rejects
+unsupported settings before persistence. Operator browser evidence does not
+qualify the agent permission paths for this operation.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L1395) at
 the reviewed commit above.

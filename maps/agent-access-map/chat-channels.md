@@ -95,6 +95,13 @@ remaining operations before qualifying the whole capability.
 Gaps: Normal agent replies work through server delivery. Explicit endpoint publication
 APIs are board management paths.
 
+Monitor publication lineage uses the admitted wake and its source run's matching
+`set_task_monitor` receipt, including company, task, immutable agent, requester,
+and scheduled time. A source ID in context cannot grant publication. The normal
+delivery worker rechecks current endpoint and sender authority. Database fixtures
+exercise lineage and finalization recovery; live Slack qualification remains
+separate.
+
 Publication, provider-reply, and form-open 403/permission errors fail the rejected
 operation without removing unrelated assigned channel tools. Confirmed
 authentication failures still put the endpoint in attention, which blocks tool
@@ -268,6 +275,13 @@ caller/session permissions and real provider delivery need separate verification
 
 GitHub review summary headings use the bot display name. Checks remain
 independently scoped by GitHub App and endpoint/PR/commit identity.
+
+After publishing a review, native agents can report `yielded` with
+`response_wake` and no attention requests. Current conversation authorization
+is checked again at commit. The task remains in review without a human card;
+real human dependencies retain the ordinary attention-request path. A timed
+wait requires a confirmed `set_task_monitor` schedule. Database coverage lives
+in `external-chat-wait.integration.test.ts`; this is not live model evidence.
 
 ## `outbound-email`
 

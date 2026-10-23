@@ -8,6 +8,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { ThemeProvider } from "@/context/ThemeContext";
 import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { TaskChatThread } from "./TaskChatThread";
+import { IssueChatThread } from "./IssueChatThread";
 import type {
   Agent,
   IssueDocument,
@@ -84,6 +85,7 @@ vi.mock("@/hooks/useStreamlinedUiEnabled", () => ({
   }),
 }));
 vi.mock("@/lib/router", () => ({
+  useLocation: () => ({ pathname: "/issues/issue", hash: "", search: "", key: "test", state: null }),
   Link: ({
     to,
     children,
@@ -399,19 +401,57 @@ it.each([true, false])("keeps an upload attached when a conversation draft becom
   expect(onAdd.mock.calls[0]?.[3]).toEqual([id]);
 });
 
-it("does not claim the agent is working while a follow-up waits behind recovery", async () => {
+it("shows Thinking during admission and clears it when the saved follow-up enters backoff", async () => {
   const pending = { id: "optimistic-recovery", companyId: "company", issueId: "issue", authorType: "user" as const,
     authorAgentId: null, authorUserId: "board", body: "Confirm the existing result.", presentation: null, metadata: null,
     createdAt: new Date(), updatedAt: new Date(), clientStatus: "pending" as const };
-  const show = (executionBlocked: boolean) => render(<TaskChatThread issueId="issue" issueStatus="blocked" executionBlocked={executionBlocked} comments={[pending]}
+  const show = (accepted: boolean) => render(<TaskChatThread issueId="issue" issueStatus="blocked" executionBlocked
+    comments={[{ ...pending, clientStatus: accepted ? "queued" : "pending" }]}
+    interruption={accepted ? { intentId: "saved-input", responsibility: "system", state: "retry_scheduled",
+      nextRetryAt: new Date(Date.now() + 30_000).toISOString(), canRetry: true, userAction: null,
+      sourceRunIds: ["failed-run"], observedRunId: "failed-run" } : null}
     onAdd={async () => {}} issueAssigneeAgentId="agent"
     agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
-  show(true);
+  show(false);
   expect(container.textContent).toContain("Confirm the existing result.");
+  expect(container.textContent).toContain("Thinking");
+  show(true);
   expect(container.textContent).not.toContain("Thinking");
   expect(container.textContent).not.toContain("Working");
-  show(false);
-  expect(container.textContent).toContain("Working");
+});
+
+it.each((["task", "legacy"] as const).flatMap(surface =>
+  ([null, "failed", "resolved"] as const).map(previousState => ({ surface, previousState })),
+))("keeps $surface admission Thinking through an old $previousState projection until acknowledgement", async ({ surface, previousState }) => {
+  let acknowledge!: () => void;
+  const onAdd = vi.fn(() => new Promise<void>(resolve => { acknowledge = resolve; }));
+  const refresh = vi.fn();
+  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
+  render(<Component comments={[]} issueId="issue" issueAssigneeAgentId="agent"
+    issueStatus="todo" onAdd={onAdd} onRefreshLatestComments={refresh}
+    interruption={previousState ? { intentId: "previous-intent", responsibility: "system", state: previousState,
+      nextRetryAt: null, canRetry: previousState === "failed", userAction: null,
+      sourceRunIds: ["previous-run"], observedRunId: "previous-run" } : null}
+    agentMap={new Map([["agent", { id: "agent", name: "Worker", adapterType: "paperclip_runner" } as Agent]])} />);
+  await act(async () => { editorCallbacks.change("Save this note."); });
+  const send = surface === "task"
+    ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
+    : [...container.querySelectorAll("button")].find(button => button.textContent === "Send");
+  expect(send).toBeDefined();
+  vi.useFakeTimers();
+  try {
+    await act(async () => { send!.click(); });
+    expect(onAdd).toHaveBeenCalledTimes(1);
+    expect(container.textContent).toContain("Thinking");
+    await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
+    expect(container.textContent).toContain("Taking longer than usual");
+    expect(refresh).toHaveBeenCalledTimes(1);
+    await act(async () => { acknowledge(); });
+    expect(container.textContent).not.toContain("Thinking");
+    expect(container.textContent).not.toContain("Taking longer than usual");
+  } finally {
+    vi.useRealTimers();
+  }
 });
 
 it("prepares comment-link history and its composer before reveal", async () => {
@@ -1988,6 +2028,8 @@ describe("TaskChatThread runtime transcript selection", () => {
     renderThread({
       comments: [],
       onAdd: async () => {},
+      interruption: { intentId: null, responsibility: "user", state: "waiting_for_user", nextRetryAt: null,
+        canRetry: false, userAction: "choose_model", sourceRunIds: ["model-rejected"], observedRunId: "model-rejected" },
       linkedRuns: [{
         runId: "model-rejected", runtimeMode: "native", status: "failed",
         errorCode: "native_provider_model_rejected",
@@ -2343,6 +2385,43 @@ describe("TaskChatThread runtime transcript selection", () => {
     expect(deny[0].disabled).toBe(false);
     expect(container.textContent).not.toContain("Cancelled");
     await act(async () => deny[0].click());
+    expect(resolve).toHaveBeenCalledWith({ runId, requestId: "permission-1", turnId: "provider-turn-1",
+      requestKind: "permission_approval", resolution: { action: "decline" } });
+  });
+
+  it("dismisses a runtime permission without resolving it and retains the feed action after reload", async () => {
+    const runId = "dismissed-native-permission";
+    nativeTranscriptState.transcriptByRun.set(runId, [
+      { kind: "runtime_request", ts: "2026-08-25T18:00:01.000Z", requestId: "permission-1",
+        requestKind: "permission_approval", turnId: "provider-turn-1", requestType: "permission", status: "pending",
+        prompt: "Pi write", choices: [{ key: "decline", label: "Deny" }], fields: [] },
+    ]);
+    const resolve = vi.spyOn(heartbeatsApi, "resolveRuntimeRequest").mockResolvedValue({} as never);
+    const show = () => renderThread({
+      issueId: "issue-1", currentUserId: "user-board", comments: [], onAdd: async () => {}, issueStatus: "in_progress",
+      activeRun: { id: runId, runtimeMode: "native", status: "running", invocationSource: "issue", triggerDetail: null,
+        startedAt: "2026-08-25T18:00:00.000Z", finishedAt: null, createdAt: "2026-08-25T18:00:00.000Z",
+        agentId: "agent-1", agentName: "Runner", adapterType: "paperclip_runner" },
+    });
+    show();
+    const takeover = () => container.querySelector('[data-testid="task-chat-composer-takeover"]');
+    await act(async () => takeover()!.querySelector<HTMLButtonElement>('[aria-label^="Dismiss "]')!.click());
+    expect(resolve).not.toHaveBeenCalled();
+    expect(takeover()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-input-indicator"]')).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show();
+    expect(takeover()).toBeNull();
+    expect(container.querySelector('[data-testid="task-chat-pending-input-indicator"]')).toBeNull();
+    await act(async () => {
+      const details = container.querySelector<HTMLDetailsElement>('[data-testid="task-chat-pending-runtime-request"]')!;
+      details.open = true;
+      details.dispatchEvent(new Event("toggle", { bubbles: true }));
+    });
+    const deny = Array.from(container.querySelectorAll<HTMLButtonElement>("button")).find(button => button.textContent === "Deny");
+    expect(deny).toBeDefined();
+    await act(async () => deny!.click());
     expect(resolve).toHaveBeenCalledWith({ runId, requestId: "permission-1", turnId: "provider-turn-1",
       requestKind: "permission_approval", resolution: { action: "decline" } });
   });
@@ -3285,6 +3364,74 @@ describe.each([true, false])("Unanswered question history (conversationMode=%s)"
     expect(takeover()?.textContent).toContain("Approve the note?");
   });
 
+  it.each(["request_confirmation", "request_checkbox_confirmation", "request_item_verdicts", "suggest_tasks"] as const)("keeps dismissed %s in the feed through reload", async kind => {
+    const fixtures = await import("@/fixtures/issueThreadInteractionFixtures");
+    const source = {
+      request_confirmation: fixtures.genericPendingRequestConfirmationInteraction,
+      request_checkbox_confirmation: fixtures.pendingRequestCheckboxConfirmationInteraction,
+      request_item_verdicts: fixtures.pendingRequestItemVerdictsInteraction,
+      suggest_tasks: fixtures.pendingSuggestedTasksInteraction,
+    }[kind];
+    const request = { ...source, id: "deferred-request", title: "Review requested" };
+    const onDismissInteraction = vi.fn().mockResolvedValue(undefined);
+    const show = () => render(<TaskChatThread {...props} comments={[]} interactions={[request]} onDismissInteraction={onDismissInteraction} />);
+    show();
+    expect(takeover()).not.toBeNull();
+    await dismiss();
+    expect(onDismissInteraction).toHaveBeenCalledWith(request);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    flushSync(() => root!.unmount());
+    root = createRoot(container);
+    show();
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Review requested"]')!.click());
+    expect(takeover()).not.toBeNull();
+  });
+
+  it("honors a saved dismissal on another browser and surfaces save failures", async () => {
+    const review = { ...planReviewInteraction(), title: "Review requested", payload: { version: 1, prompt: "Review the work?" } } as IssueThreadInteraction;
+    render(<TaskChatThread {...props} comments={[]} interactions={[{ ...review, dismissedAt: new Date() }]} />);
+    expect(takeover()).toBeNull();
+    expect(pendingIndicator()).toBeNull();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Review requested"]')!.click());
+    const onDismissInteraction = vi.fn().mockRejectedValue(new Error("Dismissal could not be saved"));
+    render(<TaskChatThread {...props} comments={[]} interactions={[review]} onDismissInteraction={onDismissInteraction} />);
+    await dismiss();
+    expect(takeover()).not.toBeNull();
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain("Dismissal could not be saved");
+  });
+
+  it("keeps the newly opened request visible when an earlier dismissal finishes saving", async () => {
+    const { genericPendingRequestConfirmationInteraction } = await import("@/fixtures/issueThreadInteractionFixtures");
+    const first = { ...genericPendingRequestConfirmationInteraction, id: "first-review", title: "First review" };
+    const second = { ...first, id: "second-review", title: "Second review" };
+    let finishDismiss!: () => void;
+    const onDismissInteraction = vi.fn(() => new Promise<void>(resolve => { finishDismiss = resolve; }));
+    render(<TaskChatThread {...props} comments={[]} interactions={[first, second]} onDismissInteraction={onDismissInteraction} />);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: First review"]')!.click());
+    await dismiss();
+    expect(onDismissInteraction).toHaveBeenCalledWith(first);
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Second review"]')!.click());
+    expect(takeover()?.textContent).toContain("Second review");
+    await act(async () => finishDismiss());
+    expect(takeover()?.textContent).toContain("Second review");
+    expect(takeover()?.textContent).not.toContain("First review");
+  });
+
+  it("keeps a reopened dismissed review visible when a delayed human comment refresh arrives", async () => {
+    const { genericPendingRequestConfirmationInteraction } = await import("@/fixtures/issueThreadInteractionFixtures");
+    const review = { ...genericPendingRequestConfirmationInteraction, title: "Reopened review" };
+    const show = (comments = movedOn.slice(0, 0)) => render(<TaskChatThread {...props} comments={comments} interactions={[review]} />);
+    show();
+    await dismiss();
+    await act(async () => container.querySelector<HTMLButtonElement>('[aria-label="Open request: Reopened review"]')!.click());
+    expect(takeover()?.textContent).toContain("Reopened review");
+    await act(async () => show(movedOn));
+    expect(takeover()?.textContent).toContain("Reopened review");
+  });
+
   it("opens the new question but can reopen the exact historical native question", async () => {
     const nativeOld = { ...old, sourceRunId: "old-run", payload: { ...old.payload, runtimeRequestId: "old-request" } } as IssueThreadInteraction;
     render(<TaskChatThread {...props} comments={movedOn} interactions={[nativeOld, newer]} />);
@@ -4073,7 +4220,7 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     expect(occurrenceCount(queuedComment.body)).toBe(1);
   });
 
-  it.each(["run-1", null])("keeps legacy queued delivery available with target %s", (targetRunId) => {
+  it.each(["run-1", null])("offers legacy interruption only with a live target (%s)", (targetRunId) => {
     const onInterruptQueued = vi.fn(async () => {});
     renderThread({
       comments: [
@@ -4108,9 +4255,14 @@ describe("TaskChatThread Paperclip Runner queue", () => {
     const interrupt = container.querySelector<HTMLButtonElement>(
       '[data-testid="task-chat-queued-interrupt-queued-prp-1"]',
     );
-    expect(interrupt).not.toBeNull();
-    flushSync(() => interrupt!.click());
-    expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
+    if (targetRunId) {
+      expect(interrupt).not.toBeNull();
+      flushSync(() => interrupt!.click());
+      expect(onInterruptQueued).toHaveBeenCalledWith(targetRunId);
+    } else {
+      expect(interrupt).toBeNull();
+      expect(onInterruptQueued).not.toHaveBeenCalled();
+    }
   });
 
   it("cancels an optimistic queued row locally before server acknowledgement", async () => {

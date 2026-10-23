@@ -1,9 +1,10 @@
 import { existsSync } from "node:fs";
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import { chmod, writeFile, symlink, mkdir, open } from "node:fs/promises";
 import { join, dirname } from "node:path";
 import { eq } from "drizzle-orm";
-import { agents, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
+import { agents, agentWakeupRequests, assets, documents, heartbeatRuns, issues, projects, routineDocuments, routines, runnerApiResponseReservations, companySkills, companyMemberships, principalPermissionGrants } from "@paperclipai/db";
+import { initializeRunIdentity } from "../run-identity.js";
 import { beforeAll, afterAll, beforeEach, afterEach, describe, expect, it, vi } from "vitest";
 import { secretService } from "../secrets.js";
 import { authorizationService } from "../authorization.js";
@@ -581,6 +582,88 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     expect((await fixture.snapshot()).projects.some(p => p.name === "Uncertain")).toBe(false);
   });
 
+  it.each([403, 422])("a deliberate retry can execute an exact mutation previously rejected with %s", async status => {
+    const fixture = await server.fixture();
+    const args = { operationId: "POST /api/companies/{companyId}/projects", body: { name: "Authorized on retry" } };
+    const rejected = vi.spyOn(globalThis, "fetch").mockResolvedValueOnce(Response.json({ error: "Rejected before mutation" }, { status }));
+    try {
+      expect(await fixture.authority.execute({ tool: "call_api", callId: "rejected", arguments: args }))
+        .toMatchObject({ ok: false, status });
+    } finally { rejected.mockRestore(); }
+    await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() })
+      .where(eq(heartbeatRuns.id, fixture.runId));
+    const id = randomUUID(), intentId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId,
+      contextSnapshot: { issueId: fixture.issueId, previousRunId: fixture.runId } });
+    await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    await server.db.insert(agentWakeupRequests).values({ id: intentId, companyId: fixture.companyId,
+      agentId: fixture.agentId, runId: id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: fixture.responsibleUserId ?? "board",
+      payload: { issueId: fixture.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: intentId,
+        sourceRunId: fixture.runId, actorId: fixture.responsibleUserId ?? "board", strategy: "fresh_isolated_workspace" } } });
+    if (fixture.responsibleUserId) await initializeRunIdentity(server.db, { companyId: fixture.companyId, runId: id,
+      issueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId, cause: "instruction" });
+    const authority = new PaperclipRunnerToolAuthority(server.db, { ...fixture, runId: id });
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      const result = await authority.execute({ tool: "call_api", callId: "accepted-retry", arguments: args });
+      expect(result).toMatchObject({ ok: true, status: 201 });
+      expect(await authority.execute({ tool: "call_api", callId: "accepted-retry", arguments: args })).toEqual(result);
+      expect(network).toHaveBeenCalledTimes(1);
+    } finally { network.mockRestore(); }
+    expect((await fixture.snapshot()).projects.filter(project => project.name === "Authorized on retry")).toHaveLength(1);
+  });
+
+  it.each(["task_retry", "automatic_successor"])("%s reuses the completed effect and fences a different unresolved effect across run identities", async mode => {
+    const fixture = await server.fixture();
+    const args = { operationId: "POST /api/companies/{companyId}/projects", body: { name: "Already created" } };
+    const completed = await fixture.authority.execute({ tool: "call_api", callId: "first-publication", arguments: args });
+    expect(completed).toMatchObject({ status: 201 });
+    const [original] = await server.db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+      resultJson: { ...original.resultJson, apiToolReceipts: { ...(original.resultJson?.apiToolReceipts as object),
+        unresolved: { operationId: "POST /api/companies/{companyId}/routines", state: "pending", digest: "unknown" } } },
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    let id = randomUUID();
+    const intentId = randomUUID();
+    await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+      status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId,
+      contextSnapshot: { issueId: fixture.issueId, previousRunId: fixture.runId } });
+    await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    await server.db.insert(agentWakeupRequests).values({ id: intentId, companyId: fixture.companyId,
+      agentId: fixture.agentId, runId: id, source: "on_demand", reason: "task_retry", status: "coalesced",
+      requestedByActorType: "user", requestedByActorId: fixture.responsibleUserId ?? "board",
+      payload: { issueId: fixture.issueId, taskRetry: { schema: "paperclip.task-retry.v1", generationId: intentId,
+        sourceRunId: fixture.runId, actorId: fixture.responsibleUserId ?? "board", strategy: "fresh_isolated_workspace" } } });
+    if (mode === "automatic_successor") {
+      const parentId = id;
+      id = randomUUID();
+      await server.db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date() })
+        .where(eq(heartbeatRuns.id, parentId));
+      await server.db.insert(heartbeatRuns).values({ id, companyId: fixture.companyId, agentId: fixture.agentId,
+        status: "running", runtimeMode: "native", nativeIssueId: fixture.issueId, retryOfRunId: parentId,
+        responsibleUserId: fixture.responsibleUserId, invocationSource: "automation", contextSnapshot: { issueId: fixture.issueId } });
+      await server.db.update(issues).set({ executionRunId: id }).where(eq(issues.id, fixture.issueId));
+    }
+    if (fixture.responsibleUserId) await initializeRunIdentity(server.db, { companyId: fixture.companyId, runId: id,
+      issueId: fixture.issueId, responsibleUserId: fixture.responsibleUserId, cause: "instruction" });
+    const authority = new PaperclipRunnerToolAuthority(server.db, { ...fixture, runId: id });
+    const network = vi.spyOn(globalThis, "fetch");
+    try {
+      expect(await authority.execute({ tool: "call_api", callId: "replacement-publication", arguments: args })).toEqual(completed);
+      expect(await authority.execute({ tool: "call_api", callId: "uncertain-other-operation", arguments: {
+        operationId: "POST /api/companies/{companyId}/routines", body: { title: "Uncertain", assigneeAgentId: fixture.agentId },
+      } })).toMatchObject({ outcome: "unknown", error: "api_outcome_unknown" });
+      expect(network).not.toHaveBeenCalled();
+      expect(await authority.execute({ tool: "call_api", callId: "independent-read", arguments: {
+        operationId: "GET /api/companies/{companyId}/projects",
+      } })).toMatchObject({ status: 200 });
+      expect(network).toHaveBeenCalledTimes(1);
+    } finally { network.mockRestore(); }
+    expect((await fixture.snapshot()).projects.filter(project => project.name === "Already created")).toHaveLength(1);
+  });
+
   it("revalidates the active run after reading an upload", async () => {
     const fixture = await server.fixture();
     const original = server.storage.getObject.bind(server.storage);
@@ -848,6 +931,22 @@ else if(m.id!==undefined) send({id:m.id,result:{}});
     const download = await fixture.authority.execute({ tool: "call_api", callId: "download", arguments: { operationId: "GET /api/assets/{assetId}/content", pathParams: { assetId: fixture.binaryArtifactId } } }) as any;
     expect(download).toMatchObject({ status: 206, byteSize: 32000, artifact: { artifactId: fixture.binaryArtifactId, byteSize: 32000 } });
     expect((await fixture.snapshot()).assets).toEqual(expect.arrayContaining([expect.objectContaining({ id: download.artifact.artifactId, companyId: fixture.companyId, createdByAgentId: fixture.agentId })]));
+  });
+
+  it.each(["sample.txt", "/home/agent/proof.txt"])("uploads remote task bytes at %s and fails closed without the reader", async (sourcePath) => {
+    const fixture=await server.fixture();
+    const bytes=Buffer.from("proof exists only on the execution host\n");
+    const read=vi.fn(async(path:string,maxBytes:number)=>{expect(path).toBe(sourcePath);expect(maxBytes).toBeGreaterThan(bytes.length);return bytes;});
+    const binding={...fixture.authority.binding,executionTargetKind:"remote" as const,readRemoteApiFile:read};
+    const authority=new PaperclipRunnerToolAuthority(server.db,binding);
+    const call={tool:"call_api" as const,callId:randomUUID(),arguments:{operationId:"POST /api/companies/{companyId}/issues/{issueId}/attachments",pathParams:{issueId:fixture.issueId},files:[{path:sourcePath}]}};
+    await expect(authority.execute(call)).resolves.toMatchObject({status:201});
+    expect(read).toHaveBeenCalledOnce();
+    expect((await fixture.snapshot()).assets).toEqual(expect.arrayContaining([expect.objectContaining({sha256:createHash("sha256").update(bytes).digest("hex"),byteSize:bytes.length})]));
+    const unsupported=new PaperclipRunnerToolAuthority(server.db,{...binding,readRemoteApiFile:undefined});
+    await expect(unsupported.execute({...call,callId:randomUUID()})).rejects.toThrow("Remote workspace file uploads are unavailable");
+    const changing=new PaperclipRunnerToolAuthority(server.db,{...binding,readRemoteApiFile:async()=>{await server.db.update(heartbeatRuns).set({status:"cancelled"}).where(eq(heartbeatRuns.id,fixture.runId));return bytes;}});
+    await expect(changing.execute({...call,callId:randomUUID()})).rejects.toThrow();
   });
 
   it("does not accept caller-supplied identity in an API comment", async () => {

@@ -47,6 +47,13 @@ Setup is covered in [connection setup](./connection-setup.md).
 
 Automated: [channel integration](../../server/src/__tests__/chat-channels.integration.test.ts) uses provider fixtures; it does not prove a live Slack, Discord, Teams, Telegram, GitHub, email, or Photon delivery.
 
+Monitor continuation regression: [database checks](../../server/src/services/chat-monitor-continuation.test.ts)
+verify the exact originating conversation, rejected forged/mismatched receipts,
+one working publication, no completion for a yielded run, and saved-response
+recovery. In a disposable live thread, request work that needs deferred repository
+preparation. Verify a useful continuation explanation, automatic resumption, and
+the final result in that same thread. A successful provider turn alone is insufficient.
+
 GitHub review comment regression (2026-10-19): repeated PR review requests reuse
 one main App comment, including across restart and reconnect. Test a leading
 request for an external bot (`@greptile review`) and verify it creates no wake or
@@ -56,6 +63,15 @@ task show paused state. Preserve newer progress and confirmed or uncertain repli
 Repeat terminal reconciliation with native identity and no legacy wake fields.
 Check delayed acknowledgements, check-only assessments followed by formal reviews,
 and combined requests with separate pre-upgrade placeholders.
+
+GitHub review attention regression: publish a 3/5 assessment, then wait for the
+next provider event. The task stays in review without a completion card or Mine
+entry. A later 5/5 review with passing required checks can finish quietly. A real
+repository-access request enters Mine until resolved. The native external-chat
+database suite checks these states and revoked endpoints using stored provider
+receipts; live model adherence remains a separate check.
+It also checks saved monitors, disabled repositories, multiple reviewed heads,
+read-only finish validation, withdrawal rollback, and separate approval gates.
 
 Manual: For each supported provider being changed, send a unique message, verify the intended agent/company receives it, and inspect the actual external reply in the original thread. Repeat with an unlinked/unauthorized sender, duplicate inbound delivery, and one supported attachment. Record provider-specific results separately.
 
