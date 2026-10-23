@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from "node:crypto";
+import { isDeepStrictEqual } from "node:util";
 import { and, eq, inArray, notInArray, sql } from "drizzle-orm";
 import { executionWorkspaceRestorePoints, executionWorkspaces, type Db } from "@paperclipai/db";
 import type { StoredSecretVersionMaterial } from "../secrets/types.js";
@@ -169,7 +170,7 @@ export async function restorePointHistoryUnchanged(ref: GitRestorePointRef, cwd:
 
 export function restorePointSnapshotMatches(ref: GitRestorePointRef, snapshot: { head: string; index: string | null; worktree: string | null; modes: Array<{ path: string; mode: number }> }) {
   return snapshot.head === ref.head && snapshot.index === ref.index && snapshot.worktree === ref.worktree
-    && JSON.stringify(snapshot.modes) === JSON.stringify(ref.modes);
+    && isDeepStrictEqual(snapshot.modes, ref.modes);
 }
 
 export async function abandonGitRestorePointsByKey(db: Db, workspaceId: string, objectKeys: string[]) {
@@ -221,7 +222,7 @@ export async function loadGitRestorePoint(input: {
   });
   const { manifest } = decodeRestorePointPayload(payload);
   if (manifest.head !== input.ref.head || manifest.index !== input.ref.index || manifest.worktree !== input.ref.worktree
-    || JSON.stringify(manifest.modes) !== JSON.stringify(input.ref.modes)) {
+    || !isDeepStrictEqual(manifest.modes, input.ref.modes)) {
     throw new RestorePointRestoreFailure("restore_point_manifest_mismatch");
   }
   return { payload, manifest };

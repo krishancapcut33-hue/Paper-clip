@@ -365,21 +365,42 @@ export async function importRestorePoint(input: { repositoryCwd: string; payload
   }
 }
 
+async function restorePointGitModes(cwd: string, manifest: RestorePointManifest, signal?: AbortSignal): Promise<Map<string, number>> {
+  const modes = new Map<string, number>();
+  if (!manifest.index || !manifest.worktree) return modes;
+
+  for (const [before, after] of [[manifest.head, manifest.index], [manifest.index, manifest.worktree]] as const) {
+    const entries = nulList(await git(cwd, ["diff", "--raw", "-z", "--no-ext-diff", "--no-textconv", "--no-renames", before, after], { signal }));
+    for (let index = 0; index < entries.length; index += 2) {
+      const mode = entries[index]?.split(" ")[1];
+      const relative = entries[index + 1];
+      if (relative && (mode === "100644" || mode === "100755")) modes.set(relative, mode === "100755" ? 0o755 : 0o644);
+    }
+  }
+
+  return modes;
+}
+
 export async function applyRestorePoint(input: { cwd: string; manifest: RestorePointManifest; signal?: AbortSignal }) {
   const { manifest } = input;
   const cwd = await fs.realpath(input.cwd);
   const head = await gitText(cwd, ["rev-parse", "--verify", "HEAD^{commit}"], { signal: input.signal });
   if (head !== manifest.head) throw new RestorePointRestoreFailure("head_mismatch");
+  const modes = await restorePointGitModes(cwd, manifest, input.signal);
   if (manifest.index && manifest.worktree) {
     const diff = await git(cwd, ["diff", "--binary", "--no-color", "--no-ext-diff", "--no-textconv", "--no-renames", "HEAD", manifest.worktree], { signal: input.signal });
     if (diff.length > 0) await git(cwd, ["apply", "--binary", "--whitespace=nowarn", "-"], { input: diff, signal: input.signal });
     await git(cwd, ["read-tree", `${manifest.index}^{tree}`], { signal: input.signal });
   }
-  for (const entry of manifest.modes) {
-    const target = path.join(cwd, entry.path);
-    if (path.relative(cwd, target).startsWith("..")) throw new RestorePointRestoreFailure("invalid_payload");
+  for (const entry of manifest.modes) modes.set(entry.path, entry.mode);
+  for (const [relative, mode] of modes) {
+    const target = path.join(cwd, relative);
+    const relativeTarget = path.relative(cwd, target);
+    if (relativeTarget === ".." || relativeTarget.startsWith(`..${path.sep}`) || path.isAbsolute(relativeTarget)) {
+      throw new RestorePointRestoreFailure("invalid_payload");
+    }
     const stat = await fs.lstat(target).catch(() => null);
-    if (stat?.isFile()) await fs.chmod(target, entry.mode);
+    if (stat?.isFile()) await fs.chmod(target, mode);
   }
   const restored = await currentRestorePointSnapshot(cwd, input.signal);
   if (restored.head !== manifest.head || restored.index !== manifest.index || restored.worktree !== manifest.worktree

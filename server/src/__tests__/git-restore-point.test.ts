@@ -1,3 +1,4 @@
+import assert from "node:assert/strict";
 import { execFileSync } from "node:child_process";
 import fs from "node:fs/promises";
 import os from "node:os";
@@ -37,8 +38,10 @@ describe("git restore points", () => {
   let root: string;
   let remote: string;
   let work: string;
+  let originalUmask: number;
 
   beforeEach(async () => {
+    originalUmask = process.umask();
     vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "31".repeat(32));
     root = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-restore-point-test-"));
     remote = path.join(root, "remote.git");
@@ -55,6 +58,7 @@ describe("git restore points", () => {
   });
 
   afterEach(async () => {
+    process.umask(originalUmask);
     vi.unstubAllEnvs();
     await fs.rm(root, { recursive: true, force: true });
   });
@@ -72,7 +76,8 @@ describe("git restore points", () => {
     expect(await captureRestorePoint({ cwd: work, upstreamCommits: upstream() })).toBeNull();
   });
 
-  it("round-trips unpushed commits, staged and unstaged edits, untracked files, deletions and modes", async () => {
+  it.each([0o002, 0o022])("round-trips unpushed commits, staged and unstaged edits, untracked files, deletions and modes with umask %i", async (umask) => {
+    process.umask(umask);
     git(work, "checkout", "-q", "-b", "feature");
     await write(work, "src/app.ts", "export const value = 2;\n");
     git(work, "commit", "-q", "-am", "unpushed one");
@@ -102,6 +107,7 @@ describe("git restore points", () => {
     expect(() => git(restored, "cat-file", "-e", `${manifest.head}^{commit}`)).toThrow();
     const imported = await importRestorePoint({ repositoryCwd: restored, payload });
     git(restored, "checkout", "-q", "-b", "feature", imported.head);
+    await fs.chmod(path.join(restored, "README.md"), 0o600);
     await applyRestorePoint({ cwd: restored, manifest: imported });
 
     expect(await read(restored, "src/app.ts")).toBe("export const value = 4;\n");
@@ -113,9 +119,26 @@ describe("git restore points", () => {
     expect((await fs.stat(path.join(restored, "scripts/run.sh"))).mode & 0o777).toBe(0o755);
     expect((await fs.stat(path.join(restored, "private/key.txt"))).mode & 0o777).toBe(0o600);
     expect(await fs.readlink(path.join(restored, "notes/readme-link"))).toBe("../README.md");
+    expect((await fs.stat(path.join(restored, "README.md"))).mode & 0o777).toBe(0o600);
     await expect(fs.access(path.join(restored, "node_modules"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(path.join(restored, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     await expect(fs.access(path.join(restored, "config/.env.local"))).rejects.toMatchObject({ code: "ENOENT" });
+  });
+
+  it.each([0o002, 0o022])("restores modes when staged edits are reverted in the worktree with umask %i", async (umask) => {
+    process.umask(umask);
+    await write(work, "src/app.ts", "export const value = 2;\n", 0o644);
+    git(work, "add", "src/app.ts");
+    await write(work, "src/app.ts", "export const value = 1;\n");
+    const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+    assert(captured);
+    expect(captured.manifest.modes).toEqual([]);
+    const restored = await freshClone("restored");
+    await importRestorePoint({ repositoryCwd: restored, payload: captured.payload });
+    await applyRestorePoint({ cwd: restored, manifest: captured.manifest });
+    expect(await read(restored, "src/app.ts")).toBe("export const value = 1;\n");
+    expect(git(restored, "show", ":src/app.ts")).toBe("export const value = 2;");
+    expect((await fs.stat(path.join(restored, "src/app.ts"))).mode & 0o777).toBe(0o644);
   });
 
   it("captures edits to tracked environment files", async () => {
@@ -131,6 +154,34 @@ describe("git restore points", () => {
     await importRestorePoint({ repositoryCwd: restored, payload: captured!.payload });
     await applyRestorePoint({ cwd: restored, manifest: captured!.manifest });
     expect(await read(restored, ".env.example")).toBe("TOKEN=\nOTHER=\n");
+  });
+
+  it("restores regular files whose names start with two dots", async () => {
+    const paths = ["..notes", "..config/file with\nspaces.txt"];
+    for (const relative of paths) await write(work, relative, "untracked work\n", 0o644);
+    const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+    assert(captured);
+    const restored = await freshClone("restored");
+    await importRestorePoint({ repositoryCwd: restored, payload: captured.payload });
+    await applyRestorePoint({ cwd: restored, manifest: captured.manifest });
+    for (const relative of paths) {
+      expect(await read(restored, relative)).toBe("untracked work\n");
+      expect((await fs.stat(path.join(restored, relative))).mode & 0o777).toBe(0o644);
+    }
+  });
+
+  it("refuses to apply modes outside the restored workspace", async () => {
+    await write(work, "notes.txt", "untracked work\n");
+    await write(root, "outside.txt", "outside\n", 0o600);
+    const captured = await captureRestorePoint({ cwd: work, upstreamCommits: upstream() });
+    assert(captured);
+    const restored = await freshClone("restored");
+    await importRestorePoint({ repositoryCwd: restored, payload: captured.payload });
+    await expect(applyRestorePoint({
+      cwd: restored,
+      manifest: { ...captured.manifest, modes: [{ path: "../outside.txt", mode: 0o777 }] },
+    })).rejects.toMatchObject({ reason: "invalid_payload" });
+    expect((await fs.stat(path.join(root, "outside.txt"))).mode & 0o777).toBe(0o600);
   });
 
   it("applies safeguards and modes to staged files whose contents match the index", async () => {

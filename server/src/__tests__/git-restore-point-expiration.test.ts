@@ -13,7 +13,8 @@ import { ensurePersistedExecutionWorkspaceAvailable, realizeExecutionWorkspace }
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt } from "../services/git-workspace-expiration.js";
 import { getStorageService } from "../storage/index.js";
-import { markGitRestorePointExpired } from "../services/git-restore-point-storage.js";
+import { loadGitRestorePoint, markGitRestorePointExpired, restorePointSnapshotMatches } from "../services/git-restore-point-storage.js";
+import { currentRestorePointSnapshot } from "../services/git-restore-point.js";
 import { GIT_RESTORE_POINT_EXPIRED_WARNING } from "../services/execution-workspaces.js";
 
 const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
@@ -97,7 +98,7 @@ describeEmbeddedPostgres("git restore point expiration", () => {
     await fs.writeFile(path.join(cwd, "marker.txt"), "unstaged edit\n");
     await fs.rm(path.join(cwd, "remove-me.txt"));
     await fs.mkdir(path.join(cwd, "notes"));
-    await fs.writeFile(path.join(cwd, "notes", "todo.md"), "untracked work\n");
+    await fs.writeFile(path.join(cwd, "notes", "todo.md"), "untracked work\n", { mode: 0o600 });
     await fs.writeFile(path.join(cwd, ".env"), "TOKEN=old\n");
     return unpushed;
   }
@@ -111,6 +112,16 @@ describeEmbeddedPostgres("git restore point expiration", () => {
     expect(recipe).toMatchObject({ schema: "paperclip.git-cache-restoration.v2", commit: unpushed,
       restorePoint: { head: unpushed, headOnRemote: false, appliedAt: null } });
     expect(await f.ledger()).toMatchObject([{ status: "active", objectKey: recipe.restorePoint.objectKey }]);
+    expect(recipe.restorePoint.modes).toContainEqual({ path: "notes/todo.md", mode: 0o600 });
+    await expect(loadGitRestorePoint({
+      storage: getStorageService(), workspace: { companyId: f.companyId, id: f.workspaceId },
+      ref: { ...recipe.restorePoint, modes: recipe.restorePoint.modes.map((entry: { path: string; mode: number }) =>
+        entry.path === "notes/todo.md" ? { ...entry, mode: 0o644 } : entry) },
+    })).rejects.toMatchObject({ reason: "restore_point_manifest_mismatch" });
+    const loaded = await loadGitRestorePoint({
+      storage: getStorageService(), workspace: { companyId: f.companyId, id: f.workspaceId }, ref: recipe.restorePoint,
+    });
+    expect(loaded).toMatchObject({ manifest: { modes: recipe.restorePoint.modes } });
 
     expect(await f.reopen()).toMatchObject({ ok: true, reopened: true });
     expect(git(f.cwd, "rev-parse", "HEAD")).toBe(unpushed);
@@ -118,6 +129,8 @@ describeEmbeddedPostgres("git restore point expiration", () => {
     expect(git(f.cwd, "show", ":marker.txt")).toBe("staged edit");
     await expect(fs.access(path.join(f.cwd, "remove-me.txt"))).rejects.toMatchObject({ code: "ENOENT" });
     expect(await fs.readFile(path.join(f.cwd, "notes", "todo.md"), "utf8")).toBe("untracked work\n");
+    expect((await fs.stat(path.join(f.cwd, "notes", "todo.md"))).mode & 0o777).toBe(0o600);
+    expect(restorePointSnapshotMatches(recipe.restorePoint, await currentRestorePointSnapshot(f.cwd))).toBe(true);
     await expect(fs.access(path.join(f.cwd, ".env"))).rejects.toMatchObject({ code: "ENOENT" });
     const restored = (await f.row()).metadata?.gitCacheRestoration as Record<string, any>;
     expect(restored.restorePoint.appliedAt).toEqual(expect.any(String));
