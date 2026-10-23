@@ -102,8 +102,9 @@ unpushed commits, uncommitted or untracked files, or history-only commits, once 
 tree has been closed for `PAPERCLIP_GIT_RESTORE_POINT_TERMINAL_DELAY_DAYS` (default `3`).
 It also removes the worktree of an issue tree that is still open once nothing has
 touched it for `PAPERCLIP_GIT_RESTORE_POINT_IDLE_DAYS` (default `7`, `0` turns this off):
-no issue in the tree was updated and no run for the tree or the workspace was created,
-started or finished in that time, and no run is still live. The workspace reaper sets a
+no issue in the tree or bound to the workspace was updated and no run for those issues or
+the workspace was created, started or finished in that time, and no run is still live. An
+interrupted removal is finished by later sweeps while the issue stays open. The workspace reaper sets a
 deadline for that moment, so open trees cost no recurring checks before then. When a run
 later finds its issue's workspace removed this way, it reopens the workspace, restore
 point included, before using it; if the restore fails, the run fails instead of starting

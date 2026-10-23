@@ -3327,22 +3327,26 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             });
           }
           const idleMs = opts.gitRestorePoints?.idleMs;
-          if (sourceIssue && idleMs && !reopenPending && opts.gitCacheExpirationEnabled && workspace.providerType !== "plugin"
+          const pendingExpiration = opts.gitCacheExpirationEnabled && workspace.providerType !== "plugin" && hasPendingGitExpiration(workspace);
+          if (pendingExpiration || (sourceIssue && idleMs && !reopenPending && opts.gitCacheExpirationEnabled && workspace.providerType !== "plugin"
             && !isClosedExecutionWorkspaceStatus(workspace.status)
-            && workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree") {
-            const lastActivityAt = await gitWorkspaceLastActivityAt(db, workspace);
-            const idleDueAt = (lastActivityAt?.getTime() ?? 0) + idleMs;
+            && workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree")) {
+            const lastActivityAt = pendingExpiration ? null : await gitWorkspaceLastActivityAt(db, workspace);
+            const idleDueAt = pendingExpiration ? now().getTime() : (lastActivityAt?.getTime() ?? 0) + idleMs!;
             if (idleDueAt <= now().getTime()) {
               const expiration = await expireReconstructableGitWorkspace(db, workspace, {
                 dryRun: opts.gitCacheExpirationDryRun ?? false, expireBase: opts.gitBaseExpirationEnabled ?? false,
                 now: now(), signal, beforeDelete: opts.beforeTerminalWorkspaceCleanup,
-                idleCutoff: new Date(now().getTime() - idleMs),
-                restorePoint: { storage: opts.gitRestorePoints!.storage, notBefore: new Date(idleDueAt),
-                  keyDurable: opts.gitRestorePoints!.keyDurable },
+                idleCutoff: idleMs ? new Date(now().getTime() - idleMs) : undefined,
+                restorePoint: opts.gitRestorePoints ? { storage: opts.gitRestorePoints.storage, notBefore: new Date(idleDueAt),
+                  keyDurable: opts.gitRestorePoints.keyDurable } : undefined,
               });
               if (expiration.candidate) result.eligible += 1;
               if (expiration.expired) result.archived += 1;
-              else terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + 60 * 60 * 1000);
+              const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+              if (!expiration.expired || (after && hasPendingGitExpiration(after))) {
+                terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + 60 * 60 * 1000);
+              }
               logger.info({ event: "execution_workspace.git_cache_expiration", executionWorkspaceId: workspace.id,
                 companyId: workspace.companyId, dryRun: opts.gitCacheExpirationDryRun ?? false, idle: true, ...expiration },
               "Git workspace cache expiration inspected");

@@ -82,9 +82,13 @@ function expirationScope(workspace: Workspace) {
       UNION
       SELECT c.id, c.status, c.completed_at, c.cancelled_at, c.updated_at FROM ${issues} c
       JOIN tree p ON c.parent_id = p.id WHERE c.company_id = ${workspace.companyId}
+    ), bound AS (
+      SELECT id, updated_at FROM ${issues}
+      WHERE company_id = ${workspace.companyId} AND execution_workspace_id = ${workspace.id}
     ), relevant_runs AS (
       SELECT r.* FROM ${heartbeatRuns} r WHERE r.company_id = ${workspace.companyId} AND (
         r.issue_id IN (SELECT id FROM tree) OR r.native_issue_id IN (SELECT id FROM tree)
+        OR r.issue_id IN (SELECT id FROM bound) OR r.native_issue_id IN (SELECT id FROM bound)
         OR r.context_snapshot->>'issueId' IN (SELECT id::text FROM tree)
         OR r.context_snapshot->>'taskId' IN (SELECT id::text FROM tree)
         OR r.context_snapshot->>'executionWorkspaceId' = ${workspace.id}
@@ -99,6 +103,7 @@ export async function gitWorkspaceLastActivityAt(db: Db | Tx, workspace: Workspa
   const rows = await db.execute<{ at: string | Date | null }>(sql`${expirationScope(workspace)}
     SELECT greatest(
       (SELECT max(updated_at) FROM tree),
+      (SELECT max(updated_at) FROM bound),
       (SELECT max(greatest(created_at, started_at, finished_at)) FROM relevant_runs)
     ) AS at`);
   const at = rows[0]?.at;
@@ -109,6 +114,7 @@ export async function isGitWorkspaceExpirationEligible(tx: Tx, workspace: Worksp
   if (workspace.metadata?.reopenPendingConsumption === true) return false;
   const closedTree = idleCutoff ? sql`
       NOT EXISTS (SELECT 1 FROM tree WHERE updated_at > ${idleCutoff.toISOString()}::timestamptz)
+      AND NOT EXISTS (SELECT 1 FROM bound WHERE updated_at > ${idleCutoff.toISOString()}::timestamptz)
       AND NOT EXISTS (SELECT 1 FROM relevant_runs WHERE greatest(created_at, started_at, finished_at) > ${idleCutoff.toISOString()}::timestamptz)` : sql`
       NOT EXISTS (SELECT 1 FROM tree WHERE status NOT IN ('done', 'cancelled')
         OR coalesce(CASE WHEN status = 'done' THEN completed_at ELSE cancelled_at END, updated_at) > ${new Date(now.getTime() - DAY_MS).toISOString()}::timestamptz)

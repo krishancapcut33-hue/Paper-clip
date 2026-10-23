@@ -263,6 +263,34 @@ describeEmbeddedPostgres("git restore point expiration", () => {
       expect(await f.ledger()).toMatchObject([{ status: "active" }]);
     });
 
+    it("lets the workspace reaper finish an interrupted idle expiration while the issue stays open", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      await openIdle(f, 8);
+      expect(await f.expire({ ...idle(), beforeDelete: async () => { throw new Error("interrupted_fixture"); } }))
+        .toMatchObject({ expired: false });
+      expect(await f.row()).toMatchObject({ status: "archived", metadata: { gitCacheExpiration: { completed: false } } });
+      expect(await exists(f.cwd)).toBe(true);
+      const worker = executionWorkspaceService(db, { gitCacheExpirationEnabled: true,
+        gitRestorePoints: { storage: getStorageService(), terminalDelayMs: 3 * DAY_MS, keyDurable: true, idleMs: 7 * DAY_MS } });
+      expect(await worker.sweepTerminalWorkspaces()).toMatchObject({ archived: 1 });
+      expect(await exists(f.cwd)).toBe(false);
+      expect(await f.reopen()).toMatchObject({ ok: true, reopened: true });
+      expect(await fs.readFile(path.join(f.cwd, "notes", "todo.md"), "utf8")).toBe("untracked work\n");
+    });
+
+    it("counts activity on another issue bound to the workspace", async () => {
+      const f = await fixture();
+      await makeUnsavedWork(f.cwd);
+      await openIdle(f, 8);
+      const other = randomUUID();
+      await db.insert(issues).values({ id: other, companyId: f.companyId, title: "Unrelated issue sharing the workspace", status: "todo",
+        executionWorkspaceId: f.workspaceId, updatedAt: new Date(Date.now() - DAY_MS) });
+      expect((await gitWorkspaceLastActivityAt(db, await f.row()))!.getTime()).toBeGreaterThan(Date.now() - 2 * DAY_MS);
+      expect(await f.expire(idle())).toMatchObject({ expired: false, skipReason: "live_or_unresolved_consumer" });
+      expect(await exists(f.cwd)).toBe(true);
+    });
+
     it("never expires open issues when idle expiry is off", async () => {
       const f = await fixture();
       await makeUnsavedWork(f.cwd);
