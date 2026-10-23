@@ -389,6 +389,24 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
       vi.unstubAllEnvs();
     });
 
+    it("expires despite a stale pending restore point left by an earlier attempt", async () => {
+      vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "31".repeat(32));
+      const f = await nestedFixture(false);
+      await unpushedNestedWork(f.nested.cwd);
+      const generation = Number((await f.row()).metadata?.lifecycleGeneration ?? 0) + 1;
+      const base = { companyId: f.companyId, executionWorkspaceId: f.workspaceId, sourceIssueId: f.issueId, generation,
+        sha256: "0".repeat(64), byteSize: 1 };
+      const [stale] = await db.insert(executionWorkspaceRestorePoints).values([
+        { ...base, checkoutName: path.basename(f.nested.cwd), objectKey: `stale/${randomUUID()}.pcrp`, status: "pending" },
+        { ...base, checkoutName: "", objectKey: `stale/${randomUUID()}.pcrp`, status: "superseded" },
+      ]).returning();
+      expect(await f.expire({ expireBase: false, restorePoint: restorePoint() })).toMatchObject({ expired: true, restorePoint: true, skipReason: null });
+      const rows = await ledger(f.workspaceId);
+      expect(rows.find(row => row.id === stale!.id)).toMatchObject({ status: "superseded" });
+      expect(rows.filter(row => row.status === "active").map(row => row.checkoutName)).toEqual([path.basename(f.nested.cwd)]);
+      vi.unstubAllEnvs();
+    });
+
     it("keeps a workspace whose nested checkout has unpushed work on another branch", async () => {
       vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "31".repeat(32));
       const f = await nestedFixture(false);
