@@ -172,13 +172,47 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await nextAgentWakes(f)).find(wake => wake.id === parked.id)).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
   });
 
-  it("is picked up by the periodic sweep when the lease is released elsewhere", async () => {
+  it("resumes a changes-requested handback to the executor while the reviewer remains the current participant", async () => {
     const f = await seed();
-    const { heartbeat, parked } = await parkWake(f);
+    const [issue] = await db.select().from(issues).where(eq(issues.id, f.issueId));
+    const currentParticipant = { type: "agent", agentId: f.previousAgentId, userId: null };
+    const returnAssignee = { type: "agent", agentId: f.nextAgentId, userId: null };
+    const executionStage = { ...f.wake.payload.executionStage!, wakeRole: "executor",
+      currentParticipant, returnAssignee, allowedActions: ["address_changes", "resubmit"],
+      lastDecisionOutcome: "changes_requested" };
+    await db.update(issues).set({ status: "todo", executionState: {
+      ...issue!.executionState as Record<string, unknown>, status: "changes_requested",
+      currentParticipant, returnAssignee, lastDecisionOutcome: "changes_requested", changesRequestedCount: 1,
+    } }).where(eq(issues.id, f.issueId));
+    const heartbeat = heartbeatService(db);
+    expect(await heartbeat.wakeup(f.nextAgentId, { ...f.wake, reason: "execution_changes_requested",
+      payload: { ...f.wake.payload, executionStage },
+      contextSnapshot: { ...f.wake.contextSnapshot, wakeReason: "execution_changes_requested", executionStage },
+    })).toBeNull();
+    const [parked] = await nextAgentWakes(f);
+    expect(parked).toMatchObject({ status: "deferred_issue_execution", runId: null });
+    await releaseLease(f);
+    await heartbeat.resumeExecutionOwnershipWaits({ companyId: f.companyId, issueId: f.issueId });
+    const runs = await nextAgentIssueRuns(f);
+    expect(runs).toHaveLength(1);
+    expect(runs[0]).toMatchObject({ status: "queued", agentId: f.nextAgentId,
+      contextSnapshot: { wakeReason: "execution_changes_requested", executionStage } });
+    const delivered = await buildPaperclipWakePayload({
+      db, companyId: f.companyId, agentId: f.nextAgentId, contextSnapshot: runs[0]!.contextSnapshot!,
+    });
+    expect(delivered?.executionStage).toEqual(executionStage);
+    expect((await nextAgentWakes(f)).find(wake => wake.id === parked!.id))
+      .toMatchObject({ status: "coalesced", runId: runs[0]!.id });
+  });
+
+  it("is picked up by fresh services' periodic sweeps when the lease is released elsewhere", async () => {
+    const f = await seed();
+    const { parked } = await parkWake(f);
     await releaseLease(f);
     // The sweep rotates receipts on a cadence; age this one past it.
     await db.update(agentWakeupRequests).set({ updatedAt: new Date(Date.now() - 60_000) }).where(eq(agentWakeupRequests.id, parked.id));
-    await Promise.all([heartbeat.resumeQueuedRuns(), heartbeat.resumeQueuedRuns()]);
+    // New service instances have only the persisted receipt, as after restart.
+    await Promise.all([heartbeatService(db).resumeQueuedRuns(), heartbeatService(db).resumeQueuedRuns()]);
     const runs = await nextAgentIssueRuns(f);
     expect(runs).toHaveLength(1);
     expect((await nextAgentWakes(f)).find(wake => wake.id === parked.id)).toMatchObject({ status: "coalesced", runId: runs[0]!.id });
