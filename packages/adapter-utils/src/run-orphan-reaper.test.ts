@@ -17,9 +17,9 @@ import {
 } from "./run-orphan-reaper.js";
 import { runChildProcess, runningProcesses } from "./server-utils.js";
 
-const linuxNonRoot =
-  process.platform === "linux" &&
-  (typeof process.getuid !== "function" || process.getuid() !== 0);
+const posixNonRoot =
+  typeof process.getuid === "function" && process.getuid() !== 0;
+const linuxNonRoot = process.platform === "linux" && posixNonRoot;
 
 function isPidAlive(pid: number) {
   try {
@@ -127,7 +127,7 @@ describe("listRunOrphanProcesses", () => {
     return tempRoot;
   }
 
-  it.skipIf(process.getuid?.() === 0)("selects only the exact run marker and excludes self and ancestors", async () => {
+  it.skipIf(!posixNonRoot)("selects only the exact run marker and excludes self and ancestors", async () => {
     const procRoot = await fakeProc();
     const runId = "run-select";
     // Ancestor chain: 1000 (self) -> 900 -> 1.
@@ -151,7 +151,7 @@ describe("listRunOrphanProcesses", () => {
     expect(result.processes[0]).toMatchObject({ ppid: 1000, startTime: "20", command: "sleep 300" });
   });
 
-  it.skipIf(process.getuid?.() === 0)("bounds the number of selected PIDs", async () => {
+  it.skipIf(!posixNonRoot)("bounds the number of selected PIDs", async () => {
     const procRoot = await fakeProc();
     const runId = "run-bound";
     await writeFakeProcProcess({ procRoot, pid: 1000, ppid: 1, startTime: "1" });
@@ -176,7 +176,7 @@ describe("listRunOrphanProcesses", () => {
     expect(result.processes).toHaveLength(4);
   });
 
-  it.skipIf(process.getuid?.() === 0)("requires the per-invocation token when one is given", async () => {
+  it.skipIf(!posixNonRoot)("requires the per-invocation token when one is given", async () => {
     const procRoot = await fakeProc();
     const runId = "run-token";
     await writeFakeProcProcess({ procRoot, pid: 1000, ppid: 1, startTime: "1" });
@@ -206,7 +206,7 @@ describe("listRunOrphanProcesses", () => {
     expect(probe.processes.map((process) => process.pid)).toEqual([4000]);
   });
 
-  it.skipIf(process.getuid?.() === 0)("redacts credentials in the audited command line", async () => {
+  it.skipIf(!posixNonRoot)("redacts credentials in the audited command line", async () => {
     const procRoot = await fakeProc();
     const runId = "run-redact";
     await writeFakeProcProcess({ procRoot, pid: 1000, ppid: 1, startTime: "1" });

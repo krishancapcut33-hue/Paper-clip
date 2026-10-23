@@ -713,18 +713,29 @@ export async function sweepRecentlyTerminalRuns(
       for (const process of listed.processes) {
         const key = `${process.pid}:${process.startTime}`;
         const signaledAt = entry.signaled.get(key);
-        if (signaledAt === undefined) {
-          if (signalOne(process.pid, "SIGTERM", kill)) {
+        const signal = signaledAt === undefined ? "SIGTERM" : now - signaledAt >= entry.graceMs ? "SIGKILL" : null;
+        if (!signal) continue;
+        // Recheck the marker, uid, and start time immediately before the
+        // signal. The list above can be stale if a selected process exited and
+        // its number was reused during the scan.
+        if (
+          !(await processStillMatches(
+            { ...deps, runId, processToken: entry.processToken },
+            process,
+            resolveProcRoot(deps),
+            resolveUid(deps),
+          ))
+        ) {
+          continue;
+        }
+        if (signal === "SIGTERM") {
+          if (signalOne(process.pid, signal, kill)) {
             entry.signaled.set(key, now);
             result.terminated += 1;
           }
-        } else if (now - signaledAt >= entry.graceMs) {
-          // The key carries the start time, so a recycled PID is never killed
-          // on the strength of an earlier selection.
-          if (signalOne(process.pid, "SIGKILL", kill)) {
-            entry.signaled.delete(key);
-            result.killed += 1;
-          }
+        } else if (signalOne(process.pid, signal, kill)) {
+          entry.signaled.delete(key);
+          result.killed += 1;
         }
       }
     }

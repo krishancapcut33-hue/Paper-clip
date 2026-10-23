@@ -13,7 +13,12 @@ import {
 import { buildSshSpawnTarget, type SshRemoteExecutionSpec } from "./ssh.js";
 import { redactCommandText } from "./command-redaction.js";
 import { paperclipChatFilePreparationDelivery } from "./chat-file-delivery.js";
-import { reapRunOrphansForTerminalRun, RUN_ORPHAN_REAPER_METRIC } from "./run-orphan-reaper.js";
+import {
+  reapRunOrphansForTerminalRun,
+  stopRunOrphanReaper,
+  RUN_ORPHAN_REAPER_METRIC,
+} from "./run-orphan-reaper.js";
+export { stopRunOrphanReaper };
 import {
   PAPERCLIP_RUNNER_PERMISSION_CAPABILITIES,
   resolvePaperclipRunnerModel,
