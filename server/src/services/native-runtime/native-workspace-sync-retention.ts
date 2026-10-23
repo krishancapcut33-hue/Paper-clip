@@ -9,7 +9,11 @@ import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { workspaceExportCauses } from "../workspace-recovery-source.js";
 import { nativeWorkspaceFinalizationLockKey } from "./native-workspace-finalization-ownership.js";
 import { NATIVE_WORKSPACE_OWNER_UNVERIFIED } from "./native-workspace-finalization-recovery-state.js";
-import { nativeWorkspaceSyncStateRoot, readNativeWorkspaceSyncReference } from "./native-workspace-sync.js";
+import {
+  nativeWorkspaceSyncStateRoot,
+  onNativeWorkspaceSyncRunDirectory,
+  readNativeWorkspaceSyncReference,
+} from "./native-workspace-sync.js";
 
 export const NATIVE_WORKSPACE_SYNC_RETENTION_DEFAULT_DAYS = 7;
 export const NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS = 15 * 60 * 1000;
@@ -17,6 +21,7 @@ export const NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS = 15 * 60 * 1000;
 const DAY_MS = 24 * 60 * 60 * 1000;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const EXPIRED_PREFIX = ".expired-";
+const DEADLINE_BATCH = 200;
 const SETTLED_RUN_STATUSES = ["succeeded", "failed", "cancelled", "timed_out", "interrupted"];
 const RETAINED_RECOVERY_STATES = ["scheduled", "running", "awaiting_evidence"];
 const RETAINED_WORKSPACE_RECOVERY_STATUSES = ["queued", "recovering"];
@@ -288,8 +293,15 @@ export function nativeWorkspaceSyncRetentionService(
     const result = emptyResult();
     const settledBefore = new Date(config.now.getTime() - config.retentionMs);
     const names = await listEntries(config.root);
+    const exhausted = () => !config.shouldContinue() || result.checked >= config.maxEntries
+      || result.candidates + result.leftoversRemoved >= config.maxRemovals;
     if (!config.dryRun) {
       for (const name of names.filter(isExpiredLeftover)) {
+        if (exhausted()) {
+          result.truncated = true;
+          return result;
+        }
+        result.checked++;
         try {
           await removeTree(path.join(config.root, name));
           result.leftoversRemoved++;
@@ -302,7 +314,7 @@ export function nativeWorkspaceSyncRetentionService(
     const runIds = names.filter((name) => UUID_PATTERN.test(name));
     const pending = cursor ? runIds.filter((name) => name > cursor!) : runIds;
     for (const name of pending) {
-      if (!config.shouldContinue() || result.checked >= config.maxEntries || result.candidates >= config.maxRemovals) {
+      if (exhausted()) {
         result.truncated = true;
         break;
       }
@@ -322,34 +334,37 @@ export function nativeWorkspaceSyncRetentionService(
   async function nextDeadlineAt(options: NativeWorkspaceSyncRetentionOptions = {}): Promise<number | null> {
     const config = settings(options);
     const at = config.now.getTime();
+    const retryAt = at + NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS;
     const names = await listEntries(config.root);
-    if (!config.dryRun && names.some(isExpiredLeftover)) return at;
-    const folders: Array<{ runId: string; newestMtimeMs: number }> = [];
-    for (const name of names) {
-      if (!UUID_PATTERN.test(name)) continue;
-      const target = path.join(config.root, name);
-      if (!(await isRealDirectory(target))) continue;
-      const newest = await newestMtimeMs(target).catch(() => null);
-      if (newest !== null) folders.push({ runId: name, newestMtimeMs: newest });
+    let next = !config.dryRun && names.some(isExpiredLeftover) ? retryAt : Number.POSITIVE_INFINITY;
+    const runIds = names.filter((name) => UUID_PATTERN.test(name));
+    for (let offset = 0; offset < runIds.length; offset += DEADLINE_BATCH) {
+      if (!config.shouldContinue()) return Math.min(next, retryAt);
+      const folders: Array<{ runId: string; newestMtimeMs: number }> = [];
+      for (const name of runIds.slice(offset, offset + DEADLINE_BATCH)) {
+        const target = path.join(config.root, name);
+        if (!(await isRealDirectory(target))) continue;
+        const newest = await newestMtimeMs(target).catch(() => null);
+        if (newest !== null) folders.push({ runId: name, newestMtimeMs: newest });
+      }
+      if (folders.length === 0) continue;
+      const runs = await db
+        .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
+        .from(heartbeatRuns)
+        .where(inArray(heartbeatRuns.id, folders.map((folder) => folder.runId)));
+      const byId = new Map(runs.map((run) => [run.id, run]));
+      for (const folder of folders) {
+        const run = byId.get(folder.runId);
+        const settledAt = !run
+          ? folder.newestMtimeMs
+          : SETTLED_RUN_STATUSES.includes(run.status) && run.finishedAt
+            ? Math.max(folder.newestMtimeMs, new Date(run.finishedAt).getTime())
+            : null;
+        const due = settledAt === null ? at + config.retentionMs : settledAt + config.retentionMs;
+        next = Math.min(next, due > at ? due : at + config.retentionMs);
+      }
     }
-    if (folders.length === 0) return null;
-    const runs = await db
-      .select({ id: heartbeatRuns.id, status: heartbeatRuns.status, finishedAt: heartbeatRuns.finishedAt })
-      .from(heartbeatRuns)
-      .where(inArray(heartbeatRuns.id, folders.map((folder) => folder.runId)));
-    const byId = new Map(runs.map((run) => [run.id, run]));
-    let next = Number.POSITIVE_INFINITY;
-    for (const folder of folders) {
-      const run = byId.get(folder.runId);
-      const settledAt = !run
-        ? folder.newestMtimeMs
-        : SETTLED_RUN_STATUSES.includes(run.status) && run.finishedAt
-          ? Math.max(folder.newestMtimeMs, new Date(run.finishedAt).getTime())
-          : null;
-      const due = settledAt === null ? at + config.retentionMs : settledAt + config.retentionMs;
-      next = Math.min(next, due > at ? due : at + config.retentionMs);
-    }
-    return next;
+    return Number.isFinite(next) ? next : null;
   }
 
   return { tick, nextDeadlineAt };
@@ -364,20 +379,19 @@ export function registerNativeWorkspaceSyncRetentionWork(
   },
 ) {
   let next: number | null = null;
-  return coordinator.register(DELIVERY_QUEUES.nativeWorkspaceSyncRetention, {
+  const worker = coordinator.register(DELIVERY_QUEUES.nativeWorkspaceSyncRetention, {
     retryMs: NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS,
     pausePassiveMaintenance: true,
     run: async (signal) => {
       next = null;
-      const result = await service.tick({
-        shouldContinue: () => !signal.aborted && (input.shouldContinue?.() ?? true),
-      });
+      const shouldContinue = () => !signal.aborted && (input.shouldContinue?.() ?? true);
+      const result = await service.tick({ shouldContinue });
       input.onResult(result);
       if (result.truncated) {
         next = Date.now() + 1000;
         return;
       }
-      const deadline = await service.nextDeadlineAt();
+      const deadline = await service.nextDeadlineAt({ shouldContinue });
       const retry = result.failed > 0 || (result.skipped.finalization_locked ?? 0) > 0
         ? Date.now() + NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS
         : null;
@@ -386,4 +400,8 @@ export function registerNativeWorkspaceSyncRetentionWork(
     hasPending: async () => false,
     nextRunAt: () => next,
   });
+  const unsubscribe = onNativeWorkspaceSyncRunDirectory(() => {
+    if (next === null) worker.wake();
+  });
+  return { ...worker, unsubscribe };
 }

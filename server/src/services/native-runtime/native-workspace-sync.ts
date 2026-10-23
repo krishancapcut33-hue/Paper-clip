@@ -249,11 +249,26 @@ async function ensurePrivateDirectory(dir: string): Promise<void> {
   }
 }
 
+const runDirectoryListeners = new Set<() => void>();
+
+export function onNativeWorkspaceSyncRunDirectory(listener: () => void): () => void {
+  runDirectoryListeners.add(listener);
+  return () => {
+    runDirectoryListeners.delete(listener);
+  };
+}
+
+async function ensureRunDirectory(runId: string): Promise<string> {
+  const dir = descriptorDirectory(runId);
+  await ensurePrivateDirectory(dir);
+  for (const listener of runDirectoryListeners) listener();
+  return dir;
+}
+
 async function writeDescriptor(
   descriptor: NativeWorkspaceSyncDescriptor,
 ): Promise<NativeWorkspaceSyncReference> {
-  const dir = descriptorDirectory(descriptor.binding.runId);
-  await ensurePrivateDirectory(dir);
+  const dir = await ensureRunDirectory(descriptor.binding.runId);
   const body = `${canonicalJson(descriptor)}\n`;
   const descriptorSha256 = createHash("sha256").update(body).digest("hex");
   const finalPath = descriptorPath(descriptor.binding.runId, descriptorSha256);
@@ -913,7 +928,7 @@ export async function prepareNativeWorkspaceSync(input: {
   let mode: WorkspaceInboundMode = "host_current";
   let reuseReason: StartupReuseReason = "created";
   const seedPaths = durableSeedPaths(input.runId);
-  await measureRunPhase("workspace_sync.descriptor_directory", () => ensurePrivateDirectory(descriptorDirectory(input.runId)));
+  await measureRunPhase("workspace_sync.descriptor_directory", () => ensureRunDirectory(input.runId));
 
   try {
   if (existingReference) {

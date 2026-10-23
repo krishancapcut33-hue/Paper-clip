@@ -25,6 +25,11 @@ import {
   registerNativeWorkspaceSyncRetentionWork,
 } from "../services/native-runtime/native-workspace-sync-retention.ts";
 import { DELIVERY_QUEUES } from "../services/delivery-work-notifications.ts";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.ts";
+import {
+  nativeWorkspaceSyncInternals,
+  nativeWorkspaceSyncStateRoot,
+} from "../services/native-runtime/native-workspace-sync.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -369,6 +374,19 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
     expect(await exists(leftover)).toBe(true);
   });
 
+  it("bounds leftover removal by the batch limits", async () => {
+    const leftovers: string[] = [];
+    for (let index = 0; index < 3; index++) leftovers.push(await writeFolder(`.expired-${randomUUID()}`, 0));
+    const folder = await writeFolder(randomUUID(), 9);
+    expect(await service().tick({ shouldContinue: () => false })).toMatchObject({ leftoversRemoved: 0, truncated: true });
+    const first = await service().tick({ maxRemovals: 2 });
+    expect(first).toMatchObject({ leftoversRemoved: 2, expired: 0, truncated: true });
+    expect(await exists(folder)).toBe(true);
+    const rest = await service().tick({ maxRemovals: 2 });
+    expect(rest).toMatchObject({ leftoversRemoved: 1, expired: 1 });
+    for (const leftover of leftovers) expect(await exists(leftover)).toBe(false);
+  });
+
   it("removes leftover expired folders", async () => {
     const leftover = await writeFolder(`.expired-${randomUUID()}`, 0);
     const retiring = await writeFolder(`.retiring-${randomUUID()}`, 30);
@@ -437,6 +455,61 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
       expect(worker.onResult).toHaveBeenCalledTimes(2);
     });
 
+    it("waits the retry delay when a leftover cannot be removed", async () => {
+      const base = await root();
+      const leftover = await writeFolder(`.expired-${randomUUID()}`, 0);
+      await fs.writeFile(path.join(leftover, "nested"), "x");
+      await fs.chmod(leftover, 0o500);
+      try {
+        const worker = register();
+        await worker.task().run(new AbortController().signal);
+        expect(worker.onResult.mock.calls[0]![0]).toMatchObject({ failed: 1 });
+        expect(worker.task().nextRunAt?.()).toBeGreaterThanOrEqual(now.getTime() + NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS);
+      } finally {
+        await fs.chmod(leftover, 0o700);
+      }
+      expect(await exists(base)).toBe(true);
+    });
+
+    it("wakes the quiet coordinator when a run creates its folder", async () => {
+      const home = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-sync-home-"));
+      const originalHome = process.env.PAPERCLIP_HOME;
+      const originalInstance = process.env.PAPERCLIP_INSTANCE_ID;
+      process.env.PAPERCLIP_HOME = home;
+      process.env.PAPERCLIP_INSTANCE_ID = "retention";
+      const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: () => {} });
+      const onResult = vi.fn();
+      const worker = registerNativeWorkspaceSyncRetentionWork(
+        coordinator,
+        nativeWorkspaceSyncRetentionService(db, { stateRoot: nativeWorkspaceSyncStateRoot() }),
+        { onResult },
+      );
+      try {
+        await worker.ready;
+        expect(onResult).toHaveBeenCalledTimes(1);
+        expect(coordinator.nextWakeAt()).toBeNull();
+        await nativeWorkspaceSyncInternals.writeDescriptor({
+          schema: "paperclip.native-workspace-sync/v3",
+          state: "prepared",
+          baselineSha256: "b".repeat(64),
+          finalHostSha256: null,
+          binding: { runId: randomUUID(), workspaceId: randomUUID(), leaseId: randomUUID(), providerLeaseId: "lease", remoteCwd: "/workspace" },
+        } as never);
+        await vi.waitFor(() => expect(onResult).toHaveBeenCalledTimes(2));
+        await vi.waitFor(() => expect(coordinator.nextWakeAt()).not.toBeNull());
+        const wakeAt = coordinator.nextWakeAt()!;
+        expect(wakeAt).toBeGreaterThan(Date.now() + 6 * DAY_MS);
+      } finally {
+        worker.unsubscribe();
+        await coordinator.stop();
+        if (originalHome === undefined) delete process.env.PAPERCLIP_HOME;
+        else process.env.PAPERCLIP_HOME = originalHome;
+        if (originalInstance === undefined) delete process.env.PAPERCLIP_INSTANCE_ID;
+        else process.env.PAPERCLIP_INSTANCE_ID = originalInstance;
+        await fs.rm(home, { recursive: true, force: true });
+      }
+    });
+
     it("retries soon when the finalization lock was held", async () => {
       const { companyId, runId } = await seed();
       const worker = register();
@@ -465,9 +538,22 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
       }).nextDeadlineAt()).toBeNull();
     });
 
-    it("is due now when a leftover expired folder exists", async () => {
+    it("retries leftover expired folders after the retry delay", async () => {
       await writeFolder(`.expired-${randomUUID()}`, 0);
-      expect(await service().nextDeadlineAt()).toBe(now.getTime());
+      expect(await service().nextDeadlineAt()).toBe(now.getTime() + NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS);
+    });
+
+    it("stops scanning when asked to and retries later", async () => {
+      await writeFolder(randomUUID(), 1);
+      expect(await service().nextDeadlineAt({ shouldContinue: () => false }))
+        .toBe(now.getTime() + NATIVE_WORKSPACE_SYNC_RETENTION_RETRY_MS);
+    });
+
+    it("carries the earliest deadline across batches", async () => {
+      for (let index = 0; index < 205; index++) await writeFolder(randomUUID(), 1);
+      await writeFolder("ffffffff-ffff-4fff-8fff-ffffffffffff", 6);
+      const deadline = await service().nextDeadlineAt();
+      expect(Math.abs(deadline! - (now.getTime() + DAY_MS))).toBeLessThan(1000);
     });
 
     it("is the earliest settled run finish plus the retention window", async () => {

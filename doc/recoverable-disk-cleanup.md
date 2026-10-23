@@ -106,7 +106,9 @@ A retention worker on the shared delivery-work scheduler removes a run's folder 
 nothing can read it. It runs at startup and at real deadlines: the earliest settled
 run's finish (or an orphan folder's newest file) plus the retention window, a
 recheck one window later for folders it had to keep, and a 15-minute retry after a
-failure or a held finalization lock. With no folders it schedules nothing. A folder
+failure, a held finalization lock or a leftover it could not delete. With no
+folders it schedules nothing; when a run then creates its folder in this server
+process, the worker wakes and schedules that folder's deadline. A folder
 named for a run id, that is a real directory and whose newest file is older than
 the window, is removed when one of these holds:
 
@@ -128,8 +130,9 @@ Each folder is checked in one transaction that holds the run's finalization
 ownership lock, so it never races a finalization or export of the same run. A held
 lock skips the folder. Inside that transaction the folder is renamed to
 `.expired-<UUID>`, and it is deleted after commit. The next sweep finishes an
-interrupted deletion. Each batch checks at most 200 folders and removes at most 50,
-continuing from where it stopped.
+interrupted deletion. Each batch checks at most 200 folders, including leftovers,
+and removes at most 50, continuing from where it stopped. Deadline discovery reads
+run state 200 folders at a time and stops when the server drains or shuts down.
 
 | Environment variable | Default | Effect |
 | --- | --- | --- |
