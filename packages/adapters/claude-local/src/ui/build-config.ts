@@ -49,7 +49,7 @@ export function buildClaudeLocalConfig(v: CreateConfigValues): Record<string, un
   if (nativeSelected && v.adapterSchemaValues?.acpxPermissionMode !== undefined) {
     ac.acpxPermissionMode = v.adapterSchemaValues.acpxPermissionMode;
   }
-  ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
+  if (!nativeSelected) ac.dangerouslySkipPermissions = v.dangerouslySkipPermissions;
   if (v.workspaceStrategyType === "git_worktree") {
     ac.workspaceStrategy = {
       type: "git_worktree",
