@@ -107,6 +107,12 @@ export async function prepareOpenCodeRuntimeConfig(input: {
   env: Record<string, string>;
   config: Record<string, unknown>;
   targetIsRemote?: boolean;
+  /**
+   * Point OpenCode at the global AGENTS.md and skills in the source config dir
+   * instead of the per-run copy. Only valid when the run can read host paths;
+   * remote targets get the copied dir shipped instead.
+   */
+  useSourceGlobalPaths?: boolean;
 }): Promise<PreparedOpenCodeRuntimeConfig> {
   const skipPermissions = asBoolean(input.config.dangerouslySkipPermissions, true);
 
@@ -142,7 +148,9 @@ export async function prepareOpenCodeRuntimeConfig(input: {
     }
   }
 
-  const sourcePaths = await detachSourcePathEntries(sourceConfigDir, runtimeConfigDir);
+  const sourcePaths = input.useSourceGlobalPaths
+    ? await detachSourcePathEntries(sourceConfigDir, runtimeConfigDir)
+    : { instructions: [], skills: [] };
   const existingConfig = await readJsonObject(runtimeConfigPath);
   const notes = [
     skipPermissions ? "Injected runtime OpenCode config with permission=allow for all tools and connections." : "Prepared isolated OpenCode provider configuration.",
