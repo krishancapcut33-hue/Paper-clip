@@ -277,11 +277,12 @@ export function fallbackRuntimeUsage(
 export function summarizeExecutionBilling(
   result: Pick<
     RunnerE2EResult,
-    "runIds" | "usage" | "environmentId" | "durationMs" | "runtimeUsage" | "firstTaskQuality" | "completionQuality" | "publicMcp"
-  >,
+    "runIds" | "usage" | "environmentId" | "durationMs" | "runtimeUsage" | "firstTaskQuality" | "completionQuality" | "publicMcp" | "productJourney"
+  > & Partial<Pick<RunnerE2EResult, "runtimeMode">>,
 ): RunnerE2EBillingSummary {
-  const requestedRunCount = Math.max(result.runIds?.length ?? 0, 1);
-  const entries = usageEntries(result.usage, requestedRunCount);
+  const browserOnly = Boolean(result.productJourney && result.runtimeMode === "none" && !result.runIds?.length);
+  const requestedRunCount = browserOnly ? 0 : Math.max(result.runIds?.length ?? 0, 1);
+  const entries = browserOnly ? [] : usageEntries(result.usage, requestedRunCount);
   let inputTokens = 0;
   let outputTokens = 0;
   let cachedInputTokens = 0;
@@ -330,14 +331,20 @@ export function summarizeExecutionBilling(
   }
   const runCount = Math.max(requestedRunCount, entries.length);
   const costStatus = costCoverageStatus(runCount, runsWithTokenUsage, runsWithReportedCost, runsWithEstimatedCost, runsWithPartialReportedCost);
-  const runtime = fallbackRuntimeUsage(result);
+  const runtime = { ...fallbackRuntimeUsage(result) };
+  if (browserOnly) runtime.agentRunDurationMs = 0;
   const estimatedRuntimeCostUsd = runtime.estimatedListCostUsd ?? 0;
   const judgments = [...(result.firstTaskQuality ? [result.firstTaskQuality] : []), ...(result.completionQuality ?? [])];
   const sumKnown = (key: "inputTokens" | "outputTokens" | "estimatedCostUsd") => judgments.some(q => q[key] === null) ? null : judgments.reduce((sum, q) => sum + (q[key] ?? 0), 0);
   const quality = judgments.length ? { inputTokens: sumKnown("inputTokens"), outputTokens: sumKnown("outputTokens"), estimatedCostUsd: sumKnown("estimatedCostUsd"), reservedCostUsd: judgments.reduce((sum, q) => sum + q.reservedCostUsd, 0) } : undefined;
+  // The operations receipt covers setup and agent requests for ONE owning attempt.
+  // Descendants reuse the fixture context without copying its receipt or charges.
+  const operations = result.productJourney?.operations;
+  const modelSubtotal = operations ? operations.modelCostUsd : reportedCostUsd + estimatedCostUsd;
   const complete =
     !incompleteReceipt && runsWithPartialReportedCost === 0 &&
     (!quality || quality.estimatedCostUsd !== null) &&
+    (!operations || operations.modelCostUsd !== null) &&
     runsWithTokenUsage === runCount &&
     runsWithReportedCost + runsWithEstimatedCost === runCount &&
     runtime.costStatus !== "unavailable";
@@ -361,7 +368,7 @@ export function summarizeExecutionBilling(
     reportedCostUsd,
     estimatedRuntimeCostUsd,
     ...(quality ? { judge: { inputTokens: quality.inputTokens, outputTokens: quality.outputTokens, estimatedCostUsd: quality.estimatedCostUsd, reservedCostUsd: quality.reservedCostUsd } } : {}),
-    observedAndEstimatedCostUsd: quality?.estimatedCostUsd === null ? null : reportedCostUsd + estimatedCostUsd + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0) + (result.publicMcp?.estimatedCostUsd ?? 0),
+    observedAndEstimatedCostUsd: modelSubtotal === null || quality?.estimatedCostUsd === null ? null : modelSubtotal + estimatedRuntimeCostUsd + (quality?.estimatedCostUsd ?? 0) + (result.publicMcp?.estimatedCostUsd ?? 0),
     complete,
   };
 }
