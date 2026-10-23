@@ -82,6 +82,7 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   const completed = await onboardingFirstTask({ context, agent: { id: agent.id }, connectionId: connection.id,
     proof: createConnectionProof(), campaignId, maxRuns: input.maxRuns, deadlineAt: input.deadlineAt,
     own: input.own, observeRun: input.observeRun });
+  evidence.artifact = completed.artifact;
   await input.verifyExecution(context, [completed.artifact.originatingRunId]);
   evidence.checks.push({ id: "first-task-complete", passed: true },
     { id: "downloadable-artifact-verified", passed: true }, { id: "native-trace-verified", passed: true });

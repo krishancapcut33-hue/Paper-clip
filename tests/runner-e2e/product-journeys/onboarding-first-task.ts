@@ -4,7 +4,8 @@ import { type createConnectionProof, verifyConnectionArtifact, verifyConnectionR
 import { connectionDelay } from "../connection-target.js";
 import { activeRuns, firstTaskCompletionSettled, type Row } from "../first-task-scoring.js";
 import { isBlockedUnstartedWake, isTerminalUnstartedWake } from "../non-execution-wake.js";
-import { JourneyError, type JourneyContext, type TargetSession } from "./types.js";
+import { JourneyError, type JourneyContext, type OnboardingArtifactEvidence, type TargetSession } from "./types.js";
+import { retainOnboardingArtifact } from "./artifact-evidence.js";
 
 export interface OnboardingFirstTaskInput {
   context: JourneyContext;
@@ -21,7 +22,7 @@ export interface OnboardingFirstTaskResult {
   runIds: string[];
   onboardingIssueId: string;
   childIssueId: string;
-  artifact: { id: string; originatingRunId: string; sha256: string };
+  artifact: OnboardingArtifactEvidence;
 }
 interface Snapshot {
   tasks: Row[];
@@ -183,7 +184,8 @@ export async function onboardingFirstTask(input: OnboardingFirstTaskInput): Prom
         (String(row.body).includes(child.id) || String(row.body).includes(child.identifier ?? child.id)))) fail("onboarding_parent_result_links_missing");
       await page.reload({ timeout: remaining() });
       await page.locator(`a[href*="/api/attachments/${artifact.id}/content"]`).first().waitFor({ state: "visible", timeout: remaining() });
-      return { runIds: [...seen.keys()], onboardingIssueId: parent.id, childIssueId: child.id, artifact: { id: artifact.id, originatingRunId: run.id, sha256 } };
+      return { runIds: [...seen.keys()], onboardingIssueId: parent.id, childIssueId: child.id,
+        artifact: retainOnboardingArtifact({ id: artifact.id, originatingRunId: run.id, bytes, proof }) };
     }
     await wait(); snapshot = await load(parent.id);
   }

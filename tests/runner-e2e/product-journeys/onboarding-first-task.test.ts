@@ -90,6 +90,18 @@ function fixture(options: Options = {}) {
 afterEach(() => { vi.restoreAllMocks(); vi.mocked(connectionDelay).mockReset().mockResolvedValue(undefined); });
 
 describe("Cloud canonical onboarding first task", () => {
+  it("retains the original download and independently generated expectation after JSON serialization", async () => {
+    const f = fixture();
+    const result = await onboardingFirstTask(f.input);
+    const retained = JSON.parse(JSON.stringify({ productJourney: { artifact: result.artifact } })).productJourney.artifact;
+    const bytes = Buffer.from(retained.contentBase64, "base64");
+    expect(bytes.toString("utf8")).toBe(JSON.stringify(f.input.proof.expected));
+    expect(retained.byteSize).toBe(bytes.byteLength);
+    expect(retained.sha256).toBe(createHash("sha256").update(bytes).digest("hex"));
+    expect(retained.input).toBe(f.input.proof.input);
+    expect(retained.expected).toEqual(f.input.proof.expected);
+    expect(retained.expected.sha256).toBe(createHash("sha256").update(retained.input).digest("hex"));
+  });
   it.each([false, true])("answers the opening and approves one child, including plan mode %s", async plan => {
     const f = fixture({ plan });
     const result = await onboardingFirstTask(f.input);
