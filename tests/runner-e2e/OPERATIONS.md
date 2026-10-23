@@ -221,7 +221,10 @@ and the existing journal checkpoint.
 
 The ledger retains bound evidence before model dispatch. Unexpected or missing
 Braintrust route confirmation, failover, a returned model mismatch, or observed
-usage above a declared limit disqualifies that request's bound. In-flight
+usage above a declared limit disqualifies that request's bound. Provider usage
+normalization retains a separate input/output lower bound even when missing or
+contradictory cache counters prevent pricing. Malformed reported counts also
+disqualify a bound. In-flight
 requests, conflicts, pending charges above their bound, and campaign overruns
 still block completion. Gateway cancellation before route confirmation remains
 unqualified even if it retained an admission reservation. Later receipts remain

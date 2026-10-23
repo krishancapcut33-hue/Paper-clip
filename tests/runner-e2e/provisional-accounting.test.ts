@@ -121,3 +121,11 @@ it("rejects malformed or mismatched evidence before creating a reservation", asy
     expect(ledger.snapshot().requests).toHaveLength(0);
   } finally { await ledger.close(); }
 });
+
+it("does not accept null as reviewed operating-bound evidence", async () => {
+  const { ledger, limits } = await fixture(true);
+  await ledger.close();
+  limits.overhead!.components[0]!.provisionalBound = null as never;
+  const directory = await mkdtemp(path.join(tmpdir(), "provisional-malformed-")); directories.push(directory);
+  await expect(openEvalCostLedger(path.join(directory, "ledger.jsonl"), limits)).rejects.toThrow("Invalid reviewed cost bound evidence");
+});

@@ -197,10 +197,10 @@ export async function forwardEvalRequest(input: {
       delete tokens.reasoning;
       receipt.errorCode ??= "invalid_usage";
     }
-    const observedInput = [tokens.input, tokens.cachedRead, tokens.cachedWrite].reduce<number>((sum, value) => sum + (value ?? 0), 0);
-    if (bound && (receipt.errorCode === "invalid_usage" || observed.model !== undefined && observed.model !== route.price.model
+    const observedInput = observed.tokenBounds?.input ?? 0;
+    if (bound && (observed.tokenBounds?.valid === false || receipt.errorCode === "invalid_usage" || observed.model !== undefined && observed.model !== route.price.model
         || !Number.isSafeInteger(observedInput) || observedInput > route.maximumInputTokens
-        || (tokens.output ?? 0) > route.maximumOutputTokens
+        || (observed.tokenBounds?.output ?? 0) > route.maximumOutputTokens
         || route.mode === "braintrust" && (!response || receipt.endpoint !== route.endpointName
           || receipt.cache === "HIT" || receipt.failoverFrom || receipt.failoverTo))) await ledger.invalidateBound(requestId);
     await input.persist(receipt);

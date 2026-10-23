@@ -393,3 +393,11 @@ it("refuses a changed model limit or rate with a stale reviewed bound before dis
   expect(transport).not.toHaveBeenCalled();
   expect(f.ledger.snapshot().requests).toHaveLength(0);
 });
+
+it("disqualifies excessive reported input even when missing cache details prevent pricing", async () => {
+  const f = await fixture();
+  await forwardEvalRequest({ ...f, route: { ...route, provisionalBound }, transport: async () => Response.json({
+    object: "response", status: "completed", model: "fixture", usage: { input_tokens: 1001, output_tokens: 1 },
+  }, { headers: { "x-bt-used-endpoint": route.endpointName! } }) });
+  expect((await readEvalCostLedger(f.file)).state.snapshot()).toMatchObject({ boundedUnresolvedRequests: 0, unknownRequests: 1, heldUsd: "0.003000000" });
+});

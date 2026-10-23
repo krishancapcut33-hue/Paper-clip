@@ -18,7 +18,7 @@ const object = (value: unknown, allowed: string[]) => {
 const reference = (value: unknown) => typeof value === "string" && /^[A-Za-z0-9][A-Za-z0-9_.:/-]{0,511}$/.test(value);
 
 export function operatingReservationBound(allowance: EvalOperatingOverhead, component: EvalOperatingOverhead["components"][number]) {
-  if (!component.provisionalBound) return undefined;
+  if (component.provisionalBound === undefined) return undefined;
   return reservationBound("operating_allowance", component.provisionalBound, {
     reference: allowance.reference, runner: allowance.runner, verifiedAt: allowance.verifiedAt, expiresAt: allowance.expiresAt,
     component: { component: component.component, maxUsd: component.maxUsd, reference: component.reference },
