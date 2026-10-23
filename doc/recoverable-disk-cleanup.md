@@ -154,7 +154,8 @@ or corrupt restore point also fails closed.
 
 When a restore point has expired, through retention or on a nested checkout, reopening
 starts fresh instead: the worktree is recreated on its branch (the branch tip if the
-repository still has it, otherwise a new branch from the base ref), the saved recipe is
+repository still has it, otherwise a new branch from the base ref), the project's nested
+repositories are cloned fresh before the provision command runs, the saved recipe is
 dropped, and a system comment on the issue warns that unpushed and uncommitted work from
 before the cleanup is no longer available. The same warning is returned with the reopen
 result and recorded on the `execution_workspace.reopened` activity.

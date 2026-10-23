@@ -4004,6 +4004,22 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           delete rebuildMetadata.gitCacheRestoration;
           delete rebuildMetadata.gitCacheExpiration;
         }
+        const freshCheckouts = freshStart && Boolean(row.projectId) && (recipe?.contents?.checkouts.length ?? 0) > 0;
+        const prepareFreshProjectRepositories = async (targetCwd: string) => {
+          const { prepareProjectRepositoryWorkspaces } = await import("./heartbeat/workspaces.js");
+          const repositoryRows = await tx.select().from(projectWorkspaces).where(and(
+            eq(projectWorkspaces.companyId, row.companyId), eq(projectWorkspaces.projectId, row.projectId!),
+          )).orderBy(asc(projectWorkspaces.createdAt), asc(projectWorkspaces.id));
+          await prepareProjectRepositoryWorkspaces({ cwd: targetCwd, anchorRepoUrl: row.repoUrl, workspaces: repositoryRows,
+            resolveGitAuth: gitAuth,
+            prepareLocalSource: async sourceCwd => {
+              const sourceIdentity = await fs.realpath(sourceCwd);
+              return async () => {
+                if (await fs.realpath(sourceCwd) !== sourceIdentity) throw forbidden("Execution workspace copy identity changed during reopen");
+                await assertTaskWorkspaceExecutionAccess(tx, input.authorizationActor, issue.companyId, { issueId: issue.id, workspaceId: row.id });
+              };
+            } });
+        };
         const recorder = workspaceOperationService(db).createRecorder({
           companyId: row.companyId,
           executionWorkspaceId: row.id,
@@ -4077,7 +4093,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             },
             skipHostProvision: trust.kind === "low_trust_review" || copyOnlyProvisioning,
             beforeSourceCopy: verifyCopyIdentity,
-            afterSourceCopy: verifyCopyIdentity,
+            afterSourceCopy: freshCheckouts ? async (sourceCwd: string, targetCwd: string) => {
+              await verifyCopyIdentity?.(sourceCwd, targetCwd);
+              await prepareFreshProjectRepositories(targetCwd);
+            } : verifyCopyIdentity,
             base: {
               baseCwd: resolvedBaseCwd ?? row.cwd ?? "",
               source: "task_session",

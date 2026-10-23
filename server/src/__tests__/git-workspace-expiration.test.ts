@@ -240,8 +240,11 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
       await markGitRestorePointExpired(db, row!);
       const recipe = (await f.row()).metadata?.gitCacheRestoration as Record<string, any>;
       expect(recipe.contents.checkouts[0].restorePoint.expiredAt).toEqual(expect.any(String));
+      await fs.rm(f.nested.cwd, { recursive: true, force: true });
       expect(await f.reopen()).toMatchObject({ ok: true, reopened: true, warning: GIT_RESTORE_POINT_EXPIRED_WARNING });
       expect(await exists(f.cwd)).toBe(true);
+      expect(git(f.nested.cwd, "rev-parse", "HEAD")).toBe(f.nestedA);
+      expect(await exists(path.join(f.nested.cwd, "draft.md"))).toBe(false);
       expect((await f.row()).metadata?.gitCacheRestoration).toBeUndefined();
       vi.unstubAllEnvs();
     });
