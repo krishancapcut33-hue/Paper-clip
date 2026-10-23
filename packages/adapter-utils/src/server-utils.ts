@@ -4853,6 +4853,7 @@ export async function runChildProcess(
               processes: [],
               groupTerminated: false,
               groupKilled: false,
+              preservedSameGroup: 0,
             });
             return terminalReaper;
           }
@@ -5015,10 +5016,20 @@ export async function runChildProcess(
 
         child.on("exit", (exitCode: number | null, exitSignal: NodeJS.Signals | null) => {
           maybeArmTerminalResultCleanup();
-          // "close" waits for every stdio pipe. A detached descendant that
-          // inherited the pipes can hold it open forever, so start the marker
-          // scan here. The close handler awaits the same promise.
-          void startTerminalReaper(exitCode, exitSignal).catch(() => undefined);
+          // "close" waits for every stdio pipe. A descendant that inherited the
+          // pipes can hold it open forever, so start the marker scan here. The
+          // close handler awaits the same promise.
+          void startTerminalReaper(exitCode, exitSignal)
+            .then((reaped) => {
+              // A preserved same-group descendant can inherit the stdio pipes
+              // and hold "close" open forever. Close our read ends only when
+              // the reaper actually saw such a descendant, so a run with no
+              // marker descendant keeps the normal close semantics.
+              if (reaped.preservedSameGroup === 0) return;
+              child.stdout?.destroy();
+              child.stderr?.destroy();
+            })
+            .catch(() => undefined);
         });
 
         child.on(

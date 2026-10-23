@@ -66,6 +66,11 @@ export interface RunOrphanReapResult {
   groupTerminated: boolean;
   /** True when the process-group fallback sent SIGKILL. */
   groupKilled: boolean;
+  /**
+   * Marker-bearing descendants in the run's group that were left alive because
+   * the caller asked to preserve same-group processes on a clean exit.
+   */
+  preservedSameGroup: number;
 }
 
 export interface RunOrphanReapAlert {
@@ -194,6 +199,7 @@ function unsupportedResult(reason: string): RunOrphanReapResult {
     processes: [],
     groupTerminated: false,
     groupKilled: false,
+    preservedSameGroup: 0,
   };
 }
 
@@ -361,19 +367,21 @@ async function scanRunOrphanProcesses(
   supported: boolean;
   reason: string | null;
   byRun: Map<string, RunOrphanProcessInfo[]>;
+  preservedByRun: Map<string, number>;
 }> {
   const empty = new Map<string, RunOrphanProcessInfo[]>();
+  const emptyPreserved = new Map<string, number>();
   if (resolvePlatform(input) !== "linux") {
-    return { supported: false, reason: "the run orphan reaper requires Linux /proc", byRun: empty };
+    return { supported: false, reason: "the run orphan reaper requires Linux /proc", byRun: empty, preservedByRun: emptyPreserved };
   }
   const uid = resolveUid(input);
   if (uid === null) {
-    return { supported: false, reason: "the current uid is unavailable", byRun: empty };
+    return { supported: false, reason: "the current uid is unavailable", byRun: empty, preservedByRun: emptyPreserved };
   }
   if (uid === 0) {
     // Never signal from a root process: a root-owned marker scan could reach
     // processes outside the run's own uid, and the run itself is unprivileged.
-    return { supported: false, reason: "refusing to reap run orphans as root", byRun: empty };
+    return { supported: false, reason: "refusing to reap run orphans as root", byRun: empty, preservedByRun: emptyPreserved };
   }
 
   const byToken = new Map<string, RunMarkerSelector>();
@@ -387,7 +395,7 @@ async function scanRunOrphanProcesses(
     }
   }
   if (byToken.size === 0 && byRunOnly.size === 0) {
-    return { supported: true, reason: null, byRun: empty };
+    return { supported: true, reason: null, byRun: empty, preservedByRun: emptyPreserved };
   }
 
   const procRoot = resolveProcRoot(input);
@@ -405,10 +413,12 @@ async function scanRunOrphanProcesses(
       supported: false,
       reason: `/proc could not be listed: ${error instanceof Error ? error.message : String(error)}`,
       byRun: empty,
+      preservedByRun: emptyPreserved,
     };
   }
 
   const byRun = new Map<string, RunOrphanProcessInfo[]>();
+  const preservedByRun = new Map<string, number>();
   let matched = 0;
   for (const pid of pids) {
     if (matched >= totalCap) break;
@@ -444,6 +454,8 @@ async function scanRunOrphanProcesses(
       selector.processGroupId !== undefined &&
       stat.pgrp === selector.processGroupId
     ) {
+      const preserved = preservedByRun.get(selector.runId) ?? 0;
+      if (preserved < maxProcessesPerRun) preservedByRun.set(selector.runId, preserved + 1);
       continue;
     }
 
@@ -459,7 +471,7 @@ async function scanRunOrphanProcesses(
     byRun.set(selector.runId, runProcesses);
     matched += 1;
   }
-  return { supported: true, reason: null, byRun };
+  return { supported: true, reason: null, byRun, preservedByRun };
 }
 
 /**
@@ -474,6 +486,7 @@ export async function listRunOrphanProcesses(
   supported: boolean;
   reason: string | null;
   processes: RunOrphanProcessInfo[];
+  preservedSameGroup: number;
 }> {
   const scan = await scanRunOrphanProcesses({
     ...input,
@@ -489,6 +502,7 @@ export async function listRunOrphanProcesses(
     supported: scan.supported,
     reason: scan.reason,
     processes: scan.byRun.get(input.runId) ?? [],
+    preservedSameGroup: scan.preservedByRun.get(input.runId) ?? 0,
   };
 }
 
@@ -579,6 +593,7 @@ export async function reapRunOrphans(
 
   const first = await listRunOrphanProcesses(input);
   if (!first.supported) return unsupportedResult(first.reason ?? "unsupported");
+  let preservedSameGroup = first.preservedSameGroup;
 
   const discovered = new Map<number, RunOrphanProcessInfo>();
   const record = (processes: RunOrphanProcessInfo[]) => {
@@ -632,6 +647,7 @@ export async function reapRunOrphans(
   }
 
   const second = await listRunOrphanProcesses(input);
+  if (second.supported) preservedSameGroup = Math.max(preservedSameGroup, second.preservedSameGroup);
   const live = second.supported ? second.processes : [];
   const secondAdded = record(live);
   if (secondAdded.length > 0) {
@@ -668,6 +684,7 @@ export async function reapRunOrphans(
     processes: [...discovered.values()],
     groupTerminated,
     groupKilled,
+    preservedSameGroup,
   };
 }
 

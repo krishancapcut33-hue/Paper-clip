@@ -330,6 +330,50 @@ describe.skipIf(!linuxNonRoot)("runChildProcess terminal reaping", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "resolves a clean exit when a preserved descendant inherited the stdio pipes",
+    async () => {
+      const runId = randomUUID();
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-inherited-pipes-"));
+      const pidFile = path.join(dir, "pid");
+      let descendantPid = 0;
+      try {
+        const result = await runChildProcess(
+          runId,
+          process.execPath,
+          [
+            "-e",
+            [
+              "const fs = require('node:fs');",
+              "const { spawn } = require('node:child_process');",
+              "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: false, stdio: 'inherit', env: process.env });",
+              "child.unref();",
+              `fs.writeFileSync(${JSON.stringify(pidFile)}, String(child.pid));`,
+            ].join(" "),
+          ],
+          {
+            cwd: process.cwd(),
+            env: { PAPERCLIP_RUN_ID: runId },
+            timeoutSec: 5,
+            graceSec: 1,
+            onLog: async () => {},
+          },
+        );
+
+        // Without closing the inherited pipes, this promise would not settle
+        // until the descendant exits or the timeout fires.
+        expect(result.exitCode).toBe(0);
+        expect(result.timedOut).toBe(false);
+        descendantPid = Number.parseInt(await fs.readFile(pidFile, "utf8"), 10);
+        expect(Number.isInteger(descendantPid) && descendantPid > 0).toBe(true);
+        expect(isPidAlive(descendantPid)).toBe(true);
+      } finally {
+        await forceKill(descendantPid);
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "leaves a same-group marker descendant to platform settlement on a clean exit",
     async () => {
       const runId = randomUUID();
