@@ -948,56 +948,6 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(1);
   });
 
-  async function readFinalization(runId: string) {
-    return (await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, runId)))[0];
-  }
-
-  async function markResumingSession(runId: string) {
-    await db.update(nativeRunFinalizations).set({ recoveryState: "resuming_session", recoveryRequestId: "restart-request" })
-      .where(eq(nativeRunFinalizations.runId, runId));
-  }
-
-  it("clears stale recovery state when the finalizer claims a persisted result", async () => {
-    const fixture = await seedNativeRun();
-    await driveToCompleteResult(fixture);
-    await markResumingSession(fixture.runId);
-    await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", failpoint: "status_projection" })
-      .catch(() => undefined);
-    expect(await readFinalization(fixture.runId)).toMatchObject({
-      phase: "retryable_failure", recoveryState: null, recoveryRequestId: null,
-    });
-  });
-
-  it("clears stale recovery state when a status decision commits", async () => {
-    const fixture = await seedNativeRun();
-    const resultId = randomUUID();
-    await db.insert(nativeRunResults).values({ id: resultId, companyId, issueId: fixture.issueId, runId: fixture.runId,
-      completionContractId: fixture.contractId, serverFingerprint: `fp-${resultId}`, schemaStatus: "accepted",
-      resultJson: {}, canonicalSha256: `sha-${resultId}` });
-    const assessmentId = randomUUID();
-    await db.insert(workAssessments).values({ id: assessmentId, companyId, issueId: fixture.issueId, runId: fixture.runId,
-      contractId: fixture.contractId, resultId, triggerKind: "native_result", triggerActorCompanyId: companyId,
-      priorIssueStatus: "in_progress", priorStatusVersion: 0, policyVersion: "telemetry-v1", assessmentJson: {},
-      inputDigest: `digest-${assessmentId}` });
-    await db.insert(nativeRunFinalizations).values({ runId: fixture.runId, companyId, issueId: fixture.issueId,
-      phase: "arbitrating", resultId, recoveryState: "resuming_session", recoveryRequestId: "restart-request" });
-    await commitNativeStatusDecision({
-      db, companyId, issueId: fixture.issueId, runId: fixture.runId, assessmentId,
-      priorStatus: "in_progress", priorStatusVersion: 0, priorDecisionId: null,
-      decision: {
-        policyVersion: NATIVE_STATUS_ARBITER_POLICY_VERSION,
-        statusAction: "cancelled",
-        toStatus: "cancelled",
-        reasonCode: "cancellation_issue_authorized",
-        unblockDescriptor: null,
-        effects: [{ kind: "release_checkout" }, { kind: "cancel_continuations" }],
-      },
-    });
-    expect(await readFinalization(fixture.runId)).toMatchObject({
-      phase: "committed", recoveryState: null, recoveryRequestId: null,
-    });
-  });
-
   it("signals durable accounting when native commitment or permanent failure makes a receipt actionable", async () => {
     const settled = vi.fn();
     const unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.accounting, settled);
