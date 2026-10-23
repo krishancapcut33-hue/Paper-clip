@@ -12,7 +12,7 @@
  */
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { Db } from "@paperclipai/db";
-import { mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
+import { existsSync, mkdtempSync, mkdirSync, writeFileSync, rmSync, realpathSync } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { distributionBundleDigest, distributionPluginActivationGuard, readDistributionPluginCatalog } from "../services/distribution-plugin-catalog.js";
@@ -152,6 +152,42 @@ describe("pluginLoader.loadAll error retry", () => {
 
     expect(result).toEqual({ total: 0, succeeded: 0, failed: 0, results: [] });
   });
+
+  it("rebuilds a bundled plugin whose dist disappeared before activation", async () => {
+    const { REPO_ROOT } = await import("../services/plugin-loader.js");
+    const packageRoot = path.join(REPO_ROOT, "packages", "plugins", `plugin-boot-rebuild-${Date.now()}`);
+    const manifest = {
+      id: "example.boot-rebuild", apiVersion: 1, version: "1.0.0",
+      displayName: "Boot rebuild", description: "Test", author: "Test",
+      categories: [], capabilities: [], entrypoints: { worker: "dist/worker.js" },
+    };
+    mkdirSync(packageRoot, { recursive: true });
+    writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
+      name: "@paperclipai/plugin-boot-rebuild", version: "1.0.0", type: "module",
+      scripts: { build: "node build.mjs" },
+      paperclipPlugin: { manifest: "./dist/manifest.js", worker: "./dist/worker.js" },
+    }));
+    writeFileSync(path.join(packageRoot, "build.mjs"), [
+      'import { mkdirSync, writeFileSync } from "node:fs";',
+      'mkdirSync("dist", { recursive: true });',
+      `writeFileSync("dist/manifest.js", ${JSON.stringify(`export default ${JSON.stringify(manifest)};`)});`,
+      'writeFileSync("dist/worker.js", "export {};\\n");',
+    ].join("\n"));
+    const plugin = createPluginRecord({
+      id: "boot-rebuild", pluginKey: manifest.id,
+      packageName: "@paperclipai/plugin-boot-rebuild", packagePath: packageRoot,
+      status: "ready", manifestJson: manifest,
+    });
+    mockRegistry.getById.mockResolvedValue(plugin);
+    try {
+      const loader = createLoader(createRuntimeServices());
+      await loader.loadSingle(plugin.id);
+      expect(existsSync(path.join(packageRoot, "dist", "manifest.js"))).toBe(true);
+      expect(existsSync(path.join(packageRoot, "dist", "worker.js"))).toBe(true);
+    } finally {
+      rmSync(packageRoot, { recursive: true, force: true });
+    }
+  }, 60_000);
 
   it("rejects distribution capability escalation before saving a runtime refresh or starting a worker", async () => {
     const root = realpathSync(mkdtempSync(path.join(os.tmpdir(), "distribution-refresh-")));
