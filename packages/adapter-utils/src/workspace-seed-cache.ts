@@ -20,7 +20,8 @@ async function digest(file: string): Promise<string> {
   return hash.digest("hex");
 }
 
-export async function readWorkspaceSeedGeneration(root: string, generation: string): Promise<WorkspaceDurableSeedPaths | null> {
+export async function readWorkspaceSeedGeneration(root: string, generation: string,
+  options: { companyDirectory?: string } = {}): Promise<WorkspaceDurableSeedPaths | null> {
   const directory = path.join(root, generation);
   try {
     for (const item of [root, directory]) { const stat = await fs.lstat(item); if (!stat.isDirectory() || stat.isSymbolicLink()) return null; }
@@ -37,8 +38,14 @@ export async function readWorkspaceSeedGeneration(root: string, generation: stri
       const stat = await fs.lstat(file);
       if (!stat.isFile() || stat.isSymbolicLink() || await digest(file) !== expected) return null;
     }
-    const usedAt = new Date();
-    await fs.utimes(receipt, usedAt, usedAt).catch(() => undefined);
+    const used = await withDirectoryMergeLock(path.resolve(options.companyDirectory ?? root), async () => {
+      const current = await fs.lstat(receipt).catch(() => null);
+      if (!current || current.ino !== receiptStat.ino || current.dev !== receiptStat.dev) return false;
+      const usedAt = new Date();
+      await fs.utimes(receipt, usedAt, usedAt);
+      return true;
+    });
+    if (!used) return null;
     return { workspaceArchivePath, workspaceArchiveSha256: metadata.workspaceSha256,
       gitArchivePath, gitArchiveSha256: metadata.gitSha256 };
   } catch { return null; }
@@ -66,7 +73,7 @@ async function removeCacheEntry(directory: string) {
   await fs.rm(retired, { recursive: true, force: true });
 }
 
-async function cachedGenerations(company: string, root: string, cleanup: boolean): Promise<CachedGeneration[]> {
+async function cachedGenerations(company: string, root: string, cleanup: boolean): Promise<{ workspaces: string[]; generations: CachedGeneration[] }> {
   const workspaces = root === company ? [company]
     : (await fs.readdir(company)).map(name => path.join(company, name));
   const generations: CachedGeneration[] = [];
@@ -90,13 +97,13 @@ async function cachedGenerations(company: string, root: string, cleanup: boolean
       generations.push({ directory, workspace, bytes, usedAt, evictable });
     }
   }
-  return generations;
+  return { workspaces, generations };
 }
 
 async function evictSeedGenerations(company: string, root: string, input: {
   generation: string; incomingBytes: number; limits: SeedCacheLimits; eviction: SeedCacheEviction; now: number; apply: boolean;
 }): Promise<boolean> {
-  const generations = await cachedGenerations(company, root, input.apply);
+  const { workspaces: workspaceDirectories, generations } = await cachedGenerations(company, root, input.apply);
   const remove = async (directory: string) => { if (input.apply) await removeCacheEntry(directory); };
   const target = path.join(root, input.generation);
   const live: CachedGeneration[] = [];
@@ -125,7 +132,7 @@ async function evictSeedGenerations(company: string, root: string, input: {
     live.splice(live.indexOf(victim), 1);
   }
   if (input.apply && root !== company) {
-    for (const workspace of new Set(generations.map(entry => entry.workspace))) {
+    for (const workspace of workspaceDirectories) {
       if (workspace !== root && !live.some(entry => entry.workspace === workspace)) await fs.rmdir(workspace).catch(() => undefined);
     }
   }
@@ -208,6 +215,9 @@ export async function publishWorkspaceSeedGeneration(
     if (initialCapacity === false && !await evictSeedGenerations(company, root, { ...plan, apply: false })) return false;
     if (options.verify && !await options.verify()) return false;
     return await withDirectoryMergeLock(company, async () => {
+      const lockedCompany = await fs.lstat(company);
+      if (!lockedCompany.isDirectory() || lockedCompany.isSymbolicLink()
+        || lockedCompany.dev !== companyStat.dev || lockedCompany.ino !== companyStat.ino) return false;
       await evictSeedGenerations(company, root, { ...plan, apply: true });
       const currentCapacity = await capacity();
       if (currentCapacity !== "available") return currentCapacity === "existing";
