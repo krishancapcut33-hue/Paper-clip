@@ -43,8 +43,28 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 type Workspace = typeof executionWorkspaces.$inferSelect;
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Expiration = GitCacheExpiration;
+export type GitExpirationFailure = { name: string; code: string | null; at: string | null; stderr: string | null };
+
 export type GitExpirationResult = { candidate: boolean; expired: boolean; reclaimedBytes: number;
-  candidateBytes: number; baseExpired: boolean; skipReason: string | null; restorePoint: boolean };
+  candidateBytes: number; baseExpired: boolean; skipReason: string | null; restorePoint: boolean; failure?: GitExpirationFailure };
+
+function redactGitOutput(text: string) {
+  return text.replace(/:\/\/[^@\s/]+@/g, "://<redacted>@")
+    .replace(/(authorization|token|password|secret)(\s*[:=]\s*)[^\n]*/gi, "$1$2<redacted>");
+}
+
+export function describeGitExpirationFailure(error: unknown): GitExpirationFailure {
+  if (!(error instanceof Error)) return { name: typeof error, code: null, at: null, stderr: null };
+  const details = error as Error & { code?: unknown; stderr?: unknown };
+  const frame = error.stack?.split("\n").slice(1).map(line => line.trim()).find(line => line.startsWith("at ")) ?? null;
+  const stderr = typeof details.stderr === "string" ? details.stderr : Buffer.isBuffer(details.stderr) ? details.stderr.toString("utf8") : "";
+  return {
+    name: error.name,
+    code: details.code === undefined || details.code === null ? null : String(details.code),
+    at: frame ? frame.slice(0, 300) : null,
+    stderr: stderr.trim() ? redactGitOutput(stderr.trim()).slice(0, 500) : null,
+  };
+}
 
 export type GitRestorePointExpirationOptions = {
   storage: StorageService;
@@ -426,6 +446,7 @@ export async function expireReconstructableGitWorkspace(db: Db, snapshot: Worksp
     for (const ledgerId of pendingRestorePoints) await abandonGitRestorePoint(db, ledgerId).catch(() => undefined);
     options.signal?.throwIfAborted();
     result.skipReason = error instanceof RestorePointSkip ? error.reason : skipReason(error);
+    if (result.skipReason === "inspection_failed") result.failure = describeGitExpirationFailure(error);
     return result;
   }
 }
