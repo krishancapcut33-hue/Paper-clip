@@ -1388,34 +1388,13 @@ function createSandboxEnvironmentDriver(
     return true;
   };
 
-  // Load the durable spool into the in-process buffer exactly once. The first
-  // flush after a restart runs this load, so the records a previous process
-  // could not land re-enter the flush path. A later flush sees the resolved
-  // promise and never reloads, so a record this process already buffered never
-  // doubles. The load runs before the flush splices the buffer, so a
-  // restart-recovered record flushes on the same tick.
-  let spoolLoadPromise: Promise<void> | null = null;
-  const ensureSpoolLoaded = (): Promise<void> => {
-    if (!spoolLoadPromise) {
-      spoolLoadPromise = (async () => {
-        const persisted = await orphanCleanupSpool.load();
-        for (const record of persisted) {
-          enqueueDeferredOrphanCleanup(record);
-        }
-      })();
-    }
-    return spoolLoadPromise;
-  };
-
-  const flushDeferredOrphanCleanups = async (): Promise<{ recovered: number; pending: number }> => {
-    // Load the durable spool into the buffer first, so a restart-recovered record
-    // flushes on this tick. The load runs once, then a resolved promise returns.
-    await ensureSpoolLoaded();
+  const flushDeferredOrphanCleanupsOnce = async (): Promise<{ recovered: number; pending: number }> => {
+    // Other task paths can append after startup; each pass must ingest their records.
+    for (const record of await orphanCleanupSpool.load()) enqueueDeferredOrphanCleanup(record);
     if (deferredOrphanCleanups.length === 0) {
       return { recovered: 0, pending: 0 };
     }
-    // Take the whole batch synchronously before the first await, so a second
-    // concurrent flush sees an empty buffer and never re-inserts the same record.
+    // New acquisitions can enqueue while this batch is being persisted.
     const batch = deferredOrphanCleanups.splice(0, deferredOrphanCleanups.length);
     let recovered = 0;
     for (const record of batch) {
@@ -1462,6 +1441,11 @@ function createSandboxEnvironmentDriver(
       }
     }
     return { recovered, pending: deferredOrphanCleanups.length };
+  };
+  let orphanFlush: Promise<{ recovered: number; pending: number }> | null = null;
+  const flushDeferredOrphanCleanups = (): Promise<{ recovered: number; pending: number }> => {
+    orphanFlush ??= flushDeferredOrphanCleanupsOnce().finally(() => { orphanFlush = null; });
+    return orphanFlush;
   };
 
   // Build the safe diagnostic fields for an orphan record. The provider
