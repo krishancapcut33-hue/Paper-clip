@@ -80,6 +80,9 @@ is bounded to 1 MiB; raw SDK errors and stdout/stderr never enter server logs.
 `server/src/services/connectors/onepassword/onepassword.test.ts` exercises strict
 arguments, patch preservation, forged endpoint rejection, and actual worker
 deadline termination with unrelated event-loop progress.
+`server/src/services/connectors/onepassword/worker.test.ts` executes the worker
+entry point with synthetic SDK results to verify nested token redaction and
+oversized-result rejection before posting a result to the gateway.
 `server/src/__tests__/onepassword-connection.test.ts` exercises encrypted
 credential ownership, personal declarations, reads and writes through a running
 agent's gateway session, classification, refresh, reconnect, action policy,
