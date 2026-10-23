@@ -101,7 +101,8 @@ Gaps: Native/Legacy and live provider takeover need separate proof; preserve exi
 A review-path repair uses the existing canonical disposition-repair prompt
 section. The server fixes its instruction and one-attempt bound. This adds no
 API, monitor authority, credential access, or bypass for task and approval gates.
-An ordinary wake cannot inherit that section from stale review-repair metadata.
+A pending repair retains that section across connection-pool retries. Ordinary
+wakes without the typed repair marker ignore stale raw instruction text.
 [Prompt controls](../../server/src/services/heartbeat/run-preparation.review-path.test.ts)
 cover fresh/resumed delivery and existing disposition repairs; hosted execution
 and durable monitor acceptance remain separate verification.

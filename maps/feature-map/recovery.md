@@ -101,9 +101,10 @@ The current task and run state should reconcile with the server.
 
 For a consumed review path, verify that the one automatic repair run receives
 the instruction to save a one-shot monitor before it promises another check.
-Repeat with a fresh and resumed session. Confirm a persisted schedule before
-claiming that follow-up will occur; the repair instruction does not schedule one
-by itself. The [wake regression](../../server/src/services/heartbeat/run-preparation.review-path.test.ts)
+Repeat with a fresh session, a resumed session, and a connection-pool retry that
+retains the typed repair marker but changes the wake reason. Confirm a persisted
+schedule before claiming that follow-up will occur; the repair instruction does
+not schedule one by itself. The [wake regression](../../server/src/services/heartbeat/run-preparation.review-path.test.ts)
 exercises the real wake builder, serializer and prompt selector with an empty
 credential-history database boundary. It does not prove a hosted agent scheduled
 or completed the follow-up. Exhaustion still blocks for a board decision.

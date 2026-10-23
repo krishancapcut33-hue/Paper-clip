@@ -14,7 +14,7 @@ function readNonEmptyString(value: unknown) {
 }
 
 export function buildReviewPathRecoveryDisposition(context: Record<string, unknown>) {
-  if (readNonEmptyString(context.wakeReason) !== ISSUE_REVIEW_PATH_LOST_WAKE_REASON) return null;
+  if (!isIssueReviewPathRecoveryRun(context)) return null;
   return {
     attempt: 1,
     maxAttempts: 1,

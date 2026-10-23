@@ -841,9 +841,11 @@ The review-path repair instruction travels in the canonical wake payload's
 `dispositionRepair` block. Both fresh and resumed agent prompts include its
 one-attempt bound and the requirement to save a monitor before promising a later
 check. The server supplies this instruction; arbitrary context text cannot
-replace it or increase the repair budget. An ordinary wake does not inherit a
-stale repair instruction. This is a normal-model repair, not a status-only
-recovery that forbids useful executor work.
+replace it or increase the repair budget. The typed repair marker preserves this
+instruction across connection-pool waits and other retries that change the wake
+reason. An ordinary wake without that marker ignores stale raw instruction text.
+This is a normal-model repair, not a status-only recovery that forbids useful
+executor work.
 
 When an execution-policy review stage has a pending agent participant, the participant's run is part of the review path only while it is live or queued. If that participant run reaches a terminal state while `executionState.status` remains `pending`, no decision has been recorded. After a successful run with no review decision, Paperclip should queue one bounded normal-model recovery wake for the same participant when the agent is invokable and no other review path exists. A failed participant instead follows the provider-continuity rules below: local conversational adapters can start a bounded continuation turn, while native sessions use validated resume/replacement. Other adapters retain their action-recovery gates. The original assignee stays unchanged. If that recovery run also finishes while the stage remains pending, or the participant cannot be invoked, Paperclip must move the source issue to an explicit blocked/recovery path instead of leaving `in_review` to drift silently.
 
