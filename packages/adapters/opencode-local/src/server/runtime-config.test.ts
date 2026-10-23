@@ -1,13 +1,14 @@
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
-import { afterEach, describe, expect, it } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import { OPENROUTER_ATTRIBUTION_HEADERS } from "@paperclipai/adapter-utils/openrouter-attribution";
 import { prepareOpenCodeRuntimeConfig } from "./runtime-config.js";
 
 const cleanupPaths = new Set<string>();
 
 afterEach(async () => {
+  vi.unstubAllEnvs();
   await Promise.all(
     [...cleanupPaths].map(async (filepath) => {
       await fs.rm(filepath, { recursive: true, force: true });
@@ -197,6 +198,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("defaults small_model to the configured model when no override is set", async () => {
+    vi.stubEnv("PAPERCLIP_OPENCODE_SMALL_MODEL", "");
     const configHome = await makeConfigHome({
       permission: { read: "allow" },
       small_model: "ollama/qwen3:8b",
@@ -220,6 +222,7 @@ describe("prepareOpenCodeRuntimeConfig", () => {
   });
 
   it("keeps the global small_model when there is no override or configured model", async () => {
+    vi.stubEnv("PAPERCLIP_OPENCODE_SMALL_MODEL", "");
     const configHome = await makeConfigHome({
       permission: { read: "allow" },
       small_model: "ollama/qwen3:8b",
