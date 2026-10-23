@@ -728,18 +728,18 @@ describe("public repository paid workflow security", () => {
     );
   });
 
-  it("resolves each trusted reporting lockfile before frozen install and AWS credentials", async () => {
+  it("keeps reporting jobs on the committed lockfile without registry re-resolution", async () => {
     const workflow = await readFile(
       path.join(repositoryRoot, ".github/workflows/runner-full-stack-e2e.yml"), "utf8",
     );
     for (const jobName of ["report", "publish_history"]) {
       const job = workflow.split(`\n  ${jobName}:`)[1]!.split(/\n  [a-z_]+:/u)[0]!;
-      const resolve = job.indexOf("pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile");
-      const install = job.indexOf("pnpm install --frozen-lockfile");
+      const install = job.indexOf("pnpm install --frozen-lockfile --ignore-scripts");
       expect(job).toContain("ref: ${{ github.sha }}");
       expect(job).not.toContain("resolved-target-lockfile");
-      expect(resolve, jobName).toBeGreaterThan(-1);
-      expect(install, jobName).toBeGreaterThan(resolve);
+      expect(job, jobName).not.toContain("--no-frozen-lockfile");
+      expect(job, jobName).not.toContain("--lockfile-only");
+      expect(install, jobName).toBeGreaterThan(job.indexOf("ref: ${{ github.sha }}"));
       const credentials = job.indexOf("aws-actions/configure-aws-credentials@");
       if (credentials >= 0) expect(install).toBeLessThan(credentials);
     }
@@ -912,7 +912,7 @@ describe("public repository paid workflow security", () => {
     for (const name of ["report", "publish_history"]) {
       const job = jobs.find(value => value.startsWith(`  ${name}:`))!;
       const installs = [...job.matchAll(/\bpnpm install[^\n]*/gu)];
-      expect(installs).toHaveLength(2);
+      expect(installs).toHaveLength(1);
       for (const install of installs) expect(install[0]).toContain('--store-dir "${{ runner.temp }}/eval-');
     }
   });

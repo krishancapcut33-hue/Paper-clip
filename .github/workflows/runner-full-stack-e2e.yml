@@ -1272,10 +1272,8 @@ jobs:
         with:
           version: 9.15.4
 
-      # Resolve from this trusted checkout only. Never use the target branch's
-      # lockfile, shared dependency cache, or install scripts with OIDC access.
-      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile --store-dir "${{ runner.temp }}/eval-report-store"
-      - run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-report-store"
+      - name: Install pinned reporting dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-report-store"
 
       - name: Resolve workflow job attempts
         env:
@@ -1501,8 +1499,8 @@ jobs:
 
       # Use a job-local store and disable lifecycle scripts throughout install.
       # OIDC is available to every step, even before the AWS credential exchange.
-      - run: pnpm install --lockfile-only --ignore-scripts --no-frozen-lockfile --store-dir "${{ runner.temp }}/eval-publisher-store"
-      - run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-publisher-store"
+      - name: Install pinned publication dependencies
+        run: pnpm install --frozen-lockfile --ignore-scripts --store-dir "${{ runner.temp }}/eval-publisher-store"
 
       - name: Install publisher-only Chromium
         run: pnpm exec playwright install --with-deps --only-shell chromium

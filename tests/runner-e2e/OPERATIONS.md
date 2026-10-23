@@ -108,6 +108,13 @@ To publish a selected campaign, review its retained normalized report and invoke
 existing trusted history publisher explicitly with the public destination; no agent
 rerun is needed. Recurring execution never invokes that publication path.
 
+Reporting and publication install only the committed lockfile from the trusted
+workflow revision, with lifecycle scripts disabled and a job-local package store.
+They never resolve new dependency versions while the job has OIDC access. If
+that revision has an outdated lockfile, reporting fails before accessing the
+archive. Use the normal master lockfile maintenance process; do not bypass the
+frozen install in the credential-bearing job.
+
 ### Public history retention
 
 Public history remains an explicit manual operation. The optional bounded publisher
