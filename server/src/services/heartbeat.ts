@@ -3153,7 +3153,7 @@ export function heartbeatService(
           message: "run started",
         });
 
-        const { currentUserRedactionOptions, appendIdentityRedactedLog, onLog, onAdapterMeta, onAdapterEvent } =
+        const { currentUserRedactionOptions, onLog, onAdapterMeta, onAdapterEvent } =
           await timePreparation("run_output", () => runOutput.begin(currentRun));
         if (runScopedMentionedSkillKeys.length > 0) {
           await onLog(
@@ -3384,7 +3384,7 @@ export function heartbeatService(
           },
           output: {
             identityRedactor,
-            appendIdentityRedactedLog,
+            flushRunLogRedactors: runOutput.flushRunLogRedactors,
             onLog,
             onAdapterEvent,
             onAdapterMeta,
@@ -3484,6 +3484,11 @@ export function heartbeatService(
           issueContext, onLog,
         }));
       } catch (err) {
+        try {
+          await runOutput.flushRunLogRedactors();
+        } catch {
+          logger.warn({ runId: run.id }, "failed to flush sanitized run-log tail after error");
+        }
         await persistUsageCaptureFailure?.();
         if (err instanceof NativeControllerDetachedForRestartError) {
           nativeSessionResumeScheduled = true;
@@ -4016,7 +4021,7 @@ export function heartbeatService(
           store: run.logStore as "local_file",
           logRef: run.logRef,
         },
-        opts,
+        { ...opts, redactPostgresCredentials: true },
       );
 
       return {
@@ -4024,8 +4029,7 @@ export function heartbeatService(
         store: run.logStore,
         logRef: run.logRef,
         ...result,
-        // Run-log chunks are already redacted before they are appended to the store.
-        // Rewriting the full chunk again on every poll creates avoidable string copies.
+        // The store rechecks historical ranges with stable byte offsets.
         content: result.content,
       };
     },

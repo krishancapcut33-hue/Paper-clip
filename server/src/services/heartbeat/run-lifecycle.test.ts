@@ -11,6 +11,7 @@ import { createHeartbeatRunState } from "./run-state.js";
 import { heartbeatService } from "../heartbeat.js";
 import { createHeartbeatRunPreparation } from "./run-preparation.js";
 import { createHeartbeatLifecycle, persistHeartbeatRunProcessMetadata, type HeartbeatLifecycleDependencies } from "./run-lifecycle.js";
+import { createRunSecretRedactionRegistry } from "../run-secret-redaction.js";
 import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../delivery-work-notifications.js";
 
 vi.mock("../live-events.js", () => ({ publishLiveEvent: vi.fn() }));
@@ -297,6 +298,30 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
     },
   );
 
+  it("persists a sanitized next action derived from successful run output", async () => {
+    const credential = "synthetic-next-action-password";
+    const registeredSecret = "q2a-opaque-canary-value";
+    const { run } = await fixture({
+      status: "succeeded",
+      stdoutExcerpt: `Next action: inspect postgresql://worker:${credential}@db.example.test/app and ${registeredSecret}`,
+    });
+    const previousMasterKey = process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+    process.env.PAPERCLIP_SECRETS_MASTER_KEY = randomBytes(32).toString("base64");
+    try {
+      await createRunSecretRedactionRegistry(db).register(run.companyId, run.id, registeredSecret);
+      const result = await createHeartbeatLifecycle(db, callbacks(db)).classifyAndPersistRunLiveness(run);
+      expect(result?.nextAction).toBe("inspect postgresql://***REDACTED***@db.example.test/app and ***REDACTED***");
+      const [persisted] = await db.select({ nextAction: heartbeatRuns.nextAction })
+        .from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id));
+      expect(persisted.nextAction).toBe(result?.nextAction);
+      expect(persisted.nextAction).not.toContain(credential);
+      expect(persisted.nextAction).not.toContain(registeredSecret);
+    } finally {
+      if (previousMasterKey === undefined) delete process.env.PAPERCLIP_SECRETS_MASTER_KEY;
+      else process.env.PAPERCLIP_SECRETS_MASTER_KEY = previousMasterKey;
+    }
+  });
+
   it("reads current redaction settings for each event and persists the published sanitized payload", async () => {
     const { run } = await fixture();
     const deps = callbacks(db);
@@ -317,6 +342,23 @@ describe.skipIf(!support.supported)("heartbeat lifecycle database wiring", () =>
       expect(text).not.toContain("bob");
       expect(text).not.toContain("test-credential-material");
       expect(published.find(event => event.payload?.seq === row.seq)?.payload).toMatchObject({ message: row.message, payload: row.payload });
+    }
+  });
+
+  it("never persists or publishes a DB URL credential in an event payload key", async () => {
+    const { run } = await fixture();
+    const key = "postgres://worker:synthetic-password@db.example.test/app?sslpassword=synthetic-query-secret";
+    await createHeartbeatLifecycle(db, callbacks(db)).appendRunEvent(run, {
+      eventType: "adapter",
+      payload: { normal: "ready", [key]: "diagnostic" },
+    });
+
+    const [row] = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, run.id));
+    const live = vi.mocked(publishLiveEvent).mock.calls.map(([event]) => event).find(event => event.type === "heartbeat.run.event");
+    for (const payload of [row?.payload, live?.payload?.payload]) {
+      expect(payload).toMatchObject({ normal: "ready" });
+      expect(payload).toHaveProperty("postgres://***REDACTED***@db.example.test/app?***REDACTED***", "diagnostic");
+      expect(JSON.stringify(payload)).not.toMatch(/worker|synthetic-password|synthetic-query-secret/);
     }
   });
 });

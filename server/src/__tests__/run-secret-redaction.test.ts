@@ -65,6 +65,26 @@ describe("registered run secret redaction", () => {
       .toBe(`${REDACTED_EVENT_VALUE} ${REDACTED_EVENT_VALUE}`);
   });
 
+  it("replaces registered secrets in event payload keys before URI masking", () => {
+    const registered = "postgres://worker:synthetic-password@db.example.test/app?sslpassword=synthetic-query-secret";
+    const event = { id: "event-1", payload: { normal: "ready", [registered]: "diagnostic" } };
+
+    expect(redactRegisteredSecretValues(event, [registered])).toEqual({
+      id: "event-1",
+      payload: { normal: "ready", [REDACTED_EVENT_VALUE]: "diagnostic" },
+    });
+  });
+
+  it("preserves fixed response fields when a registered value matches their names", () => {
+    const run = { id: "run-1", status: "succeeded", events: [{ id: "event-1", payload: { id: "diagnostic" } }] };
+
+    expect(redactRegisteredSecretValues(run, ["id"])).toEqual({
+      id: "run-1",
+      status: "succeeded",
+      events: [{ id: "event-1", payload: { [REDACTED_EVENT_VALUE]: "diagnostic" } }],
+    });
+  });
+
   it("preserves Date instances instead of collapsing them to empty objects (PAP-16607)", () => {
     const createdAt = new Date("2026-08-06T12:00:00.000Z");
     const result = redactRegisteredSecretValues({
