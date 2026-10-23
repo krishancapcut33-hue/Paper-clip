@@ -11817,6 +11817,8 @@ describe("runnerd provider runtime wiring", () => {
     "live runner",
     "live group",
     "missing process identity",
+    "released process identity",
+    "released identity without stop receipt",
     "active prior run",
     "wrong checkpoint",
     "active goal",
@@ -11937,13 +11939,34 @@ describe("runnerd provider runtime wiring", () => {
                           }
                         : profile,
                     processPid:
-                      scenario === "missing process identity" ? null : 90000001,
-                    processGroupId: 90000001,
+                      scenario === "missing process identity" ||
+                      scenario.startsWith("released")
+                        ? null
+                        : 90000001,
+                    processGroupId: scenario.startsWith("released")
+                      ? null
+                      : 90000001,
                     contextSnapshot: {
                       paperclipEnvironment: { driver: "local" },
                     },
                   },
                 ]),
+              orderBy: () => ({
+                limit: () =>
+                  Promise.resolve(
+                    scenario === "released process identity"
+                      ? [
+                          {
+                            eventType: "native.local_process_stopped",
+                            payload: {
+                              processPid: 90000001,
+                              processGroupId: 90000001,
+                            },
+                          },
+                        ]
+                      : [],
+                  ),
+              }),
             }),
           }),
         }),
@@ -12043,6 +12066,7 @@ describe("runnerd provider runtime wiring", () => {
         state.createTransport.mockClear();
         const shouldRecover = [
           "quarantined",
+          "released process identity",
           "large control plane",
           "empty retry shell",
           "unsuspended current",

@@ -8,7 +8,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { recordNativeLocalProcessStop } from "../native-local-process-stop.js";
+import { recordNativeLocalProcessStop, releaseSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import {
   legacyControllerBootId,
@@ -1920,6 +1920,8 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     void cleanup.finally(() => activeRunExecutionPromises.delete(cleanup));
   }
 
+  let settledProcessCursor: string | null = null;
+
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     await preserveCancelledNativeWorkspaces(db);
     const staleThresholdMs = opts?.staleThresholdMs ?? 0;
@@ -2050,6 +2052,15 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       });
       if (cleared) claimableNativeRunIds.add(cleared.id);
     }
+
+    const settledProcesses = await releaseSettledNativeRunProcesses(db, {
+      after: settledProcessCursor,
+      skip: runId => activeRunExecutions.has(runId) || runningProcesses.has(runId),
+    }).catch((error) => {
+      logger.warn({ err: error }, "failed to release settled native process identities");
+      return null;
+    });
+    if (settledProcesses) settledProcessCursor = settledProcesses.next;
 
     // An explicit result-less retryable failure resumes on the original run.
     // The database lease is claimed before dispatch so concurrent service

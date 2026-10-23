@@ -1,11 +1,15 @@
-import { and, desc, eq, inArray, isNull } from "drizzle-orm";
-import { environmentLeases, heartbeatRunEvents, heartbeatRuns, type Db } from "@paperclipai/db";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, or } from "drizzle-orm";
+import { environmentLeases, heartbeatRunEvents, heartbeatRuns, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import { appendHeartbeatRunEvent } from "./heartbeat-run-events.js";
+import { nativeSessionProviderEvidence } from "./native-runtime/native-session-resume.js";
+import { hasRemoteTerminationReceipt } from "./remote-execution-termination.js";
 import os from "node:os";
 
 export const PROCESS_START_REQUESTED = "native.process_start_requested";
 export const PROCESS_IDENTITY_RECORDED = "native.process_identity_recorded";
 const LOCAL_PROCESS_STOPPED = "native.local_process_stopped";
+const SETTLED_RUN_STATUSES = ["failed", "cancelled", "timed_out", "interrupted"];
+const SETTLED_COORDINATOR_PHASES = ["committed", "terminal_failure"];
 
 function absent(pid: number): boolean {
   try {
@@ -119,4 +123,56 @@ export async function readNativeLocalProcessStop(db: Db, companyId: string, runI
   if (event?.eventType !== LOCAL_PROCESS_STOPPED || typeof pid !== "number" ||
       !Number.isSafeInteger(pid) || pid <= 1 || group !== pid || !absent(pid) || !absent(-pid)) return null;
   return { processPid: pid, processGroupId: pid };
+}
+
+export async function releaseSettledNativeRunProcess(db: Db, runId: string) {
+  return db.transaction(async transaction => {
+    const tx = transaction as unknown as Db;
+    const [run] = await tx.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).for("update").limit(1);
+    if (!run || run.runtimeMode !== "native" || !SETTLED_RUN_STATUSES.includes(run.status) || !run.finishedAt ||
+        (run.processPid === null && run.processGroupId === null && run.processStartedAt === null)) return false;
+    const [coordinator] = await tx.select({ phase: nativeRunFinalizations.phase }).from(nativeRunFinalizations)
+      .where(eq(nativeRunFinalizations.runId, run.id)).limit(1);
+    if (coordinator && !SETTLED_COORDINATOR_PHASES.includes(coordinator.phase)) return false;
+    if (run.runnerProfileJson?.sessionCheckpoint == null &&
+        !(await nativeSessionProviderEvidence(tx, [run.id])).has(run.id)) return false;
+    const leases = await tx.select().from(environmentLeases).where(and(
+      eq(environmentLeases.companyId, run.companyId), eq(environmentLeases.heartbeatRunId, run.id),
+    ));
+    if (leases.some(lease => lease.provider !== "local")) {
+      if (!leases.every(hasRemoteTerminationReceipt)) return false;
+    } else {
+      if (leases.some(lease => !lease.releasedAt || lease.status === "pending_cleanup" || lease.cleanupStatus === "failed")) return false;
+      const [identity] = await tx.select({ payload: heartbeatRunEvents.payload }).from(heartbeatRunEvents).where(and(
+        eq(heartbeatRunEvents.companyId, run.companyId), eq(heartbeatRunEvents.runId, run.id),
+        eq(heartbeatRunEvents.eventType, PROCESS_IDENTITY_RECORDED), isNull(heartbeatRunEvents.sourceEventId),
+      )).orderBy(desc(heartbeatRunEvents.seq)).limit(1);
+      if (identity?.payload?.targetKind !== "local" || identity.payload.hostname !== os.hostname() ||
+          identity.payload.processPid !== run.processPid || identity.payload.processGroupId !== run.processGroupId) return false;
+      if (!(await recordNativeLocalProcessStop(tx, run))) return false;
+    }
+    await tx.update(heartbeatRuns).set({
+      processPid: null, processGroupId: null, processStartedAt: null, updatedAt: new Date(),
+    }).where(eq(heartbeatRuns.id, run.id));
+    return true;
+  });
+}
+
+export async function releaseSettledNativeRunProcesses(db: Db, input: {
+  after?: string | null; limit?: number; skip?: (runId: string) => boolean;
+} = {}) {
+  const limit = input.limit ?? 50;
+  const candidates = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(and(
+    eq(heartbeatRuns.runtimeMode, "native"),
+    inArray(heartbeatRuns.status, SETTLED_RUN_STATUSES),
+    isNotNull(heartbeatRuns.finishedAt),
+    or(isNotNull(heartbeatRuns.processPid), isNotNull(heartbeatRuns.processGroupId), isNotNull(heartbeatRuns.processStartedAt)),
+    ...(input.after ? [gt(heartbeatRuns.id, input.after)] : []),
+  )).orderBy(asc(heartbeatRuns.id)).limit(limit);
+  let released = 0;
+  for (const candidate of candidates) {
+    if (input.skip?.(candidate.id)) continue;
+    if (await releaseSettledNativeRunProcess(db, candidate.id)) released += 1;
+  }
+  return { released, next: candidates.length < limit ? null : candidates.at(-1)!.id };
 }
