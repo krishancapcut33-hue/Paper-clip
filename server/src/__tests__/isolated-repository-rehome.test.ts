@@ -343,6 +343,31 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(await fs.readFile(path.join(f.target, ".env"), "utf8")).toBe("LOCAL_SETTING=1\n");
   });
 
+  it("refuses to check out from a shared clone whose config runs filters", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    const marker = path.join(path.dirname(f.remote), "smudge-ran");
+    git(f.sharedPath, "config", "filter.evil.smudge", `sh -c 'touch ${marker}; cat'`);
+    git(f.sharedPath, "config", "filter.evil.required", "true");
+    const before = await currentRestorePointSnapshot(f.cwd);
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ rehomed: false, reason: "unsupported_base_git_config" });
+    expect(await exists(marker)).toBe(false);
+    await expectUntouched(f, before);
+  });
+
+  it("keeps a clone with more refs than the cleanup budget", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    await rehomeIsolatedRepositoryWorkspace(db, await f.row(), { hooks: { afterDatabaseUpdate: async () => { throw new Error("simulated crash"); } } });
+    const head = git(f.clone, "rev-parse", "HEAD");
+    execFileSync("git", ["-C", f.clone, "update-ref", "--stdin"], { input: Array.from({ length: 5_001 }, (_, index) => `create refs/tags/extra-${index} ${head}`).join("\n") + "\n" });
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ cloneRemoved: false, cloneKeptReason: "clone_history_budget" });
+    expect(await exists(f.clone)).toBe(true);
+    expect((await f.row()).metadata?.isolatedRepositoryRehome).toMatchObject({ cleanedAt: null });
+    execFileSync("git", ["-C", f.clone, "update-ref", "--stdin"], { input: Array.from({ length: 5_001 }, (_, index) => `delete refs/tags/extra-${index}`).join("\n") + "\n" });
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ outcome: "cleaned", cloneRemoved: true });
+  });
+
   it("keeps the clone while another workspace still references it", async () => {
     const f = await fixture();
     await makeWork(f.cwd);

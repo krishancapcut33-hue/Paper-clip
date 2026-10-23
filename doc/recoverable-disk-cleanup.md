@@ -335,6 +335,9 @@ restore can interleave. A workspace is moved only when:
 - its worktree sits at the standard `.paperclip/worktrees/<branch>` location, and the
   branch is absent from the shared clone, points to an ancestor of the worktree's HEAD
   there, and is not checked out in another of its worktrees;
+- the shared clone's local config sets no filter drivers, includes, attribute files, worktree
+  config or command settings (`core.fsmonitor`, `core.hooksPath`, `core.sshCommand` and
+  similar), and it has no `info/attributes`, because the move checks out files there;
 - its Git state is transferable: no stash or replacement refs, no in-progress merge,
   rebase or other worktree-specific state, no hidden index flags, no shallow history, and
   nothing a restore point refuses (submodules, filtered paths, special files, untracked
@@ -377,7 +380,8 @@ deleted when nothing else needs it: no other workspace or project workspace refe
 service runs in it, it has no other worktree, its own checkout has no changes or files
 other than regenerable ones, it has only branch, tag and remote-tracking refs, and every
 commit its local refs and reflogs hold is either on a remote-tracking ref or present in the
-shared clone. A clone another workspace still uses is kept (`cloneRetained`); that
+shared clone. A clone with more than 5,000 refs, reflog entries or such commits is kept
+(`clone_history_budget`). A clone another workspace still uses is kept (`cloneRetained`); that
 workspace's own move removes it later. If the server stops after the update, a later sweep
 finishes the removal and sets `cleanedAt`, also after the workspace has been archived.
 

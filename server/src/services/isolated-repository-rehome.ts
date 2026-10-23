@@ -30,6 +30,8 @@ const OPEN_STATUSES = ["active", "idle", "in_review"];
 const CLOSED_STATUSES = ["archived", "cleanup_failed"];
 const ADMIN_ENTRIES = new Set(["HEAD", "ORIG_HEAD", "FETCH_HEAD", "index", "commondir", "gitdir", "logs", "refs", "COMMIT_EDITMSG"]);
 const MAX_BOUNDARY_COMMITS = 64;
+const CLONE_HISTORY_BUDGET = 5_000;
+const UNSAFE_BASE_CONFIG = /^(filter\.|include\.|includeif\.|core\.(fsmonitor|hookspath|attributesfile|worktree|gitproxy|sshcommand|askpass|editor|pager|alternaterefscommand)$|extensions\.worktreeconfig$)/;
 export const ISOLATED_REPOSITORY_REHOME_KEY = "isolatedRepositoryRehome";
 export const ISOLATED_REPOSITORY_REHOME_PENDING_KEY = "isolatedRepositoryRehomePending";
 
@@ -150,6 +152,12 @@ async function targetWorktree(db: Db | Tx, workspace: Workspace, base: string, b
   const checkedOut = (await git(base, ["worktree", "list", "--porcelain"], { signal })).split("\n").includes(`branch refs/heads/${branch}`);
   if (checkedOut) throw new Error("base_branch_checked_out");
   return target;
+}
+
+async function assertSafeBaseConfig(base: string, signal?: AbortSignal) {
+  const keys = (await git(base, ["config", "--local", "--name-only", "--list"], { signal })).split("\n").map(key => key.trim().toLowerCase()).filter(Boolean);
+  if (keys.some(key => UNSAFE_BASE_CONFIG.test(key))) throw new Error("unsupported_base_git_config");
+  if (await exists(path.join(base, ".git", "info", "attributes"))) throw new Error("unsupported_base_git_config");
 }
 
 async function inspectWorktree(workspace: Workspace, clone: string, signal?: AbortSignal) {
@@ -357,6 +365,7 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
         await writePending(db, row.id, null);
       }
       const target = await targetWorktree(tx, row, base, branch, options.signal);
+      await assertSafeBaseConfig(base, options.signal);
       const previousTip = (await git(base, ["rev-parse", "--verify", "-q", `${branchRef}^{commit}`], { signal: options.signal }).catch(() => "")).trim() || null;
       if (previousTip && !await git(old.cwd, ["merge-base", "--is-ancestor", previousTip, "HEAD"], { signal: options.signal }).then(() => true, () => false)) {
         throw new Error("base_branch_diverged");
@@ -394,6 +403,7 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
           }
         }
         await fs.mkdir(path.dirname(target), { recursive: true });
+        await assertSafeBaseConfig(base, options.signal);
         await options.hooks?.beforeWorktreeAdd?.({ from: old.cwd, to: target });
         if (await exists(target)) throw new Error("target_worktree_exists");
         await git(base, ["worktree", "add", target, branch], { signal: options.signal, timeout: 15 * 60_000 });
@@ -496,13 +506,17 @@ async function cloneDisposable(clone: string, base: string, signal?: AbortSignal
   const untracked = nul(await git(clone, ["ls-files", "-z", "--others", "--exclude-standard"], { signal }));
   const ignored = nul(await git(clone, ["ls-files", "-z", "--others", "--ignored", "--exclude-standard", "--directory"], { signal }));
   if (untracked.length || ignored.some(file => !file.split("/").slice(0, -1).some(part => REGENERABLE_WORKSPACE_DIR_NAMES.has(part)))) return "clone_checkout_has_files";
-  const refs = (await git(clone, ["for-each-ref", "--format=%(objectname) %(refname)"], { signal })).split("\n").filter(Boolean);
+  const refs = (await git(clone, ["for-each-ref", `--count=${CLONE_HISTORY_BUDGET + 1}`, "--format=%(objectname) %(refname)"], { signal })).split("\n").filter(Boolean);
+  if (refs.length > CLONE_HISTORY_BUDGET) return "clone_history_budget";
   if (refs.some(ref => !/^[0-9a-f]{40} refs\/(heads|tags|remotes)\//.test(ref))) return "unsupported_clone_refs";
+  const reflog = (await git(clone, ["reflog", "show", "--all", "-n", String(CLONE_HISTORY_BUDGET + 1), "--format=%H %gD"], { signal }).catch(() => ""))
+    .split("\n").map(line => line.trim().split(" ")).filter(([sha]) => SHA.test(sha ?? ""));
+  if (reflog.length > CLONE_HISTORY_BUDGET) return "clone_history_budget";
   const local = [...refs.filter(ref => !/ refs\/remotes\//.test(ref)).map(ref => ref.split(" ")[0]!),
-    ...(await git(clone, ["reflog", "show", "--all", "--format=%H %gD"], { signal }).catch(() => "")).split("\n")
-      .map(line => line.trim().split(" ")).filter(([sha, selector]) => SHA.test(sha ?? "") && !(selector ?? "").startsWith("refs/remotes/")).map(([sha]) => sha!)];
+    ...reflog.filter(([, selector]) => !(selector ?? "").startsWith("refs/remotes/")).map(([sha]) => sha!)];
   if (local.length === 0) return null;
-  const unique = shas(await git(clone, ["rev-list", "--stdin"], { signal, input: [...new Set(local)].join("\n") + "\n--not\n--remotes\n" }));
+  const unique = shas(await git(clone, ["rev-list", `--max-count=${CLONE_HISTORY_BUDGET + 1}`, "--stdin"], { signal, input: [...new Set(local)].join("\n") + "\n--not\n--remotes\n" }));
+  if (unique.length > CLONE_HISTORY_BUDGET) return "clone_history_budget";
   const present = await presentCommits(base, unique, signal);
   return unique.some(sha => !present.has(sha)) ? "unique_clone_history" : null;
 }
