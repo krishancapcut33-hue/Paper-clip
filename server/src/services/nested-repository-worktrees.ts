@@ -197,6 +197,9 @@ export async function addNestedRepositoryWorktree(input: {
       const auth = input.resolveGitAuth ? await input.resolveGitAuth(input.repoUrl) : null;
       await git(input.base, ["fetch", "--quiet", "--no-write-fetch-head", "origin"], { configArgs: auth?.configArgs,
         env: auth?.env, timeout: NESTED_WORKTREE_GIT_TIMEOUT_MS });
+      if (!input.repoRef?.trim()) {
+        await git(input.base, ["remote", "set-head", "origin", "--auto"], { configArgs: auth?.configArgs, env: auth?.env }).catch(() => undefined);
+      }
       const { branch, start } = await resolveStartPoint(input.base, input.repoRef);
       if (!start) throw new Error("Repository has no commit to check out");
       const cwd = await canonicalPath(input.cwd);
@@ -229,6 +232,7 @@ export async function restoreNestedRepositoryWorktree(input: {
   cwd: string;
   commit: string;
   branchName: string | null;
+  repoRef: string | null;
   preserved?: readonly string[];
   afterAdd: (cwd: string) => Promise<void>;
 }) {
@@ -249,10 +253,9 @@ export async function restoreNestedRepositoryWorktree(input: {
       if (input.branchName) {
         await git(cwd, existing ? ["checkout", "--quiet", input.branchName] : ["checkout", "--quiet", "-b", input.branchName]);
         const rest = input.branchName.slice(prefix.length);
-        for (const upstream of [rest, rest.replace(/^r\d+\//, "")]) {
-          if (!(await git(cwd, ["rev-parse", "--verify", "-q", `refs/remotes/origin/${upstream}^{commit}`]).catch(() => "")).trim()) continue;
+        const { branch: upstream } = await resolveStartPoint(input.base, input.repoRef).catch(() => ({ branch: null }));
+        if (upstream && (rest === upstream || rest.replace(/^r\d+\//, "") === upstream)) {
           await git(cwd, ["branch", "--quiet", `--set-upstream-to=origin/${upstream}`, input.branchName]);
-          break;
         }
       }
       await input.afterAdd(cwd);

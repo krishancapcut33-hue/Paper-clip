@@ -257,7 +257,8 @@ export async function restoreGitWorkspaceContents(input: Identity & { cwd: strin
           }
           await ensureSavedGitCommit(base, checkout.source.repoUrl, checkout.commit, input.resolveGitAuth);
           if (checkout.branchName) await gitCacheCommand(base, ["check-ref-format", "--branch", checkout.branchName]);
-          await restoreNestedRepositoryWorktree({ base, cwd: destination, commit: checkout.commit, branchName: checkout.branchName, preserved,
+          await restoreNestedRepositoryWorktree({ base, cwd: destination, commit: checkout.commit, branchName: checkout.branchName,
+            repoRef: checkout.source.repoRef, preserved,
             afterAdd: async cwd => {
               if (checkout.restorePoint) await applyGitRestorePointToWorktree({ storage: input.storage ?? getStorageService(), workspace,
                 ref: checkout.restorePoint, repositoryCwd: cwd, worktreePath: cwd });

@@ -20,7 +20,7 @@ import { realizeExecutionWorkspace, ensurePersistedExecutionWorkspaceAvailable }
 import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { prepareProjectRepositoryWorkspaces, mergeExecutionWorkspaceMetadataForPersistence } from "../services/heartbeat/workspaces.js";
 import { describeGitExpirationFailure, expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
-import { withNestedRepositoryBaseLock } from "../services/nested-repository-worktrees.js";
+import { nestedWorktreeBranchPrefix, restoreNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "../services/nested-repository-worktrees.js";
 import * as activityLog from "../services/activity-log.js";
 import { readGitCacheRestoration } from "../services/git-workspace-restoration.js";
 import { assertReproducibleManagedCheckout, gitCacheExpirationLockLocations, readGitCacheExpiration } from "../services/git-workspace-restoration.js";
@@ -1083,6 +1083,32 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
       expect(git(back!.cwd, "symbolic-ref", "HEAD")).toBe(original.replace(/\/main$/, "/r2/main"));
       expect(git(back!.cwd, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
       expect(git(path.join(detachedRoot, retained!), "symbolic-ref", "HEAD")).toBe(original);
+    });
+
+    it("follows a changed remote default branch for new tasks", async () => {
+      const f = await nestedFixture(false, true);
+      git(f.nestedSource, "push", "-q", f.nestedRemote, "main:trunk");
+      git(f.nestedRemote, "symbolic-ref", "HEAD", "refs/heads/trunk");
+      const task = path.join(path.dirname(f.source), "default-branch-task");
+      await fs.mkdir(task);
+      const [prepared] = await prepareProjectRepositoryWorkspaces({ ...f.preparation, cwd: task,
+        workspaces: [{ ...f.preparation.workspaces[0]!, repoRef: null }] });
+      expect(git(prepared!.cwd, "symbolic-ref", "--short", "HEAD")).toMatch(/^paperclip\/[a-f0-9]{12}\/trunk$/);
+      expect(git(prepared!.cwd, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/trunk");
+    });
+
+    it("restores a renumbered owned branch tracking its source branch, not a same-named remote branch", async () => {
+      const f = await nestedFixture(false, true);
+      git(f.nestedSource, "commit", "-q", "--allow-empty", "-m", "Unrelated r2 branch");
+      git(f.nestedSource, "push", "-q", f.nestedRemote, "HEAD:r2/main");
+      const base = await real(f.sharedBase);
+      git(base, "fetch", "-q", "origin");
+      const target = path.join(path.dirname(f.source), "renumbered-task", "checkout");
+      await fs.mkdir(path.dirname(target));
+      const branchName = `${await nestedWorktreeBranchPrefix(target)}r2/main`;
+      await restoreNestedRepositoryWorktree({ base, cwd: target, commit: f.nestedA, branchName, repoRef: null, afterAdd: async () => undefined });
+      expect(git(target, "symbolic-ref", "--short", "HEAD")).toBe(branchName);
+      expect(git(target, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
     });
 
     it("keeps adopting a legacy standalone nested clone", async () => {

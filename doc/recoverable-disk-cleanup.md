@@ -226,8 +226,10 @@ configured local folder are still seeded as independent copies, and existing sta
 nested clones keep working unchanged; they are not migrated.
 
 Each nested worktree checks out its own branch, `paperclip/<id>/<branch>`, where `<id>`
-derives from the worktree path and `<branch>` is the default branch or the configured
-branch ref, tracking `origin/<branch>`. A tag or commit ref is checked out detached, as
+derives from the worktree path and `<branch>` is the remote's current default branch
+(refreshed before each new worktree) or the configured branch ref, tracking
+`origin/<branch>`. Reopening derives the upstream from the saved source ref, not from the
+branch name. A tag or commit ref is checked out detached, as
 before. Branch names therefore never collide between tasks. When a checkout kept under
 `.paperclip-runtime/detached-repositories/` still holds that branch, the new worktree
 uses `paperclip/<id>/r<n>/<branch>` instead, so the retained work is never reset. `git pull` works as before;
