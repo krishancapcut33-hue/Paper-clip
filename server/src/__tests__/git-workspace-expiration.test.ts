@@ -1111,6 +1111,42 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
       expect(git(target, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
     });
 
+    it("starts a fully qualified branch ref at the current remote commit and rejects a deleted branch", async () => {
+      const f = await nestedFixture(false, true);
+      await fs.writeFile(path.join(f.nestedSource, "nested.txt"), "nested B\n");
+      git(f.nestedSource, "commit", "-qam", "Nested B");
+      git(f.nestedSource, "push", "-q", f.nestedRemote, "main", "main:short-lived");
+      const nestedB = git(f.nestedSource, "rev-parse", "HEAD");
+      const prepare = async (name: string, repoRef: string) => {
+        const task = path.join(path.dirname(f.source), name);
+        await fs.mkdir(task);
+        return prepareProjectRepositoryWorkspaces({ ...f.preparation, cwd: task, workspaces: [{ ...f.preparation.workspaces[0]!, repoRef }] });
+      };
+      const [qualified] = await prepare("qualified-task", "refs/heads/main");
+      expect(git(qualified!.cwd, "rev-parse", "HEAD")).toBe(nestedB);
+      expect(git(qualified!.cwd, "rev-parse", "--abbrev-ref", "@{upstream}")).toBe("origin/main");
+      await prepare("short-lived-task", "short-lived");
+      git(f.nestedRemote, "branch", "-D", "short-lived");
+      await expect(prepare("deleted-branch-task", "short-lived")).rejects.toThrow('Repository ref "short-lived" was not found');
+    });
+
+    it("never runs hooks planted in the shared clone while preparing or restoring", async () => {
+      const f = await nestedFixture(false, true);
+      const marker = path.join(path.dirname(f.source), "hook-ran");
+      const hooks = path.join(await real(f.sharedBase), ".git", "hooks");
+      for (const hook of ["post-checkout", "reference-transaction"]) {
+        await fs.writeFile(path.join(hooks, hook), `#!/bin/sh\necho ${hook} >> ${JSON.stringify(marker)}\n`, { mode: 0o755 });
+      }
+      const task = path.join(path.dirname(f.source), "hooked-task");
+      await fs.mkdir(task);
+      await prepareProjectRepositoryWorkspaces({ ...f.preparation, cwd: task });
+      const target = path.join(path.dirname(f.source), "hooked-restore", "checkout");
+      await fs.mkdir(path.dirname(target));
+      await restoreNestedRepositoryWorktree({ base: await real(f.sharedBase), cwd: target, commit: f.nestedA,
+        branchName: `${await nestedWorktreeBranchPrefix(target)}main`, repoRef: "main", preserved: [f.nestedA], afterAdd: async () => undefined });
+      expect(await exists(marker)).toBe(false);
+    });
+
     it("keeps adopting a legacy standalone nested clone", async () => {
       const f = await nestedFixture(false);
       const [prepared] = await prepareProjectRepositoryWorkspaces({ ...f.preparation, sharedBase: { companyId: f.companyId, projectId: f.projectId! } });

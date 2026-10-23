@@ -747,7 +747,7 @@ export async function ensureSavedGitCommit(cwd: string, repoUrl: string, commit:
   if (await gitCacheCommand(cwd, ["cat-file", "-e", `${commit}^{commit}`]).then(() => true, () => false)) return;
   try {
     const auth = await resolveGitAuth(repoUrl);
-    await execFile("git", [...auth?.configArgs ?? [], "-C", cwd, "fetch", "--no-tags", "--no-recurse-submodules", "--", repoUrl, commit], {
+    await execFile("git", [...auth?.configArgs ?? [], "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, "fetch", "--no-tags", "--no-recurse-submodules", "--", repoUrl, commit], {
       timeout: 60_000, maxBuffer: 1024 * 1024, env: { ...process.env, ...auth?.env, GIT_TERMINAL_PROMPT: "0" },
     });
     if ((await gitCacheCommand(cwd, ["rev-parse", `${commit}^{commit}`])).trim() !== commit) throw new GitCacheRestorationFailure();

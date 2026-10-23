@@ -234,7 +234,10 @@ before. Branch names therefore never collide between tasks. When a checkout kept
 `.paperclip-runtime/detached-repositories/` still holds that branch, the new worktree
 uses `paperclip/<id>/r<n>/<branch>` instead, so the retained work is never reset. `git pull` works as before;
 pushing needs an explicit destination such as `git push origin HEAD:<branch>`. Adding the
-worktree, fetching and removing registrations are serialized per shared clone.
+worktree, fetching and removing registrations are serialized per shared clone. Each new
+worktree first fetches with `--prune`, so a branch deleted upstream is rejected as a fresh
+clone would reject it. Server-side Git commands on the shared clone run with hooks
+disabled, so hooks an agent plants there never run in the server.
 
 Branches and reflogs of a worktree live partly in the shared clone. Expiration and restore
 points therefore scope their checks to what belongs to the nested worktree: its `HEAD`,

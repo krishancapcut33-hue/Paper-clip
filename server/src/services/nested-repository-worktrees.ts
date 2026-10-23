@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import { constants } from "node:fs";
+import os from "node:os";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -20,7 +21,7 @@ export type LinkedNestedCheckout = { checkout: string; base: string; gitDir: str
 type GitInvocation = { configArgs?: string[]; env?: Record<string, string>; timeout?: number };
 
 async function git(cwd: string, args: string[], options: GitInvocation = {}) {
-  const result = await execFile("git", [...options.configArgs ?? [], "-c", "core.fsmonitor=false", "-C", cwd, ...args], {
+  const result = await execFile("git", [...options.configArgs ?? [], "-c", "core.fsmonitor=false", "-c", `core.hooksPath=${os.devNull}`, "-C", cwd, ...args], {
     timeout: options.timeout ?? 60_000, maxBuffer: 16 * 1024 * 1024,
     env: { ...sanitizeRuntimeServiceBaseEnv(process.env), GIT_TERMINAL_PROMPT: "0", ...options.env },
   });
@@ -166,7 +167,7 @@ async function checkedOutBranches(base: string) {
 
 async function resolveStartPoint(base: string, repoRef: string | null) {
   const commit = async (ref: string) => (await git(base, ["rev-parse", "--verify", "-q", `${ref}^{commit}`]).catch(() => "")).trim();
-  const ref = repoRef?.trim() || null;
+  const ref = repoRef?.trim().replace(/^refs\/heads\//, "") || null;
   if (ref) {
     if (await commit(`refs/remotes/origin/${ref}`)) return { branch: ref, start: `refs/remotes/origin/${ref}` };
     const detached = await commit(ref);
@@ -195,7 +196,7 @@ export async function addNestedRepositoryWorktree(input: {
   try {
     return await withNestedRepositoryBaseLock(input.base, async () => {
       const auth = input.resolveGitAuth ? await input.resolveGitAuth(input.repoUrl) : null;
-      await git(input.base, ["fetch", "--quiet", "--no-write-fetch-head", "origin"], { configArgs: auth?.configArgs,
+      await git(input.base, ["fetch", "--quiet", "--prune", "--no-write-fetch-head", "origin"], { configArgs: auth?.configArgs,
         env: auth?.env, timeout: NESTED_WORKTREE_GIT_TIMEOUT_MS });
       if (!input.repoRef?.trim()) {
         await git(input.base, ["remote", "set-head", "origin", "--auto"], { configArgs: auth?.configArgs, env: auth?.env }).catch(() => undefined);
