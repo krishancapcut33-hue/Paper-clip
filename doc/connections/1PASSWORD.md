@@ -1,7 +1,7 @@
 # 1Password
 
-Connect from **Apps → 1Password**, choose who can use the connection, and paste
-your `OP_SERVICE_ACCOUNT_TOKEN`. Setup links directly to
+Connect from **Connectors → 1Password**, choose who can use the connection, and
+fill **Paste your 1Password Service Account token**. Setup links directly to
 [Create a service account](https://www.1password.dev/service-accounts/get-started#create-a-service-account).
 No desktop sign-in, CLI installation, Connect server, or OAuth application is
 required. Change agent access and action policies on **Permissions** after setup.
@@ -145,7 +145,7 @@ worker lifecycle, and result sanitization under
 catalog registry registers its probe, tools, classification, contract hashes,
 and executor. Shared setup, health, discovery, and gateway code dispatch that
 existing contract; existing providers retain their behavior. No schema or database migration is needed.
-The shared credential-label formatter preserves manifest labels that name an
-environment variable, allowing `OP_SERVICE_ACCOUNT_TOKEN` to appear faithfully
+The shared credential-label formatter preserves explicit "Paste your" prompts
+from the manifest, so setup shows **Paste your 1Password Service Account token**
 without a provider-specific UI branch. Ordinary key labels keep their existing
 presentation.

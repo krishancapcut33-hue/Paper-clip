@@ -434,7 +434,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await render(undefined, false, <ConnectionSetupFlow serviceSlug="1password" />);
     const fields = container.querySelectorAll<HTMLInputElement>('input[type="password"]');
     expect(fields).toHaveLength(1);
-    expect(container.textContent).toContain("OP_SERVICE_ACCOUNT_TOKEN");
+    expect(fields[0]!.getAttribute("aria-label")).toBe("Paste your 1Password Service Account token");
     expect(container.querySelector('a[href="https://www.1password.dev/service-accounts/get-started#create-a-service-account"]')).not.toBeNull();
     expect(buttonByText("Connect")?.disabled).toBe(true);
     await act(async () => setInputValue(fields[0]!, "ops_disposable-fixture"));

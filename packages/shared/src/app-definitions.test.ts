@@ -235,7 +235,7 @@ describe("AppDefinition catalog", () => {
     expect(app.name).toBe("1Password");
     expect(app.methods).toHaveLength(1);
     expect(app.methods[0]).toMatchObject({ key: "service-account", transport: "rest_api", auth: "api_key",
-      credentialFields: [{ key: "authorization", label: "OP_SERVICE_ACCOUNT_TOKEN", type: "password", secret: true, required: true }],
+      credentialFields: [{ key: "authorization", label: "Paste your 1Password Service Account token", type: "password", secret: true, required: true }],
       keyPlacement: { location: "header", name: "Authorization", prefix: "Bearer " }, riskTier: "S4" });
     expect(app.methods[0]!.guidanceMd).toContain("https://www.1password.dev/service-accounts/get-started#create-a-service-account");
     expect(app.methods[0]!.tenantFields ?? []).toHaveLength(0);
@@ -896,7 +896,7 @@ describe("AppDefinition catalog", () => {
       "ticktick",
       "xero",
     ]);
-    expect(APP_STORE_DEFINITIONS).toHaveLength(87);
+    expect(APP_STORE_DEFINITIONS).toHaveLength(88);
     const connectableSlugs = new Set(
       CONNECTABLE_APP_DEFINITIONS.map((entry) => entry.slug),
     );
