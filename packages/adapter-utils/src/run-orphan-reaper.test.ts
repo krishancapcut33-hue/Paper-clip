@@ -330,6 +330,47 @@ describe.skipIf(!linuxNonRoot)("runChildProcess terminal reaping", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "leaves a same-group marker descendant to platform settlement on a clean exit",
+    async () => {
+      const runId = randomUUID();
+      let observed = "";
+      let descendantPid = 0;
+      try {
+        const result = await runChildProcess(
+          runId,
+          process.execPath,
+          [
+            "-e",
+            [
+              "const { spawn } = require('node:child_process');",
+              "const child = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: false, stdio: 'ignore', env: process.env });",
+              "child.unref();",
+              "process.stdout.write('child:' + child.pid);",
+            ].join(" "),
+          ],
+          {
+            cwd: process.cwd(),
+            env: { PAPERCLIP_RUN_ID: runId },
+            timeoutSec: 5,
+            graceSec: 1,
+            onLog: async (stream, chunk) => {
+              if (stream === "stdout") observed += chunk;
+            },
+          },
+        );
+
+        descendantPid = await waitForPidFrom(() => observed);
+        expect(result.exitCode).toBe(0);
+        // The case-handoff source run keeps a same-group writer alive after the
+        // adapter exits. The reaper must not preempt that handoff settlement.
+        expect(isPidAlive(descendantPid)).toBe(true);
+      } finally {
+        await forceKill(descendantPid);
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "reaps the exact setsid grandchild from the P8 contract after a successful run",
     async () => {
       const runId = randomUUID();

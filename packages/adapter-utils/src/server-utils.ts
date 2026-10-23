@@ -4856,6 +4856,11 @@ export async function runChildProcess(
             });
             return terminalReaper;
           }
+          const abnormalExit =
+            timedOut ||
+            terminalCleanupStarted ||
+            exitSignal !== null ||
+            (typeof exitCode === "number" && exitCode !== 0);
           terminalReaper = reapRunOrphansForTerminalRun({
             runId,
             processToken: runProcessToken,
@@ -4865,13 +4870,13 @@ export async function runChildProcess(
             // close, so it does not need a second group signal.
             processGroupHandled: timedOut,
             // A clean exit can intentionally leave background infrastructure in
-            // the group (the sandbox callback bridge does). The group fallback
-            // is only safe for an abnormal stop.
-            allowProcessGroupFallback:
-              timedOut ||
-              terminalCleanupStarted ||
-              exitSignal !== null ||
-              (typeof exitCode === "number" && exitCode !== 0),
+            // the group (the sandbox callback bridge and the case-handoff
+            // writer do). The group fallback is only safe for an abnormal stop.
+            allowProcessGroupFallback: abnormalExit,
+            // On a clean exit, keep same-group descendants for the platform's
+            // own process-tree settlement. Reap only descendants that left the
+            // group with setsid and still carry the run marker.
+            reapSameProcessGroup: abnormalExit,
           });
           return terminalReaper;
         };

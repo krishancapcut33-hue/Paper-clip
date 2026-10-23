@@ -42,6 +42,8 @@ const STAT_SETTLE_MS = 25;
 export interface RunOrphanProcessInfo {
   pid: number;
   ppid: number;
+  /** Process group id. A `setsid` descendant has a different value. */
+  processGroupId: number;
   startTime: string;
   command: string;
 }
@@ -106,6 +108,8 @@ export interface ListRunOrphanProcessesInput extends RunOrphanReaperDependencies
    * later invocation. When this is set, both markers must match.
    */
   processToken?: string | null;
+  processGroupId?: number | null;
+  reapSameProcessGroup?: boolean;
   maxProcesses?: number;
 }
 
@@ -125,6 +129,12 @@ export interface ReapRunOrphansInput extends ListRunOrphanProcessesInput {
    */
   allowProcessGroupFallback?: boolean;
   processGroupId?: number | null;
+  /**
+   * When false, a process that is still in the run's process group is left to
+   * the platform's process-tree settlement. A clean run can intentionally keep
+   * a same-group background writer alive (the case-handoff proof does).
+   */
+  reapSameProcessGroup?: boolean;
   /** Called once per pass that found matching processes. */
   onAlert?: (alert: RunOrphanReapAlert) => void;
   phase?: "terminal" | "sweep";
@@ -202,6 +212,7 @@ async function readPidNames(procRoot: string): Promise<number[]> {
 interface ProcStatFields {
   pid: number;
   ppid: number;
+  pgrp: number;
   state: string;
   startTime: string;
 }
@@ -219,9 +230,11 @@ function parseProcStat(pid: number, raw: string): ProcStatFields | null {
   if (rest.length < 20) return null;
   const ppid = Number.parseInt(rest[1], 10);
   if (!Number.isInteger(ppid) || ppid < 0) return null;
+  const pgrp = Number.parseInt(rest[2], 10);
+  if (!Number.isInteger(pgrp) || pgrp < 0) return null;
   const startTime = rest[19];
   if (!startTime) return null;
-  return { pid, ppid, state: rest[0] ?? "?", startTime };
+  return { pid, ppid, pgrp, state: rest[0] ?? "?", startTime };
 }
 
 async function readProcStat(
@@ -333,6 +346,8 @@ function readProcMarkers(raw: Buffer): ProcMarkers {
 interface RunMarkerSelector {
   runId: string;
   processToken?: string | null;
+  processGroupId?: number | null;
+  reapSameProcessGroup?: boolean;
 }
 
 interface ScanRunOrphanProcessesInput extends RunOrphanReaperDependencies {
@@ -423,12 +438,21 @@ async function scanRunOrphanProcesses(
       byToken.get(`${markers.runId}\u0000${markers.processToken ?? ""}`) ??
       byRunOnly.get(markers.runId);
     if (!selector) continue;
+    if (
+      selector.reapSameProcessGroup === false &&
+      selector.processGroupId !== null &&
+      selector.processGroupId !== undefined &&
+      stat.pgrp === selector.processGroupId
+    ) {
+      continue;
+    }
 
     const runProcesses = byRun.get(selector.runId) ?? [];
     if (runProcesses.length >= maxProcessesPerRun) continue;
     runProcesses.push({
       pid,
       ppid: stat.ppid,
+      processGroupId: stat.pgrp,
       startTime: stat.startTime,
       command: await readCommand(procRoot, pid),
     });
@@ -453,7 +477,12 @@ export async function listRunOrphanProcesses(
 }> {
   const scan = await scanRunOrphanProcesses({
     ...input,
-    selectors: [{ runId: input.runId, processToken: input.processToken ?? null }],
+    selectors: [{
+      runId: input.runId,
+      processToken: input.processToken ?? null,
+      processGroupId: input.processGroupId ?? null,
+      reapSameProcessGroup: input.reapSameProcessGroup !== false,
+    }],
     maxProcessesPerRun: input.maxProcesses,
   });
   return {
@@ -671,6 +700,8 @@ async function processStillMatches(
 interface RecentTerminalRun {
   runId: string;
   processToken: string | null;
+  processGroupId: number | null;
+  reapSameProcessGroup: boolean;
   graceMs: number;
   expiresAt: number;
   /** `${pid}:${startTime}` seen and signaled on an earlier sweep. */
@@ -741,6 +772,8 @@ function stopSweepTimerIfIdle(): void {
 export function registerRecentTerminalRun(input: {
   runId: string;
   processToken?: string | null;
+  processGroupId?: number | null;
+  reapSameProcessGroup?: boolean;
   graceMs?: number;
   windowMs?: number;
   now?: number;
@@ -751,6 +784,8 @@ export function registerRecentTerminalRun(input: {
   recentTerminalRuns.set(input.runId, {
     runId: input.runId,
     processToken: input.processToken ?? null,
+    processGroupId: input.processGroupId ?? null,
+    reapSameProcessGroup: input.reapSameProcessGroup !== false,
     graceMs: Math.max(0, input.graceMs ?? DEFAULT_GRACE_MS),
     expiresAt: now + windowMs,
     signaled: new Map(),
@@ -804,6 +839,8 @@ export async function sweepRecentlyTerminalRuns(
     selectors: entries.map(([runId, entry]) => ({
       runId,
       processToken: entry.processToken,
+      processGroupId: entry.processGroupId,
+      reapSameProcessGroup: entry.reapSameProcessGroup,
     })),
     maxProcessesPerRun: DEFAULT_MAX_PROCESSES,
   });
@@ -866,6 +903,7 @@ export async function reapRunOrphansForTerminalRun(input: {
   graceMs?: number;
   processGroupHandled?: boolean;
   allowProcessGroupFallback?: boolean;
+  reapSameProcessGroup?: boolean;
 }): Promise<RunOrphanReapResult> {
   const graceMs = Math.max(0, input.graceMs ?? DEFAULT_GRACE_MS);
   const result = await reapRunOrphans({
@@ -875,6 +913,7 @@ export async function reapRunOrphansForTerminalRun(input: {
     graceMs,
     processGroupHandled: input.processGroupHandled === true,
     allowProcessGroupFallback: input.allowProcessGroupFallback === true,
+    reapSameProcessGroup: input.reapSameProcessGroup !== false,
     phase: "terminal",
   });
   // A platform that cannot scan has nothing for a later sweep to find, and a
@@ -887,6 +926,8 @@ export async function reapRunOrphansForTerminalRun(input: {
   registerRecentTerminalRun({
     runId: input.runId,
     processToken: input.processToken ?? null,
+    processGroupId: input.processGroupId ?? null,
+    reapSameProcessGroup: input.reapSameProcessGroup !== false,
     graceMs,
   });
   return result;
