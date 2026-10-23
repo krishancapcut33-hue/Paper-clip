@@ -85,6 +85,7 @@ function publicEvidencePath(
 }
 
 export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
+  assertPublicCampaign(campaign);
   const screenshots = new Set<string>();
   for (const result of campaign.results) {
     const files =
@@ -116,6 +117,12 @@ export function publicScreenshotPaths(campaign: RunnerE2ECampaign) {
     }
   }
   return screenshots;
+}
+
+export function assertPublicCampaign(campaign: Pick<RunnerE2ECampaign, "results">) {
+  if (campaign.results.some(result => result.productJourney?.privacy === "private")) {
+    throw new Error("Private Product E2E campaigns cannot enter the public history publisher");
+  }
 }
 
 export function isHistoricalBundlePathAllowed(
@@ -526,6 +533,7 @@ async function main() {
   if (campaign.accounting) validateCampaignAccounting(campaign.accounting);
   if (campaign.operations) validateEvalOperationsReport(campaign.operations);
   if (campaign.feedbackReview) validateCampaignFeedbackReview(campaign, campaign.feedbackReview);
+  assertPublicCampaign(campaign);
   if (campaign.schema !== "paperclip.runner-e2e.campaign/v2") {
     throw new Error("Historical publishing requires a v2 normalized campaign");
   }
