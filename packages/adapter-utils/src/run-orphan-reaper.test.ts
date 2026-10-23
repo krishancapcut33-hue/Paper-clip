@@ -10,10 +10,16 @@ import {
   reapRunOrphans,
   registerRecentTerminalRun,
   resetRunOrphanReaperForTests,
+  resumeRunOrphanReaperForTests,
   RUN_ORPHAN_REAPER_METRIC,
+  stopRunOrphanReaper,
   sweepRecentlyTerminalRuns,
 } from "./run-orphan-reaper.js";
 import { runChildProcess, runningProcesses } from "./server-utils.js";
+
+const linuxNonRoot =
+  process.platform === "linux" &&
+  (typeof process.getuid !== "function" || process.getuid() !== 0);
 
 function isPidAlive(pid: number) {
   try {
@@ -121,7 +127,7 @@ describe("listRunOrphanProcesses", () => {
     return tempRoot;
   }
 
-  it("selects only the exact run marker and excludes self and ancestors", async () => {
+  it.skipIf(process.getuid?.() === 0)("selects only the exact run marker and excludes self and ancestors", async () => {
     const procRoot = await fakeProc();
     const runId = "run-select";
     // Ancestor chain: 1000 (self) -> 900 -> 1.
@@ -133,13 +139,19 @@ describe("listRunOrphanProcesses", () => {
     await writeFakeProcProcess({ procRoot, pid: 2003, ppid: 1, startTime: "23", env: "PAPERCLIP_RUN_ID=run-select-extra\0" });
     await writeFakeProcProcess({ procRoot, pid: 2004, ppid: 1, startTime: "24", env: "X=1\0NOT_PAPERCLIP_RUN_ID=run-select\0" });
 
-    const result = await listRunOrphanProcesses({ runId, procRoot, selfPid: 1000 });
+    const result = await listRunOrphanProcesses({
+      runId,
+      procRoot,
+      selfPid: 1000,
+      platform: "linux",
+      uid: (await fs.stat(procRoot)).uid,
+    });
     expect(result.supported).toBe(true);
     expect(result.processes.map((process) => process.pid)).toEqual([2000]);
     expect(result.processes[0]).toMatchObject({ ppid: 1000, startTime: "20", command: "sleep 300" });
   });
 
-  it("bounds the number of selected PIDs", async () => {
+  it.skipIf(process.getuid?.() === 0)("bounds the number of selected PIDs", async () => {
     const procRoot = await fakeProc();
     const runId = "run-bound";
     await writeFakeProcProcess({ procRoot, pid: 1000, ppid: 1, startTime: "1" });
@@ -153,11 +165,18 @@ describe("listRunOrphanProcesses", () => {
       });
     }
 
-    const result = await listRunOrphanProcesses({ runId, procRoot, selfPid: 1000, maxProcesses: 4 });
+    const result = await listRunOrphanProcesses({
+      runId,
+      procRoot,
+      selfPid: 1000,
+      maxProcesses: 4,
+      platform: "linux",
+      uid: (await fs.stat(procRoot)).uid,
+    });
     expect(result.processes).toHaveLength(4);
   });
 
-  it("requires the per-invocation token when one is given", async () => {
+  it.skipIf(process.getuid?.() === 0)("requires the per-invocation token when one is given", async () => {
     const procRoot = await fakeProc();
     const runId = "run-token";
     await writeFakeProcProcess({ procRoot, pid: 1000, ppid: 1, startTime: "1" });
@@ -181,8 +200,35 @@ describe("listRunOrphanProcesses", () => {
       processToken: "probe",
       procRoot,
       selfPid: 1000,
+      platform: "linux",
+      uid: (await fs.stat(procRoot)).uid,
     });
     expect(probe.processes.map((process) => process.pid)).toEqual([4000]);
+  });
+
+  it.skipIf(process.getuid?.() === 0)("redacts credentials in the audited command line", async () => {
+    const procRoot = await fakeProc();
+    const runId = "run-redact";
+    await writeFakeProcProcess({ procRoot, pid: 1000, ppid: 1, startTime: "1" });
+    await writeFakeProcProcess({
+      procRoot,
+      pid: 5000,
+      ppid: 1,
+      startTime: "50",
+      env: `PAPERCLIP_RUN_ID=${runId}\0`,
+      cmdline: "tool\0--api-key=super-secret-value\0",
+    });
+
+    const result = await listRunOrphanProcesses({
+      runId,
+      procRoot,
+      selfPid: 1000,
+      platform: "linux",
+      uid: (await fs.stat(procRoot)).uid,
+    });
+    expect(result.processes).toHaveLength(1);
+    expect(result.processes[0].command).not.toContain("super-secret-value");
+    expect(result.processes[0].command).toContain("***REDACTED***");
   });
 
   it("refuses to run as root and on non-Linux platforms", async () => {
@@ -197,7 +243,7 @@ describe("listRunOrphanProcesses", () => {
   });
 });
 
-describe("reapRunOrphans", () => {
+describe.skipIf(!linuxNonRoot)("reapRunOrphans", () => {
   afterEach(() => {
     resetRunOrphanReaperForTests();
   });
@@ -242,7 +288,7 @@ describe("reapRunOrphans", () => {
   });
 });
 
-describe("runChildProcess terminal reaping", () => {
+describe.skipIf(!linuxNonRoot)("runChildProcess terminal reaping", () => {
   afterEach(() => {
     resetRunOrphanReaperForTests();
   });
@@ -392,11 +438,11 @@ describe("runChildProcess terminal reaping", () => {
   );
 
   it.skipIf(process.platform === "win32")(
-    "uses the process-group fallback when a descendant cleared its environment",
+    "uses the process-group fallback after an abnormal stop when a descendant cleared its environment",
     async () => {
       const runId = randomUUID();
       let observed = "";
-      const result = await runChildProcess(
+      const resultPromise = runChildProcess(
         runId,
         process.execPath,
         [
@@ -406,12 +452,13 @@ describe("runChildProcess terminal reaping", () => {
             "const child = spawn('/usr/bin/env', ['-i', '/bin/sleep', '300'], { detached: false, stdio: 'ignore', env: process.env });",
             "child.unref();",
             "process.stdout.write('child:' + child.pid);",
+            "setInterval(() => {}, 1000);",
           ].join(" "),
         ],
         {
           cwd: process.cwd(),
           env: { PAPERCLIP_RUN_ID: runId },
-          timeoutSec: 5,
+          timeoutSec: 0,
           graceSec: 1,
           onLog: async (stream, chunk) => {
             if (stream === "stdout") observed += chunk;
@@ -420,13 +467,61 @@ describe("runChildProcess terminal reaping", () => {
       );
 
       const descendantPid = await waitForPidFrom(() => observed);
-      expect(result.exitCode).toBe(0);
+      const running = runningProcesses.get(runId);
+      expect(running).toBeDefined();
+      // Kill only the direct child, so the env-cleared descendant survives in
+      // the group until the reaper's fallback runs.
+      running?.child.kill("SIGTERM");
+
+      const result = await resultPromise;
+      expect(result.signal).toBe("SIGTERM");
       expect(await waitForPidExit(descendantPid)).toBe(true);
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
+    "does not group-kill background infrastructure after a clean exit",
+    async () => {
+      const runId = randomUUID();
+      let observed = "";
+      let descendantPid = 0;
+      try {
+        const result = await runChildProcess(
+          runId,
+          process.execPath,
+          [
+            "-e",
+            [
+              "const { spawn } = require('node:child_process');",
+              "const child = spawn('/usr/bin/env', ['-i', '/bin/sleep', '300'], { detached: false, stdio: 'ignore', env: process.env });",
+              "child.unref();",
+              "process.stdout.write('child:' + child.pid);",
+            ].join(" "),
+          ],
+          {
+            cwd: process.cwd(),
+            env: { PAPERCLIP_RUN_ID: runId },
+            timeoutSec: 5,
+            graceSec: 1,
+            onLog: async (stream, chunk) => {
+              if (stream === "stdout") observed += chunk;
+            },
+          },
+        );
+
+        descendantPid = await waitForPidFrom(() => observed);
+        expect(result.exitCode).toBe(0);
+        // The sandbox callback bridge is started this way. A clean run must not
+        // kill its own background control server.
+        expect(isPidAlive(descendantPid)).toBe(true);
+      } finally {
+        await forceKill(descendantPid);
+      }
     },
   );
 });
 
-describe("sweepRecentlyTerminalRuns", () => {
+describe.skipIf(!linuxNonRoot)("sweepRecentlyTerminalRuns", () => {
   afterEach(() => {
     resetRunOrphanReaperForTests();
   });
@@ -495,16 +590,25 @@ describe("sweepRecentlyTerminalRuns", () => {
 });
 
 describe("reapRunOrphansForTerminalRun", () => {
-  afterEach(() => {
+  afterEach(async () => {
+    await stopRunOrphanReaper();
     resetRunOrphanReaperForTests();
+    resumeRunOrphanReaperForTests();
   });
 
   it("reports cleanup unavailable instead of a false green when it cannot scan", async () => {
-    const result = await reapRunOrphansForTerminalRun({ runId: randomUUID(), graceMs: 0 });
-    // On the supported CI platform this is a real (empty) pass; force the
-    // unsupported branch through the direct reader instead.
-    const direct = await listRunOrphanProcesses({ runId: "run-a", platform: "win32" });
-    expect(direct.supported).toBe(false);
-    expect(result.supported || process.platform !== "linux").toBe(true);
+    const listed = await listRunOrphanProcesses({ runId: "run-a", platform: "win32" });
+    expect(listed.supported).toBe(false);
+    const reaped = await reapRunOrphans({ runId: "run-a", platform: "win32" });
+    expect(reaped.supported).toBe(false);
+    expect(reaped.reason).toBeTruthy();
+  });
+
+  it("stops and drains the sweep on host shutdown", async () => {
+    registerRecentTerminalRun({ runId: randomUUID(), windowMs: 10_000 });
+    await stopRunOrphanReaper();
+    const result = await sweepRecentlyTerminalRuns(Date.now());
+    expect(result.scanned).toBe(0);
+    resumeRunOrphanReaperForTests();
   });
 });

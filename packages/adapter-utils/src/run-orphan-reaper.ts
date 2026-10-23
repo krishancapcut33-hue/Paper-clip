@@ -1,5 +1,6 @@
 import fs from "node:fs/promises";
 import path from "node:path";
+import { redactCommandText } from "./command-redaction.js";
 
 /**
  * Run-scoped orphan reaper.
@@ -59,6 +60,10 @@ export interface RunOrphanReapResult {
   /** Matching processes still visible after the final pass. */
   survivors: number;
   processes: RunOrphanProcessInfo[];
+  /** True when the process-group fallback sent SIGTERM. */
+  groupTerminated: boolean;
+  /** True when the process-group fallback sent SIGKILL. */
+  groupKilled: boolean;
 }
 
 export interface RunOrphanReapAlert {
@@ -69,6 +74,8 @@ export interface RunOrphanReapAlert {
   pids: number[];
   commands: string[];
   phase: "terminal" | "sweep";
+  /** Set when the process-group fallback ran, even if no marker matched. */
+  processGroupId?: number | null;
 }
 
 export interface RunOrphanReaperDependencies {
@@ -110,6 +117,13 @@ export interface ReapRunOrphansInput extends ListRunOrphanProcessesInput {
    * pass does not signal a group a second time.
    */
   processGroupHandled?: boolean;
+  /**
+   * Permit the process-group fallback. This is opt-in because a clean run can
+   * intentionally leave background infrastructure (the sandbox callback bridge
+   * is one example) in the same group. Only an abnormal terminal status or an
+   * explicit test should enable it.
+   */
+  allowProcessGroupFallback?: boolean;
   processGroupId?: number | null;
   /** Called once per pass that found matching processes. */
   onAlert?: (alert: RunOrphanReapAlert) => void;
@@ -168,6 +182,8 @@ function unsupportedResult(reason: string): RunOrphanReapResult {
     killed: 0,
     survivors: 0,
     processes: [],
+    groupTerminated: false,
+    groupKilled: false,
   };
 }
 
@@ -260,7 +276,9 @@ async function collectAncestors(
 async function readCommand(procRoot: string, pid: number): Promise<string> {
   try {
     const raw = await fs.readFile(path.join(procRoot, String(pid), "cmdline"));
-    const command = raw.toString("utf8").replace(/\0/g, " ").replace(/\s+/g, " ").trim();
+    const command = redactCommandText(
+      raw.toString("utf8").replace(/\0/g, " ").replace(/\s+/g, " ").trim(),
+    );
     return command.slice(0, 200) || "<unknown>";
   } catch {
     return "<unknown>";
@@ -401,6 +419,7 @@ function buildAlert(
   runId: string,
   processes: RunOrphanProcessInfo[],
   phase: "terminal" | "sweep",
+  processGroupId: number | null = null,
 ): RunOrphanReapAlert {
   const unique = new Map<number, RunOrphanProcessInfo>();
   for (const process of processes) unique.set(process.pid, process);
@@ -413,6 +432,7 @@ function buildAlert(
     pids: values.map((value) => value.pid),
     commands: values.map((value) => value.command),
     phase,
+    ...(processGroupId !== null ? { processGroupId } : {}),
   };
 }
 
@@ -429,34 +449,58 @@ export async function reapRunOrphans(
   const kill = resolveKill(input);
   const sleep = resolveSleep(input);
   const selfPid = resolveSelfPid(input);
+  const procRoot = resolveProcRoot(input);
+  const uid = resolveUid(input);
   const phase = input.phase ?? "terminal";
 
   const first = await listRunOrphanProcesses(input);
   if (!first.supported) return unsupportedResult(first.reason ?? "unsupported");
 
+  const discovered = new Map<number, RunOrphanProcessInfo>();
+  const record = (processes: RunOrphanProcessInfo[]) => {
+    const added: RunOrphanProcessInfo[] = [];
+    for (const process of processes) {
+      if (discovered.has(process.pid)) continue;
+      discovered.set(process.pid, process);
+      added.push(process);
+    }
+    return added;
+  };
+
   const initial = first.processes;
+  const initialAdded = record(initial);
   let terminated = 0;
-  if (initial.length > 0) {
-    const alert = buildAlert(input.runId, initial, phase);
+  if (initialAdded.length > 0) {
+    const alert = buildAlert(input.runId, initialAdded, phase);
     writeStructuredAlert(alert, input);
     input.onAlert?.(alert);
-    for (const process of initial) {
+    for (const process of initialAdded) {
+      if (!(await processStillMatches(input, process, procRoot, uid))) continue;
       if (signalOne(process.pid, "SIGTERM", kill)) terminated += 1;
     }
   }
 
   // The process-group fallback covers a descendant that cleared its environment
-  // (`env -i`) but stayed in the run's process group. It runs even when the
-  // marker scan found something, because a single run can leave both kinds of
-  // survivor behind.
+  // (`env -i`) but stayed in the run's process group. It is opt-in because a
+  // clean run can intentionally leave background infrastructure in the group.
   let groupTerminated = false;
+  let groupKilled = false;
   const processGroupId = input.processGroupId ?? null;
   if (
+    input.allowProcessGroupFallback === true &&
     !input.processGroupHandled &&
     processGroupId !== null &&
+    processGroupId > 1 &&
+    processGroupId !== selfPid &&
+    !(await collectAncestors(procRoot, selfPid)).has(processGroupId) &&
     pidGroupAlive(processGroupId, kill)
   ) {
     groupTerminated = signalProcessGroup(processGroupId, "SIGTERM", selfPid, kill);
+    if (groupTerminated && discovered.size === 0) {
+      const alert = buildAlert(input.runId, [], phase, processGroupId);
+      writeStructuredAlert(alert, input);
+      input.onAlert?.(alert);
+    }
   }
 
   if (initial.length > 0 || groupTerminated) {
@@ -465,14 +509,24 @@ export async function reapRunOrphans(
 
   const second = await listRunOrphanProcesses(input);
   const live = second.supported ? second.processes : [];
+  const secondAdded = record(live);
+  if (secondAdded.length > 0) {
+    // A descendant that forked during the grace window was not in the first
+    // alert. Record it before the SIGKILL escalation so the audit log covers
+    // every process this pass stopped.
+    const alert = buildAlert(input.runId, secondAdded, phase);
+    writeStructuredAlert(alert, input);
+    input.onAlert?.(alert);
+  }
   let killed = 0;
   for (const process of live) {
-    // Re-reading the marker immediately before the signal keeps the kill bound
-    // to the run, not to a recycled PID.
+    // Recheck uid, marker, and start time immediately before the signal so a
+    // recycled PID is never killed on the strength of the earlier scan.
+    if (!(await processStillMatches(input, process, procRoot, uid))) continue;
     if (signalOne(process.pid, "SIGKILL", kill)) killed += 1;
   }
   if (groupTerminated && pidGroupAlive(processGroupId as number, kill)) {
-    signalProcessGroup(processGroupId as number, "SIGKILL", selfPid, kill);
+    groupKilled = signalProcessGroup(processGroupId as number, "SIGKILL", selfPid, kill);
   }
 
   if (killed > 0) await sleep(STAT_SETTLE_MS);
@@ -483,23 +537,47 @@ export async function reapRunOrphans(
   return {
     supported: true,
     reason: null,
-    found: initial.length,
+    found: discovered.size,
     terminated,
     killed,
     survivors,
-    processes: initial,
+    processes: [...discovered.values()],
+    groupTerminated,
+    groupKilled,
   };
+}
+
+async function processStillMatches(
+  input: ListRunOrphanProcessesInput,
+  process: RunOrphanProcessInfo,
+  procRoot: string,
+  uid: number | null,
+): Promise<boolean> {
+  if (uid === null) return false;
+  const stat = await readProcStat(procRoot, process.pid);
+  if (!stat || stat.state === "Z" || stat.state === "X") return false;
+  if (stat.startTime !== process.startTime) return false;
+  try {
+    if ((await fs.stat(path.join(procRoot, String(process.pid)))).uid !== uid) return false;
+    const environ = await fs.readFile(path.join(procRoot, String(process.pid), "environ"));
+    if (!environmentHasExactMarker(environ, "PAPERCLIP_RUN_ID", input.runId)) return false;
+    if (
+      input.processToken &&
+      !environmentHasExactMarker(environ, "PAPERCLIP_RUN_PROCESS_TOKEN", input.processToken)
+    ) {
+      return false;
+    }
+    return true;
+  } catch {
+    return false;
+  }
 }
 
 interface RecentTerminalRun {
   runId: string;
   processToken: string | null;
-  processGroupId: number | null;
   graceMs: number;
   expiresAt: number;
-  processGroupHandled: boolean;
-  processGroupChecked: boolean;
-  processGroupSignaledAt: number | null;
   /** `${pid}:${startTime}` seen and signaled on an earlier sweep. */
   signaled: Map<string, number>;
   alertedPids: Set<number>;
@@ -525,6 +603,8 @@ function reportRunOrphanReaperUnavailable(reason: string): void {
 
 const recentTerminalRuns = new Map<string, RecentTerminalRun>();
 let sweepTimer: NodeJS.Timeout | null = null;
+let sweepInFlight: Promise<unknown> | null = null;
+let reaperStopping = false;
 
 function readPositiveEnvMs(name: string, fallback: number): number {
   const raw = Number.parseInt(process.env[name] ?? "", 10);
@@ -540,9 +620,14 @@ function sweepIntervalMs(): number {
 }
 
 function ensureSweepTimer(deps: RunOrphanReaperDependencies): void {
-  if (sweepTimer || recentTerminalRuns.size === 0) return;
+  if (reaperStopping || sweepTimer || recentTerminalRuns.size === 0) return;
   sweepTimer = setInterval(() => {
-    void sweepRecentlyTerminalRuns(resolveNow(deps), deps).catch(() => undefined);
+    if (reaperStopping || sweepInFlight) return;
+    const run = sweepRecentlyTerminalRuns(resolveNow(deps), deps).catch(() => undefined);
+    sweepInFlight = run;
+    void run.finally(() => {
+      if (sweepInFlight === run) sweepInFlight = null;
+    });
   }, sweepIntervalMs());
   sweepTimer.unref?.();
 }
@@ -561,9 +646,7 @@ function stopSweepTimerIfIdle(): void {
 export function registerRecentTerminalRun(input: {
   runId: string;
   processToken?: string | null;
-  processGroupId?: number | null;
   graceMs?: number;
-  processGroupHandled?: boolean;
   windowMs?: number;
   now?: number;
 }): void {
@@ -573,12 +656,8 @@ export function registerRecentTerminalRun(input: {
   recentTerminalRuns.set(input.runId, {
     runId: input.runId,
     processToken: input.processToken ?? null,
-    processGroupId: input.processGroupId ?? null,
     graceMs: Math.max(0, input.graceMs ?? DEFAULT_GRACE_MS),
     expiresAt: now + windowMs,
-    processGroupHandled: input.processGroupHandled === true,
-    processGroupChecked: false,
-    processGroupSignaledAt: null,
     signaled: new Map(),
     alertedPids: new Set(),
   });
@@ -609,7 +688,6 @@ export async function sweepRecentlyTerminalRuns(
 ): Promise<SweepRunOrphanResult> {
   const result: SweepRunOrphanResult = { scanned: 0, found: 0, terminated: 0, killed: 0 };
   const kill = resolveKill(deps);
-  const selfPid = resolveSelfPid(deps);
 
   for (const [runId, entry] of [...recentTerminalRuns.entries()]) {
     if (now >= entry.expiresAt) {
@@ -650,27 +728,6 @@ export async function sweepRecentlyTerminalRuns(
         }
       }
     }
-
-    if (
-      !entry.processGroupHandled &&
-      entry.processGroupId !== null &&
-      !entry.processGroupChecked &&
-      pidGroupAlive(entry.processGroupId, kill)
-    ) {
-      entry.processGroupChecked = true;
-      entry.processGroupSignaledAt = now;
-      signalProcessGroup(entry.processGroupId, "SIGTERM", selfPid, kill);
-    } else if (
-      entry.processGroupSignaledAt !== null &&
-      entry.processGroupId !== null &&
-      now - entry.processGroupSignaledAt >= entry.graceMs &&
-      pidGroupAlive(entry.processGroupId, kill)
-    ) {
-      // Only escalate when the group is still the one this entry selected. The
-      // window is short and the entry is removed at expiry.
-      signalProcessGroup(entry.processGroupId, "SIGKILL", selfPid, kill);
-      entry.processGroupSignaledAt = null;
-    }
   }
 
   stopSweepTimerIfIdle();
@@ -688,6 +745,7 @@ export async function reapRunOrphansForTerminalRun(input: {
   processGroupId?: number | null;
   graceMs?: number;
   processGroupHandled?: boolean;
+  allowProcessGroupFallback?: boolean;
 }): Promise<RunOrphanReapResult> {
   const graceMs = Math.max(0, input.graceMs ?? DEFAULT_GRACE_MS);
   const result = await reapRunOrphans({
@@ -696,6 +754,7 @@ export async function reapRunOrphansForTerminalRun(input: {
     processGroupId: input.processGroupId ?? null,
     graceMs,
     processGroupHandled: input.processGroupHandled === true,
+    allowProcessGroupFallback: input.allowProcessGroupFallback === true,
     phase: "terminal",
   });
   // A platform that cannot scan has nothing for a later sweep to find, and a
@@ -708,9 +767,7 @@ export async function reapRunOrphansForTerminalRun(input: {
   registerRecentTerminalRun({
     runId: input.runId,
     processToken: input.processToken ?? null,
-    processGroupId: input.processGroupId ?? null,
     graceMs,
-    processGroupHandled: input.processGroupHandled === true,
   });
   return result;
 }
@@ -719,6 +776,26 @@ export async function reapRunOrphansForTerminalRun(input: {
 export function resetRunOrphanReaperForTests(): void {
   recentTerminalRuns.clear();
   unavailableReported = false;
+  reaperStopping = false;
+  sweepInFlight = null;
   if (sweepTimer) clearInterval(sweepTimer);
   sweepTimer = null;
+}
+
+/**
+ * Host lifecycle hook. The server calls this during orderly shutdown so no new
+ * sweep starts and an in-flight sweep is awaited before the process exits.
+ */
+export async function stopRunOrphanReaper(): Promise<void> {
+  reaperStopping = true;
+  recentTerminalRuns.clear();
+  if (sweepTimer) clearInterval(sweepTimer);
+  sweepTimer = null;
+  const inFlight = sweepInFlight;
+  if (inFlight) await inFlight.catch(() => undefined);
+}
+
+/** Resumes sweeps after a test-only stop. */
+export function resumeRunOrphanReaperForTests(): void {
+  reaperStopping = false;
 }

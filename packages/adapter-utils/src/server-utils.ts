@@ -4818,12 +4818,38 @@ export async function runChildProcess(
         let terminalCleanupKillTimer: NodeJS.Timeout | null = null;
         let terminalResultStdoutScanOffset = 0;
         let terminalResultStderrScanOffset = 0;
+        let terminalReaper: ReturnType<typeof reapRunOrphansForTerminalRun> | null = null;
 
         const clearTerminalCleanupTimers = () => {
           if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
           if (terminalCleanupKillTimer) clearTimeout(terminalCleanupKillTimer);
           terminalCleanupTimer = null;
           terminalCleanupKillTimer = null;
+        };
+
+        const startTerminalReaper = (
+          exitCode: number | null,
+          exitSignal: NodeJS.Signals | null,
+        ) => {
+          if (terminalReaper) return terminalReaper;
+          terminalReaper = reapRunOrphansForTerminalRun({
+            runId,
+            processToken: runProcessToken,
+            processGroupId,
+            graceMs: Math.max(1, opts.graceSec) * 1000,
+            // The timeout path keeps its own group escalation alive after
+            // close, so it does not need a second group signal.
+            processGroupHandled: timedOut,
+            // A clean exit can intentionally leave background infrastructure in
+            // the group (the sandbox callback bridge does). The group fallback
+            // is only safe for an abnormal stop.
+            allowProcessGroupFallback:
+              timedOut ||
+              terminalCleanupStarted ||
+              exitSignal !== null ||
+              (typeof exitCode === "number" && exitCode !== 0),
+          });
+          return terminalReaper;
         };
 
         const maybeArmTerminalResultCleanup = () => {
@@ -4958,15 +4984,22 @@ export async function runChildProcess(
           reject(new Error(msg));
         });
 
-        child.on("exit", () => {
+        child.on("exit", (exitCode: number | null, exitSignal: NodeJS.Signals | null) => {
           maybeArmTerminalResultCleanup();
+          // "close" waits for every stdio pipe. A detached descendant that
+          // inherited the pipes can hold it open forever, so start the marker
+          // scan here. The close handler awaits the same promise.
+          void startTerminalReaper(exitCode, exitSignal).catch(() => undefined);
         });
 
         child.on(
           "close",
           (code: number | null, signal: NodeJS.Signals | null) => {
             if (timeout) clearTimeout(timeout);
-            clearTerminalCleanupTimers();
+            // Keep an already-armed terminal-cleanup SIGKILL timer: the leader
+            // can exit on SIGTERM while a same-group descendant still lives.
+            if (terminalCleanupTimer) clearTimeout(terminalCleanupTimer);
+            terminalCleanupTimer = null;
             runningProcesses.delete(runId);
             void logChain.finally(() => {
               void Promise.resolve()
@@ -4997,13 +5030,7 @@ export async function runChildProcess(
                   // carries the run marker, so reap it for every terminal
                   // status. The reaper is a supplement: it never changes the
                   // exit code or signal the caller already observed.
-                  void reapRunOrphansForTerminalRun({
-                    runId,
-                    processToken: runProcessToken,
-                    processGroupId,
-                    graceMs: Math.max(1, opts.graceSec) * 1000,
-                    processGroupHandled: timedOut || terminalCleanupStarted,
-                  })
+                  void startTerminalReaper(code, signal)
                     .then((reaped) => {
                       // Keep the reaper's own audit record in the run output, not
                       // only on the server stderr stream. Operators can then see
