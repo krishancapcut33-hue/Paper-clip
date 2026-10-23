@@ -142,7 +142,8 @@ the bot may stay in review with an authorized provider-event wait or a saved
 monitor. Neither wait enrolls a person in Mine. Human requests are for concrete
 dependencies of the assigned review, such as missing repository access.
 A later published review with no human dependency withdraws the same bot's
-earlier completion request for a published review. Independent approval gates
+earlier completion request for a published review when its result commits and
+independent gates are clear. Finish-report validation is read-only. Independent approval gates
 and requests without that review evidence remain unchanged.
 
 New inbound comments retain their provider in `metadata.sourceChannel`. Historical

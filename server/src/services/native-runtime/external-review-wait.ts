@@ -1,14 +1,18 @@
 import { and, eq, inArray } from "drizzle-orm";
 import { chatConversations, chatEndpoints, heartbeatRuns, issues, statusDecisions, type Db } from "@paperclipai/db";
+import { authorizeChatConversationForBoundRun } from "./chat-attachment-reuse.js";
 
 export async function listExternalReviewWaits(db: Db, companyId: string, issueIds: string[]) {
   if (!issueIds.length) return [];
-  return db.select({
+  const candidates = await db.selectDistinctOn([issues.id], {
     id: statusDecisions.id,
     companyId: issues.companyId,
     issueId: issues.id,
     status: chatConversations.state,
     createdAt: statusDecisions.createdAt,
+    runId: heartbeatRuns.id,
+    agentId: heartbeatRuns.agentId,
+    contextSnapshot: heartbeatRuns.contextSnapshot,
   }).from(issues)
     .innerJoin(statusDecisions, and(
       eq(statusDecisions.id, issues.lastStatusDecisionId),
@@ -37,4 +41,15 @@ export async function listExternalReviewWaits(db: Db, companyId: string, issueId
       eq(chatEndpoints.status, "active"),
     ))
     .where(and(eq(issues.companyId, companyId), inArray(issues.id, issueIds), eq(issues.status, "in_review")));
+  const waits = await Promise.all(candidates.map(async ({ runId, agentId, contextSnapshot, ...wait }) => {
+    try {
+      await authorizeChatConversationForBoundRun(db, { companyId, issueId: wait.issueId, runId, agentId }, contextSnapshot, "read");
+      return wait;
+    } catch (error) {
+      if (error instanceof Error && ["paperclip_runner_chat_attachment_binding_denied",
+        "paperclip_runner_chat_attachment_destination_denied", "paperclip_runner_chat_attachment_principal_denied"].includes(error.message)) return null;
+      throw error;
+    }
+  }));
+  return waits.filter((wait): wait is NonNullable<typeof wait> => wait !== null);
 }

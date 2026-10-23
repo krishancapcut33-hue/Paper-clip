@@ -70,6 +70,8 @@ entry. A later 5/5 review with passing required checks can finish quietly. A rea
 repository-access request enters Mine until resolved. The native external-chat
 database suite checks these states and revoked endpoints using stored provider
 receipts; live model adherence remains a separate check.
+It also checks saved monitors, disabled repositories, multiple reviewed heads,
+read-only finish validation, withdrawal rollback, and separate approval gates.
 
 Manual: For each supported provider being changed, send a unique message, verify the intended agent/company receives it, and inspect the actual external reply in the original thread. Repeat with an unlinked/unauthorized sender, duplicate inbound delivery, and one supported attachment. Record provider-specific results separately.
 

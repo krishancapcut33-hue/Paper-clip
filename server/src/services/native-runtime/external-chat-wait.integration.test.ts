@@ -4302,18 +4302,25 @@ describe("native external-chat response wait", () => {
   });
 
   it.each([
-    [3, "yielded", "in_review"],
-    [5, "yielded", "in_review"],
-    [5, "done", "done"],
-  ] as const)("keeps a published %s/5 review reporting %s out of Mine", async (score, disposition, status) => {
+    [3, "yielded", "in_review", "response_wake", false],
+    [5, "yielded", "in_review", "response_wake", false],
+    [5, "done", "done", null, false],
+    [3, "yielded", "in_review", "monitor", false],
+    [3, "yielded", "in_review", "response_wake", true],
+  ] as const)("settles a published %s/5 review reporting %s in %s with %s, separate approval: %s", async (score, disposition, status, continuationKind, separateApproval) => {
     const fixture = await seedWaitTurn("github", [], {
       reportedWorkDisposition: disposition,
       summary: disposition === "done" ? "Review is 5/5 and required checks passed." : "Review published; waiting for the next PR update.",
       ...(disposition === "done" ? { continuation: undefined } : {}),
+      ...(continuationKind === "monitor" ? { continuation: { kind: "monitor", summary: "Wait for the saved check.", idempotencyKey: "review-monitor" } } : {}),
     });
     await db.update(issues).set({ title: "Review the pull request", originKind: "chat_channel",
       createdByUserId: fixture.userId, responsibleUserId: fixture.userId }).where(eq(issues.id, fixture.issueId));
     const oldRequest = score === 3 ? await seedPriorCompletionReview(fixture) : null;
+    if (continuationKind === "monitor") {
+      await new PaperclipRunnerToolAuthority(db, fixture).execute({ tool: "set_task_monitor", callId: randomUUID(),
+        arguments: { idempotencyKey: "review-monitor", monitor: { nextCheckAt: new Date(Date.now() + 60_000).toISOString(), notes: "Check PR status." } } });
+    }
     const [review] = await db.insert(chatGitHubReviews).values({
       companyId: fixture.companyId, endpointId: fixture.endpointId, issueId: fixture.issueId,
       runId: fixture.runId, repositoryId: "1", repository: "paperclip/test-repository", pullNumber: 1,
@@ -4331,11 +4338,13 @@ describe("native external-chat response wait", () => {
       checkId: "123",
     }).returning();
     await expect(hasPublishedGitHubReview(db, fixture)).resolves.toBe(false);
+    // A completed but unpublished head must not hide another published head from this run.
+    const [published] = await db.insert(chatGitHubReviews).values({ ...review!, id: randomUUID(), deliveryId: randomUUID(), headSha: "c".repeat(40) }).returning();
     await db.insert(chatActions).values({
       companyId: fixture.companyId, endpointId: fixture.endpointId, kind: "github_review_publication",
-      providerActionId: `github_publication:${fixture.issueId}:assessment:${createHash("sha256").update(JSON.stringify(review!.id)).digest("hex")}`,
-      status: "processed", payload: { operation: "assessment", reviewId: review!.id },
-      result: { reviewId: review!.id, checkUrl: "https://github.com/paperclip/test-repository/runs/123" },
+      providerActionId: `github_publication:${fixture.issueId}:assessment:${createHash("sha256").update(JSON.stringify(published!.id)).digest("hex")}`,
+      status: "processed", payload: { operation: "assessment", reviewId: published!.id },
+      result: { reviewId: published!.id, checkUrl: "https://github.com/paperclip/test-repository/runs/123" },
     });
     if (oldRequest) {
       const [older] = await db.insert(chatGitHubReviews).values({
@@ -4350,10 +4359,29 @@ describe("native external-chat response wait", () => {
     await expect(hasPublishedGitHubReview(db, { ...fixture, runId: randomUUID() })).resolves.toBe(false);
     const [stored] = await db.select().from(nativeRunResults).where(eq(nativeRunResults.runId, fixture.runId));
     await expect(nativeCompletionFeedback(db, fixture.runId, stored!.resultJson.result as PrpStructuredRunResult)).resolves.toContain("accepted");
+    if (oldRequest) {
+      const pending = async () => (await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, oldRequest.id)))[0]!.status;
+      expect(await pending()).toBe("pending");
+      const reported = stored!.resultJson.result as PrpStructuredRunResult;
+      await expect(nativeCompletionFeedback(db, fixture.runId, { ...reported,
+        completionClaim: { ...reported.completionClaim, contractRevision: "stale" } })).rejects.toThrow("Stale completionClaim");
+      expect(await pending()).toBe("pending");
+      if (separateApproval) {
+        const [approval] = await db.insert(approvals).values({ companyId: fixture.companyId, type: "hire_agent", status: "pending", payload: {} }).returning();
+        await db.insert(issueApprovals).values({ companyId: fixture.companyId, issueId: fixture.issueId, approvalId: approval!.id });
+        await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
+        expect(await pending()).toBe("pending");
+        expect((await issueService(db).list(fixture.companyId, { touchedByUserId: fixture.userId })).map(issue => issue.id)).toContain(fixture.issueId);
+        return;
+      }
+      expect(await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true,
+        failpoint: "status_projection" })).toMatchObject({ phase: "retryable_failure" });
+      expect(await pending()).toBe("pending");
+    }
     await finalizeNativeRun({ db, runId: fixture.runId, workspaceFinalizeStatus: "succeeded", projectRunStatus: true });
     const all = await issueService(db).list(fixture.companyId);
     expect(all.find(issue => issue.id === fixture.issueId)).toMatchObject({ status,
-      ...(status === "in_review" ? { reviewAttention: { state: "covered", paths: [expect.objectContaining({ kind: "external_response" })] } } : {}),
+      ...(status === "in_review" ? { reviewAttention: { state: "covered", paths: [expect.objectContaining({ kind: continuationKind === "monitor" ? "monitor" : "external_response" })] } } : {}),
     });
     expect(await issueService(db).list(fixture.companyId, { touchedByUserId: fixture.userId })).toEqual([]);
     expect(await db.select().from(issueThreadInteractions).where(and(
@@ -4362,7 +4390,14 @@ describe("native external-chat response wait", () => {
     if (oldRequest) expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, oldRequest.id)))
       .toEqual([expect.objectContaining({ status: "cancelled", result: expect.objectContaining({ outcome: "withdrawn" }) })]);
     expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, fixture.companyId))).toEqual([]);
-    if (status === "in_review") {
+    if (status === "in_review" && continuationKind === "response_wake") {
+      const attention = async () => (await issueService(db).listReviewAttention(fixture.companyId, [{ id: fixture.issueId, companyId: fixture.companyId, status }])).get(fixture.issueId)?.state;
+      await db.update(chatEndpointResources).set({ enabled: false }).where(eq(chatEndpointResources.endpointId, fixture.endpointId));
+      expect(await attention()).toBe("stalled");
+      await db.update(chatEndpointResources).set({ enabled: true }).where(eq(chatEndpointResources.endpointId, fixture.endpointId));
+      await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.companyId, fixture.companyId));
+      expect(await attention()).toBe("stalled");
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.companyId, fixture.companyId));
       await db.update(chatEndpoints).set({ status: "revoked" }).where(eq(chatEndpoints.id, fixture.endpointId));
       expect((await issueService(db).listReviewAttention(fixture.companyId, [{
         id: fixture.issueId, companyId: fixture.companyId, status,
