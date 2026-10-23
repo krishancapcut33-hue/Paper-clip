@@ -27,8 +27,17 @@ vi.mock("../services/connectors/onepassword/client.js", async importOriginal => 
       fixtureState.items.set(String(args.itemId), item); return item;
     }
     if (tool === "onepassword_get_item") return fixtureState.items.get(String(args.itemId));
+    if (tool === "onepassword_list_items") return [...fixtureState.items.values()].filter(item => item.vaultId === args.vaultId && !item.archived);
     if (tool === "onepassword_resolve_secret") return { value: "disposable-secret" };
-    if (tool === "onepassword_delete_item") fixtureState.items.delete(String(args.itemId));
+    if (tool === "onepassword_archive_item") {
+      const item = fixtureState.items.get(String(args.itemId));
+      if (item) item.archived = true;
+      return { archived: true };
+    }
+    if (tool === "onepassword_delete_item") {
+      fixtureState.items.delete(String(args.itemId));
+      return { deleted: true };
+    }
     return { success: true };
   };
   return { ...actual, callOnePassword, executeOnePasswordTool: (input: Parameters<typeof actual.executeOnePasswordTool>[0]) =>
@@ -101,6 +110,8 @@ const credential = live ? process.env.OP_SERVICE_ACCOUNT_TOKEN! : "ops_fixture-c
         category: "SecureNote", notes: "Synthetic connector test data", fields: [{ id: "test_secret", title: "Test secret", fieldType: "Concealed", value: "disposable-secret" }] });
       itemId = (created.result?.data?.structuredContent as { id: string }).id;
       expect(typeof itemId === "string").toBe(true);
+      const listed = await f.call("onepassword_list_items", { vaultId });
+      expect((listed.result?.data?.structuredContent as Array<{ id: string }>).some(item => item.id === itemId)).toBe(true);
       const read = await f.call("onepassword_get_item", { vaultId, itemId });
       expect(JSON.stringify(read).includes("Synthetic connector test data")).toBe(true);
       await f.call("onepassword_update_item", { vaultId, itemId, notes: "Updated synthetic connector test data" });
@@ -111,16 +122,23 @@ const credential = live ? process.env.OP_SERVICE_ACCOUNT_TOKEN! : "ops_fixture-c
       await f.service.refreshCatalog(f.connected.connectionId, actor);
       await f.service.reconnectGalleryApp(f.connected.connectionId, f.company.id, { credentialValues: { "credentials.authorization": credential } }, actor);
       await f.call("onepassword_get_item", { vaultId, itemId });
+      const archived = await f.call("onepassword_archive_item", { vaultId, itemId });
+      expect(archived.result?.data?.structuredContent).toEqual({ archived: true });
     } finally {
-      if (itemId) await f.call("onepassword_delete_item", { vaultId, itemId });
+      if (itemId) {
+        const deleted = await f.call("onepassword_delete_item", { vaultId, itemId });
+        expect(deleted.result?.data?.structuredContent).toEqual({ deleted: true });
+      }
     }
+    const remaining = await f.call("onepassword_list_items", { vaultId });
+    expect((remaining.result?.data?.structuredContent as Array<{ id: string }>).some(item => item.id === itemId)).toBe(false);
     const audit = await db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, f.company.id));
     expect(audit.length > 0).toBe(true);
     expect(JSON.stringify(audit).includes(credential)).toBe(false);
     await f.service.archiveConnection(f.connected.connectionId, f.company.id, actor);
     await expect(f.call("onepassword_list_vaults", {})).rejects.toThrow();
     expect(await f.gateway.listToolsForSession(f.session.token)).toHaveLength(0);
-  }, 120_000);
+  }, 180_000);
 
   it.skipIf(live)("enforces action policy, company scope, and revocation on retained sessions", async () => {
     const f = await fixture();

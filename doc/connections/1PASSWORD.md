@@ -101,9 +101,22 @@ replacement/reconnect preserving the connection ID, another gateway read,
 removal, and denial through the retained gateway session. Audit and connection
 responses did not contain the credential. The account could list one vault but
 1Password denied a minimal synthetic item creation for lack of permission; no
-item was created. Live create/update/archive/delete remain unqualified until a
-service account with Write Items permission is supplied. The deterministic
-provider suite covers mutations and the ordinary policy boundaries separately.
+item was created.
+
+On 2026-10-23, a replacement token with Write Items permission passed the live
+governed lifecycle for both personal and shared credentials. All eight actions
+ran through an actual run-scoped gateway: list vaults, create and list a
+synthetic item, read it, update it and verify the update, resolve its secret
+reference, archive it, and delete it. Catalog refresh, reconnect, another read,
+connection removal, and retained-session denial also passed. Both synthetic
+items were deleted, and their absence from item listings was verified. Audit,
+responses, and the captured log did not contain the credential.
+
+The first 2026-10-23 attempt stopped before any provider call because the host
+had exhausted PostgreSQL semaphores. The passing run used a temporary test-only
+PostgreSQL profile with ten connections and fewer workers; no shared service or
+host limit was changed. The deterministic provider suite covers mutations and
+the ordinary policy boundaries separately.
 
 The browser walkthrough used a fresh local test instance, a personal credential,
 and one explicitly selected disposable agent. It reached the normal Permissions
