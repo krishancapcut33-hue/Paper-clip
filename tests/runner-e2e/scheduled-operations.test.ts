@@ -75,3 +75,26 @@ it("rejects an overhead allowance that cannot leave room for a full selected req
   expect(() => validateScheduledBudget({ ...input, overhead: expensive })).toThrow("insufficient allowance");
   expect(validateScheduledBudget({ ...input, overhead })).toMatchObject({ executionIds: scheduledSelection("daily") });
 });
+
+
+it.each(["daily", "weekly"] as const)("prepares %s with its own reviewed operating allowance", async cadence => {
+  const directory = await mkdtemp(path.join(tmpdir(), "eval-cadence-overhead-"));
+  const allowance = (value: string): EvalOperatingOverhead => ({ ...overhead, reference: `fixture-${value}`,
+    components: overhead.components.map(component => ({ ...component,
+      maxUsd: component.component === "observability" ? value : component.component === "artifact_storage" ? "1" : "0" })) });
+  const allowances = { daily: allowance("10"), weekly: allowance("20") };
+  const env = { EVAL_EVENT: "workflow_dispatch", EVAL_CADENCE: cadence, EVAL_OPERATIONS_ENABLED: "true",
+    GITHUB_RUN_ID: "123", GITHUB_RUN_ATTEMPT: "1", GITHUB_WORKSPACE: directory,
+    EVAL_OPERATING_OVERHEAD_JSON: JSON.stringify(allowances), EVAL_TEST_RUNNER: "ubuntu-latest",
+    PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID: input.projectId };
+  try {
+    await expect(prepareScheduledCampaign({ ...env,
+      EVAL_OPERATING_OVERHEAD_JSON: JSON.stringify({ ...allowances, [cadence]: undefined }) }, input.now)).rejects.toThrow();
+    await expect(prepareScheduledCampaign({ ...env,
+      EVAL_OPERATING_OVERHEAD_JSON: JSON.stringify({ ...allowances, typo: allowances.daily }) }, input.now)).rejects.toThrow();
+    const prepared = await prepareScheduledCampaign(env, input.now);
+    expect(prepared.manifest.limits.overhead).toEqual(allowances[cadence]);
+    expect(prepared.manifest.limits.maxUsd).toBe(cadence === "daily" ? "20" : "100");
+    expect(prepared.manifest.executionIds).toEqual(scheduledSelection(cadence));
+  } finally { await rm(directory, { recursive: true, force: true }); }
+});

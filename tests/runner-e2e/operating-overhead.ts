@@ -40,10 +40,16 @@ export function validateOperatingOverhead(value: EvalOperatingOverhead, totalUsd
   return reserved;
 }
 
-export function scheduledOperatingOverhead(raw: string | undefined, runner: string | undefined, totalUsd: string, now: number): EvalOperatingOverhead {
+export function scheduledOperatingOverhead(raw: string | undefined, runner: string | undefined, totalUsd: string, now: number, cadence?: "daily" | "weekly"): EvalOperatingOverhead {
   if (!raw || raw.length > 16_384) throw new Error("Missing reviewed operating overhead allowance");
-  let value: EvalOperatingOverhead;
-  try { value = JSON.parse(raw); } catch { throw new Error("Invalid operating overhead JSON"); }
+  let parsed: unknown;
+  try { parsed = JSON.parse(raw); } catch { throw new Error("Invalid operating overhead JSON"); }
+  if (parsed && typeof parsed === "object" && !Array.isArray(parsed) && !("version" in parsed)) {
+    object(parsed, ["daily", "weekly"]);
+    if (!cadence) throw new Error("Missing operating overhead cadence");
+    parsed = (parsed as Record<string, unknown>)[cadence];
+  }
+  const value = parsed as EvalOperatingOverhead;
   validateOperatingOverhead(value, totalUsd);
   if (runner !== "ubuntu-latest" || value.runner !== "github-hosted") throw new Error("Bounded campaigns require the standard GitHub-hosted runner allowance");
   if (!Number.isFinite(now) || now < Date.parse(value.verifiedAt) || now + 4 * 3_600_000 >= Date.parse(value.expiresAt)) {

@@ -375,8 +375,12 @@ maximum allowances, not forecasts of actual spending.
 This is an admission limit with retained reservations, not a reconciled invoice
 total or a provider-enforced billing limit.
 
-Before enabling recurrence, set `RUNNER_E2E_OPERATING_OVERHEAD_JSON` to a reviewed
-allowance with `version: 1`, an evidence `reference`, the actual `runner`
+Before enabling recurrence, set `RUNNER_E2E_OPERATING_OVERHEAD_JSON` to an object
+with `daily` and `weekly` reviewed allowances. The catalog selects the allowance
+for the actual trigger, then passes only that validated allowance to preparation.
+A missing selected cadence or unknown outer field fails admission. A single
+allowance remains supported when the same bounds fit both schedules. Each
+allowance has `version: 1`, an evidence `reference`, the actual `runner`
 (`github-hosted` for bounded schedules), and `verifiedAt`/`expiresAt` timestamps no more
 than 31 days apart. Its `components` array must contain exactly `ci_compute`,
 `artifact_storage`, `observability`, and `shared_subscription`. Each component

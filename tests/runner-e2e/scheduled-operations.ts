@@ -87,7 +87,7 @@ export async function prepareScheduledCampaign(env: NodeJS.ProcessEnv, now = Dat
   const directory = path.join(env.GITHUB_WORKSPACE, "tests/runner-e2e/results/scheduled");
   const manifest = scheduledManifest({ cadence, campaignId, ledgerPath: path.join(directory, "ledger.jsonl"),
     projectId: env.PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID ?? "", now, runAttempt: env.GITHUB_RUN_ATTEMPT ?? "",
-    overhead: scheduledOperatingOverhead(env.EVAL_OPERATING_OVERHEAD_JSON, env.EVAL_TEST_RUNNER, budget(cadence), now) });
+    overhead: scheduledOperatingOverhead(env.EVAL_OPERATING_OVERHEAD_JSON, env.EVAL_TEST_RUNNER, budget(cadence), now, cadence) });
   await mkdir(directory, { recursive: true, mode: 0o700 });
   const manifestPath = path.join(directory, "manifest.json");
   await writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { mode: 0o600, flag: "wx" });
@@ -109,7 +109,7 @@ if (process.argv[1] && import.meta.url === pathToFileURL(process.argv[1]).href) 
     const cadence = scheduledCadence(process.env.EVAL_EVENT ?? "", process.env.EVAL_SCHEDULE ?? "", process.env.EVAL_CADENCE);
     if (!cadence || process.env.EVAL_OPERATIONS_ENABLED !== "true") throw new Error("Bounded eval operations are not enabled");
     const now = Date.now();
-    const overhead = scheduledOperatingOverhead(process.env.EVAL_OPERATING_OVERHEAD_JSON, process.env.EVAL_TEST_RUNNER, budget(cadence), now);
+    const overhead = scheduledOperatingOverhead(process.env.EVAL_OPERATING_OVERHEAD_JSON, process.env.EVAL_TEST_RUNNER, budget(cadence), now, cadence);
     validateScheduledBudget({ cadence, overhead, now });
     console.log(JSON.stringify({ ...scheduledMatrix(cadence), overhead }));
   } else if (command === "prepare") {
