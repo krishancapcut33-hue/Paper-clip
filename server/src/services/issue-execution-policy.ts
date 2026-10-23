@@ -1175,6 +1175,166 @@ export function buildInitialIssueMonitorFields(input: {
   };
 }
 
+export const FAILED_WAKE_MONITOR_REARM_DELAY_MS = 60_000;
+
+const FAILED_WAKE_MONITOR_REARM_STATUSES = new Set(["failed", "timed_out", "interrupted"]);
+
+export function isIssueMonitorFailedWakeReason(wakeReason: string | null | undefined, wakeSource?: string | null) {
+  return wakeReason === "issue_monitor_due" || wakeSource === "issue.monitor" || wakeSource === "issue_monitor";
+}
+
+function coerceMonitorDeadline(value: Date | string | null | undefined) {
+  if (value instanceof Date) return Number.isNaN(value.getTime()) ? null : value;
+  return parseMonitorDate(typeof value === "string" ? value : null);
+}
+
+function nextCheckMatchesOriginatingDeadline(
+  monitorNextCheckAt: Date | string | null | undefined,
+  originatingNextCheckAt: Date | string | null | undefined,
+) {
+  const current = coerceMonitorDeadline(monitorNextCheckAt);
+  const originating = coerceMonitorDeadline(originatingNextCheckAt);
+  return Boolean(current && originating && current.getTime() === originating.getTime());
+}
+
+export function shouldRearmIssueMonitorAfterFailedWake(input: {
+  runStatus: string;
+  wakeReason?: string | null;
+  wakeSource?: string | null;
+  issueStatus: string;
+  assigneeAgentId?: string | null;
+  assigneeUserId?: string | null;
+  monitorStatus?: string | null;
+  monitorNextCheckAt?: Date | string | null;
+  originatingNextCheckAt?: Date | string | null;
+  retryOwnsNextAttempt?: boolean;
+  attemptCount?: number | null;
+  maxAttempts?: number | null;
+  timeoutAt?: string | null;
+  postedComment: boolean;
+  now?: Date;
+}) {
+  if (!FAILED_WAKE_MONITOR_REARM_STATUSES.has(input.runStatus)) return false;
+  if (!isIssueMonitorFailedWakeReason(input.wakeReason ?? null, input.wakeSource ?? null)) return false;
+  if (input.postedComment) return false;
+  if (input.retryOwnsNextAttempt) return false;
+  if (!issueAllowsMonitor(input.issueStatus, input.assigneeAgentId ?? null, input.assigneeUserId ?? null)) {
+    return false;
+  }
+  const matchesOriginatingDeadline = nextCheckMatchesOriginatingDeadline(
+    input.monitorNextCheckAt,
+    input.originatingNextCheckAt,
+  );
+  // Consume-on-enqueue can land after a fast setup failure. The originating
+  // fire deadline is not a later agent PATCH; treat it as still eligible.
+  if (input.monitorStatus && input.monitorStatus !== "triggered") {
+    if (!(input.monitorStatus === "scheduled" && matchesOriginatingDeadline)) return false;
+  }
+  if (input.monitorNextCheckAt && !matchesOriginatingDeadline) return false;
+  const unconsumedOriginatingDeadline =
+    input.monitorStatus === "scheduled" && matchesOriginatingDeadline;
+  const maxAttempts = input.maxAttempts ?? null;
+  const attemptCount = input.attemptCount ?? 0;
+  // An unconsumed fire has not incremented yet. Count it here so maxAttempts
+  // still binds when setup fails before consume-on-enqueue.
+  const spentAttemptCount = unconsumedOriginatingDeadline ? attemptCount + 1 : attemptCount;
+  if (maxAttempts !== null && spentAttemptCount >= maxAttempts) return false;
+  const timeoutAt = parseMonitorDate(input.timeoutAt ?? null);
+  const now = input.now ?? new Date();
+  if (timeoutAt && now.getTime() >= timeoutAt.getTime()) return false;
+  return true;
+}
+
+function clampFailedWakeRearmDeadline(input: {
+  now: Date;
+  nextCheckAt: Date;
+  timeoutAt?: string | null;
+}) {
+  const timeoutAt = parseMonitorDate(input.timeoutAt ?? null);
+  if (!timeoutAt) return input.nextCheckAt;
+  if (input.now.getTime() >= timeoutAt.getTime()) return input.nextCheckAt;
+  return input.nextCheckAt.getTime() > timeoutAt.getTime() ? timeoutAt : input.nextCheckAt;
+}
+
+export function buildIssueMonitorRearmedAfterFailedWakePatch(input: {
+  issue: IssueLike;
+  policy: IssueExecutionPolicy | null;
+  nextCheckAt: Date;
+  originatingNextCheckAt?: Date | string | null;
+  now?: Date;
+}) {
+  const existingState = parseIssueExecutionState(input.issue.executionState);
+  const currentMonitorState = derivePersistedMonitorState({
+    issue: input.issue,
+    state: existingState,
+    policy: input.policy,
+  });
+  if (!currentMonitorState) return null;
+  const originatingNextCheckAt = input.originatingNextCheckAt ?? null;
+  const now = input.now ?? new Date();
+  if (
+    !shouldRearmIssueMonitorAfterFailedWake({
+      runStatus: "failed",
+      wakeReason: "issue_monitor_due",
+      issueStatus: input.issue.status,
+      assigneeAgentId: input.issue.assigneeAgentId ?? null,
+      assigneeUserId: input.issue.assigneeUserId ?? null,
+      monitorStatus: currentMonitorState.status,
+      monitorNextCheckAt: input.issue.monitorNextCheckAt ?? null,
+      originatingNextCheckAt,
+      attemptCount: currentMonitorState.attemptCount,
+      maxAttempts: currentMonitorState.maxAttempts ?? null,
+      timeoutAt: currentMonitorState.timeoutAt ?? null,
+      postedComment: false,
+      now,
+    })
+  ) {
+    return null;
+  }
+
+  const unconsumedOriginatingDeadline =
+    currentMonitorState.status === "scheduled" &&
+    nextCheckMatchesOriginatingDeadline(input.issue.monitorNextCheckAt ?? null, originatingNextCheckAt);
+  const spentAttemptCount = unconsumedOriginatingDeadline
+    ? (currentMonitorState.attemptCount ?? 0) + 1
+    : currentMonitorState.attemptCount;
+  const previousMonitorState = unconsumedOriginatingDeadline
+    ? { ...currentMonitorState, attemptCount: spentAttemptCount }
+    : currentMonitorState;
+  const restoredAt = clampFailedWakeRearmDeadline({
+    now,
+    nextCheckAt: input.nextCheckAt,
+    timeoutAt: currentMonitorState.timeoutAt ?? null,
+  });
+
+  const restoredMonitor: IssueExecutionMonitorPolicy = {
+    nextCheckAt: restoredAt.toISOString(),
+    notes: currentMonitorState.notes ?? null,
+    scheduledBy: currentMonitorState.scheduledBy === "board" ? "board" : "assignee",
+    kind: currentMonitorState.kind ?? null,
+    serviceName: currentMonitorState.serviceName ?? null,
+    externalRef: currentMonitorState.externalRef ?? null,
+    timeoutAt: currentMonitorState.timeoutAt ?? null,
+    maxAttempts: currentMonitorState.maxAttempts ?? null,
+    recoveryPolicy: currentMonitorState.recoveryPolicy ?? null,
+  };
+  const nextMonitorState = buildScheduledMonitorState(previousMonitorState, restoredMonitor);
+  const nextPolicy = input.policy
+    ? { ...input.policy, monitor: restoredMonitor }
+    : normalizeIssueExecutionPolicy({ monitor: restoredMonitor });
+
+  return {
+    executionPolicy: nextPolicy as Record<string, unknown> | null,
+    executionState: executionStateWithMonitor(existingState, nextMonitorState) as Record<string, unknown> | null,
+    monitorNextCheckAt: restoredAt,
+    monitorWakeRequestedAt: null,
+    monitorAttemptCount: spentAttemptCount,
+    monitorNotes: nextMonitorState.notes,
+    monitorScheduledBy: nextMonitorState.scheduledBy,
+    restoredMonitor,
+  };
+}
+
 export function buildIssueMonitorTriggeredPatch(input: {
   issue: IssueLike;
   policy: IssueExecutionPolicy | null;
