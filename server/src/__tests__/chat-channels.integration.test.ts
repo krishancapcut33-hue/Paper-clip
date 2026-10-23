@@ -1,4 +1,5 @@
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { readFreshWorkspaceReadiness } from "../services/fresh-workspace-continuation.js";
 import { requestTaskRetry } from "../services/task-retry.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
@@ -61116,6 +61117,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const [successor] = await readHeartbeatRunsById(admitted.runId!);
         expect(successor).toMatchObject({ status: "queued", retryOfRunId: context.runId,
           contextSnapshot: { wakeCommentIds: [context.action.payload.commentId], taskRetryRequestId: receipt.requestId } });
+        expect(await readFreshWorkspaceReadiness(db, successor)).toMatchObject({
+          mode: "fresh_isolated_workspace", retryIntentId: receipt.requestId, sourceRunId: context.runId,
+          retainedSourceIds: [leaseId],
+        });
         await heartbeat.resumeQueuedRuns();
         await context.service.processFailedChatRunRetries();
         expect((await readHeartbeatRunsByCompanyId(companyId))
