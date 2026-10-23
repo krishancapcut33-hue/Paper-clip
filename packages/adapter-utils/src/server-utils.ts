@@ -5015,16 +5015,20 @@ export async function runChildProcess(
         });
 
         child.on("exit", (exitCode: number | null, exitSignal: NodeJS.Signals | null) => {
-          // The direct child has exited. The remaining drain is cleanup work,
-          // not run time, so the wall-clock timeout must not fire during it and
-          // signal a preserved background worker.
-          if (timeout) clearTimeout(timeout);
           maybeArmTerminalResultCleanup();
           // "close" waits for every stdio pipe. A descendant that inherited the
           // pipes can hold it open forever, so start the marker scan here. The
           // close handler awaits the same promise.
           void startTerminalReaper(exitCode, exitSignal)
             .then(async (reaped) => {
+              if (reaped.found > 0 || reaped.preservedSameGroup > 0) {
+                // The direct child has exited and the remaining work is cleanup,
+                // not run time. Do not let the wall-clock timeout fire during
+                // it and signal a preserved background worker. A run with no
+                // marker descendant keeps the timeout armed as the backstop for
+                // a non-marker descendant that holds the pipes open.
+                if (timeout) clearTimeout(timeout);
+              }
               // A preserved same-group descendant can inherit the stdio pipes
               // and hold "close" open forever. Close our read ends only when
               // the reaper actually saw such a descendant, so a run with no
