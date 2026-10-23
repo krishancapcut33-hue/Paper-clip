@@ -39,6 +39,7 @@ const mockReleaseRunLease = vi.hoisted(() => vi.fn(async () => undefined));
 const mockEnvironmentRuntime = vi.hoisted(() => ({
   acquireRunLease: vi.fn(),
   realizeWorkspace: vi.fn(),
+  supportsTasks: vi.fn(async () => false),
   getDriver: vi.fn(() => ({
     releaseRunLease: mockReleaseRunLease,
   })),
@@ -1056,7 +1057,20 @@ describe("agent test-environment route", () => {
         .send({ adapterConfig: {}, environmentId: pluginEnvironment.id });
       expect(mockResolveNewAgentRunnerForCompany).toHaveBeenCalledWith(expect.anything(), "company-1",
         expect.objectContaining({ adapterType: "claude_local", defaultEnvironmentId: pluginEnvironment.id }));
-      expect(JSON.stringify(res.body)).not.toContain("is not allowed here");
+      // The driver check passes, and the resolved Runner leases the plugin
+      // environment. The probe stops at the controlled task-capability check.
+      expect(res.status, JSON.stringify(res.body)).toBe(200);
+      expect(mockEnvironmentRuntime.acquireRunLease).toHaveBeenCalledWith(expect.objectContaining({
+        adapterType: "paperclip_runner",
+        environment: expect.objectContaining({ id: pluginEnvironment.id, driver: "plugin" }),
+      }));
+      expect(mockEnvironmentRuntime.supportsTasks).toHaveBeenCalledWith({ lease: expect.objectContaining({ id: "lease-1" }) });
+      expect(res.body).toMatchObject({
+        adapterType: "paperclip_runner",
+        status: "fail",
+        checks: [expect.objectContaining({ detail: "Plugin environment does not provide native Runner task execution" })],
+      });
+      expect(testEnvironmentSpy).not.toHaveBeenCalled();
     });
 
     it("still rejects a plugin environment when selection keeps a legacy adapter, before resolving secrets", async () => {
