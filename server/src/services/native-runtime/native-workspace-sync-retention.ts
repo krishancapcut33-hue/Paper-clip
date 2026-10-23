@@ -6,6 +6,7 @@ import { heartbeatRuns, type Db } from "@paperclipai/db";
 import { logger } from "../../middleware/logger.js";
 import type { createDeliveryWorkCoordinator } from "../delivery-work-coordinator.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
+import { readProcessStartedAt } from "../hot-restart.js";
 import { workspaceExportCauses } from "../workspace-recovery-source.js";
 import { nativeWorkspaceFinalizationLockKey } from "./native-workspace-finalization-ownership.js";
 import { NATIVE_WORKSPACE_OWNER_UNVERIFIED } from "./native-workspace-finalization-recovery-state.js";
@@ -35,6 +36,12 @@ export type NativeWorkspaceSyncRetentionOptions = {
   now?: () => Date;
   stateRoot?: string;
   shouldContinue?: () => boolean;
+  processProbe?: ProcessProbe;
+};
+
+export type ProcessProbe = {
+  mayBeAlive: (pid: number) => boolean;
+  startedAt: (pid: number) => Promise<string | null>;
 };
 
 export type NativeWorkspaceSyncRetentionResult = {
@@ -56,6 +63,8 @@ type RunRow = {
   status: string;
   finished_at: string | Date | null;
   process_pid: number | null;
+  process_group_id: number | null;
+  process_started_at: string | Date | null;
   controller_live: boolean;
   owner_present: boolean;
   reference: unknown;
@@ -131,13 +140,13 @@ function finalizationBlocker(row: {
 
 async function retentionBlocker(
   tx: Tx,
-  input: { runId: string; run: RunRow; settledBefore: Date },
+  input: { runId: string; run: RunRow; settledBefore: Date; processProbe: ProcessProbe },
 ): Promise<string | null> {
   const { runId, run } = input;
   const finishedAt = run.finished_at ? new Date(run.finished_at) : null;
   if (!SETTLED_RUN_STATUSES.includes(run.status)) return "run_unsettled";
   if (!finishedAt || finishedAt >= input.settledBefore) return "recently_finished";
-  if (run.process_pid !== null) return "process_live";
+  if (await runProcessMayBeLive(tx, input)) return "process_live";
   if (run.controller_live) return "controller_live";
   if (run.owner_present) return "finalization_owner";
   const reference = readNativeWorkspaceSyncReference(run.reference);
@@ -207,9 +216,38 @@ async function retentionBlocker(
   return null;
 }
 
+const defaultProcessProbe: ProcessProbe = {
+  mayBeAlive: (pid) => {
+    try {
+      process.kill(pid, 0);
+      return true;
+    } catch (error) {
+      return (error as NodeJS.ErrnoException).code !== "ESRCH";
+    }
+  },
+  startedAt: (pid) => readProcessStartedAt(pid).catch(() => null),
+};
+
+async function runProcessMayBeLive(
+  tx: Tx,
+  input: { runId: string; run: RunRow; processProbe: ProcessProbe },
+): Promise<boolean> {
+  const { run, processProbe } = input;
+  if (run.process_pid === null && run.process_group_id === null) return false;
+  const leases = (await tx.execute(sql`
+    select provider from environment_leases where company_id = ${run.company_id} and heartbeat_run_id = ${input.runId}
+  `)) as unknown as Array<{ provider: string }>;
+  if (leases.length > 0 && leases.every((lease) => lease.provider !== "local")) return false;
+  if (run.process_group_id !== null && processProbe.mayBeAlive(-run.process_group_id)) return true;
+  if (run.process_pid === null || !processProbe.mayBeAlive(run.process_pid)) return false;
+  if (!run.process_started_at) return true;
+  const observed = await processProbe.startedAt(run.process_pid);
+  return !observed || new Date(observed).getTime() === new Date(run.process_started_at).getTime();
+}
+
 async function readRun(tx: Tx, runId: string): Promise<RunRow | undefined> {
   const [run] = (await tx.execute(sql`
-    select company_id, status, finished_at, process_pid,
+    select company_id, status, finished_at, process_pid, process_group_id, process_started_at,
       (controller_lease_expires_at is not null and controller_lease_expires_at >= now()) as controller_live,
       (runner_profile_json->>'nativeWorkspaceFinalizationOwner' is not null) as owner_present,
       runner_profile_json->'nativeWorkspaceSync' as reference
@@ -238,6 +276,7 @@ export function nativeWorkspaceSyncRetentionService(
       now: (options.now ?? defaults.now ?? (() => new Date()))(),
       root: path.resolve(options.stateRoot ?? defaults.stateRoot ?? nativeWorkspaceSyncStateRoot()),
       shouldContinue: options.shouldContinue ?? defaults.shouldContinue ?? (() => true),
+      processProbe: options.processProbe ?? defaults.processProbe ?? defaultProcessProbe,
     };
   }
 
@@ -248,7 +287,7 @@ export function nativeWorkspaceSyncRetentionService(
   async function expireFolder(
     root: string,
     name: string,
-    input: { settledBefore: Date; dryRun: boolean },
+    input: { settledBefore: Date; dryRun: boolean; processProbe: ProcessProbe },
     result: NativeWorkspaceSyncRetentionResult,
   ) {
     const skip = (reason: string) => {
@@ -270,7 +309,12 @@ export function nativeWorkspaceSyncRetentionService(
       const run = initial ? await readRun(tx, name) : undefined;
       if (initial && !run) return { reason: "run_changed" };
       if (run) {
-        const reason = await retentionBlocker(tx, { runId: name, run, settledBefore: input.settledBefore });
+        const reason = await retentionBlocker(tx, {
+          runId: name,
+          run,
+          settledBefore: input.settledBefore,
+          processProbe: input.processProbe,
+        });
         if (reason) return { reason };
       }
       if (input.dryRun) return { trash: null };
@@ -329,7 +373,7 @@ export function nativeWorkspaceSyncRetentionService(
       result.checked++;
       cursor = name;
       try {
-        await expireFolder(config.root, name, { settledBefore, dryRun: config.dryRun }, result);
+        await expireFolder(config.root, name, { settledBefore, dryRun: config.dryRun, processProbe: config.processProbe }, result);
       } catch (err) {
         result.failed++;
         logger.warn({ err, runId: name }, "native workspace sync retention skipped a folder");

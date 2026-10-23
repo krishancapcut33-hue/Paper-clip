@@ -53,6 +53,9 @@ type SeedInput = {
   reference?: boolean;
   owner?: boolean;
   processPid?: number | null;
+  processGroupId?: number | null;
+  processStartedAt?: Date | null;
+  leaseProvider?: string | null;
   controllerLeaseDaysFromNow?: number | null;
   finalization?: {
     phase: string;
@@ -78,6 +81,7 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
   }, 20_000);
 
   afterEach(async () => {
+    livePids = new Map();
     await db.delete(issueRecoveryActions);
     await db.delete(nativeRunFinalizations);
     await db.delete(environmentLeases);
@@ -142,6 +146,8 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
       nativeIssueId: issue!.id,
       finishedAt: finishedDaysAgo === null ? null : new Date(now.getTime() - finishedDaysAgo * DAY_MS),
       processPid: input.processPid ?? null,
+      processGroupId: input.processGroupId ?? null,
+      processStartedAt: input.processStartedAt ?? null,
       controllerLeaseExpiresAt: input.controllerLeaseDaysFromNow == null
         ? null
         : new Date(now.getTime() + input.controllerLeaseDaysFromNow * DAY_MS),
@@ -162,12 +168,13 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
           : new Date(now.getTime() + finalization.nextAttemptDaysFromNow * DAY_MS),
       });
     }
-    if (input.leaseMetadata || input.leasePolicy) {
+    if (input.leaseMetadata || input.leasePolicy || input.leaseProvider !== undefined) {
       await db.insert(environmentLeases).values({
         id: leaseId,
         companyId,
         heartbeatRunId: runId,
         status: "released",
+        provider: input.leaseProvider ?? null,
         leasePolicy: input.leasePolicy ?? "ephemeral",
         metadata: input.leaseMetadata ?? {},
       });
@@ -189,8 +196,16 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
     return { companyId, runId, folder };
   }
 
+  const processStart = new Date(now.getTime() - 20 * DAY_MS);
+  let livePids = new Map<number, string | null>();
+
+  const processProbe = {
+    mayBeAlive: (pid: number) => livePids.has(pid),
+    startedAt: async (pid: number) => livePids.get(pid) ?? null,
+  };
+
   function service() {
-    return nativeWorkspaceSyncRetentionService(db, { stateRoot, now: () => now });
+    return nativeWorkspaceSyncRetentionService(db, { stateRoot, now: () => now, processProbe });
   }
 
   async function expectKept(input: SeedInput, reason: string) {
@@ -249,8 +264,60 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
     await expectKept({ runStatus: "running", finishedDaysAgo: null }, "run_unsettled");
   });
 
-  it("keeps runs with a live process", async () => {
-    await expectKept({ processPid: 1234 }, "process_live");
+  it("keeps runs whose local process is still alive", async () => {
+    livePids.set(1234, processStart.toISOString());
+    await expectKept({ processPid: 1234, processStartedAt: processStart, leaseProvider: "local" }, "process_live");
+  });
+
+  it("keeps runs whose local process is alive with an unreadable start time", async () => {
+    livePids.set(1234, null);
+    await expectKept({ processPid: 1234, processStartedAt: processStart }, "process_live");
+  });
+
+  it("keeps runs whose local process group is still alive", async () => {
+    livePids.set(-4321, null);
+    await expectKept({ processPid: 4321, processGroupId: 4321 }, "process_live");
+  });
+
+  it("keeps a running run that still records a process", async () => {
+    livePids.set(1234, processStart.toISOString());
+    await expectKept({ runStatus: "running", finishedDaysAgo: null, processPid: 1234 }, "run_unsettled");
+  });
+
+  it("deletes a terminal run whose recorded local process has exited", async () => {
+    const { folder } = await seed({
+      runStatus: "failed",
+      finalization: { phase: "terminal_failure" },
+      processPid: 1234,
+      processGroupId: 1234,
+      processStartedAt: processStart,
+      leaseProvider: "local",
+    });
+    expect((await service().tick()).expired).toBe(1);
+    expect(await exists(folder)).toBe(false);
+  });
+
+  it("deletes a terminal run whose recorded pid was recycled by another process", async () => {
+    livePids.set(1234, new Date(now.getTime() - DAY_MS).toISOString());
+    const { folder } = await seed({ processPid: 1234, processStartedAt: processStart });
+    expect((await service().tick()).expired).toBe(1);
+    expect(await exists(folder)).toBe(false);
+  });
+
+  it("deletes a terminal run whose stale pid came from a destroyed sandbox", async () => {
+    livePids.set(1234, processStart.toISOString());
+    livePids.set(-1234, null);
+    const { folder } = await seed({
+      runStatus: "cancelled",
+      finalization: { phase: "terminal_failure" },
+      processPid: 1234,
+      processGroupId: 1234,
+      processStartedAt: processStart,
+      leaseProvider: "daytona",
+      leaseMetadata: { remoteExecutionTermination: { state: "destroyed" } },
+    });
+    expect((await service().tick()).expired).toBe(1);
+    expect(await exists(folder)).toBe(false);
   });
 
   it("keeps runs with a live controller lease", async () => {

@@ -115,7 +115,8 @@ the window, is removed when one of these holds:
 - no run with that id exists;
 - the run has no valid workspace sync reference and is settled: it `succeeded`,
   `failed`, was `cancelled`, `timed_out` or `interrupted`, finished before the
-  window, has no process, no live controller lease and no finalization owner receipt;
+  window, has no live process, no live controller lease and no finalization owner
+  receipt;
 - the run is settled as above, and also:
   - its native run finalization, if any, has no lease owner or scheduled retry and is
     `committed`, or `terminal_failure` with no recovery state or `blocked`;
@@ -125,6 +126,12 @@ the window, is removed when one of these holds:
   - its referenced lease was destroyed, or no retained workspace recovery of the run
     is scheduled, running, awaiting evidence, queued or recovering;
   - historical recovery adoption has no pending work for the run.
+
+Failed native runs can keep their recorded process ID after they finish. A recorded
+process blocks removal only while it can still be the run's own process: the run has a
+local lease or no lease, and the process ID or process group still exists on this
+host with the recorded start time (or a start time that cannot be read). A process ID
+from a remote sandbox, or one the operating system reused, does not block removal.
 
 Each folder is checked in one transaction that holds the run's finalization
 ownership lock, so it never races a finalization or export of the same run. A held
