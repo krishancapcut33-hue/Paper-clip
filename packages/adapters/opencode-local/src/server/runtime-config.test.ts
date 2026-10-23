@@ -178,17 +178,62 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     await prepared.cleanup();
   });
 
-  it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL", async () => {
-    const configHome = await makeConfigHome({ permission: { read: "allow" } });
+  it("pins small_model from PAPERCLIP_OPENCODE_SMALL_MODEL over the configured model", async () => {
+    const configHome = await makeConfigHome({
+      permission: { read: "allow" },
+      small_model: "ollama/qwen3:8b",
+    });
     const prepared = await prepareOpenCodeRuntimeConfig({
       env: { XDG_CONFIG_HOME: configHome, PAPERCLIP_OPENCODE_SMALL_MODEL: "example/model-a" },
-      config: {},
+      config: { model: "ollama/qwen3-coder:30b-32k" },
     });
     cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
     const runtimeConfig = JSON.parse(
       await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
     ) as { small_model?: string };
     expect(runtimeConfig.small_model).toBe("example/model-a");
+    expect(prepared.notes).toContain("Pinned OpenCode small_model to example/model-a.");
+    await prepared.cleanup();
+  });
+
+  it("defaults small_model to the configured model when no override is set", async () => {
+    const configHome = await makeConfigHome({
+      permission: { read: "allow" },
+      small_model: "ollama/qwen3:8b",
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: { model: "ollama/qwen3-coder:30b-32k" },
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const rawConfig = await fs.readFile(
+      path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"),
+      "utf8",
+    );
+    const runtimeConfig = JSON.parse(rawConfig) as { small_model?: string };
+    expect(runtimeConfig.small_model).toBe("ollama/qwen3-coder:30b-32k");
+    expect(rawConfig).not.toContain("qwen3:8b");
+    expect(prepared.notes).toContain(
+      "Defaulted OpenCode small_model to the run model ollama/qwen3-coder:30b-32k.",
+    );
+    await prepared.cleanup();
+  });
+
+  it("keeps the global small_model when there is no override or configured model", async () => {
+    const configHome = await makeConfigHome({
+      permission: { read: "allow" },
+      small_model: "ollama/qwen3:8b",
+    });
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome },
+      config: {},
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    const runtimeConfig = JSON.parse(
+      await fs.readFile(path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "opencode.json"), "utf8"),
+    ) as { small_model?: string };
+    expect(runtimeConfig.small_model).toBe("ollama/qwen3:8b");
+    expect(prepared.notes.some((note) => note.includes("small_model"))).toBe(false);
     await prepared.cleanup();
   });
 
