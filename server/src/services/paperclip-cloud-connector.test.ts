@@ -32,8 +32,6 @@ const subject = "user_test";
 const originRejectionContract = JSON.parse(readFileSync(
   new URL("./fixtures/cloud-connector-origin-rejection.json", import.meta.url), "utf8",
 )) as { status: number; body: { error: string } };
-// Captured from the producer's broker test: the provider rejected the refresh
-// grant (revoked, expired, rotated, or no longer matching the profile).
 const refreshReauthorizationContract = JSON.parse(readFileSync(
   new URL("./fixtures/cloud-connector-refresh-reauthorization.json", import.meta.url), "utf8",
 )) as { status: number; body: { error: string } };
