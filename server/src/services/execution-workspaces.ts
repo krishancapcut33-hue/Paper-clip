@@ -5,7 +5,7 @@ import { measureRunTransaction } from "./execution-transaction-timing.js";
 import { measureRunPhase } from "./execution-preparation-timing.js";
 import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "./task-workspace-access.js";
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
-import { expireReconstructableGitWorkspace, hasPendingGitExpiration } from "./git-workspace-expiration.js";
+import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration } from "./git-workspace-expiration.js";
 import type { StorageService } from "../storage/types.js";
 import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure } from "./git-workspace-restoration.js";
 import { parseObject } from "../adapters/utils.js";
@@ -299,7 +299,7 @@ export type ExecutionWorkspaceServiceOptions = {
   gitCacheExpirationEnabled?: boolean;
   gitBaseExpirationEnabled?: boolean;
   gitCacheExpirationDryRun?: boolean;
-  gitRestorePoints?: { storage: StorageService; terminalDelayMs: number; keyDurable: boolean };
+  gitRestorePoints?: { storage: StorageService; terminalDelayMs: number; keyDurable: boolean; idleMs?: number | null };
   terminalWorkspaceInspectionBackoffMs?: number;
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
   now?: () => Date;
@@ -3325,6 +3325,30 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
                 workspace.metadata as Record<string, unknown> | null,
               ),
             });
+          }
+          const idleMs = opts.gitRestorePoints?.idleMs;
+          if (sourceIssue && idleMs && !reopenPending && opts.gitCacheExpirationEnabled && workspace.providerType !== "plugin"
+            && !isClosedExecutionWorkspaceStatus(workspace.status)
+            && workspace.mode === "isolated_workspace" && workspace.strategyType === "git_worktree") {
+            const lastActivityAt = await gitWorkspaceLastActivityAt(db, workspace);
+            const idleDueAt = (lastActivityAt?.getTime() ?? 0) + idleMs;
+            if (idleDueAt <= now().getTime()) {
+              const expiration = await expireReconstructableGitWorkspace(db, workspace, {
+                dryRun: opts.gitCacheExpirationDryRun ?? false, expireBase: opts.gitBaseExpirationEnabled ?? false,
+                now: now(), signal, beforeDelete: opts.beforeTerminalWorkspaceCleanup,
+                idleCutoff: new Date(now().getTime() - idleMs),
+                restorePoint: { storage: opts.gitRestorePoints!.storage, notBefore: new Date(idleDueAt),
+                  keyDurable: opts.gitRestorePoints!.keyDurable },
+              });
+              if (expiration.candidate) result.eligible += 1;
+              if (expiration.expired) result.archived += 1;
+              else terminalWorkspaceDeadlines.set(workspace.id, now().getTime() + 60 * 60 * 1000);
+              logger.info({ event: "execution_workspace.git_cache_expiration", executionWorkspaceId: workspace.id,
+                companyId: workspace.companyId, dryRun: opts.gitCacheExpirationDryRun ?? false, idle: true, ...expiration },
+              "Git workspace cache expiration inspected");
+              continue;
+            }
+            terminalWorkspaceDeadlines.set(workspace.id, idleDueAt);
           }
           result.skippedNonTerminalTree += 1;
           continue;
