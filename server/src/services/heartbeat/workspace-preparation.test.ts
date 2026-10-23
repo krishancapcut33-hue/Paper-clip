@@ -177,18 +177,20 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     expect(call).not.toHaveBeenCalled();
   });
 
-  it("keeps a fresh projectless reservation stable through repeated preparation", async () => {
+  it.each([false, true])("keeps a fresh task reservation stable through repeated preparation (project: %s)", async project => {
     const { input, issue, envOrchestrator } = await fixture();
-    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
-    const pluginKey = "test.fresh-projectless";
+    if (!project) await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, issue.id));
+    const pluginKey = "test.fresh-task";
     await db.insert(plugins).values({ pluginKey, packageName: "test-tasks", version: "1.0.0", apiVersion: 1,
       status: "ready", categories: ["workspace"], manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0",
         displayName: "Tasks", description: "Tasks", author: "Test", categories: ["workspace"],
         capabilities: ["environment.drivers.register"], entrypoints: { worker: "./worker.js" },
         environmentDrivers: [{ driverKey: "tasks", displayName: "Task VM", configSchema: { type: "object" }, supportsTasks: true, freshWorkspaceVersion: 1 }] } });
     input.agent.adapterType = "paperclip_runner";
-    input.task.issueRef = { ...input.task.issueRef!, projectId: null, projectWorkspaceId: null };
-    input.task.context = { issueId: issue.id };
+    if (!project) {
+      input.task.issueRef = { ...input.task.issueRef!, projectId: null, projectWorkspaceId: null };
+      input.task.context = { issueId: issue.id };
+    }
     input.task.freshWorkspace = { mode: "fresh_isolated_workspace", retryIntentId: input.run.id, sourceRunId: input.run.id, retainedSourceIds: [] };
     input.policy.requestedExecutionWorkspaceMode = input.policy.effectiveExecutionWorkspaceMode = "isolated_workspace";
     input.config.mergedConfig = { workspaceStrategy: { type: "project_primary" } };
@@ -201,7 +203,9 @@ describe.skipIf(!support.supported)("heartbeat workspace preparation boundary", 
     expect(read).toHaveBeenCalledWith(input.agent.companyId, input.run.id);
     expect(acquire).toHaveBeenCalledTimes(2);
     for (const [args] of acquire.mock.calls) expect(args.persistedExecutionWorkspace).toMatchObject({ id: input.run.id,
-      providerType: "adapter_managed", metadata: { runnerTaskFreshWorkspace: { attemptId: input.run.id } } });
+      providerType: "adapter_managed", projectId: project ? issue.projectId : null,
+      projectWorkspaceId: project ? issue.projectWorkspaceId : null,
+      metadata: { runnerTaskFreshWorkspace: { attemptId: input.run.id } } });
     const rows = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, input.agent.companyId));
     expect(rows).toHaveLength(1);
   });

@@ -92,7 +92,9 @@ export async function reserveFreshPluginTaskWorkspace(input: {
   db: Db; companyId: string; issueId: string; runId: string; agentId: string; responsibleUserId: string | null;
   fresh: PluginFreshWorkspace; expectedBindingRevision: number;
   owner: Record<string, unknown>;
+  source?: { projectId: string | null; projectWorkspaceId: string | null; repoUrl: string | null; baseRef: string | null };
 }) {
+  const source = input.source ?? { projectId: null, projectWorkspaceId: null, repoUrl: null, baseRef: null };
   return input.db.transaction(async tx => {
     const [task] = await tx.select().from(issues).where(and(eq(issues.id, input.issueId),
       eq(issues.companyId, input.companyId))).for("update");
@@ -103,14 +105,15 @@ export async function reserveFreshPluginTaskWorkspace(input: {
     await assertTaskWorkspaceExecutionAccess(tx, { type: "agent", source: "agent_jwt",
       companyId: input.companyId, agentId: input.agentId, runId: input.runId,
       onBehalfOfUserId: input.responsibleUserId === "local-board" ? null : input.responsibleUserId,
-    }, input.companyId, { issueId: input.issueId });
+    }, input.companyId, { issueId: input.issueId, projectWorkspaceId: source.projectWorkspaceId });
     const [reserved] = await tx.select().from(executionWorkspaces).where(and(
       eq(executionWorkspaces.companyId, input.companyId), eq(executionWorkspaces.sourceIssueId, input.issueId),
       eq(executionWorkspaces.id, input.fresh.attemptId)));
     if (reserved) {
       if (task.executionWorkspaceId !== reserved.id || reserved.providerType !== "adapter_managed" ||
           !isDeepStrictEqual(reserved.metadata?.runnerTaskFreshWorkspace, input.fresh) ||
-          !isDeepStrictEqual(reserved.metadata?.runnerTaskWorkspaceOwner, input.owner))
+          !isDeepStrictEqual(reserved.metadata?.runnerTaskWorkspaceOwner, input.owner) ||
+          Object.entries(source).some(([key, value]) => reserved[key as keyof typeof source] !== value))
         throw conflict("Task workspace binding changed; retry preparation");
       return reserved.id;
     }
@@ -118,7 +121,7 @@ export async function reserveFreshPluginTaskWorkspace(input: {
       throw conflict("Task workspace binding changed; retry preparation");
     await notifyTerminalWorkspaceWork(tx, `workspace:${input.fresh.attemptId}`);
     await tx.insert(executionWorkspaces).values({ id: input.fresh.attemptId,
-      companyId: input.companyId, sourceIssueId: input.issueId, projectId: null, projectWorkspaceId: null,
+      companyId: input.companyId, sourceIssueId: input.issueId, ...source,
       mode: "isolated_workspace", strategyType: "project_primary", name: "Fresh task workspace", status: "active",
       providerType: "adapter_managed", cwd: `/workspaces/${input.fresh.attemptId}`,
       metadata: { runnerTaskFreshWorkspace: input.fresh, runnerTaskWorkspaceOwner: input.owner },
