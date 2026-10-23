@@ -1,9 +1,11 @@
+import { environmentTaskOperationSchema } from "@paperclipai/plugin-sdk";
 import type { Db } from "@paperclipai/db";
 import type { Environment, EnvironmentLease } from "@paperclipai/shared";
 import { adapterSupportsRemoteManagedEnvironments } from "@paperclipai/shared";
 import {
   adapterExecutionTargetToRemoteSpec,
   type AdapterExecutionTarget,
+  type SandboxLeaseAcquisition,
 } from "@paperclipai/adapter-utils/execution-target";
 import type { DuplexObservabilityRecorder } from "@paperclipai/adapter-utils/duplex-observability";
 import {
@@ -71,6 +73,40 @@ function toBoolean(value: unknown): boolean | undefined {
   return typeof value === "boolean" ? value : undefined;
 }
 
+function sandboxLeaseAcquisitionFromMetadata(
+  value: unknown,
+  providerLeaseId: string | null | undefined,
+): SandboxLeaseAcquisition | null {
+  if (!value || typeof value !== "object" || Array.isArray(value)) return null;
+  const candidate = value as Record<string, unknown>;
+  if (
+    candidate.outcome !== "created" &&
+    candidate.outcome !== "resumed" &&
+    candidate.outcome !== "replacement"
+  ) return null;
+  const resolvedProviderLeaseId =
+    typeof candidate.providerLeaseId === "string" && candidate.providerLeaseId
+      ? candidate.providerLeaseId
+      : providerLeaseId;
+  if (!resolvedProviderLeaseId) return null;
+  const reason = candidate.reason;
+  if (
+    reason !== undefined &&
+    reason !== "not_found" &&
+    reason !== "expired" &&
+    reason !== "identity_mismatch" &&
+    reason !== "resume_failed"
+  ) return null;
+  return {
+    outcome: candidate.outcome,
+    providerLeaseId: resolvedProviderLeaseId,
+    ...(typeof candidate.previousProviderLeaseId === "string"
+      ? { previousProviderLeaseId: candidate.previousProviderLeaseId }
+      : {}),
+    ...(reason ? { reason } : {}),
+  };
+}
+
 /**
  * Compute the tail of `final` that the provider did NOT already stream.
  *
@@ -90,6 +126,9 @@ function undeliveredSuffix(delivered: string, final: string): string {
   if (!final) return "";
   if (delivered.length === 0) return final;
   if (final.startsWith(delivered)) return final.slice(delivered.length);
+  // Some providers retain only the last 4 MiB while streaming the full output.
+  // Replaying that captured tail would count its usage receipts a second time.
+  if (delivered.endsWith(final)) return "";
   return final;
 }
 
@@ -216,6 +255,26 @@ export async function resolveEnvironmentExecutionTarget(input: {
     };
   }
 
+  if (input.environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
+    const lease = input.lease;
+    const runtime = input.environmentRuntime;
+    if (!lease || !runtime || lease.companyId !== input.companyId ||
+        lease.environmentId !== input.environment.id || !await runtime.supportsTasks({ lease })) {
+      throw new Error("Plugin environment does not provide native Runner task execution");
+    }
+    // The Runner resolves its workspace locally; this is only a relative scope marker.
+    return {
+      kind: "remote", transport: "sandbox", providerKey: "plugin",
+      environmentId: input.environment.id, leaseId: lease.id, remoteCwd: ".",
+      runnerLifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
+      sandboxLeaseAcquisition: { outcome: "created", providerLeaseId: lease.providerLeaseId! },
+      ...(lease.metadata?.runnerTaskProbe ? { runnerTaskProbe: lease.metadata.runnerTaskProbe as { runId: string; sessionId: string } } : {}),
+      runnerTask: operation => runtime.task({ companyId: input.companyId, leaseId: lease.id,
+        operation: environmentTaskOperationSchema.parse(operation) }),
+
+    };
+  }
+
   if (input.environment.driver === "sandbox") {
     // Keep this gate in lockstep with the shared capability metadata that the
     // environment selector and capabilities API expose; a drift here lets the
@@ -331,11 +390,39 @@ export async function resolveEnvironmentExecutionTarget(input: {
       shellCommand,
       remoteCwd,
       enableSandboxDuplexBridge,
+      runnerLifecyclePolicy:
+        parsed.config.runnerLifecycleMode === "warm"
+          ? {
+              mode: "warm",
+              idleTimeoutMs:
+                typeof parsed.config.runnerIdleTimeoutMs === "number"
+                  ? parsed.config.runnerIdleTimeoutMs
+                  : 300_000,
+            }
+          : parsed.config.runnerLifecycleMode === "per_turn"
+            ? { mode: "per_turn", idleTimeoutMs: null }
+            : null,
+      reusableLeaseConfigured: parsed.config.reuseLease === true,
+      sandboxLeaseAcquisition: sandboxLeaseAcquisitionFromMetadata(
+        input.lease?.metadata?.sandboxLeaseAcquisition,
+        input.lease?.providerLeaseId,
+      ),
       // Attach the host duplex observability recorder next to the runner. The bridge
       // binds it to the fixed observability surface. Absent keeps the no-op
       // default, so the surface stays inert on a run with no injected recorder.
       duplexObservabilityRecorder: input.duplexObservabilityRecorder ?? null,
       ...(effectiveCapabilities ? { effectiveCapabilities: Object.freeze({ ...effectiveCapabilities }) } : {}),
+      ...(input.environmentRuntime?.getRunnerIngressEndpoint && input.lease
+        ? {
+            getRunnerIngressEndpoint: ({ port, path }) =>
+              input.environmentRuntime!.getRunnerIngressEndpoint({
+                environment: input.environment as Environment,
+                lease: input.lease!,
+                port,
+                path,
+              }),
+          }
+        : {}),
       environmentId: input.environment.id ?? null,
       leaseId: input.leaseId ?? null,
       timeoutMs,
@@ -418,6 +505,7 @@ export async function resolveEnvironmentExecutionTarget(input: {
                     env: commandInput.env,
                     stdin: commandInput.stdin,
                     timeoutMs: commandInput.timeoutMs,
+                    commandTimeoutMs: commandInput.commandTimeoutMs,
                     onLog: commandInput.onLog ? onIncrementalLog : undefined,
                     // The ACP process session bridge sets `useSession` so its
                     // long-lived agent command opens the persistent session and

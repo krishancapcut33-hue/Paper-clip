@@ -1,3 +1,4 @@
+import { isOpenRouterUrl, openRouterCodexHeaders } from "./openrouter-attribution.js";
 import { randomUUID } from "node:crypto";
 import { constants } from "node:fs";
 import {
@@ -12,6 +13,8 @@ import {
   writeFile,
 } from "node:fs/promises";
 import { dirname, isAbsolute, join, relative, resolve, sep } from "node:path";
+import { parse as parseToml } from "smol-toml";
+import { codexObservabilityToml } from "./agent-observability.js";
 
 import type { NativeRuntimeContextSnapshot } from "../contracts/runtime-context.js";
 import type { NativeMcpLaunchBinding } from "./native-mcp.js";
@@ -107,9 +110,6 @@ async function protectStagedTree(root: string): Promise<void> {
     if (!opened.isDirectory()) {
       throw new Error("staged runtime context root must be a directory");
     }
-    // Keep directories owner-writable so the private staging tree can be
-    // removed without a second path-based chmod traversal.
-    await rootHandle.chmod(0o700);
     for (const entry of await readdir(root, { withFileTypes: true })) {
       const child = join(root, entry.name);
       if (entry.isDirectory()) {
@@ -130,9 +130,79 @@ async function protectStagedTree(root: string): Promise<void> {
         await childHandle.close();
       }
     }
+    // Seal directories only after their descendants. Traversal needs execute
+    // permission, but provider processes must not be able to rewrite assigned
+    // skills after the immutable snapshot has been published.
+    await rootHandle.chmod(0o555);
   } finally {
     await rootHandle.close();
   }
+}
+
+async function unprotectMaterializedTree(root: string): Promise<void> {
+  const rootHandle = await open(
+    root,
+    constants.O_RDONLY
+      | (constants.O_NOFOLLOW ?? 0)
+      | (constants.O_DIRECTORY ?? 0),
+  );
+  try {
+    const opened = await rootHandle.stat();
+    if (!opened.isDirectory()) {
+      throw new Error("materialized runtime context root must be a directory");
+    }
+    // Restore directory mutation before descending so every child can be
+    // unlinked. Handles plus O_NOFOLLOW keep cleanup inside the sealed tree.
+    await rootHandle.chmod(0o700);
+    for (const entry of await readdir(root, { withFileTypes: true })) {
+      const child = join(root, entry.name);
+      if (entry.isDirectory()) {
+        await unprotectMaterializedTree(child);
+        continue;
+      }
+      const childHandle = await open(
+        child,
+        constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0),
+      );
+      try {
+        const openedChild = await childHandle.stat();
+        if (!openedChild.isFile()) {
+          throw new Error("materialized runtime context asset must be a regular file");
+        }
+        await childHandle.chmod(0o600);
+      } finally {
+        await childHandle.close();
+      }
+    }
+  } finally {
+    await rootHandle.close();
+  }
+}
+
+async function removeMaterializedTree(
+  skillsHome: string,
+  removeTree: (path: string) => Promise<void>,
+): Promise<void> {
+  const exists = await lstat(skillsHome).then(
+    () => true,
+    (error: NodeJS.ErrnoException) => {
+      if (error.code === "ENOENT") return false;
+      throw error;
+    },
+  );
+  if (!exists) return;
+  await unprotectMaterializedTree(skillsHome);
+  await removeTree(skillsHome);
+}
+
+/** Removes a previously sealed skills snapshot at an explicit lifecycle boundary. */
+export async function releaseMaterializedNativeRuntimeSkills(
+  skillsHome: string,
+): Promise<void> {
+  await removeMaterializedTree(
+    skillsHome,
+    (path) => rm(path, { recursive: true, force: true }),
+  );
 }
 
 export async function materializeNativeRuntimeSkills(
@@ -211,7 +281,9 @@ export async function materializeNativeRuntimeSkills(
     // filesystem. Publication therefore targets only a fresh destination.
     await renameTree(stagingHome, skillsHome);
   } catch (error) {
-    await removeTree(stagingHome).catch(() => undefined);
+    // Cleanup is best effort and must not replace the publication failure that
+    // explains why no runtime snapshot was installed.
+    await removeMaterializedTree(stagingHome, removeTree).catch(() => undefined);
     throw error;
   }
 }
@@ -237,7 +309,31 @@ async function readSourceCodexAuth(sourceAuth: string): Promise<Buffer | null> {
   }
 }
 
+/** Copy only Paperclip's value-free provider projection, never host tools or hooks. */
+async function managedCodexProviderConfig(sourceHome?: string | null): Promise<string> {
+  if (!sourceHome?.trim()) return "";
+  const source = await readSourceCodexAuth(join(sourceHome, "config.toml"));
+  if (!source) return "";
+  let parsed;
+  try { parsed = parseToml(source.toString("utf8")); } catch { return ""; }
+  if (parsed.model_provider !== "paperclip") return "";
+  const providers = parsed.model_providers as Record<string, unknown> | undefined;
+  const provider = providers?.paperclip as Record<string, unknown> | undefined;
+  if (!provider || typeof provider.base_url !== "string" || provider.wire_api !== "responses"
+    || provider.requires_openai_auth !== false
+    || (provider.env_key !== undefined && provider.env_key !== "PAPERCLIP_AI_PROVIDER_KEY")) {
+    throw new Error("Invalid managed Codex provider configuration");
+  }
+  const url = new URL(provider.base_url);
+  if (url.username || url.password || url.search || url.hash
+    || (url.protocol !== "https:" && !(url.protocol === "http:" && ["localhost", "127.0.0.1", "[::1]"].includes(url.hostname)))) {
+    throw new Error("Invalid managed Codex provider URL");
+  }
+  return `model_provider = "paperclip"\n[model_providers.paperclip]\nname = "Paperclip connection"\nbase_url = ${JSON.stringify(provider.base_url)}\nwire_api = "responses"\nrequires_openai_auth = false\n${provider.env_key ? 'env_key = "PAPERCLIP_AI_PROVIDER_KEY"\n' : ""}${isOpenRouterUrl(provider.base_url) ? openRouterCodexHeaders() : ""}`;
+}
+
 export async function prepareIsolatedCodexHome(input: {
+  observability?: import("./agent-observability.js").ProviderObservabilityLaunch;
   context: NativeRuntimeContextSnapshot | null;
   codexHome: string;
   sourceCodexHome?: string | null;
@@ -249,27 +345,41 @@ export async function prepareIsolatedCodexHome(input: {
     join(input.codexHome, "skills"),
   );
 
+  const providerConfig = await managedCodexProviderConfig(input.sourceCodexHome);
   const configPath = join(input.codexHome, "config.toml");
-  await rm(configPath, { force: true });
-  await writeFile(configPath, [
-    // Codex shell snapshots serialize the provider process environment. The
-    // native runner injects short-lived provider and MCP bindings, so a
-    // snapshot would turn ephemeral credentials into durable session state.
-    "[features]",
-    "shell_snapshot = false",
-    "",
-    ...(input.nativeMcp
-      ? [
-          `[mcp_servers.${JSON.stringify(input.nativeMcp.name)}]`,
-          `url = ${JSON.stringify(input.nativeMcp.url)}`,
-          `http_headers = { Authorization = ${JSON.stringify(`Bearer ${input.nativeMcp.token}`)} }`,
-          "",
-        ]
-      : []),
-  ].join("\n"), { mode: 0o600 });
+  await mkdir(input.codexHome, { recursive: true, mode: 0o700 });
+  await chmod(input.codexHome, 0o700);
+  const temporaryConfig = join(input.codexHome, `.config-${randomUUID()}.tmp`);
+  try {
+    await writeFile(temporaryConfig, [
+      providerConfig,
+      codexObservabilityToml(input.observability?.otelConfig),
+      // Codex shell snapshots serialize the provider process environment. The
+      // native runner injects short-lived provider and MCP bindings, so a
+      // snapshot would turn ephemeral credentials into durable session state.
+      "[features]",
+      "shell_snapshot = false",
+      "",
+      ...(input.nativeMcp
+        ? [
+            `[mcp_servers.${JSON.stringify(input.nativeMcp.name)}]`,
+            `url = ${JSON.stringify(input.nativeMcp.url)}`,
+            // This endpoint is Paperclip's authenticated policy gateway, not an
+            // upstream server. It enforces connection grants and human approvals
+            // for every operation; the provider must deliver calls to that gate.
+            'default_tools_approval_mode = "approve"',
+            `http_headers = { Authorization = ${JSON.stringify(`Bearer ${input.nativeMcp.token}`)} }`,
+            "",
+          ]
+        : []),
+    ].join("\n"), { mode: 0o600, flag: "wx" });
+    await rename(temporaryConfig, configPath);
+    await chmod(configPath, 0o600);
+  } finally { await rm(temporaryConfig, { force: true }); }
 
   const targetAuth = join(input.codexHome, "auth.json");
   await rm(targetAuth, { force: true });
+  if (providerConfig) return;
   const apiKey = input.apiKey?.trim();
   if (apiKey) {
     // The pinned Codex app-server authenticates API-key automation through its
