@@ -1,3 +1,4 @@
+import type { PromptInjectionModelOutcome, PromptInjectionDetectorMetadata } from "@paperclipai/shared";
 import { createHash, createHmac, timingSafeEqual } from "node:crypto";
 import { redactEventPayload, redactSensitiveText, REDACTED_EVENT_VALUE } from "../redaction.js";
 
@@ -6,6 +7,7 @@ export class ToolContentValidationError extends Error {
     message: string,
     public readonly reasonCode: string,
     public readonly findings: string[],
+    public readonly detectorMetadata?: PromptInjectionDetectorMetadata,
   ) {
     super(message);
   }
@@ -86,6 +88,7 @@ export function signToolArguments(args: {
   canonicalArguments: string;
   approvalSnapshot?: unknown;
   executionOnApprove?: boolean;
+  identityContextId?: string;
   signingSecret?: string;
 }) {
   const payloadValue: Record<string, unknown> = {
@@ -93,6 +96,7 @@ export function signToolArguments(args: {
     toolName: args.toolName,
     canonicalArguments: args.canonicalArguments,
   };
+  if (args.identityContextId) payloadValue.identityContextId = args.identityContextId;
   if (args.executionOnApprove === true) {
     payloadValue.executionOnApprove = true;
   }
@@ -111,6 +115,7 @@ export function verifyToolArgumentsSignature(input: {
   canonicalArguments: string;
   approvalSnapshot?: unknown;
   executionOnApprove?: boolean;
+  identityContextId?: string;
   signingSecret?: string;
 }) {
   if (!input.signedArguments) return false;
@@ -127,6 +132,7 @@ export function verifyToolArgumentsSignature(input: {
     toolName: input.toolName,
     canonicalArguments: input.canonicalArguments,
   };
+  if (input.identityContextId) expectedPayloadValue.identityContextId = input.identityContextId;
   if (input.executionOnApprove !== undefined) {
     expectedPayloadValue.executionOnApprove = input.executionOnApprove;
   }
@@ -146,7 +152,7 @@ export function readSignedToolArgumentsPayload(input: {
   invocationId: string;
   toolName: string;
   signingSecret?: string;
-}): { arguments: unknown; approvalSnapshot?: unknown; executionOnApprove?: boolean } | null {
+}): { arguments: unknown; approvalSnapshot?: unknown; executionOnApprove?: boolean; identityContextId?: string } | null {
   if (!input.signedArguments) return null;
   let parsed: { payload?: unknown };
   try {
@@ -161,6 +167,7 @@ export function readSignedToolArgumentsPayload(input: {
     canonicalArguments?: unknown;
     approvalSnapshot?: unknown;
     executionOnApprove?: unknown;
+    identityContextId?: unknown;
   };
   try {
     payload = JSON.parse(parsed.payload);
@@ -176,6 +183,7 @@ export function readSignedToolArgumentsPayload(input: {
     canonicalArguments: payload.canonicalArguments,
     approvalSnapshot: payload.approvalSnapshot,
     executionOnApprove: payload.executionOnApprove === true ? true : undefined,
+    identityContextId: typeof payload.identityContextId === "string" ? payload.identityContextId : undefined,
     signingSecret: input.signingSecret,
   })) {
     return null;
@@ -185,6 +193,7 @@ export function readSignedToolArgumentsPayload(input: {
       arguments: JSON.parse(payload.canonicalArguments) as unknown,
       ...(payload.approvalSnapshot !== undefined ? { approvalSnapshot: payload.approvalSnapshot } : {}),
       ...(payload.executionOnApprove === true ? { executionOnApprove: true } : {}),
+      ...(typeof payload.identityContextId === "string" ? { identityContextId: payload.identityContextId } : {}),
     };
   } catch {
     return null;
@@ -212,11 +221,12 @@ export function summarizeToolValue(value: unknown) {
   };
 }
 
-export function validateToolContent(input: {
+export async function validateToolContent(input: {
   value: unknown;
   direction: "arguments" | "result";
   sensitiveMode?: "redact" | "block";
   promptInjectionMode?: "redact" | "block" | "ignore";
+  classifier?: (content: string) => Promise<PromptInjectionModelOutcome>;
 }) {
   const sensitiveMode = input.sensitiveMode ?? "redact";
   const promptInjectionMode = input.promptInjectionMode ?? (input.direction === "result" ? "block" : "ignore");
@@ -231,7 +241,28 @@ export function validateToolContent(input: {
     }
   }
 
-  const promptFindings = promptInjectionMode === "ignore" ? [] : scanPromptInjection(input.value);
+  let promptFindings: string[] = [];
+  let detectorMetadata: PromptInjectionDetectorMetadata | undefined;
+  if (promptInjectionMode !== "ignore") {
+    // Wrapping allows the existing recursive redactor to handle root arrays and
+    // strings, without changing the tool return value or its historical hash.
+    const outbound = redactSensitiveText(stableSerialize(redactEventPayload({ value: input.value })?.value));
+    // A verdict cannot cover text hidden from the model but still delivered to
+    // the caller by the legacy return contract. Fall back before dispatch, so a
+    // secret-named field cannot conceal instructions behind a safe verdict.
+    const outcome: PromptInjectionModelOutcome | undefined = input.classifier
+      ? outbound !== stableSerialize(redactedValue)
+        ? { status: "unavailable", reason: "input_redaction_mismatch" }
+        : await input.classifier(outbound)
+      : undefined;
+    if (outcome?.status === "classified") {
+      promptFindings = outcome.findings;
+      detectorMetadata = { detector: "model", model: outcome.model, invocationId: outcome.invocationId, policyVersion: outcome.policyVersion };
+    } else {
+      promptFindings = scanPromptInjection(input.value);
+      detectorMetadata = { detector: "regex", ...(outcome ? { fallbackReason: outcome.reason, model: outcome.model, invocationId: outcome.invocationId } : {}) };
+    }
+  }
   if (promptFindings.length > 0) {
     findings.push(...promptFindings);
     if (promptInjectionMode === "block") {
@@ -239,6 +270,7 @@ export function validateToolContent(input: {
         "Tool result contained prompt-injection instructions and was blocked",
         "prompt_injection_blocked",
         promptFindings,
+        detectorMetadata,
       );
     }
   }
@@ -247,5 +279,6 @@ export function validateToolContent(input: {
     value: redactedValue,
     summary: redactedSummary,
     findings,
+    detectorMetadata,
   };
 }

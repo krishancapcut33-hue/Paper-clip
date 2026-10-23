@@ -55,6 +55,21 @@ function callerHeaders(req: { headers: Record<string, string | string[] | undefi
   return headers;
 }
 
+async function cancellableRequest<T>(req: Request, res: Response, work: (signal: AbortSignal) => Promise<T>) {
+  const controller = new AbortController();
+  const aborted = () => controller.abort();
+  const closed = () => { if (!res.writableEnded) controller.abort(); };
+  req.once("aborted", aborted);
+  res.once("close", closed);
+  if (req.aborted || res.destroyed) controller.abort();
+  try {
+    return await work(controller.signal);
+  } finally {
+    req.removeListener("aborted", aborted);
+    res.removeListener("close", closed);
+  }
+}
+
 async function handleMcpGatewayProtocol(
   req: Request,
   res: Response,
@@ -96,11 +111,12 @@ async function handleMcpGatewayProtocol(
       return;
     }
     if (body.method === "tools/list") {
-      const tools = await toolGateway.listToolsForNamedGateway({
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForNamedGateway({
         ...locator,
         bearerToken: token,
         callerHeaders: headers,
-      });
+        signal,
+      }));
       res.json({
         jsonrpc: "2.0",
         id,
@@ -164,14 +180,15 @@ async function handleMcpGatewayProtocol(
         res.json({ jsonrpc: "2.0", id, result: { content: [{ type: "text", text: JSON.stringify(result) }], structuredContent: result, isError: false } });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
         gatewayId: locator.gatewayId ?? null,
         gatewayPublicId: locator.gatewayPublicId ?? null,
         tool: name,
         parameters: params.arguments ?? {},
         callerHeaders: req.headers,
-      });
+      }));
       const resultRecord = result.result && typeof result.result === "object" && !Array.isArray(result.result)
         ? result.result as Record<string, unknown>
         : null;
@@ -202,8 +219,19 @@ async function handleMcpGatewayProtocol(
     }
     res.status(404).json({ jsonrpc: "2.0", id, error: { code: -32601, message: "Method not found" } });
   } catch (err) {
+    if (res.destroyed) return;
     if (err instanceof ToolGatewayHttpError) {
       const id = (req.body as { id?: unknown } | undefined)?.id ?? null;
+      // Provider tool failures are MCP tool results, not successful calls or
+      // protocol errors. The service has already recorded the failed invocation.
+      if (req.body?.method === "tools/call" && err.reasonCode === "tool_error") {
+        res.json({
+          jsonrpc: "2.0",
+          id,
+          result: { content: [{ type: "text", text: err.message }], isError: true },
+        });
+        return;
+      }
       res.status(err.status).json({
         jsonrpc: "2.0",
         id,
@@ -217,12 +245,8 @@ async function handleMcpGatewayProtocol(
 
 export function mcpGatewayProtocolRoutes(toolGateway: ToolGatewayService) {
   const router = Router();
-  router.get("/mcp/gateways/:gatewayPublicId", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/mcp/gateways/${req.params.gatewayPublicId}`,
-      authentication: "bearer",
-    });
+  router.get("/mcp/gateways/:gatewayPublicId", async (_req, res) => {
+    res.set("Allow", "POST").status(405).end();
   });
   router.post("/mcp/gateways/:gatewayPublicId", async (req, res) => {
     await handleMcpGatewayProtocol(req, res, toolGateway, { gatewayPublicId: req.params.gatewayPublicId });
@@ -302,6 +326,7 @@ function outcomeCondition(outcome: string) {
 }
 
 function sendGatewayError(res: import("express").Response, err: unknown) {
+  if (res.destroyed) return;
   if (err instanceof ToolGatewayHttpError) {
     res.status(err.status).json({
       error: err.message,
@@ -440,12 +465,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
     }
   });
 
-  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
-    res.json({
-      transport: "streamable_http",
-      endpoint: `/api/tool-gateway/gateways/${req.params.gatewayId}/mcp`,
-      authentication: "bearer",
-    });
+  router.get("/tool-gateway/gateways/:gatewayId/mcp", async (_req, res) => {
+    res.set("Allow", "POST").status(405).end();
   });
 
   router.post("/tool-gateway/gateways/:gatewayId/mcp", async (req, res) => {
@@ -541,7 +562,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(401).json({ error: "Tool gateway session token is required" });
         return;
       }
-      const tools = await toolGateway.listToolsForSession(token);
+      const tools = await cancellableRequest(req, res, (signal) => toolGateway.listToolsForSession(token, { signal }));
       res.json(tools);
     } catch (err) {
       sendGatewayError(res, err);
@@ -566,16 +587,18 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
         res.status(400).json({ error: '"tool" is required and must be a string' });
         return;
       }
-      const result = await toolGateway.executeTool({
+      const toolName = body.tool;
+      const result = await cancellableRequest(req, res, (signal) => toolGateway.executeTool({
+        signal,
         sessionToken: token,
-        tool: body.tool,
+        tool: toolName,
         parameters: body.parameters ?? {},
         timeoutMs: body.timeoutMs,
         approvedActionRequestId:
           typeof body.approvedActionRequestId === "string" ? body.approvedActionRequestId : null,
         idempotencyKey: typeof body.idempotencyKey === "string" ? body.idempotencyKey : null,
         callerHeaders: callerHeaders(req),
-      });
+      }));
       res.json(result);
     } catch (err) {
       sendGatewayError(res, err);
@@ -585,7 +608,8 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   router.post("/tool-gateway/action-requests/:id/approve", async (req, res) => {
     try {
       assertBoard(req);
-      const body = (req.body ?? {}) as { companyId?: string };
+      const body = (req.body ?? {}) as { companyId?: string; rememberAction?: boolean };
+      if (body.rememberAction !== undefined && typeof body.rememberAction !== "boolean") { res.status(400).json({ error: "rememberAction must be a boolean" }); return; }
       const companyId = body.companyId ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
@@ -596,6 +620,7 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
       const actionRequest = await toolGateway.approveActionRequest({
         companyId,
         actionRequestId: req.params.id,
+        rememberAction: body.rememberAction,
         actor: {
           agentId: actor.agentId,
           userId: req.actor.type === "board" ? req.actor.userId : null,
@@ -610,17 +635,19 @@ export function toolGatewayRoutes(db: Db, toolGateway: ToolGatewayService) {
   router.post("/tool-gateway/action-requests/:id/decline", async (req, res) => {
     try {
       assertBoard(req);
-      const body = (req.body ?? {}) as { companyId?: string };
+      const body = (req.body ?? {}) as { companyId?: string; reason?: string };
       const companyId = body.companyId ?? (typeof req.query.companyId === "string" ? req.query.companyId : null);
       if (!companyId) {
         res.status(400).json({ error: "companyId is required" });
         return;
       }
+      if (body.reason !== undefined && (typeof body.reason !== "string" || body.reason.length > 4000)) { res.status(400).json({ error: "reason must be a string up to 4000 characters" }); return; }
       assertBoardMutationAccess(req, companyId);
       const actor = getActorInfo(req);
       const actionRequest = await toolGateway.declineActionRequest({
         companyId,
         actionRequestId: req.params.id,
+        reason: body.reason,
         actor: {
           agentId: actor.agentId,
           userId: req.actor.type === "board" ? req.actor.userId : null,
