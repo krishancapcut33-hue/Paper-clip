@@ -150,12 +150,12 @@ function requireSafeSegment(value: string, label: string): string {
   return value;
 }
 
+export function nativeWorkspaceSyncStateRoot(): string {
+  return path.join(resolvePaperclipInstanceRoot(), STATE_ROOT_NAME);
+}
+
 function descriptorDirectory(runId: string): string {
-  return path.join(
-    resolvePaperclipInstanceRoot(),
-    STATE_ROOT_NAME,
-    requireSafeSegment(runId, "run_id"),
-  );
+  return path.join(nativeWorkspaceSyncStateRoot(), requireSafeSegment(runId, "run_id"));
 }
 
 function descriptorPath(runId: string, descriptorSha256: string): string {

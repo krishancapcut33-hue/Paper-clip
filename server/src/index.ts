@@ -13,6 +13,10 @@ import {
   nativeHarnessBackupExpirationService,
 } from "./services/native-runtime/native-harness-backup-expiration.js";
 import { gitRestorePointRetentionService, registerGitRestorePointWork } from "./services/git-restore-point-ledger.js";
+import {
+  nativeWorkspaceSyncRetentionService,
+  registerNativeWorkspaceSyncRetentionWork,
+} from "./services/native-runtime/native-workspace-sync-retention.js";
 import { markGitRestorePointExpired } from "./services/git-restore-point-storage.js";
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
@@ -1514,6 +1518,19 @@ async function startServerWithDatabaseTeardown(
         logger.info(result, "git restore point retention");
       }
     });
+    if (config.nativeWorkspaceSyncRetentionEnabled) {
+      registerNativeWorkspaceSyncRetentionWork(deliveryWork, nativeWorkspaceSyncRetentionService(db as any, {
+        retentionDays: config.nativeWorkspaceSyncRetentionDays,
+        dryRun: config.nativeWorkspaceSyncRetentionDryRun,
+      }), {
+        shouldContinue: () => !heartbeatSchedulerStopped && !isIdleTaskDrainActive() && !isWarmStandby(),
+        onResult: (result) => {
+          if (result.candidates > 0 || result.leftoversRemoved > 0 || result.failed > 0) {
+            logger.info({ ...result, dryRun: config.nativeWorkspaceSyncRetentionDryRun }, "native workspace sync retention");
+          }
+        },
+      });
+    }
     let lastTerminalWorkspaceSkipLogAt = 0;
     const terminalWorkspaceWorker = registerTerminalWorkspaceWork(deliveryWork, {
       ...terminalWorkspaces,
