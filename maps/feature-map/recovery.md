@@ -99,6 +99,15 @@ While viewing an active or recovering task, interrupt the browser connection
 and restore it, or suspend and return to the tab. Reload is a separate check.
 The current task and run state should reconcile with the server.
 
+For a consumed review path, verify that the one automatic repair run receives
+the instruction to save a one-shot monitor before it promises another check.
+Repeat with a fresh and resumed session. Confirm a persisted schedule before
+claiming that follow-up will occur; the repair instruction does not schedule one
+by itself. The [wake regression](../../server/src/services/heartbeat/run-preparation.review-path.test.ts)
+exercises the real wake builder, serializer and prompt selector with an empty
+credential-history database boundary. It does not prove a hosted agent scheduled
+or completed the follow-up. Exhaustion still blocks for a board decision.
+
 ## Driving it
 
 Preconditions: follow the [baseline](./README.md#before-driving-a-journey).

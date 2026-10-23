@@ -98,6 +98,14 @@ Verification: `not-run` — Observe attempts/retry timing and actual useful resu
 
 Gaps: Native/Legacy and live provider takeover need separate proof; preserve existing failed callback evidence.
 
+A review-path repair uses the existing canonical disposition-repair prompt
+section. The server fixes its instruction and one-attempt bound. This adds no
+API, monitor authority, credential access, or bypass for task and approval gates.
+An ordinary wake cannot inherit that section from stale review-repair metadata.
+[Prompt controls](../../server/src/services/heartbeat/run-preparation.review-path.test.ts)
+cover fresh/resumed delivery and existing disposition repairs; hosted execution
+and durable monitor acceptance remain separate verification.
+
 ### `resolve-permitted-source-action`
 
 API: `present` — POST /api/issues/{id}/recovery-actions/resolve with exact actionId/outcome/sourceIssueStatus/resolutionNote.
