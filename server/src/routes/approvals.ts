@@ -1,4 +1,4 @@
-import { Router, type Request } from "express";
+import { Router, type Request, type Response } from "express";
 import { eq } from "drizzle-orm";
 import { heartbeatRuns, type Db } from "@paperclipai/db";
 import {
@@ -23,6 +23,7 @@ import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo, 
 import { redactEventPayload } from "../redaction.js";
 import type { PluginWorkerManager } from "../services/plugin-worker-manager.js";
 import { issueService } from "../services/issues.js";
+import { checkSecretOperationTarget } from "../services/secret-approval-hook.js";
 import { approvalReadSqlCondition, canActorReadApproval } from "../services/authorization.js";
 import { REVIEW_PATH_RECOVERY_INSTRUCTION } from "../services/recovery/review-path-recovery.js";
 
@@ -64,6 +65,39 @@ export function approvalRoutes(
   const issueApprovalsSvc = issueApprovalService(db);
   const issuesSvc = issueService(db);
   const secretsSvc = secretService(db);
+
+  /**
+   * An approved `secret_operation` row is executed verbatim, so it is validated
+   * whenever a payload is stored (create and resubmit), not at approve time,
+   * when the board has already decided. Responds 422 and returns null on failure.
+   */
+  async function normalizeSecretOperationPayload(
+    res: Response,
+    companyId: string,
+    payload: unknown,
+  ): Promise<Record<string, unknown> | null> {
+    const parsed = secretOperationPayloadSchema.safeParse(payload);
+    if (!parsed.success) {
+      res.status(422).json({
+        error: "Invalid secret_operation payload",
+        // Shape only — never echo the submitted payload back.
+        details: parsed.error.issues.map((issue) => ({
+          path: issue.path.join(".") || "(root)",
+          code: issue.code,
+        })),
+      });
+      return null;
+    }
+    const targetError = await checkSecretOperationTarget(db, companyId, parsed.data.targetId);
+    if (targetError) {
+      res.status(422).json({
+        error: "Invalid secret_operation payload",
+        details: [{ path: "targetId", code: targetError }],
+      });
+      return null;
+    }
+    return parsed.data;
+  }
   const strictSecretsMode = process.env.PAPERCLIP_SECRETS_STRICT_MODE === "true";
 
   async function lostReviewPathIssueIds(
@@ -249,21 +283,13 @@ export function approvalRoutes(
         { strictMode: strictSecretsMode },
       );
     } else if (approvalInput.type === "secret_operation") {
-      // Strict: an approved row is executed verbatim, so validate it now rather
-      // than at approve time, when the board has already made a decision.
-      const parsedSecretOperation = secretOperationPayloadSchema.safeParse(approvalInput.payload);
-      if (!parsedSecretOperation.success) {
-        res.status(422).json({
-          error: "Invalid secret_operation payload",
-          // Shape only — never echo the submitted payload back.
-          details: parsedSecretOperation.error.issues.map((issue) => ({
-            path: issue.path.join(".") || "(root)",
-            code: issue.code,
-          })),
-        });
-        return;
-      }
-      normalizedPayload = parsedSecretOperation.data;
+      const secretOperationPayload = await normalizeSecretOperationPayload(
+        res,
+        companyId,
+        approvalInput.payload,
+      );
+      if (!secretOperationPayload) return;
+      normalizedPayload = secretOperationPayload;
     }
 
     const actor = getActorInfo(req);
@@ -519,7 +545,7 @@ export function approvalRoutes(
       return;
     }
 
-    const normalizedPayload = req.body.payload
+    let normalizedPayload = req.body.payload
       ? existing.type === "hire_agent"
         ? await secretsSvc.normalizeHireApprovalPayloadForPersistence(
             existing.companyId,
@@ -528,6 +554,14 @@ export function approvalRoutes(
           )
         : req.body.payload
       : undefined;
+    if (normalizedPayload && existing.type === "secret_operation") {
+      normalizedPayload = await normalizeSecretOperationPayload(
+        res,
+        existing.companyId,
+        normalizedPayload,
+      );
+      if (!normalizedPayload) return;
+    }
     const approval = await svc.resubmit(id, normalizedPayload);
     const actor = getActorInfo(req);
     await logActivity(db, {

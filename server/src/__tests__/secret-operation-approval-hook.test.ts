@@ -4,6 +4,7 @@ import { executeApprovedSecretOperation } from "../services/secret-approval-hook
 import { redactEventPayload } from "../redaction.js";
 
 const mockSecretService = vi.hoisted(() => ({
+  getById: vi.fn(),
   update: vi.fn(),
   remove: vi.fn(),
 }));
@@ -52,6 +53,12 @@ function activityDetails(action: string) {
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mockSecretService.getById.mockResolvedValue({
+    id: TARGET,
+    companyId: "company-1",
+    scope: "company",
+    status: "active",
+  });
   mockSecretService.update.mockResolvedValue({ id: TARGET });
   mockSecretService.remove.mockResolvedValue({ id: TARGET });
   mockIssueService.addComment.mockResolvedValue({ id: "comment-1" });
@@ -185,5 +192,68 @@ describe("executeApprovedSecretOperation", () => {
 
     expect(result.ok).toBe(true);
     expect(activityActions()).toContain("approval.secret_operation.applied");
+  });
+
+  it.each(["rename", "delete"] as const)(
+    "refuses to %s a secret owned by another company",
+    async (op) => {
+      mockSecretService.getById.mockResolvedValue({
+        id: TARGET,
+        companyId: "company-2",
+        scope: "company",
+        status: "active",
+      });
+
+      const result = await executeApprovedSecretOperation(db, {
+        companyId: "company-1",
+        approvalId: "approval-1",
+        payload: op === "rename" ? { op, targetId: TARGET, newName: "x" } : { op, targetId: TARGET },
+      });
+
+      expect(result.ok).toBe(false);
+      // Same message as a missing id: the foreign secret's existence is not confirmed.
+      expect(result.error).toBe("secret not found");
+      expect(mockSecretService.update).not.toHaveBeenCalled();
+      expect(mockSecretService.remove).not.toHaveBeenCalled();
+      expect(activityActions()).toContain("approval.secret_operation.failed");
+    },
+  );
+
+  it("refuses a secret that is not company-scoped", async () => {
+    mockSecretService.getById.mockResolvedValue({
+      id: TARGET,
+      companyId: "company-1",
+      scope: "user",
+      status: "active",
+    });
+
+    const result = await executeApprovedSecretOperation(db, {
+      companyId: "company-1",
+      approvalId: "approval-1",
+      payload: { op: "delete", targetId: TARGET },
+    });
+
+    expect(result.ok).toBe(false);
+    expect(mockSecretService.remove).not.toHaveBeenCalled();
+  });
+
+  it("keeps notifying the remaining linked issues when one comment fails", async () => {
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([
+      { id: "issue-1" },
+      { id: "issue-2" },
+    ]);
+    mockIssueService.addComment
+      .mockRejectedValueOnce(new Error("issue is closed"))
+      .mockResolvedValueOnce({ id: "comment-2" });
+
+    const result = await executeApprovedSecretOperation(db, {
+      companyId: "company-1",
+      approvalId: "approval-1",
+      payload: { op: "delete", targetId: TARGET },
+    });
+
+    expect(result.ok).toBe(true);
+    expect(mockIssueService.addComment).toHaveBeenCalledTimes(2);
+    expect(mockIssueService.addComment.mock.calls[1][0]).toBe("issue-2");
   });
 });

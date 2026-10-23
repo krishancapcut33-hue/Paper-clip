@@ -35,16 +35,47 @@ function describeIssues(error: { issues: Array<{ path: PropertyKey[]; code: stri
 }
 
 async function notifyLinkedIssues(db: Db, approvalId: string, body: string): Promise<void> {
+  // Never let the notification path hide the operation's own outcome, and never
+  // let one unwritable issue swallow the notice for the others.
+  let linked: Array<{ id: string }>;
   try {
-    const issues = issueService(db);
-    const linked = await issueApprovalService(db).listIssuesForApproval(approvalId);
-    for (const issue of linked) {
-      await issues.addComment(issue.id, body, {});
-    }
+    linked = await issueApprovalService(db).listIssuesForApproval(approvalId);
   } catch (err) {
-    // Never let the notification path hide the operation's own outcome.
-    logger.error({ err, approvalId }, "secret operation hook: failed to comment on linked issues");
+    logger.error({ err, approvalId }, "secret operation hook: failed to list linked issues");
+    return;
   }
+  const issues = issueService(db);
+  for (const issue of linked) {
+    try {
+      await issues.addComment(issue.id, body, {});
+    } catch (err) {
+      logger.error(
+        { err, approvalId, issueId: issue.id },
+        "secret operation hook: failed to comment on linked issue",
+      );
+    }
+  }
+}
+
+/**
+ * `secretService.update/remove` look secrets up by id alone; the board secret
+ * routes add the tenant check in front of them. This path has no route in
+ * front, so it must do the same: only a company-scoped secret owned by the
+ * approval's own company may be touched. Returns an error string, or null.
+ */
+export async function checkSecretOperationTarget(
+  db: Db,
+  companyId: string,
+  targetId: string,
+): Promise<string | null> {
+  const secret = await secretService(db).getById(targetId);
+  // Same message for "missing" and "other company": do not confirm that a
+  // foreign id exists.
+  if (!secret || secret.companyId !== companyId || secret.status === "deleted") {
+    return "secret not found";
+  }
+  if (secret.scope !== "company") return "secret operations require a company-scoped secret";
+  return null;
 }
 
 /**
@@ -82,6 +113,17 @@ export async function executeApprovedSecretOperation(
   const secrets = secretService(db);
 
   try {
+    const targetError = await checkSecretOperationTarget(db, companyId, payload.targetId);
+    if (targetError) {
+      return fail(db, {
+        companyId,
+        approvalId,
+        op: payload.op,
+        targetId: payload.targetId,
+        error: targetError,
+      });
+    }
+
     if (payload.op === "rename") {
       // Name only. Rotation/rekeying is deliberately out of scope for this type,
       // so an approved rename can never touch the stored value.

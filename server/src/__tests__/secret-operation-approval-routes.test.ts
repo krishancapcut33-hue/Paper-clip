@@ -23,6 +23,7 @@ const mockSecretService = vi.hoisted(() => ({
   normalizeHireApprovalPayloadForPersistence: vi.fn(),
 }));
 const mockLogActivity = vi.hoisted(() => vi.fn());
+const mockCheckSecretOperationTarget = vi.hoisted(() => vi.fn());
 const mockAccessService = vi.hoisted(() => ({ decide: vi.fn() }));
 
 vi.mock("../services/authorization.js", async (importActual) => ({
@@ -37,6 +38,10 @@ vi.mock("../services/index.js", () => ({
   issueApprovalService: () => mockIssueApprovalService,
   logActivity: mockLogActivity,
   secretService: () => mockSecretService,
+}));
+
+vi.mock("../services/secret-approval-hook.js", () => ({
+  checkSecretOperationTarget: mockCheckSecretOperationTarget,
 }));
 
 const { errorHandler } = await import("../middleware/index.js");
@@ -106,6 +111,7 @@ describe("secret_operation approval routes", () => {
       ...Object.values(mockSecretService),
       ...Object.values(mockAccessService),
       mockLogActivity,
+      mockCheckSecretOperationTarget,
     ]) {
       fn.mockReset();
     }
@@ -119,6 +125,7 @@ describe("secret_operation approval routes", () => {
     mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([{ id: "issue-1" }]);
     mockIssueApprovalService.linkManyForApproval.mockResolvedValue(undefined);
     mockLogActivity.mockResolvedValue(undefined);
+    mockCheckSecretOperationTarget.mockResolvedValue(null);
     mockApprovalService.create.mockImplementation(async (companyId: string, data: any) => ({
       id: "approval-1",
       companyId,
@@ -239,5 +246,56 @@ describe("secret_operation approval routes", () => {
     expect(res.body.secretOperation.error).toBe("secret not found");
     // The requester is still woken: a failed operation must not also be a silent one.
     expect(mockHeartbeatService.wakeup).toHaveBeenCalled();
+  });
+
+  it("rejects a target that is not a company secret of this company", async () => {
+    mockCheckSecretOperationTarget.mockResolvedValue("secret not found");
+
+    const res = await request(createApp(agentActor))
+      .post("/api/companies/company-1/approvals")
+      .send({ type: "secret_operation", payload: { op: "delete", targetId: TARGET } });
+
+    expect(res.status).toBe(422);
+    expect(mockCheckSecretOperationTarget).toHaveBeenCalledWith(expect.anything(), "company-1", TARGET);
+    expect(mockApprovalService.create).not.toHaveBeenCalled();
+  });
+
+  it("validates a resubmitted payload with the same strict schema", async () => {
+    mockApprovalService.getById.mockResolvedValue(approvalRow({ status: "revision_requested" }));
+
+    const res = await request(createApp(agentActor))
+      .post("/api/approvals/approval-1/resubmit")
+      .send({ payload: { op: "delete", targetId: TARGET, newName: "not-allowed-here" } });
+
+    expect(res.status).toBe(422);
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it("checks the company of a resubmitted target", async () => {
+    mockApprovalService.getById.mockResolvedValue(approvalRow({ status: "revision_requested" }));
+    mockCheckSecretOperationTarget.mockResolvedValue("secret not found");
+
+    const res = await request(createApp(agentActor))
+      .post("/api/approvals/approval-1/resubmit")
+      .send({ payload: { op: "delete", targetId: TARGET } });
+
+    expect(res.status).toBe(422);
+    expect(mockApprovalService.resubmit).not.toHaveBeenCalled();
+  });
+
+  it("stores a valid resubmitted payload", async () => {
+    mockApprovalService.getById.mockResolvedValue(approvalRow({ status: "revision_requested" }));
+    mockApprovalService.resubmit.mockResolvedValue(approvalRow());
+
+    const res = await request(createApp(agentActor))
+      .post("/api/approvals/approval-1/resubmit")
+      .send({ payload: { op: "rename", targetId: TARGET, newName: "gateway-client-secret" } });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.resubmit).toHaveBeenCalledWith("approval-1", {
+      op: "rename",
+      targetId: TARGET,
+      newName: "gateway-client-secret",
+    });
   });
 });
