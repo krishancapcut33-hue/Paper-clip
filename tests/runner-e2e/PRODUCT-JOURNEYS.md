@@ -89,7 +89,9 @@ and independent expected result. Reinspection can decode the original bytes,
 recompute their checksum, and recompute the expected nonce, count, sum, and input
 checksum after the workspace is deleted. Only this exact four-field synthetic
 fixture is admitted, with a 4 KiB download limit and a closed receipt schema;
-arbitrary agent output is excluded. The receipt survives a later trace failure.
+arbitrary agent output is excluded. Capture follows attribution and independent
+download verification. The receipt survives later document, link, reload, or
+trace failures without turning those failed journey steps into passes.
 Historical attempts without it remain readable and do not gain retained-artifact
 proof retroactively. Descendant stories reuse context without copying the receipt.
 
