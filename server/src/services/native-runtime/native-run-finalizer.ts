@@ -2,6 +2,7 @@ import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import { reconcileMuseNativeTerminalRun } from "./muse-terminal-reconciliation.js";
 import { assertNativeCaseHandoffResult } from "./native-case-handoff.js";
 import { scheduledIssueMonitorWait } from "../issue-monitors.js";
+import { hasPublishedGitHubReview } from "../chat-channels/github/review-wait.js";
 import { readNativeMonitorDelivery } from "./native-monitor-delivery.js";
 import { isNativePlanWaitResult, readNativePlanWait } from "./native-plan-wait.js";
 import { activeIssueInteractionCondition } from "../issue-question-context.js";
@@ -10,6 +11,7 @@ import { settleExternalConversation } from "../slack-conversation-lifecycle.js";
 import { executionFailureRetryCount } from "../execution-recovery-attempt.js";
 import { readPersistedNativeFailureEvidence } from "./native-provider-failure-evidence.js";
 import { dismissAutomaticCompletionReviews } from "./automatic-completion-reviews.js";
+import { supersedeExternalReviewRequests } from "./superseded-external-review-requests.js";
 import { getNativeReviewAssignment, readNativeReviewAssignmentContext } from "./native-review-participant.js";
 import { conversationNativeDecision, isConversation } from "../agent-conversations.js";
 import { issueTreeControlService } from "../issue-tree-control.js";
@@ -1317,13 +1319,6 @@ export async function finalizeNativeRun(input: {
       .then((rows) => rows[0] ?? null);
     if (!authoritativeIssue)
       throw new Error("native_finalization_issue_missing");
-    const governanceGate = await pendingNativeGovernance({
-      db: input.db,
-      companyId: run.companyId,
-      issueId: authoritativeIssue.id,
-      runId: run.id,
-      executionState: record(authoritativeIssue.executionState),
-    });
     const externalChatResponseWaitAuthorization =
       assessment.reportedDisposition === "yielded" &&
       assessment.continuation?.kind === "response_wake"
@@ -1337,6 +1332,22 @@ export async function finalizeNativeRun(input: {
             },
           })
         : "not_applicable";
+    const monitorWaitAt = scheduledIssueMonitorWait(authoritativeIssue, run.agentId);
+    if (terminalState === "succeeded" && input.workspaceFinalizeStatus === "succeeded" &&
+      assessment.attentionRequests.length === 0 && (assessment.reportedDisposition === "done" ||
+        (assessment.reportedDisposition === "yielded" && (externalChatResponseWaitAuthorization === "authorized" ||
+          (assessment.continuation?.kind === "monitor" && monitorWaitAt !== null))))) {
+      await supersedeExternalReviewRequests(input.db, {
+        companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id, agentId: run.agentId,
+      });
+    }
+    const governanceGate = await pendingNativeGovernance({
+      db: input.db,
+      companyId: run.companyId,
+      issueId: authoritativeIssue.id,
+      runId: run.id,
+      executionState: record(authoritativeIssue.executionState),
+    });
     const boardResponseWaitOrigin =
       externalChatResponseWaitAuthorization === "not_applicable" &&
       assessment.reportedDisposition === "yielded" &&
@@ -1402,7 +1413,6 @@ export async function finalizeNativeRun(input: {
     };
     const hasPendingChildCompletion = !reviewContext &&
       await hasPendingNativeChildCompletion(input.db, childCompletionRecipient);
-    const monitorWaitAt = scheduledIssueMonitorWait(authoritativeIssue, run.agentId);
     const monitorDelivery = assessment.reportedDisposition === "yielded" &&
       assessment.continuation?.kind === "monitor" &&
       authoritativeIssue.executionRunId !== run.id && authoritativeIssue.checkoutRunId !== run.id
@@ -1433,6 +1443,11 @@ export async function finalizeNativeRun(input: {
         dependencyReadiness.unresolvedBlockerCount > 0,
       governanceResolvedForRun: resolvedInteraction !== null,
       externalChatResponseWaitAuthorization,
+      publishedExternalReview: assessment.reportedDisposition === "yielded" &&
+        (externalChatResponseWaitAuthorization === "authorized" || monitorWaitAt !== null)
+        ? await hasPublishedGitHubReview(input.db, {
+            companyId: run.companyId, issueId: authoritativeIssue.id, runId: run.id,
+          }) : false,
       boardResponseWaitAuthorized: boardResponseWait !== null,
       boardResponseWaitOrigin: boardResponseWaitOrigin !== null,
       isConversation: isConversation(authoritativeIssue),
