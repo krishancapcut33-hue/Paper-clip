@@ -68,6 +68,7 @@ import {
   eq,
   inArray,
   isNotNull,
+  isNull,
   like,
   notInArray,
   or,
@@ -60948,7 +60949,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   );
 
   it.each((["github", "telegram"] as const).flatMap(provider =>
-    (["pending", "exhausted", "wrong_generation", "paused_endpoint", "paused_after_wait", "edited_after_wait", "superseded_after_wait"] as const).map(gate => ({ provider, gate }))))(
+    (["pending", "historical_sibling", "foreign_source_hold", "automatic_scheduled", "automatic_running", "automatic_awaiting_evidence", "exhausted", "wrong_generation", "paused_endpoint", "paused_after_wait", "paused_agent_after_wait", "edited_after_wait", "superseded_after_wait"] as const).map(gate => ({ provider, gate }))))(
     "holds an ordinary $provider Retry behind its exact remote recovery: $gate", async ({ provider, gate }) => {
       const context = await failedChatRetryFixture(provider, undefined, true);
       try {
@@ -60956,7 +60957,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const leaseId = randomUUID();
         await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId,
           nativePhase: "terminal_failure", runnerProfileJson: {},
-          resultJson: { workspaceRestoreRecovery: {
+          resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
             schema: "paperclip.workspace-restore-recovery.v1", runId: context.runId, leaseIds: [leaseId],
           } },
         }).where(eq(heartbeatRuns.id, context.runId));
@@ -60967,6 +60968,15 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "retain_on_failure",
           metadata: { remoteCwd: "/home/daytona/paperclip-workspace", pendingCleanupInFlight: false },
         });
+        const priorRecovery = { ...createSystemRecovery(context.runId),
+          state: gate === "automatic_scheduled" ? "scheduled" as const
+            : gate === "automatic_running" ? "running" as const
+              : gate === "automatic_awaiting_evidence" ? "awaiting_evidence" as const : "exhausted" as const,
+          attempts: 2, retriesUsed: 1, attemptId: randomUUID(),
+          firstFailureAt: Date.now() - 1000, deadlineAt: Date.now() + 60_000,
+          preservationOperationIds: [randomUUID()],
+        };
+        const canResume = gate === "pending" || gate === "historical_sibling" || gate.startsWith("automatic_");
         await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
           kind: "active_run_watchdog", status: "resolved", ownerType: "system",
           cause: "native_continuation_requires_reconciliation", fingerprint: randomUUID(),
@@ -60974,7 +60984,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           evidence: { runId: context.runId, automaticRecovery: { replay: "blocked" },
             workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] },
             historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: context.runId, leaseIds: [leaseId] },
-            systemRecovery: { ...createSystemRecovery(context.runId), state: "exhausted" },
+            systemRecovery: priorRecovery,
           },
         });
         const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user",
@@ -60984,6 +60994,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
           sql`${issueRecoveryActions.evidence}->>'runId' = ${context.runId}`,
         ));
+        if (gate === "historical_sibling") await db.insert(issueRecoveryActions).values({
+          companyId, sourceIssueId: issueId, kind: "active_run_watchdog", status: "resolved", ownerType: "system",
+          cause: "native_session_retry_exhausted", fingerprint: randomUUID(),
+          nextAction: "Preserve the historical execution outcome.",
+          evidence: { runId: context.runId, automaticRecovery: { replay: "blocked", actionOutcome: "unknown" } },
+        });
+        if (gate.startsWith("automatic_")) expect(recoveryAction.evidence.systemRecovery).toMatchObject({
+          generationId: priorRecovery.generationId, intentId: receipt.requestId,
+          attempts: priorRecovery.attempts, retriesUsed: priorRecovery.retriesUsed,
+          attemptId: priorRecovery.attemptId, deadlineAt: priorRecovery.deadlineAt,
+          preservationOperationIds: priorRecovery.preservationOperationIds,
+        });
         if (gate === "exhausted" || gate === "wrong_generation") await db.update(issueRecoveryActions).set({
           evidence: { ...recoveryAction.evidence, systemRecovery: {
             ...recoveryAction.evidence.systemRecovery as Record<string, unknown>,
@@ -61040,8 +61062,24 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           systemRecovery: { ...recoveryAction.evidence.systemRecovery as Record<string, unknown>, state: "exhausted",
             failure: { code: "source_unavailable", retryClass: "service_required", evidenceFingerprint: "missing-source" } },
         } }).where(eq(issueRecoveryActions.id, recoveryAction.id));
+        if (gate === "foreign_source_hold") {
+          const foreignRunId = randomUUID();
+          await db.insert(heartbeatRuns).values({ id: foreignRunId, companyId, issueId, nativeIssueId: issueId,
+            agentId: context.fixture.assignedAgentId, runtimeMode: "native", nativePhase: "terminal_failure",
+            status: "failed", createdAt: new Date(Date.now() - 120_000), finishedAt: new Date(Date.now() - 60_000),
+            resultJson: { workspaceRestoreFailure: "restore_failed", workspaceRestoreRecovery: {
+              schema: "paperclip.workspace-restore-recovery.v1", runId: foreignRunId, leaseIds: [] } },
+          });
+          await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+            kind: "active_run_watchdog", status: "resolved", ownerType: "system",
+            cause: "native_session_retry_exhausted", fingerprint: randomUUID(), nextAction: "An independent source still needs recovery.",
+            evidence: { runId: foreignRunId, automaticRecovery: { replay: "blocked" } },
+          });
+        }
         if (gate === "paused_after_wait") await db.update(chatEndpoints).set({ status: "paused" })
           .where(eq(chatEndpoints.id, context.endpoint.id));
+        if (gate === "paused_agent_after_wait") await db.update(agents).set({ status: "paused" })
+          .where(eq(agents.id, context.fixture.assignedAgentId));
         if (gate === "edited_after_wait") await db.update(issueComments).set({ body: "Changed after waiting", updatedAt: new Date() })
           .where(eq(issueComments.id, String(context.action.payload.commentId)));
         if (gate === "superseded_after_wait") {
@@ -61056,7 +61094,17 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await heartbeat.resumeQueuedRuns();
           await context.service.processFailedChatRunRetries();
         }
-        if (gate !== "pending") {
+        if (!canResume) {
+          if (gate === "foreign_source_hold") {
+            expect((await readAgentWakeupRequestsById(receipt.chatActionId!))[0]).toMatchObject({
+              status: "deferred_issue_execution", payload: { executionWait: { reason: "workspace_repair_required" } },
+            });
+          } else if (gate !== "superseded_after_wait") {
+            await heartbeat.resumeQueuedRuns();
+            expect((await db.select().from(chatActions).where(eq(chatActions.id, receipt.chatActionId!)))[0])
+              .toMatchObject({ status: "failed" });
+            expect((await readAgentWakeupRequestsById(receipt.requestId!))[0]).toMatchObject({ status: "failed" });
+          }
           expect((await readAgentWakeupRequestsById(receipt.chatActionId!))[0]).toMatchObject({ runId: null });
           expect((await readHeartbeatRunsByCompanyId(companyId))
             .filter(run => run.contextSnapshot?.taskRetryRequestId === receipt.requestId)).toHaveLength(0);
@@ -61073,7 +61121,16 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect((await readHeartbeatRunsByCompanyId(companyId))
           .filter(run => run.contextSnapshot?.taskRetryRequestId === receipt.requestId)).toHaveLength(1);
 
-      } finally { await context.service.shutdown(); }
+      } finally {
+        await context.service.shutdown();
+        // Remove this case's unadmitted synthetic Retry receipts. Global
+        // notice scans must not consume another case's injected read failure.
+        await db.delete(agentWakeupRequests).where(and(
+          eq(agentWakeupRequests.companyId, context.fixture.companyId),
+          inArray(agentWakeupRequests.reason, ["task_retry", "retry_failed_run"]),
+          isNull(agentWakeupRequests.runId),
+        ));
+      }
     },
   );
 

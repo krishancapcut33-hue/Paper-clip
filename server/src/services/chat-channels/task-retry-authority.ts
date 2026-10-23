@@ -61,7 +61,9 @@ export async function taskChatRetryCanAwaitRecovery(db: Db, run: typeof heartbea
     eq(issueRecoveryActions.id, blocker.recoveryActionId),
   )).for("share", { noWait: true });
   const recovery = readSystemRecovery(action?.evidence);
+  // Attaching Retry to active automatic recovery preserves that recovery's
+  // generation and budget. Its current intentId binds this user request; the
+  // Retry receipt's generation is a different identity.
   return Boolean(recovery && recovery.sourceRunId === run.id && recovery.intentId === intentId &&
-    recovery.generationId === retry.intent.generationId &&
     ["scheduled", "running", "awaiting_evidence"].includes(recovery.state));
 }

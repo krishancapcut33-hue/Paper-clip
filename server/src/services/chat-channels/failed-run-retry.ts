@@ -1671,11 +1671,6 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         .select()
         .from(agentWakeupRequests)
         .where(eq(agentWakeupRequests.id, claimed.id));
-      if (receipt)
-        return settle("processed", {
-          code: "failed_chat_retry_durable",
-          attemptCount,
-        });
       const denied =
         error &&
         typeof error === "object" &&
@@ -1687,6 +1682,24 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           "chat_failed_run_retry_not_authorized",
           "chat_action_authorization_changed",
         ].includes(String(error.details.code));
+      if (receipt) {
+        if (denied && typeof claimed.payload.taskRetryIntentId === "string" &&
+            receipt.status === "deferred_issue_execution" && !receipt.runId &&
+            receipt.payload?.taskRetryRequestId === claimed.payload.taskRetryIntentId) {
+          // Receipt existence proves the earlier wait, not current authority.
+          // Retire only this unadmitted wake; an admitted run keeps its history.
+          await db.update(agentWakeupRequests).set({
+            status: "failed", error: "chat_failed_run_retry_not_authorized",
+            finishedAt: new Date(), updatedAt: new Date(),
+          }).where(and(eq(agentWakeupRequests.id, receipt.id),
+            eq(agentWakeupRequests.companyId, claimed.companyId),
+            eq(agentWakeupRequests.status, "deferred_issue_execution"), isNull(agentWakeupRequests.runId)));
+          return settle("failed", { code: "failed_chat_retry_not_authorized", attemptCount });
+        }
+        return settle(["skipped", "failed", "cancelled"].includes(receipt.status) ? "failed" : "processed", {
+          code: "failed_chat_retry_durable", attemptCount,
+        });
+      }
       const retryable = !denied && attemptCount < 8;
       return settle(retryable ? "issued" : "failed", {
         code: retryable

@@ -190,10 +190,10 @@ export async function reconcileTaskChatRetryReceipts(db: Db) {
         chat.payload.failedRunId === intent.sourceRunId && receipt?.status === "deferred_issue_execution" &&
         !receipt.runId && receipt.payload?.taskRetryRequestId === wake.id) {
       await db.transaction(async tx => {
-        const changed = await tx.update(chatActions).set({ status: "issued", updatedAt: new Date() })
+        await notifyChatActionWork(tx, "failed_run_retry");
+        await tx.update(chatActions).set({ status: "issued", updatedAt: new Date() })
           .where(and(eq(chatActions.id, chat.id), eq(chatActions.companyId, wake.companyId),
-            eq(chatActions.status, "processed"), eq(chatActions.updatedAt, chat.updatedAt))).returning({ id: chatActions.id });
-        if (changed.length) await notifyChatActionWork(tx, "failed_run_retry");
+            eq(chatActions.status, "processed"), eq(chatActions.updatedAt, chat.updatedAt)));
       });
     }
     const failed = chat && ["failed", "cancelled"].includes(chat.status);
