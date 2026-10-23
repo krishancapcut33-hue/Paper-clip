@@ -4741,6 +4741,11 @@ export async function runChildProcess(
   // from treating a later invocation of the same run as an orphan left by an
   // earlier one.
   const runProcessToken = randomUUID();
+  // Only a run invocation that actually carries the run marker can leave
+  // marker-bearing descendants. Bridge control commands and probes with a
+  // synthetic id skip the scan, so their latency and background infrastructure
+  // never enter the reaper's window.
+  const runOrphanMarkerMatches = opts.env.PAPERCLIP_RUN_ID === runId;
   const onLogError =
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
@@ -4837,6 +4842,20 @@ export async function runChildProcess(
           exitSignal: NodeJS.Signals | null,
         ) => {
           if (terminalReaper) return terminalReaper;
+          if (!runOrphanMarkerMatches) {
+            terminalReaper = Promise.resolve({
+              supported: true,
+              reason: null,
+              found: 0,
+              terminated: 0,
+              killed: 0,
+              survivors: 0,
+              processes: [],
+              groupTerminated: false,
+              groupKilled: false,
+            });
+            return terminalReaper;
+          }
           terminalReaper = reapRunOrphansForTerminalRun({
             runId,
             processToken: runProcessToken,
