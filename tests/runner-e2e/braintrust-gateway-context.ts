@@ -1,7 +1,5 @@
 import { validEvalLedgerId, type EvalChargeIdentity } from "./cost-ledger.js";
 
-// Braintrust SpanComponentsV4 project-log context, with no invented parent span.
-// The SDK propagates this allowlisted metadata onto the gateway's new LLM span.
 export function braintrustGatewayRequestParent(projectId: string, requestId: string, campaignId: string, identity: EvalChargeIdentity): string {
   if (!/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i.test(projectId)
       || ![requestId, campaignId, identity.executionId, identity.attemptId].every(validEvalLedgerId)
