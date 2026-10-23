@@ -813,6 +813,19 @@ describeEmbeddedPostgres("reconstructable Git expiration", () => {
     expect(await exists(f.cwd)).toBe(true);
   });
 
+  it.skipIf(process.getuid?.() === 0)("describes an unexpected failure while inspecting the base", async () => {
+    const f = await fixture();
+    const locked = path.join(f.baseCwd, "locked-dir");
+    const result = await f.expire({ beforeDelete: async () => {
+      await fs.mkdir(locked);
+      await fs.writeFile(path.join(locked, "file"), "x");
+      await fs.chmod(locked, 0o000);
+    } });
+    await fs.chmod(locked, 0o755);
+    expect(result).toMatchObject({ expired: true, baseExpired: false, skipReason: "inspection_failed",
+      failure: { code: "EACCES", at: expect.stringMatching(/^at /) } });
+  });
+
   it("redacts credentials from a described git failure", async () => {
     const error = await promisify(execFile)("git", ["-c", "http.extraHeader=Authorization: Bearer sk-secret-header",
       "ls-remote", "https://user:sk-secret-pass@127.0.0.1:9/repo.git"], { env: { ...process.env, GIT_TERMINAL_PROMPT: "0" } })
