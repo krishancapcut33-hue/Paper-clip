@@ -142,8 +142,8 @@ export async function compareAnthropicBilling(config: AnthropicBillingComparison
   const providerCost = estimateProviderCost({ provider: "anthropic", model: price.model, complete: true, tokens: providerTokens,
     cacheWrite5m, cacheWrite1h }, price);
   if (providerCost === null) throw new Error("Provider usage cannot be priced");
-  const observedTokens = emptyTokens(), completeTokens = emptyTokens();
-  const retained = { requests: 0, completeRequests: 0, partialTokenRequests: 0, missingTokenRequests: 0, unconfirmedModelRequests: 0, knownUsd: 0n };
+  const observedTokens = emptyTokens(), completeTokens = emptyTokens(), missingTokenFields = emptyTokens();
+  const retained = { requests: 0, completeRequests: 0, completeTokenRequests: 0, partialTokenRequests: 0, missingTokenRequests: 0, unconfirmedModelRequests: 0, knownUsd: 0n };
   for (const request of snapshot.requests) {
     if (request.phase === "infrastructure") continue;
     if (!manifest.executionIds.includes(request.executionId)) throw new Error("Ledger execution is outside the manifest selection");
@@ -159,17 +159,22 @@ export async function compareAnthropicBilling(config: AnthropicBillingComparison
     retained.requests++;
     if (request.receiptComplete) retained.completeRequests++;
     retained.knownUsd += usdToUnits(request.costUsd ?? "0");
-    const candidates = observations.filter(row => row.classification === request.classification && row.costUsd !== undefined
-      && usdToUnits(row.costUsd) === usdToUnits(request.costUsd ?? "0") && (!request.receiptComplete || row.final));
-    const tokenValues = candidates.filter(row => row.tokens && tokenKeys.every(key => row.tokens![key] !== undefined))
-      .map(row => Object.fromEntries(tokenKeys.map(key => [key, row.tokens![key]!])) as Tokens);
-    if (new Set(tokenValues.map(value => JSON.stringify(value))).size > 1) throw new Error("Duplicate observations disagree on tokens");
-    if (!tokenValues.length) retained.missingTokenRequests++;
-    else {
-      addTokens(observedTokens, tokenValues[0]!);
-      if (request.receiptComplete) addTokens(completeTokens, tokenValues[0]!);
-      else retained.partialTokenRequests++;
+    const tokenEvidence = observations.filter(row => row.tokens && tokenKeys.some(key => row.tokens![key] !== undefined));
+    const selected = emptyTokens();
+    for (const key of tokenKeys) {
+      const present = tokenEvidence.filter(row => row.tokens![key] !== undefined);
+      const finalized = present.filter(row => row.final);
+      const values = new Set((finalized.length ? finalized : present).map(row => row.tokens![key]!));
+      if (values.size > 1) throw new Error("Duplicate observations disagree on tokens");
+      if (values.size) selected[key] = [...values][0]!;
+      else missingTokenFields[key]++;
     }
+    addTokens(observedTokens, selected);
+    if (!tokenEvidence.length) retained.missingTokenRequests++;
+    else if (tokenEvidence.some(row => row.final && tokenKeys.every(key => row.tokens![key] !== undefined))) {
+      retained.completeTokenRequests++;
+      addTokens(completeTokens, selected);
+    } else retained.partialTokenRequests++;
   }
   if (!retained.requests) throw new Error("Ledger has no comparable model requests");
   const sources = [
@@ -187,14 +192,14 @@ export async function compareAnthropicBilling(config: AnthropicBillingComparison
       roundedTokenCostUsd: money(roundedTokenCost), roundedOtherCostUsd: money(roundedOtherCost),
       roundedTokenCostIntervalUsd: { lowerInclusive: money(roundingLower), upperExclusive: money(roundingUpper) },
       tokenEstimateConsistentWithRoundedCost: priced >= roundingLower && priced < roundingUpper },
-    retained: { ...retained, knownUsd: money(retained.knownUsd), observedTokens, completeTokens },
+    retained: { ...retained, knownUsd: money(retained.knownUsd), observedTokens, completeTokens, missingTokenFields },
     difference: { tokens: Object.fromEntries(tokenKeys.map(key => [key, providerTokens[key] - observedTokens[key]])),
       estimatedUsd: money(priced - retained.knownUsd) },
     invoiceReconciled: false, requestCostsAllocated: false, holdsReleased: false,
     limitations: [
       "This is a scope/window comparison. Matching labels do not prove that the dedicated key had no other use.",
       "Provider exports can lag and round costs. Token pricing uses the retained manifest, not an invoice or discount calculation.",
-      "Request subtotals include at most one authoritative token observation per request. Missing and partial receipts remain explicit.",
+      "Each known token category counts at most once per request, independently of cost. Final token evidence takes precedence; missing fields and partial receipts remain explicit.",
       "Do not add the provider total to the retained subtotal or distribute their difference across requests. Journals and admission holds are unchanged.",
       "Non-model export charges, infrastructure, storage and tracing remain separate from the model token comparison.",
     ],

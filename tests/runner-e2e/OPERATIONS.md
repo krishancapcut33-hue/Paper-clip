@@ -541,8 +541,10 @@ labels do not establish exclusive use of a key or completeness of its export.
 The output records source hashes, the journal checkpoint, the reporting window,
 its provisional status, provider tokens priced with the retained manifest,
 rounded provider charges, and the retained request subtotal. Complete and
-partial token receipts remain distinct. Equivalent provider/gateway observations
-count once; contradictory token observations fail. Canceled requests without a
+partial token receipts remain distinct from dollar-cost completeness. Each known
+token category counts once per request even when the cost or other token fields
+are unknown. Missing-field counts remain explicit. Final token evidence takes
+precedence over partial evidence; equally strong contradictory values fail. Canceled requests without a
 returned model identity remain explicitly unconfirmed. The token and estimated
 USD differences can be positive or negative; neither is assigned to a request.
 Non-model charges are shown separately. The report does not add the provider

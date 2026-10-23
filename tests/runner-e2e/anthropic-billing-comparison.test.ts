@@ -75,6 +75,35 @@ it("retains partial tokens once and exposes a negative provider difference", asy
     difference: { tokens: { input: -30, output: 1 }, estimatedUsd: "-0.000050000" } });
 });
 
+it.each([
+  [{ input: 40 }, { input: 0, cachedRead: 1, cachedWrite: 1, output: 1 }, 5],
+  [{ input: 40, cachedRead: 0, cachedWrite: 0, output: 2 }, { input: 0, cachedRead: 0, cachedWrite: 0, output: 0 }, 7],
+])("preserves known token fields on unpriced partial receipts", async (tokens, missingFields, expectedOutput) => {
+  const { config, limits } = await fixture();
+  const ledger = await openEvalCostLedger(config.ledger, limits);
+  try {
+    await ledger.observe({ observationId: "unpriced-token-evidence", requestId: "cancelled", provider: "anthropic", source: "gateway",
+      currency: "USD", route: "braintrust", classification: "unknown", tokens, final: false });
+  } finally { await ledger.close(); }
+  expect(await compareAnthropicBilling(config)).toMatchObject({ retained: { partialTokenRequests: 1, missingTokenRequests: 0,
+    knownUsd: "0.000326000", observedTokens: { input: 50, output: expectedOutput }, missingTokenFields: missingFields },
+    difference: { tokens: { input: -30 } }, holdsReleased: false });
+});
+
+it("prefers final token evidence while preserving an unknown dollar cost", async () => {
+  const { config, limits } = await fixture();
+  const ledger = await openEvalCostLedger(config.ledger, limits);
+  const observation = { requestId: "cancelled", provider: "anthropic", model: "claude-sonnet-5", source: "gateway" as const,
+    currency: "USD" as const, route: "braintrust" as const, classification: "unknown" as const };
+  try {
+    await ledger.observe({ ...observation, observationId: "earlier", tokens: { input: 40, output: 1 }, final: false });
+    await ledger.observe({ ...observation, observationId: "final-unpriced", tokens: { input: 40, cachedRead: 0, cachedWrite: 0, output: 2 }, final: true });
+  } finally { await ledger.close(); }
+  expect(await compareAnthropicBilling(config)).toMatchObject({ retained: { completeRequests: 1, completeTokenRequests: 2,
+    partialTokenRequests: 0, missingTokenRequests: 0, knownUsd: "0.000326000", observedTokens: { input: 50, output: 7 },
+    missingTokenFields: { input: 0, cachedRead: 0, cachedWrite: 0, output: 0 } } });
+});
+
 it("rejects duplicate token observations that disagree despite equal cost", async () => {
   const { config, limits, observation } = await fixture();
   const ledger = await openEvalCostLedger(config.ledger, limits);
