@@ -2875,6 +2875,10 @@ Native event and retry-exhaustion ingestion lock the run row to verify its
 company and agent bindings. That lock reads only those two fields. Sequence
 allocation, replay checks, and event insertion remain in the same transaction.
 
+Sandbox-provider driver lookup filters plugin manifests by driver key and kind
+in Postgres before returning rows. Install order, status and worker checks still
+select the provider. Each lookup reads current registry state without a cache.
+
 Run the deterministic native event replay with the normal server test runner:
 
 ```sh
