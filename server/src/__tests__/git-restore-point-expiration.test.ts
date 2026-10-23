@@ -242,6 +242,10 @@ describeEmbeddedPostgres("git restore point expiration", () => {
     git(f.baseCwd, "gc", "-q", "--prune=now");
     expect(() => git(f.baseCwd, "cat-file", "-e", `${unpushed}^{commit}`)).toThrow();
     expect((await f.row()).metadata?.gitCacheRestoration).toMatchObject({ restorePoint: { expiredAt: expect.any(String) } });
+    await fs.writeFile(f.cwd, "blocks the worktree\n");
+    expect(await f.reopen()).toMatchObject({ ok: false, code: "rebuild_failed" });
+    expect((await f.row()).metadata?.gitCacheRestoration).toMatchObject({ restorePoint: { expiredAt: expect.any(String) } });
+    await fs.rm(f.cwd);
     const reopened = await f.reopen();
     expect(reopened).toMatchObject({ ok: true, reopened: true, warning: GIT_RESTORE_POINT_EXPIRED_WARNING });
     expect(await exists(f.cwd)).toBe(true);
@@ -251,7 +255,7 @@ describeEmbeddedPostgres("git restore point expiration", () => {
     await expect(fs.access(path.join(f.cwd, "notes", "todo.md"))).rejects.toMatchObject({ code: "ENOENT" });
     expect((await f.row()).metadata?.gitCacheRestoration).toBeUndefined();
     const comments = await db.select().from(issueComments).where(eq(issueComments.issueId, f.issueId));
-    expect(comments.map(comment => [comment.authorType, comment.body])).toContainEqual(["system", GIT_RESTORE_POINT_EXPIRED_WARNING]);
+    expect(comments.filter(comment => comment.body === GIT_RESTORE_POINT_EXPIRED_WARNING)).toMatchObject([{ authorType: "system" }]);
   });
 
   it("reports a restore point candidate in dry run without storing anything", async () => {

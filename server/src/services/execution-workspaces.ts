@@ -3973,7 +3973,6 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         delete nextMetadata.gitCacheExpiration;
         const rebuildMetadata = { ...(row.metadata as Record<string, unknown> | null ?? {}) };
         if (freshStart) {
-          delete nextMetadata.gitCacheRestoration;
           delete rebuildMetadata.gitCacheRestoration;
           delete rebuildMetadata.gitCacheExpiration;
         }
@@ -4154,7 +4153,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         // Keep the refresh guard after reopening so normal preparation cannot
         // advance the saved checkout to upstream HEAD. Its intact branch may now
         // receive newer task commits; the next expiration records a fresh recipe.
-        if (recipe && !freshStart) nextMetadata.gitCacheRestoration = { ...nextMetadata.gitCacheRestoration as Record<string, unknown>, restoredAt: now().toISOString() };
+        if (freshStart) delete nextMetadata.gitCacheRestoration;
+        else if (recipe) nextMetadata.gitCacheRestoration = { ...nextMetadata.gitCacheRestoration as Record<string, unknown>, restoredAt: now().toISOString() };
         const activeMetadata = setMetadataReopenPendingConsumption(nextMetadata, now());
         await measureRunPhase("workspace.notification", () => notifyTerminalWorkspaceWork(tx, `workspace:${row.id}`));
         const activeRow = await tx
