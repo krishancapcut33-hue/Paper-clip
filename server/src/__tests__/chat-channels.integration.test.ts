@@ -1,5 +1,7 @@
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { requestTaskRetry } from "../services/task-retry.js";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
+import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { stageReceiptReactionRemovals } from "../services/chat-receipt-reactions.js";
 import type { Db } from "@paperclipai/db";
 import * as activityLogModule from "../services/activity-log.js";
@@ -60942,6 +60944,136 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         else process.env.PAPERCLIP_RUNNER_STATE_DIR = previous;
         rmSync(directory, { recursive: true, force: true });
       }
+    },
+  );
+
+  it.each((["github", "telegram"] as const).flatMap(provider =>
+    (["pending", "exhausted", "wrong_generation", "paused_endpoint", "paused_after_wait", "edited_after_wait", "superseded_after_wait"] as const).map(gate => ({ provider, gate }))))(
+    "holds an ordinary $provider Retry behind its exact remote recovery: $gate", async ({ provider, gate }) => {
+      const context = await failedChatRetryFixture(provider, undefined, true);
+      try {
+        const companyId = context.fixture.companyId, issueId = context.issue.id;
+        const leaseId = randomUUID();
+        await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId,
+          nativePhase: "terminal_failure", runnerProfileJson: {},
+          resultJson: { workspaceRestoreRecovery: {
+            schema: "paperclip.workspace-restore-recovery.v1", runId: context.runId, leaseIds: [leaseId],
+          } },
+        }).where(eq(heartbeatRuns.id, context.runId));
+        await db.insert(nativeRunFinalizations).values({ companyId, issueId,
+          runId: context.runId, phase: "terminal_failure" });
+        await db.insert(environmentLeases).values({ id: leaseId, companyId, issueId,
+          heartbeatRunId: context.runId, provider: "daytona", providerLeaseId: randomUUID(),
+          status: "pending_cleanup", cleanupStatus: "failed", leasePolicy: "retain_on_failure",
+          metadata: { remoteCwd: "/home/daytona/paperclip-workspace", pendingCleanupInFlight: false },
+        });
+        await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+          kind: "active_run_watchdog", status: "resolved", ownerType: "system",
+          cause: "native_continuation_requires_reconciliation", fingerprint: randomUUID(),
+          nextAction: "Verify and preserve the exact retained source before continuing.",
+          evidence: { runId: context.runId, automaticRecovery: { replay: "blocked" },
+            workspaceRestoreRecovery: { schema: "paperclip.workspace-restore-recovery.v1", leaseIds: [leaseId] },
+            historicalWorkspaceSource: { schema: "paperclip.historical-workspace-source.v1", runId: context.runId, leaseIds: [leaseId] },
+            systemRecovery: { ...createSystemRecovery(context.runId), state: "exhausted" },
+          },
+        });
+        const receipt = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user",
+          actorSource: "cloud_tenant", observedRunId: context.runId, idempotencyKey: randomUUID(),
+          prepareChatRetry: context.service.prepareFailedChatRunRetry });
+        const [recoveryAction] = await db.select().from(issueRecoveryActions).where(and(
+          eq(issueRecoveryActions.companyId, companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
+          sql`${issueRecoveryActions.evidence}->>'runId' = ${context.runId}`,
+        ));
+        if (gate === "exhausted" || gate === "wrong_generation") await db.update(issueRecoveryActions).set({
+          evidence: { ...recoveryAction.evidence, systemRecovery: {
+            ...recoveryAction.evidence.systemRecovery as Record<string, unknown>,
+            ...(gate === "exhausted" ? { state: "exhausted" } : { intentId: randomUUID() }),
+          } },
+        }).where(eq(issueRecoveryActions.id, recoveryAction.id));
+        if (gate === "paused_endpoint") await db.update(chatEndpoints).set({ status: "paused" })
+          .where(eq(chatEndpoints.id, context.endpoint.id));
+        // Keep capacity occupied so a regression cannot start a real adapter.
+        await db.update(agents).set({ adapterType: "paperclip_runner", status: "running",
+          runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+          .where(eq(agents.id, context.fixture.assignedAgentId));
+        await db.insert(heartbeatRuns).values({ companyId,
+          agentId: context.fixture.assignedAgentId, status: "running", startedAt: new Date() });
+        context.wakeup.mockImplementation(heartbeatService(db).wakeup);
+        const outcome = await context.service.processFailedChatRunRetry(receipt.chatActionId!);
+        if (["exhausted", "wrong_generation", "paused_endpoint"].includes(gate)) {
+          expect(outcome).toMatchObject({ status: "failed" });
+          expect(await readAgentWakeupRequestsById(receipt.chatActionId!)).toHaveLength(0);
+          expect((await readHeartbeatRunsByCompanyId(companyId))
+            .filter(run => run.contextSnapshot?.taskRetryRequestId === receipt.requestId)).toHaveLength(0);
+          return;
+        }
+        expect(outcome).toMatchObject({ status: "deferred" });
+        const [wake] = await readAgentWakeupRequestsById(receipt.chatActionId!);
+        expect(wake).toMatchObject({ status: "deferred_issue_execution", runId: null,
+          payload: { taskRetryRequestId: receipt.requestId, retryOfRunId: context.runId } });
+        const [intent] = await readAgentWakeupRequestsById(receipt.requestId!);
+        expect(intent).toMatchObject({ status: "deferred_issue_execution", runId: null });
+        expect((await readHeartbeatRunsByCompanyId(companyId))
+          .filter(run => run.contextSnapshot?.taskRetryRequestId === receipt.requestId)).toHaveLength(0);
+        expect((await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId)))[0])
+          .toMatchObject({ status: "pending_cleanup", cleanupStatus: "failed", metadata: { pendingCleanupInFlight: false } });
+        const retryContext = context.wakeup.mock.calls.at(-1)![1].contextSnapshot!;
+        for (const phase of ["promotion", "execution"] as const) {
+          await expect(authorizeFailedChatRunRetryWake(db, db, { phase,
+            wakeupRequestId: receipt.chatActionId!, companyId, issueId,
+            agentId: context.fixture.assignedAgentId, contextSnapshot: retryContext,
+          })).rejects.toMatchObject({ details: { code: "chat_failed_run_retry_not_authorized" } });
+        }
+        const heartbeat = heartbeatService(db);
+        await heartbeat.resumeQueuedRuns();
+        await context.service.processFailedChatRunRetries();
+        expect((await readAgentWakeupRequestsById(receipt.chatActionId!))[0])
+          .toMatchObject({ status: "deferred_issue_execution", runId: null });
+        // Model the recovery worker's validated absence receipt; this test
+        // exercises queue continuation, not the provider's absence signature.
+        const [lease] = await db.select().from(environmentLeases).where(eq(environmentLeases.id, leaseId));
+        await db.update(environmentLeases).set({ status: "released", cleanupStatus: "success", releasedAt: new Date(),
+          failureReason: "workspace_source_unavailable", metadata: { ...lease.metadata,
+            remoteExecutionTermination: remoteTerminationReceipt(lease, { providerLeaseId: lease.providerLeaseId, state: "destroyed" }),
+          } }).where(eq(environmentLeases.id, leaseId));
+        await db.update(issueRecoveryActions).set({ evidence: { ...recoveryAction.evidence,
+          systemRecovery: { ...recoveryAction.evidence.systemRecovery as Record<string, unknown>, state: "exhausted",
+            failure: { code: "source_unavailable", retryClass: "service_required", evidenceFingerprint: "missing-source" } },
+        } }).where(eq(issueRecoveryActions.id, recoveryAction.id));
+        if (gate === "paused_after_wait") await db.update(chatEndpoints).set({ status: "paused" })
+          .where(eq(chatEndpoints.id, context.endpoint.id));
+        if (gate === "edited_after_wait") await db.update(issueComments).set({ body: "Changed after waiting", updatedAt: new Date() })
+          .where(eq(issueComments.id, String(context.action.payload.commentId)));
+        if (gate === "superseded_after_wait") {
+          const replacement = await requestTaskRetry({ db, companyId, issueId, actorId: "owner-user",
+            actorSource: "cloud_tenant", observedRunId: context.runId, idempotencyKey: randomUUID(),
+            prepareChatRetry: context.service.prepareFailedChatRunRetry });
+          expect(replacement.requestId).not.toBe(receipt.requestId);
+          // Reconsider only the old action, including a delayed worker after
+          // supersession. The replacement remains owned by its own request.
+          await context.service.processFailedChatRunRetry(receipt.chatActionId!);
+        } else {
+          await heartbeat.resumeQueuedRuns();
+          await context.service.processFailedChatRunRetries();
+        }
+        if (gate !== "pending") {
+          expect((await readAgentWakeupRequestsById(receipt.chatActionId!))[0]).toMatchObject({ runId: null });
+          expect((await readHeartbeatRunsByCompanyId(companyId))
+            .filter(run => run.contextSnapshot?.taskRetryRequestId === receipt.requestId)).toHaveLength(0);
+          return;
+        }
+        const [admitted] = await readAgentWakeupRequestsById(receipt.chatActionId!);
+        expect(admitted).toMatchObject({ status: "queued" });
+        expect(admitted.runId).toBeTruthy();
+        const [successor] = await readHeartbeatRunsById(admitted.runId!);
+        expect(successor).toMatchObject({ status: "queued", retryOfRunId: context.runId,
+          contextSnapshot: { wakeCommentIds: [context.action.payload.commentId], taskRetryRequestId: receipt.requestId } });
+        await heartbeat.resumeQueuedRuns();
+        await context.service.processFailedChatRunRetries();
+        expect((await readHeartbeatRunsByCompanyId(companyId))
+          .filter(run => run.contextSnapshot?.taskRetryRequestId === receipt.requestId)).toHaveLength(1);
+
+      } finally { await context.service.shutdown(); }
     },
   );
 
