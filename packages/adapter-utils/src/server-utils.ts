@@ -5021,19 +5021,25 @@ export async function runChildProcess(
           // close handler awaits the same promise.
           void startTerminalReaper(exitCode, exitSignal)
             .then(async (reaped) => {
-              if (reaped.found > 0 || reaped.preservedSameGroup > 0) {
-                // The direct child has exited and the remaining work is cleanup,
-                // not run time. Do not let the wall-clock timeout fire during
-                // it and signal a preserved background worker. A run with no
-                // marker descendant keeps the timeout armed as the backstop for
-                // a non-marker descendant that holds the pipes open.
-                if (timeout) clearTimeout(timeout);
-              }
               // A preserved same-group descendant can inherit the stdio pipes
               // and hold "close" open forever. Close our read ends only when
               // the reaper actually saw such a descendant, so a run with no
               // marker descendant keeps the normal close semantics.
-              if (reaped.preservedSameGroup === 0) return;
+              if (reaped.preservedSameGroup === 0) {
+                // Do not clear the wall-clock timeout here unless the pipes are
+                // already closed and "close" is imminent. A same-group
+                // descendant that cleared its environment can still hold the
+                // pipes, and only the timeout's group signal will stop it.
+                const streamsClosed =
+                  (!child.stdout || child.stdout.readableEnded || child.stdout.destroyed) &&
+                  (!child.stderr || child.stderr.readableEnded || child.stderr.destroyed);
+                if (streamsClosed && timeout) clearTimeout(timeout);
+                return;
+              }
+              // We will close the pipes below, so the remaining drain is cleanup
+              // work, not run time. Do not let the wall-clock timeout fire and
+              // signal the preserved background worker.
+              if (timeout) clearTimeout(timeout);
               // The data handlers pause each stream while async onLog writes
               // drain. Wait for that work and for a quiet buffer before closing
               // the pipes, or the direct child's final output is lost.

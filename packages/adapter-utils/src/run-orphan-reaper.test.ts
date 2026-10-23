@@ -421,6 +421,55 @@ describe.skipIf(!linuxNonRoot)("runChildProcess terminal reaping", () => {
   );
 
   it.skipIf(process.platform === "win32")(
+    "keeps the timeout backstop when an env-cleared descendant holds the pipes",
+    async () => {
+      const runId = randomUUID();
+      const dir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pipe-backstop-"));
+      const pidFile = path.join(dir, "pids.json");
+      let markerPid = 0;
+      let holderPid = 0;
+      try {
+        const result = await runChildProcess(
+          runId,
+          process.execPath,
+          [
+            "-e",
+            [
+              "const fs = require('node:fs');",
+              "const { spawn } = require('node:child_process');",
+              "const marker = spawn(process.execPath, ['-e', 'setInterval(() => {}, 1000)'], { detached: true, stdio: 'ignore', env: process.env });",
+              "marker.unref();",
+              "const holder = spawn('/usr/bin/env', ['-i', '/bin/sleep', '300'], { detached: false, stdio: 'inherit', env: process.env });",
+              "holder.unref();",
+              `fs.writeFileSync(${JSON.stringify(pidFile)}, JSON.stringify({ marker: marker.pid, holder: holder.pid }));`,
+            ].join(" "),
+          ],
+          {
+            cwd: process.cwd(),
+            env: { PAPERCLIP_RUN_ID: runId },
+            timeoutSec: 0.5,
+            graceSec: 1,
+            onLog: async () => {},
+          },
+        );
+
+        // The marker descendant is reaped, but the env-cleared holder keeps
+        // the pipes. The timeout must remain armed so the run cannot hang.
+        expect(result.timedOut).toBe(true);
+        const pids = JSON.parse(await fs.readFile(pidFile, "utf8")) as { marker: number; holder: number };
+        markerPid = pids.marker;
+        holderPid = pids.holder;
+        expect(await waitForPidExit(markerPid)).toBe(true);
+        expect(await waitForPidExit(holderPid)).toBe(true);
+      } finally {
+        await forceKill(markerPid);
+        await forceKill(holderPid);
+        await fs.rm(dir, { recursive: true, force: true });
+      }
+    },
+  );
+
+  it.skipIf(process.platform === "win32")(
     "does not time out a clean exit during the stdio drain",
     async () => {
       const runId = randomUUID();
