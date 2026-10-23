@@ -9,6 +9,7 @@ import { forbidden, unprocessable } from "../errors.js";
 import { runSshCommand } from "@paperclipai/adapter-utils/ssh";
 import { parseEnvironmentDriverConfig, resolveEnvironmentDriverConfigForRuntime } from "./environment-config.js";
 import { localAgentRunnerTarget } from "../lib/agent-runner-platform.js";
+import { normalizeClaudeRunnerOptions, type AgentConfigurationWarning } from "@paperclipai/shared";
 
 export type RunnerTarget = {
   driver: string; platform?: string; architecture?: string; libc?: "glibc" | "musl" | "unknown"; glibcVersion?: string;
@@ -23,6 +24,7 @@ export interface AgentRunnerSelection {
   target?: RunnerTarget;
   /** Server-owned inactive setup drafts may precede model selection. Never use for a hire or run. */
   setupOnly?: boolean;
+  onConfigurationWarnings?: (warnings: AgentConfigurationWarning[]) => void;
 }
 
 function runnerAdaptersAvailable(harness: string, driver: string): boolean {
@@ -133,6 +135,16 @@ function resolveClaudeRunnerConfig(config: Record<string, unknown>): Record<stri
 }
 
 export function resolveNewAgentRunner(input: AgentRunnerSelection): { adapterType: string; adapterConfig: Record<string, unknown> } {
+  const result = resolveAgentRunner(input);
+  if (result.adapterType === "paperclip_runner" && agentHarnessType(result.adapterType, result.adapterConfig) === "claude_local") {
+    const normalized = normalizeClaudeRunnerOptions(input.adapterConfig ?? {});
+    result.adapterConfig = normalizeClaudeRunnerOptions(result.adapterConfig).config;
+    input.onConfigurationWarnings?.(normalized.warnings);
+  }
+  return result;
+}
+
+function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string; adapterConfig: Record<string, unknown> } {
   const adapterType = input.adapterType ?? "process";
   let config = { ...input.adapterConfig };
   const harness = agentHarnessType(adapterType, config);
