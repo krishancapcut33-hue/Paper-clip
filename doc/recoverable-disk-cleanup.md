@@ -228,7 +228,9 @@ nested clones keep working unchanged; they are not migrated.
 Each nested worktree checks out its own branch, `paperclip/<id>/<branch>`, where `<id>`
 derives from the worktree path and `<branch>` is the default branch or the configured
 branch ref, tracking `origin/<branch>`. A tag or commit ref is checked out detached, as
-before. Branch names therefore never collide between tasks. `git pull` works as before;
+before. Branch names therefore never collide between tasks. When a checkout kept under
+`.paperclip-runtime/detached-repositories/` still holds that branch, the new worktree
+uses `paperclip/<id>/r<n>/<branch>` instead, so the retained work is never reset. `git pull` works as before;
 pushing needs an explicit destination such as `git push origin HEAD:<branch>`. Adding the
 worktree, fetching and removing registrations are serialized per shared clone.
 

@@ -249,18 +249,25 @@ async function assertCommitMessageSaved(cwd: string, gitDir: string, signal?: Ab
   if (!saved.includes(message.trim())) throw new Error("uncommitted_git_message");
 }
 
+const OWNED_NESTED_REF_LIMIT = 64;
+
 async function ownedNestedRefs(linked: LinkedNestedCheckout, signal?: AbortSignal) {
-  return (await gitCacheCommand(linked.checkout, ["for-each-ref", "--format=%(objectname) %(refname)", `refs/heads/${linked.branchPrefix}`], signal))
+  const refs = (await gitCacheCommand(linked.checkout, ["for-each-ref", `--count=${OWNED_NESTED_REF_LIMIT + 1}`,
+    "--format=%(objectname) %(refname)", `refs/heads/${linked.branchPrefix}`], signal))
     .split("\n").map(line => line.trim().split(" ")).filter(([sha, ref]) => shaPattern.test(sha ?? "") && ref) as Array<[string, string]>;
+  if (refs.length > OWNED_NESTED_REF_LIMIT) throw new Error("managed_checkout_local_tip_budget");
+  return refs;
 }
 
 async function ownedNestedReflogs(linked: LinkedNestedCheckout, refs: Array<[string, string]>, signal?: AbortSignal) {
-  const commits: string[] = [];
+  const commits = new Set<string>();
   for (const [, ref] of refs) {
-    commits.push(...(await gitCacheCommand(linked.checkout, ["reflog", "show", "--format=%H", ref], signal).catch(() => ""))
-      .split("\n").map(line => line.trim()).filter(sha => shaPattern.test(sha)));
+    for (const line of (await gitCacheCommand(linked.checkout, ["reflog", "show", "--format=%H", ref], signal).catch(() => "")).split("\n")) {
+      if (shaPattern.test(line.trim())) commits.add(line.trim());
+    }
+    if (commits.size > MANAGED_CHECKOUT_LOCAL_TIP_LIMIT) throw new Error("managed_checkout_local_tip_budget");
   }
-  return commits;
+  return [...commits];
 }
 
 async function assertOwnedNestedHead(linked: LinkedNestedCheckout, signal?: AbortSignal) {
@@ -482,7 +489,7 @@ export async function assertReproducibleGitFiles(cwd: string, signal?: AbortSign
   if (!options.restorePoint && (await gitCacheCommand(cwd, ["status", "--porcelain=v1", "--untracked-files=all", "-z"], signal)).length) throw new Error("dirty_or_untracked_files");
   if ((await gitCacheCommand(cwd, ["ls-files", "-v"], signal)).split("\n").some(line => /^[a-zS] /.test(line))) throw new Error("unsupported_index_flags");
   const localConfig = await gitCacheCommand(cwd, ["config", "--local", "--name-only", "--list"], signal);
-  if (localConfig.split("\n").filter(Boolean).some(key => !/^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|remote\.origin\.(url|fetch)|branch\.[^.]+\.(remote|merge))$/.test(key))) throw new Error("unsupported_local_git_config");
+  if (localConfig.split("\n").filter(Boolean).some(key => !/^(core\.(repositoryformatversion|filemode|bare|logallrefupdates|ignorecase|precomposeunicode)|remote\.origin\.(url|fetch)|branch\..+\.(remote|merge))$/.test(key))) throw new Error("unsupported_local_git_config");
   const regenerable = await findRegenerableWorkspaceDirs(cwd, { signal });
   const ignored = (await gitCacheCommand(cwd, ["ls-files", "--others", "--ignored", "--exclude-standard", "-z"], signal)).split("\0").filter(Boolean);
   const unexplained = ignored.filter(file => !(options.preserveSettings && file === PAPERCLIP_CLAUDE_SETTINGS_FILE) && !regenerable.some(dir => file.startsWith(`${dir}/`))

@@ -1,4 +1,5 @@
 import fs from "node:fs/promises";
+import { constants } from "node:fs";
 import path from "node:path";
 import { createHash } from "node:crypto";
 import { AsyncLocalStorage } from "node:async_hooks";
@@ -35,6 +36,28 @@ async function missing(target: string) {
 
 async function canonicalPath(target: string) {
   return path.join(await fs.realpath(path.dirname(target)), path.basename(target));
+}
+
+const WORKTREE_POINTER_LIMIT = 4096;
+
+export async function readWorktreePointer(admin: string) {
+  const target = path.join(admin, "gitdir");
+  const entry = await fs.lstat(target);
+  if (!entry.isFile() || entry.nlink !== 1 || entry.size > WORKTREE_POINTER_LIMIT) throw new Error("unproven_managed_checkout");
+  const handle = await fs.open(target, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  try {
+    const stat = await handle.stat();
+    if (!stat.isFile() || stat.nlink !== 1 || stat.size > WORKTREE_POINTER_LIMIT) throw new Error("unproven_managed_checkout");
+    const buffer = Buffer.alloc(WORKTREE_POINTER_LIMIT + 1);
+    let length = 0;
+    while (length < buffer.length) {
+      const { bytesRead } = await handle.read(buffer, length, buffer.length - length, length);
+      if (bytesRead === 0) break;
+      length += bytesRead;
+    }
+    if (length > WORKTREE_POINTER_LIMIT) throw new Error("unproven_managed_checkout");
+    return buffer.subarray(0, length).toString("utf8").trim();
+  } finally { await handle.close(); }
 }
 
 export function nestedRepositoryBaseCandidates(input: { companyId: string; projectId: string; repoUrl: string }) {
@@ -88,7 +111,7 @@ export async function readLinkedNestedCheckout(checkout: string, baseCandidates?
   const gitDir = await fs.realpath((await git(real, ["rev-parse", "--absolute-git-dir"])).trim());
   const common = await fs.realpath((await git(real, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
   if (path.basename(common) !== ".git" || path.dirname(gitDir) !== path.join(common, "worktrees")) throw new Error("unproven_managed_checkout");
-  const pointer = (await fs.readFile(path.join(gitDir, "gitdir"), "utf8")).trim();
+  const pointer = await readWorktreePointer(gitDir);
   if (path.basename(pointer) !== ".git" || path.join(await fs.realpath(path.dirname(pointer)).catch(() => ""), ".git") !== path.join(real, ".git")) {
     throw new Error("unproven_managed_checkout");
   }
@@ -130,10 +153,15 @@ async function removeStaleRegistrations(base: string, checkout: string) {
     const directory = path.join(root, admin);
     const entry = await fs.lstat(directory).catch(() => null);
     if (!entry?.isDirectory() || entry.isSymbolicLink()) continue;
-    const pointer = (await fs.readFile(path.join(directory, "gitdir"), "utf8").catch(() => "")).trim();
+    const pointer = await readWorktreePointer(directory).catch(() => "");
     if (pointer !== expected || !await missing(checkout)) continue;
     await fs.rm(directory, { recursive: true, force: true });
   }
+}
+
+async function checkedOutBranches(base: string) {
+  return new Set((await git(base, ["worktree", "list", "--porcelain"])).split("\n")
+    .filter(line => line.startsWith("branch ")).map(line => line.slice("branch ".length)));
 }
 
 async function resolveStartPoint(base: string, repoRef: string | null) {
@@ -178,11 +206,14 @@ export async function addNestedRepositoryWorktree(input: {
         await git(input.base, ["worktree", "add", "--quiet", "--detach", cwd, start], { timeout: NESTED_WORKTREE_GIT_TIMEOUT_MS });
         return { branchName: null };
       }
-      const owned = `${await nestedWorktreeBranchPrefix(cwd)}${branch}`;
+      const prefix = await nestedWorktreeBranchPrefix(cwd);
+      const held = await checkedOutBranches(input.base);
+      let owned = `${prefix}${branch}`;
+      for (let attempt = 2; held.has(`refs/heads/${owned}`); attempt += 1) owned = `${prefix}r${attempt}/${branch}`;
       await git(input.base, ["check-ref-format", "--branch", owned]);
       const existing = (await git(input.base, ["rev-parse", "--verify", "-q", `refs/heads/${owned}`]).catch(() => "")).trim();
       await git(input.base, existing ? ["worktree", "add", "--quiet", cwd, owned]
-        : ["worktree", "add", "--quiet", owned.includes(".") ? "--no-track" : "--track", "-b", owned, cwd, start],
+        : ["worktree", "add", "--quiet", "--track", "-b", owned, cwd, start],
       { timeout: NESTED_WORKTREE_GIT_TIMEOUT_MS });
       return { branchName: owned };
     });
@@ -217,10 +248,11 @@ export async function restoreNestedRepositoryWorktree(input: {
       if (input.preserved?.length) await git(cwd, ["update-ref", "--no-deref", "-m", "paperclip: restore saved commit", "HEAD", input.commit]);
       if (input.branchName) {
         await git(cwd, existing ? ["checkout", "--quiet", input.branchName] : ["checkout", "--quiet", "-b", input.branchName]);
-        const upstream = input.branchName.slice(prefix.length);
-        if (!input.branchName.includes(".")
-          && (await git(cwd, ["rev-parse", "--verify", "-q", `refs/remotes/origin/${upstream}^{commit}`]).catch(() => "")).trim()) {
+        const rest = input.branchName.slice(prefix.length);
+        for (const upstream of [rest, rest.replace(/^r\d+\//, "")]) {
+          if (!(await git(cwd, ["rev-parse", "--verify", "-q", `refs/remotes/origin/${upstream}^{commit}`]).catch(() => "")).trim()) continue;
           await git(cwd, ["branch", "--quiet", `--set-upstream-to=origin/${upstream}`, input.branchName]);
+          break;
         }
       }
       await input.afterAdd(cwd);
@@ -243,7 +275,7 @@ export async function forgetExpiredNestedRepositoryWorktree(input: {
     const entry = await fs.lstat(admin).catch(() => null);
     if (entry && (!entry.isDirectory() || entry.isSymbolicLink())) throw new Error("unproven_worktree_admin");
     if (entry && await missing(input.checkout)
-      && (await fs.readFile(path.join(admin, "gitdir"), "utf8").catch(() => "")).trim() === path.join(input.checkout, ".git")) {
+      && await readWorktreePointer(admin).catch(() => "") === path.join(input.checkout, ".git")) {
       await fs.rm(admin, { recursive: true, force: true });
     }
     if (input.branchName && await missing(input.checkout)) {
@@ -277,7 +309,9 @@ export async function releaseNestedRepositoryWorktrees(worktrees: LinkedNestedCh
         await removeStaleRegistrations(worktree.base, worktree.checkout);
         const refs = (await git(worktree.base, ["for-each-ref", "--format=%(objectname) %(refname)", `refs/heads/${worktree.branchPrefix}`]))
           .split("\n").map(line => line.trim().split(" ")).filter(([sha, ref]) => /^[a-f0-9]{40}$/.test(sha ?? "") && ref);
+        const held = await checkedOutBranches(worktree.base);
         for (const [sha, ref] of refs) {
+          if (held.has(ref!)) continue;
           const unpushed = (await git(worktree.base, ["rev-list", "--max-count=1", sha!, "--not", "--remotes=origin"])).trim();
           if (unpushed) continue;
           await git(worktree.base, ["update-ref", "-d", ref!, sha!]);
