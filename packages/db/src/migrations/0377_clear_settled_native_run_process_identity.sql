@@ -1,5 +1,5 @@
 UPDATE "heartbeat_runs" AS "run"
-SET "process_pid" = NULL, "process_group_id" = NULL, "process_started_at" = NULL, "updated_at" = now()
+SET "process_pid" = NULL, "process_group_id" = NULL, "process_started_at" = NULL
 WHERE "run"."runtime_mode" = 'native'
   AND "run"."status" IN ('failed', 'cancelled', 'timed_out', 'interrupted')
   AND "run"."finished_at" < now() - interval '1 day'

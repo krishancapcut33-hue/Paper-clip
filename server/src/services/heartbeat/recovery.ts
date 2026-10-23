@@ -8,7 +8,7 @@ import {
   hasStopOnlyCleanup,
   settleStopOnlyCleanup,
 } from "../sandbox-stop-and-retain.js";
-import { recordNativeLocalProcessStop, releaseSettledNativeRunProcesses } from "../native-local-process-stop.js";
+import { discoverSettledNativeRunProcesses, recordNativeLocalProcessStop, retryPendingSettledNativeRunProcesses } from "../native-local-process-stop.js";
 import { pendingCaseHandoffForRun } from "./case-handoff-lifecycle.js";
 import {
   legacyControllerBootId,
@@ -1920,7 +1920,7 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
     void cleanup.finally(() => activeRunExecutionPromises.delete(cleanup));
   }
 
-  let settledProcessCursor: string | null = null;
+  let settledProcessesDiscovered = false;
 
   async function reapOrphanedRuns(opts?: { staleThresholdMs?: number }) {
     await preserveCancelledNativeWorkspaces(db);
@@ -2053,14 +2053,17 @@ export function createHeartbeatRecovery(db: Db, dependencies: HeartbeatRecoveryD
       if (cleared) claimableNativeRunIds.add(cleared.id);
     }
 
-    const settledProcesses = await releaseSettledNativeRunProcesses(db, {
-      after: settledProcessCursor,
-      skip: runId => activeRunExecutions.has(runId) || runningProcesses.has(runId),
-    }).catch((error) => {
-      logger.warn({ err: error }, "failed to release settled native process identities");
-      return null;
-    });
-    if (settledProcesses) settledProcessCursor = settledProcesses.next;
+    const executingRun = (runId: string) => activeRunExecutions.has(runId) || runningProcesses.has(runId);
+    if (!settledProcessesDiscovered) {
+      settledProcessesDiscovered = await discoverSettledNativeRunProcesses(db, { skip: executingRun }).then(() => true, (error) => {
+        logger.warn({ err: error }, "failed to discover settled native process identities");
+        return false;
+      });
+    } else {
+      await retryPendingSettledNativeRunProcesses(db, { skip: executingRun }).catch((error) => {
+        logger.warn({ err: error }, "failed to retry settled native process identity release");
+      });
+    }
 
     // An explicit result-less retryable failure resumes on the original run.
     // The database lease is claimed before dispatch so concurrent service

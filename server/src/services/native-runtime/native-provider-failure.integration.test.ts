@@ -294,10 +294,10 @@ describe("native completed failure diagnostics", () => {
           expect(coordinator.phase).toBe("committed");
           expect(settled).toMatchObject({ status: "failed", processPid: EXITED_PID, processGroupId: EXITED_PID });
           await db.insert(heartbeatRunEvents).values({ companyId, runId, agentId, seq: 1_000, eventType: "harness.ready" });
-          expect(await releaseSettledNativeRunProcess(db, runId)).toBe(true);
+          expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
           const [released] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId));
           expect(released).toMatchObject({ status: "failed", processPid: null, processGroupId: null, processStartedAt: null });
-          expect(await readNativeLocalProcessStop(db, companyId, runId)).toEqual({ processPid: EXITED_PID, processGroupId: EXITED_PID });
+          expect(await readNativeLocalProcessStop(db, companyId, runId)).toMatchObject({ processPid: EXITED_PID, processGroupId: EXITED_PID });
         }
       }
     },

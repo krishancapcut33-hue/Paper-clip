@@ -22,8 +22,12 @@ import { persistHeartbeatRunProcessMetadata } from "../services/heartbeat/run-li
 import {
   hasNativeLocalProcessStop,
   readNativeLocalProcessStop,
+  discoverSettledNativeRunProcesses,
+  pendingSettledNativeRunProcessIds,
   releaseSettledNativeRunProcess,
-  releaseSettledNativeRunProcesses,
+  retryPendingSettledNativeRunProcesses,
+  settleNativeRunProcess,
+  withReleasedNativeRunProcess,
 } from "../services/native-local-process-stop.js";
 import { remoteTerminationReceipt } from "../services/remote-execution-termination.js";
 import { heartbeatService } from "../services/heartbeat.js";
@@ -138,18 +142,33 @@ suite("settled native run process identity", () => {
   it("releases a failed native run's local identity with a stop receipt once its process is gone", async () => {
     const { runId, pid } = await seed();
     expect(await readRun(runId)).toMatchObject({ processPid: pid, processGroupId: pid });
-    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(true);
-    expect(await readRun(runId)).toMatchObject({ status: "failed", processPid: null, processGroupId: null, processStartedAt: null });
+    const before = await readRun(runId);
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
+    const after = await readRun(runId);
+    expect(after).toMatchObject({ status: "failed", processPid: null, processGroupId: null, processStartedAt: null });
     expect(await hasNativeLocalProcessStop(db, companyId, runId)).toBe(true);
-    expect(await readNativeLocalProcessStop(db, companyId, runId)).toEqual({ processPid: pid, processGroupId: pid });
-    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(false);
+    expect(await readNativeLocalProcessStop(db, companyId, runId)).toEqual({
+      processPid: pid, processGroupId: pid, processStartedAt: before.processStartedAt!.toISOString(),
+    });
+    expect(await withReleasedNativeRunProcess(db, after)).toMatchObject({
+      processPid: pid, processGroupId: pid, processStartedAt: before.processStartedAt,
+    });
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe("skipped");
   });
 
   it("releases the identity from the periodic recovery sweep", async () => {
     const { runId } = await seed({ status: "timed_out" });
-    await heartbeatService(db).reapOrphanedRuns();
+    const child = startDetached();
+    children.push(child);
+    const alive = await seed({ pid: child.pid! });
+    const heartbeat = heartbeatService(db);
+    await heartbeat.reapOrphanedRuns();
     expect((await readRun(runId)).processPid).toBeNull();
     expect(await hasNativeLocalProcessStop(db, companyId, runId)).toBe(true);
+    expect((await readRun(alive.runId)).processPid).toBe(child.pid);
+    await new Promise<void>(resolve => { child.once("exit", () => resolve()); process.kill(-child.pid!, "SIGKILL"); });
+    await heartbeat.reapOrphanedRuns();
+    expect((await readRun(alive.runId)).processPid).toBeNull();
   }, 30_000);
 
   it.each([
@@ -184,7 +203,7 @@ suite("settled native run process identity", () => {
 
   it.each(["cancelled", "timed_out", "interrupted"])("releases a settled %s native run", async status => {
     const { runId } = await seed({ status });
-    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(true);
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
     expect((await readRun(runId)).processPid).toBeNull();
   });
 
@@ -192,54 +211,77 @@ suite("settled native run process identity", () => {
     const child = startDetached();
     children.push(child);
     const { runId } = await seed({ pid: child.pid! });
-    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(false);
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe("pending");
     expect((await readRun(runId)).processPid).toBe(child.pid);
     expect(await hasNativeLocalProcessStop(db, companyId, runId)).toBe(false);
     await new Promise<void>(resolve => { child.once("exit", () => resolve()); process.kill(-child.pid!, "SIGKILL"); });
-    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(true);
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
     expect((await readRun(runId)).processPid).toBeNull();
   });
 
   it.each([
-    ["a succeeded run that can hand its runner to the next turn", { status: "succeeded" }],
-    ["a same-run retry that still owns the process identity", { phase: "retryable_failure" }],
-    ["unfinished workspace finalization", { phase: "workspace_finalizing" }],
-    ["an unreleased local lease", { leases: ["local_unreleased"] }],
-    ["a process recorded by another host", { hostname: `${os.hostname()}-other` }],
-    ["a launch without provider evidence or checkpoint", { checkpoint: false }],
-    ["a sandbox without a termination receipt", { leases: ["remote_unconfirmed"] }],
-    ["a mixed local and sandbox run", { leases: ["local", "remote_stopped"] }],
-  ] as const)("keeps the identity for %s", async (_name, fixture) => {
+    ["a succeeded run that can hand its runner to the next turn", { status: "succeeded" }, "skipped"],
+    ["a same-run retry that still owns the process identity", { phase: "retryable_failure" }, "skipped"],
+    ["unfinished workspace finalization", { phase: "workspace_finalizing" }, "skipped"],
+    ["an unreleased local lease", { leases: ["local_unreleased"] }, "pending"],
+    ["a process recorded by another host", { hostname: `${os.hostname()}-other` }, "skipped"],
+    ["a launch without provider evidence or checkpoint", { checkpoint: false }, "skipped"],
+    ["a sandbox without a termination receipt", { leases: ["remote_unconfirmed"] }, "pending"],
+    ["a mixed local and sandbox run", { leases: ["local", "remote_stopped"] }, "pending"],
+  ] as const)("keeps the identity for %s", async (_name, fixture, outcome) => {
     const { runId, pid } = await seed(fixture as Fixture);
-    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(false);
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(outcome);
     expect(await readRun(runId)).toMatchObject({ processPid: pid, processGroupId: pid });
   });
 
   it("releases evidence-only launches and runs without a coordinator", async () => {
     const evidence = await seed({ checkpoint: false, providerEvidence: true });
     const uncoordinated = await seed({ phase: null });
-    expect(await releaseSettledNativeRunProcess(db, evidence.runId)).toBe(true);
-    expect(await releaseSettledNativeRunProcess(db, uncoordinated.runId)).toBe(true);
+    expect(await releaseSettledNativeRunProcess(db, evidence.runId)).toBe("released");
+    expect(await releaseSettledNativeRunProcess(db, uncoordinated.runId)).toBe("released");
   });
 
   it("releases a sandbox identity only after every lease confirmed termination", async () => {
     const { runId } = await seed({ leases: ["remote_stopped"] });
-    expect(await releaseSettledNativeRunProcess(db, runId)).toBe(true);
+    expect(await releaseSettledNativeRunProcess(db, runId)).toBe("released");
     expect((await readRun(runId)).processPid).toBeNull();
     expect(await hasNativeLocalProcessStop(db, companyId, runId)).toBe(false);
   });
 
-  it("sweeps settled runs in bounded pages and skips live executions", async () => {
+  it("discovers settled runs in pages, skips live executions, and retries only pending releases", async () => {
     const first = await seed();
     const skipped = await seed();
-    const page = await releaseSettledNativeRunProcesses(db, { limit: 1000, skip: runId => runId === skipped.runId });
-    expect(page.next).toBeNull();
+    const child = startDetached();
+    children.push(child);
+    const alive = await seed({ pid: child.pid! });
+    await discoverSettledNativeRunProcesses(db, { limit: 1, skip: runId => runId === skipped.runId });
     expect((await readRun(first.runId)).processPid).toBeNull();
     expect((await readRun(skipped.runId)).processPid).toBe(skipped.pid);
-    const bounded = await releaseSettledNativeRunProcesses(db, { limit: 1 });
-    expect(bounded.next).not.toBeNull();
-    await releaseSettledNativeRunProcesses(db, { after: bounded.next, limit: 1000 });
-    expect((await readRun(skipped.runId)).processPid).toBeNull();
+    expect((await readRun(alive.runId)).processPid).toBe(child.pid);
+    expect(pendingSettledNativeRunProcessIds()).toContain(alive.runId);
+    expect(pendingSettledNativeRunProcessIds()).not.toContain(skipped.runId);
+    await new Promise<void>(resolve => { child.once("exit", () => resolve()); process.kill(-child.pid!, "SIGKILL"); });
+    await retryPendingSettledNativeRunProcesses(db);
+    expect((await readRun(alive.runId)).processPid).toBeNull();
+    expect(pendingSettledNativeRunProcessIds()).not.toContain(alive.runId);
+    await settleNativeRunProcess(db, skipped.runId);
+    expect(pendingSettledNativeRunProcessIds()).not.toContain(skipped.runId);
+    for (let attempt = 0; attempt < 25 && pendingSettledNativeRunProcessIds().length; attempt += 1) {
+      await retryPendingSettledNativeRunProcesses(db);
+    }
+    expect(pendingSettledNativeRunProcessIds()).toEqual([]);
+    const idle = new Proxy({}, { get: () => { throw new Error("idle retry touched the database"); } }) as typeof db;
+    await retryPendingSettledNativeRunProcesses(idle);
   });
 
+  it("stops retrying a release that never becomes ready", async () => {
+    const { runId } = await seed({ leases: ["local_unreleased"] });
+    expect(await settleNativeRunProcess(db, runId)).toBe("pending");
+    expect(pendingSettledNativeRunProcessIds()).toContain(runId);
+    for (let attempt = 0; attempt < 18; attempt += 1) await retryPendingSettledNativeRunProcesses(db);
+    expect(pendingSettledNativeRunProcessIds()).toContain(runId);
+    await retryPendingSettledNativeRunProcesses(db);
+    expect(pendingSettledNativeRunProcessIds()).not.toContain(runId);
+    expect((await readRun(runId)).processPid).not.toBeNull();
+  });
 });

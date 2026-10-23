@@ -252,7 +252,7 @@ import {
 import { withAdapterExecutionPhase } from "@paperclipai/adapter-utils/execution-phase";
 import {
   recordNativeLocalProcessStop,
-  releaseSettledNativeRunProcess,
+  settleNativeRunProcess,
 } from "./native-local-process-stop.js";
 
 import {
@@ -3853,7 +3853,7 @@ export function heartbeatService(
         }
         if (latestRun?.runtimeMode === "native" && isHeartbeatRunTerminalStatus(latestRun.status) &&
             !nativeSessionResumeScheduled && !nativeWorkspaceFinalizeScheduled && !nativeOwnershipHeld) {
-          await releaseSettledNativeRunProcess(db, run.id).catch(error => {
+          await settleNativeRunProcess(db, run.id).catch(error => {
             logger.warn({ err: error, runId: run.id }, "failed to release settled native process identity");
           });
         }
