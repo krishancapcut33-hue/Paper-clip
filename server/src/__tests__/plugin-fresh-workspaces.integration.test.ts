@@ -3,6 +3,7 @@ import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vites
 import { eq, sql } from "drizzle-orm";
 import { createDb, executionWorkspaces, heartbeatRuns, issues, plugins } from "@paperclipai/db";
 import { preparePluginWorkspace, removePluginWorkspace } from "../services/plugin-workspaces.js";
+import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { reserveFreshPluginTaskWorkspace } from "../services/provider-fresh-workspace.js";
 import { createPluginWorkspaceFixture } from "./helpers/plugin-workspaces.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -55,6 +56,32 @@ describe.skipIf(!support.supported)("provider-owned fresh retry reservations", (
     expect(retained.metadata).toEqual(f.previous.metadata);
     const rows = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.companyId, f.companyId));
     expect(rows).toHaveLength(2);
+  });
+  it("keeps fresh directory authority server-owned through metadata updates", async () => {
+    const f = await fixture(); await enable(f.pluginId);
+    const service = executionWorkspaceService(db);
+    const original = await service.update(f.previous.id, { metadata: {
+      note: "ordinary metadata", workspaceProviderFresh: f.fresh, runnerTaskFreshWorkspace: f.fresh,
+      runnerTaskWorkspaceOwner: { pluginKey: "forged" },
+    } });
+    expect(original!.metadata).toMatchObject({ note: "ordinary metadata" });
+    for (const key of ["workspaceProviderFresh", "runnerTaskFreshWorkspace", "runnerTaskWorkspaceOwner"]) {
+      expect(original!.metadata?.[key]).toBeUndefined();
+    }
+    const prepared = await preparePluginWorkspace(db, f.workers, f.input);
+    const updated = await service.update(prepared!.id, { metadata: { note: "caller edit", workspaceProviderFresh: null } });
+    expect(updated!.metadata).toMatchObject({ note: "caller edit", workspaceProviderFresh: f.fresh });
+    await db.update(issues).set({ projectId: null, projectWorkspaceId: null }).where(eq(issues.id, f.issueId));
+    const owner = { agentId: f.input.agentId, environmentId: randomUUID(), pluginKey: "test.tasks", driverKey: "tasks" };
+    const next = { ...f.fresh, attemptId: randomUUID(), previousWorkspaceId: prepared!.id };
+    const id = await reserveFreshPluginTaskWorkspace({ db, companyId: f.companyId, issueId: f.issueId,
+      runId: f.input.runId, agentId: f.input.agentId, responsibleUserId: null, fresh: next, owner,
+      expectedBindingRevision: 2 });
+    const directory = await service.update(id, { metadata: { runnerTaskFreshWorkspace: f.fresh,
+      runnerTaskWorkspaceOwner: { pluginKey: "forged" } } });
+    expect(directory!.metadata).toMatchObject({ runnerTaskFreshWorkspace: next, runnerTaskWorkspaceOwner: owner });
+    const cleared = await service.update(id, { metadata: null });
+    expect(cleared!.metadata).toMatchObject({ runnerTaskFreshWorkspace: next, runnerTaskWorkspaceOwner: owner });
   });
   it("retains the durable removal intent if transfer cache cleanup fails", async () => {
     const f = await fixture(); await enable(f.pluginId);
