@@ -339,6 +339,40 @@ describe("approval routes idempotent retries", () => {
     );
   });
 
+  it("keeps the authenticated board user for Telegram approval requester wakeups without linked issues", async () => {
+    const approval = {
+      id: "approval-telegram-wake",
+      companyId: "company-1",
+      type: "hire_agent",
+      status: "approved",
+      payload: {},
+      requestedByAgentId: "agent-1",
+    };
+    mockApprovalService.getById.mockResolvedValue({ ...approval, status: "pending" });
+    mockApprovalService.approve.mockResolvedValue({ approval, applied: true });
+    mockIssueApprovalService.listIssuesForApproval.mockResolvedValue([]);
+
+    const res = await request(await createApp({ source: "board_key", keyId: "board-key-1" }))
+      .post("/api/approvals/approval-telegram-wake/approve")
+      .send({ decidedByUserId: "telegram:tigom007" });
+
+    expect(res.status).toBe(200);
+    expect(mockApprovalService.approve).toHaveBeenCalledWith(
+      approval.id,
+      "telegram:tigom007",
+      undefined,
+    );
+    expect(mockHeartbeatService.wakeup).toHaveBeenCalledWith("agent-1", expect.objectContaining({
+      requestedByActorType: "user",
+      requestedByActorId: "user-1",
+      payload: expect.objectContaining({ issueId: null, issueIds: [] }),
+    }));
+    expect(mockLogActivity).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({
+      action: "approval.approved",
+      actorId: "telegram:tigom007",
+    }));
+  });
+
   it.each([
     "telegram:",
     "telegram:bad/value",

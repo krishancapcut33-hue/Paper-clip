@@ -2718,31 +2718,11 @@ export function createPluginWorkerHandle(
   }
 
   function contextForWorkerMessage(message: JsonRpcRequest | JsonRpcNotification): WorkerHostCallContext {
-    function deriveScopedContextForActiveInvocation(): WorkerHostCallContext | null {
-      if (!isJsonRpcRequest(message)) return null;
-      const derivedScope = deriveInvocationScope(message.method, message.params);
-      if (!derivedScope) return null;
-      const activeCompanyIds = new Set(
-        Array.from(activeInvocations.values())
-          .map((entry) => readNonEmptyString(entry.scope.companyId))
-          .filter((companyId): companyId is string => Boolean(companyId)),
-      );
-      if (activeCompanyIds.has(derivedScope.companyId)) {
-        return { invocationScope: derivedScope };
-      }
-      return null;
-    }
-
     function deriveBackgroundContext(): WorkerHostCallContext | null {
       if (!isJsonRpcRequest(message)) return null;
       const derivedScope = deriveInvocationScope(message.method, message.params);
       if (derivedScope && DERIVED_SCOPE_BACKGROUND_HOST_METHODS.has(message.method)) {
-        const activeCompanyIds = new Set(
-          Array.from(activeInvocations.values())
-            .map((entry) => readNonEmptyString(entry.scope.companyId))
-            .filter((companyId): companyId is string => Boolean(companyId)),
-        );
-        if (activeCompanyIds.has(derivedScope.companyId)) {
+        if (proactiveCompanyScopes.has(derivedScope.companyId)) {
           return { invocationScope: derivedScope };
         }
       }
@@ -2777,8 +2757,6 @@ export function createPluginWorkerHandle(
       if (proactiveCompanyId && proactiveCompanyScopes.has(proactiveCompanyId)) {
         return { invocationScope: { companyId: proactiveCompanyId } };
       }
-      const scopedContext = deriveScopedContextForActiveInvocation();
-      if (scopedContext) return scopedContext;
       const backgroundContext = deriveBackgroundContext();
       if (backgroundContext) return backgroundContext;
       const hasActiveInvocation = activeInvocations.size > 0 ||

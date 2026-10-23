@@ -354,7 +354,7 @@ export function approvalRoutes(
               ...(primaryReviewPathContext ?? {}),
             },
             requestedByActorType: "user",
-            requestedByActorId: decidedByUserId,
+            requestedByActorId: req.actor.userId ?? "board",
             contextSnapshot: {
               source: "approval.approved",
               approvalId: approval.id,
