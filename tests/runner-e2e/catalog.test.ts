@@ -20,6 +20,7 @@ import {
   daytonaWarmEnvironment,
   isImmutableDaytonaImage,
   pendingContextIntegrityProfiles,
+  productJourneys,
   suiteDefinitionHash,
   validateRunnerCatalog,
 } from "./catalog.js";
@@ -55,6 +56,13 @@ describe("runner E2E catalog", () => {
     }
     expect(suiteDefinitionHash({ ...cell.suite, tasks: cell.suite.tasks.map(task => task.id === cell.task.id
       ? { ...task, expectedRunCount: 5 } : task) })).not.toBe(cell.suiteDefinitionHash);
+  });
+
+  it("exports deployment journeys separately from the model matrix and default selection", () => {
+    expect(productJourneys.map(journey => journey.id)).toEqual(["task-properties", "cloud-onboarding"]);
+    expect(runnerSuites.some(suite => suite.id === "product-journeys")).toBe(false);
+    expect(runnerMatrix.some(execution => execution.suite.id === "product-journeys")).toBe(false);
+    expect(selectRunnerExecutions(parseRunnerSelectors(["--all"])).some(execution => execution.suite.id === "product-journeys")).toBe(false);
   });
 
   it("keeps the single managed onboarding variant explicit-only without changing local onboarding coverage", () => {
