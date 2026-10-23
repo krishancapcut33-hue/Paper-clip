@@ -299,7 +299,16 @@ export async function listRunOrphanProcesses(
   const excluded = new Set<number>([selfPid]);
   for (const pid of await collectAncestors(procRoot, selfPid)) excluded.add(pid);
 
-  const pids = await readPidNames(procRoot);
+  let pids: number[];
+  try {
+    pids = await readPidNames(procRoot);
+  } catch (error) {
+    return {
+      supported: false,
+      reason: `/proc could not be listed: ${error instanceof Error ? error.message : String(error)}`,
+      processes: [],
+    };
+  }
   const processes: RunOrphanProcessInfo[] = [];
   for (const pid of pids) {
     if (processes.length >= maxProcesses) break;
