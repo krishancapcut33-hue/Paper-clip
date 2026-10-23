@@ -130,8 +130,9 @@ Each folder is checked in one transaction that holds the run's finalization
 ownership lock, so it never races a finalization or export of the same run. A held
 lock skips the folder. Inside that transaction the folder is renamed to
 `.expired-<UUID>`, and it is deleted after commit. The next sweep finishes an
-interrupted deletion. Each batch checks at most 200 folders, including leftovers,
-and removes at most 50, continuing from where it stopped. Deadline discovery reads
+interrupted deletion. Each batch tries at most 50 leftovers, then checks at most 200
+folders and removes at most 50. Leftovers and folders each continue from where the
+previous batch stopped, so a leftover that cannot be deleted does not block others. Deadline discovery reads
 run state 200 folders at a time and stops when the server drains or shuts down.
 
 | Environment variable | Default | Effect |

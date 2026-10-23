@@ -1355,6 +1355,7 @@ async function startServerWithDatabaseTeardown(
     hasPending: () => caseHandoffDeliveries.hasPending(),
   });
   let unregisterTerminalWorkspaceProbe: (() => void) | undefined;
+  let unsubscribeNativeWorkspaceSyncRetention: (() => void) | undefined;
   const fastResponses = app.locals.fastResponses as ReturnType<typeof import("./services/fast-responses.js").fastResponseService>;
   const fastResponseWorker = deliveryWork.register(DELIVERY_QUEUES.fastResponse, {
     retryMs: 100, run: (signal) => fastResponses.sweepPending(signal), hasPending: () => fastResponses.hasPending(),
@@ -1519,7 +1520,7 @@ async function startServerWithDatabaseTeardown(
       }
     });
     if (config.nativeWorkspaceSyncRetentionEnabled) {
-      registerNativeWorkspaceSyncRetentionWork(deliveryWork, nativeWorkspaceSyncRetentionService(db as any, {
+      unsubscribeNativeWorkspaceSyncRetention = registerNativeWorkspaceSyncRetentionWork(deliveryWork, nativeWorkspaceSyncRetentionService(db as any, {
         retentionDays: config.nativeWorkspaceSyncRetentionDays,
         dryRun: config.nativeWorkspaceSyncRetentionDryRun,
       }), {
@@ -1529,7 +1530,7 @@ async function startServerWithDatabaseTeardown(
             logger.info({ ...result, dryRun: config.nativeWorkspaceSyncRetentionDryRun }, "native workspace sync retention");
           }
         },
-      });
+      }).unsubscribe;
     }
     let lastTerminalWorkspaceSkipLogAt = 0;
     const terminalWorkspaceWorker = registerTerminalWorkspaceWork(deliveryWork, {
@@ -2089,6 +2090,7 @@ async function startServerWithDatabaseTeardown(
     unsubscribeChatCompletions();
     await deliveryWork.stop();
     unregisterTerminalWorkspaceProbe?.();
+    unsubscribeNativeWorkspaceSyncRetention?.();
     if (heartbeatSchedulerInterval) {
       clearInterval(heartbeatSchedulerInterval);
       heartbeatSchedulerInterval = null;

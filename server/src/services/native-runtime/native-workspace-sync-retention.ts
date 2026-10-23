@@ -223,6 +223,7 @@ export function nativeWorkspaceSyncRetentionService(
   defaults: NativeWorkspaceSyncRetentionOptions = {},
 ) {
   let cursor: string | null = null;
+  let leftoverCursor: string | null = null;
 
   function settings(options: NativeWorkspaceSyncRetentionOptions) {
     const retentionDays = Math.max(
@@ -293,15 +294,21 @@ export function nativeWorkspaceSyncRetentionService(
     const result = emptyResult();
     const settledBefore = new Date(config.now.getTime() - config.retentionMs);
     const names = await listEntries(config.root);
-    const exhausted = () => !config.shouldContinue() || result.checked >= config.maxEntries
-      || result.candidates + result.leftoversRemoved >= config.maxRemovals;
+    let leftoversTruncated = false;
     if (!config.dryRun) {
-      for (const name of names.filter(isExpiredLeftover)) {
-        if (exhausted()) {
+      const leftovers = names.filter(isExpiredLeftover);
+      let attempts = 0;
+      for (const name of leftoverCursor ? leftovers.filter((entry) => entry > leftoverCursor!) : leftovers) {
+        if (!config.shouldContinue()) {
           result.truncated = true;
           return result;
         }
-        result.checked++;
+        if (attempts >= config.maxRemovals) {
+          leftoversTruncated = true;
+          break;
+        }
+        attempts++;
+        leftoverCursor = name;
         try {
           await removeTree(path.join(config.root, name));
           result.leftoversRemoved++;
@@ -311,10 +318,11 @@ export function nativeWorkspaceSyncRetentionService(
         }
       }
     }
+    if (!leftoversTruncated) leftoverCursor = null;
     const runIds = names.filter((name) => UUID_PATTERN.test(name));
     const pending = cursor ? runIds.filter((name) => name > cursor!) : runIds;
     for (const name of pending) {
-      if (exhausted()) {
+      if (!config.shouldContinue() || result.checked >= config.maxEntries || result.candidates >= config.maxRemovals) {
         result.truncated = true;
         break;
       }
@@ -328,6 +336,7 @@ export function nativeWorkspaceSyncRetentionService(
       }
     }
     if (!result.truncated) cursor = null;
+    result.truncated ||= leftoversTruncated;
     return result;
   }
 

@@ -379,12 +379,33 @@ describeEmbeddedPostgres("native workspace sync retention", () => {
     for (let index = 0; index < 3; index++) leftovers.push(await writeFolder(`.expired-${randomUUID()}`, 0));
     const folder = await writeFolder(randomUUID(), 9);
     expect(await service().tick({ shouldContinue: () => false })).toMatchObject({ leftoversRemoved: 0, truncated: true });
-    const first = await service().tick({ maxRemovals: 2 });
-    expect(first).toMatchObject({ leftoversRemoved: 2, expired: 0, truncated: true });
-    expect(await exists(folder)).toBe(true);
-    const rest = await service().tick({ maxRemovals: 2 });
-    expect(rest).toMatchObject({ leftoversRemoved: 1, expired: 1 });
+    const retention = service();
+    const first = await retention.tick({ maxRemovals: 2 });
+    expect(first).toMatchObject({ leftoversRemoved: 2, expired: 1, truncated: true });
+    expect(await exists(folder)).toBe(false);
+    const rest = await retention.tick({ maxRemovals: 2 });
+    expect(rest).toMatchObject({ leftoversRemoved: 1, expired: 0, truncated: false });
     for (const leftover of leftovers) expect(await exists(leftover)).toBe(false);
+  });
+
+  it("keeps expiring run folders and moves past leftovers that cannot be removed", async () => {
+    const stuck: string[] = [];
+    for (let index = 0; index < 2; index++) {
+      const leftover = await writeFolder(`.expired-${randomUUID()}`, 0);
+      await fs.chmod(leftover, 0o500);
+      stuck.push(leftover);
+    }
+    const folder = await writeFolder(randomUUID(), 9);
+    const retention = service();
+    try {
+      const first = await retention.tick({ maxRemovals: 1 });
+      expect(first).toMatchObject({ failed: 1, expired: 1, truncated: true });
+      expect(await exists(folder)).toBe(false);
+      const second = await retention.tick({ maxRemovals: 1 });
+      expect(second).toMatchObject({ failed: 1, truncated: false });
+    } finally {
+      for (const leftover of stuck) await fs.chmod(leftover, 0o700);
+    }
   });
 
   it("removes leftover expired folders", async () => {
