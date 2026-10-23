@@ -110,11 +110,12 @@ export async function callWorkspaceProvider(
     projectId: workspace.projectId,
     executionWorkspaceId: workspace.id,
     operationId:
-      (operation.kind === "inspect" || operation.kind === "finalize")
+      operation.kind === "inspect"
         ? randomUUID()
         : createHash("sha256")
             .update(
-              JSON.stringify([workspace.id, operationGeneration, operation]),
+              JSON.stringify([workspace.id, operationGeneration, operation,
+                ...(operation.kind === "finalize" ? [input.runId, input.agentId] : [])]),
             )
             .digest("hex"),
     generation: operationGeneration,
