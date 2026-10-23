@@ -2266,10 +2266,6 @@ export function pluginLoader(
       // ------------------------------------------------------------------
       const packageRoot = resolvePluginPackageRoot(activePlugin, localPluginDir);
       assertPackageActivation?.({ pluginKey, packageRoot, installedPackagePath: activePlugin.packagePath });
-      // Bundled plugins are built on install, but their dist/ lives in the
-      // container layer and disappears when a new image recreates the pod.
-      // Rebuild only repo-bundled packages with missing declared entrypoints;
-      // ensureLocalPluginBuilt keeps external packages and opt-outs untouched.
       const pkgJson = await readPackageJson(packageRoot);
       if (pkgJson) await ensureLocalPluginBuilt(packageRoot, pkgJson);
       activePlugin = await refreshPluginManifestFromPackage(activePlugin, packageRoot);

@@ -27,6 +27,7 @@ const mockRegistry = vi.hoisted(() => ({
   updateStatus: vi.fn(),
   upsertConfig: vi.fn(),
   getConfig: vi.fn(),
+  listConfigs: vi.fn(),
   delete: vi.fn(),
 }));
 
@@ -159,7 +160,7 @@ describe("pluginLoader.loadAll error retry", () => {
     const manifest = {
       id: "example.boot-rebuild", apiVersion: 1, version: "1.0.0",
       displayName: "Boot rebuild", description: "Test", author: "Test",
-      categories: [], capabilities: [], entrypoints: { worker: "dist/worker.js" },
+      categories: ["automation"], capabilities: ["companies.read"], entrypoints: { worker: "dist/worker.js" },
     };
     mkdirSync(packageRoot, { recursive: true });
     writeFileSync(path.join(packageRoot, "package.json"), JSON.stringify({
@@ -179,9 +180,20 @@ describe("pluginLoader.loadAll error retry", () => {
       status: "ready", manifestJson: manifest,
     });
     mockRegistry.getById.mockResolvedValue(plugin);
+    mockRegistry.listConfigs = vi.fn().mockResolvedValue([]);
+    const startWorker = vi.fn().mockResolvedValue(undefined);
+    const runtime = createRuntimeServices();
+    runtime.workerManager = { startWorker } as never;
+    runtime.eventBus = { forPlugin: vi.fn(() => ({})), subscriptionCount: vi.fn(() => 0) } as never;
+    runtime.jobStore = { syncJobDeclarations: vi.fn() } as never;
+    runtime.jobScheduler = { registerPlugin: vi.fn() } as never;
+    runtime.toolDispatcher = { registerPluginTools: vi.fn() } as never;
     try {
-      const loader = createLoader(createRuntimeServices());
-      await loader.loadSingle(plugin.id);
+      const loader = createLoader(runtime);
+      const result = await loader.loadSingle(plugin.id);
+      expect(result.success).toBe(true);
+      expect(startWorker).toHaveBeenCalledOnce();
+      expect(runtime.lifecycleManager.markError).not.toHaveBeenCalled();
       expect(existsSync(path.join(packageRoot, "dist", "manifest.js"))).toBe(true);
       expect(existsSync(path.join(packageRoot, "dist", "worker.js"))).toBe(true);
     } finally {
