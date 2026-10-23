@@ -185,6 +185,8 @@ for that same bounded drain. Repeated shutdown calls share the same completion.
 
 A private receipt records `clientDisconnected: true` and keeps the request
 outcome `cancelled`, even if a complete provider response arrives during drain.
+A disconnect during receipt or ledger persistence also saves the corrected
+cancellation outcome before completion.
 Final usage may then replace its existing hold with an estimate under the normal
 ledger rules. It does not change the product verdict or establish invoice
 settlement. If no complete usage arrives, the unknown hold remains. The provider

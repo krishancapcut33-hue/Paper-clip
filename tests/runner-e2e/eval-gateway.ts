@@ -126,6 +126,11 @@ export async function forwardEvalRequest(input: {
   const requestId = randomUUID();
   const receipt: EvalGatewayReceipt = { requestId, route: route.mode, outcome: "failed", usageComplete: false, final: false, costUsd: null,
     ...(route.mode === "braintrust" ? { braintrustParent: braintrustGatewayRequestParent(route.projectId!, requestId, ledger.snapshot().campaignId, input.identity) } : {}) };
+  const markDisconnected = () => {
+    if (!input.downstreamSignal?.aborted || receipt.clientDisconnected) return false;
+    receipt.clientDisconnected = true; receipt.outcome = "cancelled"; receipt.errorCode ??= "client_disconnected";
+    return true;
+  };
   const usage = new ProviderUsageAccumulator(route.provider, body);
   const bound = modelReservationBound(route, reservation);
   await ledger.reserve(requestId, input.identity, reservation, bound);
@@ -187,7 +192,6 @@ export async function forwardEvalRequest(input: {
   } finally {
     abort.abort();
     await response?.body?.cancel().catch(() => {});
-    if (input.downstreamSignal?.aborted) { receipt.clientDisconnected = true; receipt.outcome = "cancelled"; receipt.errorCode ??= "client_disconnected"; }
     const observed = usage.receipt();
     receipt.usage = observed;
     receipt.usageComplete = observed.complete;
@@ -204,6 +208,7 @@ export async function forwardEvalRequest(input: {
         || (observed.tokenBounds?.output ?? 0) > route.maximumOutputTokens
         || route.mode === "braintrust" && (!response || receipt.endpoint !== route.endpointName
           || receipt.cache === "HIT" || receipt.failoverFrom || receipt.failoverTo))) await ledger.invalidateBound(requestId);
+    markDisconnected();
     await input.persist(receipt);
     await ledger.observe({ observationId: `${requestId}:usage`, requestId, source: route.mode === "braintrust" ? "gateway" : "provider",
       provider: route.provider,
@@ -211,7 +216,12 @@ export async function forwardEvalRequest(input: {
       ...(validEvalLedgerId(receipt.providerRequestId) ? { providerRequestId: receipt.providerRequestId } : {}),
       currency: "USD", route: route.mode, classification: receipt.costUsd === null ? "unknown" : "estimated",
       ...(receipt.costUsd !== null ? { costUsd: receipt.costUsd, pricingVersion: route.price.version } : {}), tokens, final: observed.final });
+    if (markDisconnected()) await input.persist(receipt);
     await ledger.finish(requestId, receipt.outcome);
+    if (markDisconnected()) {
+      await input.persist(receipt);
+      await ledger.finish(requestId, receipt.outcome);
+    }
   }
   return receipt;
 }

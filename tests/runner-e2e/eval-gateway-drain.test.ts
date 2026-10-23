@@ -1,9 +1,9 @@
-import { mkdtemp, rm } from "node:fs/promises";
+import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { afterEach, expect, it, vi } from "vitest";
 import { openEvalCostLedger, readEvalCostLedger } from "./cost-ledger.js";
-import { startEvalGateway, type EvalGatewayReceipt, type EvalGatewayRoute } from "./eval-gateway.js";
+import { forwardEvalRequest, startEvalGateway, type EvalGatewayReceipt, type EvalGatewayRoute } from "./eval-gateway.js";
 
 const cleanups: Array<() => Promise<void>> = [];
 afterEach(async () => { vi.useRealTimers(); for (const cleanup of cleanups.splice(0).reverse()) await cleanup(); });
@@ -137,4 +137,47 @@ it("drains an existing SSE stream after the client stops reading", async () => {
   expect(transport).toHaveBeenCalledOnce();
   expect(f.receipts.at(-1)).toMatchObject({ outcome: "cancelled", clientDisconnected: true, final: true, costUsd: "0.000070000" });
   expect(f.ledger.snapshot()).toMatchObject({ inflight: 0, unknownRequests: 0, heldUsd: "0.000000000" });
+});
+
+it("retains cancellation and final usage without closing the gateway", async () => {
+  const f = await fixture(), started = deferred<void>(), release = deferred<void>();
+  const transport = vi.fn<typeof fetch>(async (_url, init) => {
+    started.resolve();
+    await Promise.race([release.promise, new Promise<never>((_resolve, reject) => init!.signal!.addEventListener("abort", () => reject(init!.signal!.reason), { once: true }))]);
+    return finalResponse("openai");
+  });
+  const gateway = await startEvalGateway({ ...f, transport }); cleanups.push(() => gateway.close());
+  const client = new AbortController(), result = request(gateway, "openai", client.signal);
+  await started.promise;
+  client.abort(); await result;
+  release.resolve();
+  await vi.waitFor(() => expect(f.ledger.snapshot().inflight).toBe(0));
+  expect(f.receipts.at(-1)).toMatchObject({ outcome: "cancelled", clientDisconnected: true, final: true, costUsd: "0.000070000" });
+  expect(f.ledger.snapshot()).toMatchObject({ knownUsd: "0.000070000", heldUsd: "0.000000000", unknownRequests: 0 });
+  expect(transport).toHaveBeenCalledOnce();
+});
+
+it.each(["persist", "observe", "finish"] as const)("records a disconnect during final %s without losing complete usage", async stage => {
+  const f = await fixture(), reached = deferred<void>(), release = deferred<void>(), downstream = new AbortController();
+  let blocked = false;
+  const pause = async (current: typeof stage) => {
+    if (current !== stage || blocked) return;
+    blocked = true; reached.resolve(); await release.promise;
+  };
+  const ledger = { ...f.ledger,
+    observe: async (...args: Parameters<typeof f.ledger.observe>) => { await pause("observe"); return f.ledger.observe(...args); },
+    finish: async (...args: Parameters<typeof f.ledger.finish>) => { await pause("finish"); return f.ledger.finish(...args); },
+  };
+  const transport = vi.fn<typeof fetch>(async () => finalResponse("openai"));
+  const result = forwardEvalRequest({ ...f, ledger, payload: { model: "fixture", input: "hello" }, downstreamSignal: downstream.signal,
+    transport, onHeaders: () => {}, onChunk: async () => {}, persist: async receipt => {
+      await f.persist(receipt); if (receipt.final) await pause("persist");
+    } });
+  await reached.promise; downstream.abort(); release.resolve();
+  expect(await result).toMatchObject({ outcome: "cancelled", clientDisconnected: true, final: true, costUsd: "0.000070000" });
+  expect(f.receipts.at(-1)).toMatchObject({ outcome: "cancelled", clientDisconnected: true, final: true });
+  const events = (await readFile(f.file, "utf8")).trim().split("\n").map(line => JSON.parse(line).event);
+  expect(events.filter(event => event.type === "finish").at(-1)).toMatchObject({ outcome: "cancelled" });
+  expect(f.ledger.snapshot()).toMatchObject({ knownUsd: "0.000070000", heldUsd: "0.000000000", unknownRequests: 0 });
+  expect(transport).toHaveBeenCalledOnce();
 });
