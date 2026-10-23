@@ -349,7 +349,10 @@ directories such as `node_modules`, untracked `.env` and `.env.*` files,
 `.claude/settings.local.json`, and each nested `.paperclip-repositories/*` checkout as a
 whole. A standalone nested clone moves as is. A nested checkout that is a worktree of its own
 shared clone moves too, and the move runs `git worktree repair` in that clone so its
-registration follows the new path (a rollback moves it back and repairs it again). Any other
+registration follows the new path. Its `paperclip/<hash>/` branch is renamed to the prefix of
+the new path, because that prefix proves the checkout owns the branch (a rollback moves it
+back, repairs it and renames the branch back). Items inside a moved nested checkout, such as
+its `node_modules`, move with it. Any other
 ignored file that a restore point does not save keeps the workspace in
 place.
 
@@ -362,7 +365,10 @@ moves items back, restores the branch, and leaves the old worktree untouched. Be
 changes the shared clone, the move records `isolatedRepositoryRehomePending` (target, branch,
 previous branch tip and planned moves). If the server stops before the update, the next
 attempt uses that record to move items back, remove the new worktree and restore the
-branch, then starts again. A dry run reports such a record without undoing it. A new worktree is removed only when the move created it: a
+branch, then starts again. A dry run reports such a record without undoing it. If an item
+exists in both places (for example a process recreated `.env` in the old worktree), the
+rollback stops with `rehome_rollback_conflict` and keeps the new worktree and the record, so
+neither copy is lost; later attempts retry the rollback once the conflict is resolved. A new worktree is removed only when the move created it: a
 target that appears from elsewhere is never deleted.
 
 After the update, the old worktree is removed and the clone is renamed to trash and
@@ -388,7 +394,9 @@ remember the old path; the run's working directory comes from the updated worksp
 Reopening or restoring an expired workspace whose recipe came from a private clone no
 longer recreates that clone when the project has a shared managed clone for the same
 repository, its branch there is absent or at the saved commit, and the shared clone has
-every commit the saved restore point bundle needs as a base. The workspace is
+every commit the saved restore point bundle needs as a base. A recipe with worktree-backed
+nested checkouts on branches keeps the old behavior, because their branch names are bound to
+the old path. The workspace is
 rebuilt as a worktree of the shared clone at the standard location, with the saved commit
 and restore point imported and applied as before. Without a shared clone, the old
 behavior applies.

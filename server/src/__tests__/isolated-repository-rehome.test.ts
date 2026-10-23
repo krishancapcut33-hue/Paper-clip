@@ -16,7 +16,7 @@ import { executionWorkspaceService } from "../services/execution-workspaces.js";
 import { expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
 import { currentRestorePointSnapshot } from "../services/git-restore-point.js";
 import { rehomeIsolatedRepositoryWorkspace } from "../services/isolated-repository-rehome.js";
-import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates, readLinkedNestedCheckout } from "../services/nested-repository-worktrees.js";
+import { addNestedRepositoryWorktree, nestedRepositoryBaseCandidates, nestedWorktreeBranchPrefix, readLinkedNestedCheckout } from "../services/nested-repository-worktrees.js";
 import { getStorageService } from "../storage/index.js";
 
 const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
@@ -139,10 +139,14 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     const f = await fixture();
     const unpushed = await makeWork(f.cwd);
     await ensureManagedRepositoriesIgnored(f.cwd);
+    await fs.appendFile(path.join(f.cwd, ".gitignore"), "/.paperclip-repositories/\n");
     const nested = path.join(f.cwd, ".paperclip-repositories", "docs");
     await fs.mkdir(nested, { recursive: true });
     git(nested, "init", "--initial-branch=main");
-    await fs.writeFile(path.join(nested, "readme.md"), "nested\n"); git(nested, "add", "."); git(nested, "commit", "-m", "nested");
+    await fs.writeFile(path.join(nested, "readme.md"), "nested\n");
+    await fs.writeFile(path.join(nested, ".gitignore"), "node_modules/\n"); git(nested, "add", "."); git(nested, "commit", "-m", "nested");
+    await fs.mkdir(path.join(nested, "node_modules", "dep"), { recursive: true });
+    await fs.writeFile(path.join(nested, "node_modules", "dep", "index.js"), "nested dependency\n");
     const before = await currentRestorePointSnapshot(f.cwd);
     const view = gitView(f.cwd);
 
@@ -163,6 +167,7 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(await fs.readFile(path.join(f.target, ".env"), "utf8")).toBe("LOCAL_SETTING=1\n");
     expect(await fs.readFile(path.join(f.target, ".claude", "settings.local.json"), "utf8")).toBe("{\"local\":true}\n");
     expect(git(path.join(f.target, ".paperclip-repositories", "docs"), "log", "-1", "--format=%s")).toBe("nested");
+    expect(await fs.readFile(path.join(f.target, ".paperclip-repositories", "docs", "node_modules", "dep", "index.js"), "utf8")).toBe("nested dependency\n");
 
     const row = await f.row();
     expect(row).toMatchObject({ cwd: f.target, providerRef: f.target, branchName: "fixture-task" });
@@ -179,6 +184,7 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     await makeWork(f.cwd);
     const nested = await addLinkedNested(f);
     const oldCheckout = await fs.realpath(nested.checkout);
+    const previousPrefix = await nestedWorktreeBranchPrefix(oldCheckout);
     const before = await currentRestorePointSnapshot(f.cwd);
     const result = await rehomeIsolatedRepositoryWorkspace(db, await f.row());
     expect(result).toMatchObject({ rehomed: true, cloneRemoved: true, reason: null });
@@ -187,7 +193,11 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(await readLinkedNestedCheckout(moved)).toMatchObject({ base: nested.realBase, checkout: moved });
     expect(worktreePaths(nested.base)).toContain(moved);
     expect(worktreePaths(nested.base)).not.toContain(oldCheckout);
-    expect(git(moved, "symbolic-ref", "--short", "HEAD")).toBe(nested.branchName);
+    expect(nested.branchName!.startsWith(previousPrefix)).toBe(true);
+    const renamed = `${await nestedWorktreeBranchPrefix(moved)}${nested.branchName!.slice(previousPrefix.length)}`;
+    expect(renamed).not.toBe(nested.branchName);
+    expect(git(moved, "symbolic-ref", "--short", "HEAD")).toBe(renamed);
+    expect(() => git(nested.base, "rev-parse", "--verify", "-q", `refs/heads/${nested.branchName}`)).toThrow();
     expect(git(moved, "status", "--porcelain")).toBe("M guide.md");
     expect(git(nested.base, "worktree", "list", "--porcelain")).not.toContain("prunable");
   });
@@ -204,6 +214,7 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     expect(result).toMatchObject({ rehomed: false, reason: "snapshot_mismatch" });
     expect(await readLinkedNestedCheckout(nested.checkout)).toMatchObject({ base: nested.realBase, checkout: oldCheckout });
     expect(worktreePaths(nested.base)).toContain(oldCheckout);
+    expect(git(nested.checkout, "symbolic-ref", "--short", "HEAD")).toBe(nested.branchName);
     expect(git(nested.checkout, "status", "--porcelain")).toBe("M guide.md");
     expect(await exists(f.target)).toBe(false);
   });
@@ -312,6 +323,24 @@ describeEmbeddedPostgres("isolated repository source re-home", () => {
     await fs.rm(f.target, { recursive: true });
     await expectUntouched(f, before);
     expect((await f.row()).metadata?.isolatedRepositoryRehomePending).toBeUndefined();
+  });
+
+  it("keeps both copies when a file reappears in the old worktree before verification", async () => {
+    const f = await fixture();
+    await makeWork(f.cwd);
+    const result = await rehomeIsolatedRepositoryWorkspace(db, await f.row(), { hooks: { beforeVerify: async ({ from }) => {
+      await fs.writeFile(path.join(from, ".env"), "RECREATED=1\n");
+    } } });
+    expect(result).toMatchObject({ rehomed: false, reason: "rehome_rollback_conflict" });
+    expect(await fs.readFile(path.join(f.target, ".env"), "utf8")).toBe("LOCAL_SETTING=1\n");
+    expect(await fs.readFile(path.join(f.cwd, ".env"), "utf8")).toBe("RECREATED=1\n");
+    expect((await f.row()).metadata?.isolatedRepositoryRehomePending).toMatchObject({ target: f.target });
+    expect((await f.row()).cwd).toBe(f.cwd);
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ rehomed: false, reason: "rehome_rollback_conflict" });
+    expect(await fs.readFile(path.join(f.target, ".env"), "utf8")).toBe("LOCAL_SETTING=1\n");
+    await fs.rm(path.join(f.cwd, ".env"));
+    expect(await rehomeIsolatedRepositoryWorkspace(db, await f.row())).toMatchObject({ rehomed: true, reason: null });
+    expect(await fs.readFile(path.join(f.target, ".env"), "utf8")).toBe("LOCAL_SETTING=1\n");
   });
 
   it("keeps the clone while another workspace still references it", async () => {

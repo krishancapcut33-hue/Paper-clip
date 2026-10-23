@@ -21,7 +21,7 @@ import { withWorkspaceLockKeepalive } from "./native-runtime/native-workspace-lo
 import { canonicalRepositoryRoot } from "./execution-workspace-source-roots.js";
 import { withExecutionWorkspaceLifecycleLock } from "./execution-workspace-lifecycle-lock.js";
 import { loadGitRestorePoint } from "./git-restore-point-storage.js";
-import { readLinkedNestedCheckout, repairMovedNestedRepositoryWorktree } from "./nested-repository-worktrees.js";
+import { nestedWorktreeBranchPrefix, readLinkedNestedCheckout, repairMovedNestedRepositoryWorktree, withNestedRepositoryBaseLock } from "./nested-repository-worktrees.js";
 import { getStorageService } from "../storage/index.js";
 
 const execFile = promisify(execFileCallback);
@@ -197,7 +197,8 @@ async function transferPlan(cwd: string, signal?: AbortSignal) {
     ...ignored.filter(file => !covered(file) && (env(file) || file === ".claude/settings.local.json"))])].sort();
   if (ignored.some(file => !covered(file) && !files.includes(file) && !restorePointSavesIgnoredFile(file))) throw new Error("untransferable_ignored_files");
   if (files.some(file => file.endsWith("/"))) throw new Error("untransferable_ignored_files");
-  return [...regenerable, ...nested, ...files];
+  const plan = [...regenerable, ...nested, ...files];
+  return plan.filter(item => !plan.some(other => other !== item && item.startsWith(`${other}/`)));
 }
 
 async function boundary(cwd: string, base: string, head: string, signal?: AbortSignal) {
@@ -223,6 +224,21 @@ async function repairLinkedCheckout(checkout: string) {
   if (!marker?.isFile()) return;
   const common = (await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim();
   await repairMovedNestedRepositoryWorktree(path.dirname(common), checkout);
+}
+
+async function retargetNestedBranch(checkout: string, from: string) {
+  const marker = await fs.lstat(path.join(checkout, ".git")).catch(() => null);
+  if (!marker?.isFile()) return;
+  const head = (await git(checkout, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim();
+  const previous = await nestedWorktreeBranchPrefix(from);
+  if (!head.startsWith(previous)) return;
+  const next = `${await nestedWorktreeBranchPrefix(checkout)}${head.slice(previous.length)}`;
+  if (next === head) return;
+  const base = path.dirname((await git(checkout, ["rev-parse", "--path-format=absolute", "--git-common-dir"])).trim());
+  await withNestedRepositoryBaseLock(base, async () => {
+    if ((await git(base, ["rev-parse", "--verify", "-q", `refs/heads/${next}`]).catch(() => "")).trim()) throw new Error("nested_branch_conflict");
+    await git(checkout, ["branch", "-m", head, next]);
+  });
 }
 
 async function linkedCheckoutBases(cwd: string, moves: string[]) {
@@ -262,12 +278,16 @@ async function provenTarget(db: Db | Tx, workspaceId: string, pending: IsolatedR
 
 async function undoMove(db: Db | Tx, workspaceId: string, pending: IsolatedRepositoryRehomePending, ownsTarget?: boolean) {
   if (ownsTarget ?? await provenTarget(db, workspaceId, pending)) {
+    for (const relative of pending.moves) {
+      if (await exists(path.join(pending.target, relative)) && await exists(path.join(pending.from, relative))) throw new Error("rehome_rollback_conflict");
+    }
     for (const relative of [...pending.moves].reverse()) {
       const moved = path.join(pending.target, relative), original = path.join(pending.from, relative);
       if (!await exists(moved) || await exists(original)) continue;
       await fs.mkdir(path.dirname(original), { recursive: true });
       await fs.rename(moved, original);
       await repairLinkedCheckout(original).catch(() => undefined);
+      await retargetNestedBranch(original, moved).catch(() => undefined);
     }
     await git(pending.base, ["worktree", "remove", "--force", "--force", pending.target]).catch(() => undefined);
     await fs.rm(pending.target, { recursive: true, force: true });
@@ -392,7 +412,10 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
           if (await exists(destination)) throw new Error("transfer_conflict");
           await fs.mkdir(path.dirname(destination), { recursive: true });
           await fs.rename(path.join(old.cwd, relative), destination);
-          if (linkedBases.has(relative)) await repairLinkedCheckout(destination);
+          if (linkedBases.has(relative)) {
+            await repairLinkedCheckout(destination);
+            await retargetNestedBranch(destination, path.join(old.cwd, relative));
+          }
         }
         await options.hooks?.beforeVerify?.({ from: old.cwd, to: target });
         const after = await currentRestorePointSnapshot(old.cwd, options.signal);
@@ -405,7 +428,10 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
         for (const relative of moves) {
           if (!await exists(path.join(target, relative)) || await exists(path.join(old.cwd, relative))) throw new Error("transfer_incomplete");
           const base = linkedBases.get(relative);
-          if (base && (await readLinkedNestedCheckout(path.join(target, relative)).catch(() => null))?.base !== base) throw new Error("transfer_incomplete");
+          if (!base) continue;
+          const linked = await readLinkedNestedCheckout(path.join(target, relative)).catch(() => null);
+          const head = linked ? (await git(linked.checkout, ["symbolic-ref", "--quiet", "--short", "HEAD"]).catch(() => "")).trim() : "";
+          if (linked?.base !== base || (head.startsWith("paperclip/") && !head.startsWith(linked.branchPrefix))) throw new Error("transfer_incomplete");
         }
         const at = (options.now ?? new Date()).toISOString();
         await db.transaction(async updateTx => {
@@ -423,11 +449,12 @@ export async function rehomeIsolatedRepositoryWorkspace(db: Db, snapshot: Worksp
         });
         committed = true;
       } finally {
-        if (!committed && recorded) {
-          await undoMove(tx, row.id, pending, ownsTarget);
-          await writePending(db, row.id, null);
-        }
-        await locks.release().catch(() => undefined);
+        try {
+          if (!committed && recorded) {
+            await undoMove(tx, row.id, pending, ownsTarget);
+            await writePending(db, row.id, null);
+          }
+        } finally { await locks.release().catch(() => undefined); }
       }
       result.rehomed = true;
       result.outcome = "rehomed";
@@ -558,6 +585,7 @@ export async function rehomeExpiredIsolatedRestoration(db: Db, snapshot: Workspa
     const target = await targetWorktree(db, snapshot, base, recipe.branchName);
     const tip = (await git(base, ["rev-parse", "--verify", "-q", `refs/heads/${recipe.branchName}^{commit}`]).catch(() => "")).trim();
     if (tip && tip !== recipe.commit) return snapshot;
+    if ((recipe.contents?.checkouts ?? []).some(checkout => checkout.worktree && checkout.branchName)) return snapshot;
     if (recipe.restorePoint && !recipe.restorePoint.headOnRemote && !recipe.restorePoint.expiredAt) {
       const { manifest } = await loadGitRestorePoint({ storage: getStorageService(), workspace: { companyId: snapshot.companyId, id: snapshot.id }, ref: recipe.restorePoint });
       const present = await presentCommits(base, manifest.prerequisites);
