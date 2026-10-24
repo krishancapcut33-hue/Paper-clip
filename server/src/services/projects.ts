@@ -54,6 +54,26 @@ type ProjectRow = typeof projects.$inferSelect;
 type ProjectWorkspaceRow = typeof projectWorkspaces.$inferSelect;
 type WorkspaceRuntimeServiceRow = typeof workspaceRuntimeServices.$inferSelect;
 const REPO_ONLY_CWD_SENTINEL = "/__paperclip_repo_only__";
+/**
+ * Server-owned workspace metadata marker. It records that the stored cwd came from the instance
+ * "default project folder" template, so heartbeat may materialize that exact path on first run
+ * even if the template changes later. Client-supplied metadata never sets or keeps this key.
+ */
+const DEFAULT_PROJECT_WORKSPACE_PATH_METADATA_KEY = "_paperclipDefaultWorkspacePath";
+
+export function isApprovedDefaultProjectWorkspacePath(
+  metadata: Record<string, unknown> | null | undefined,
+): boolean {
+  return metadata?.[DEFAULT_PROJECT_WORKSPACE_PATH_METADATA_KEY] === true;
+}
+
+function withoutDefaultProjectWorkspacePathMarker(
+  metadata: Record<string, unknown> | null | undefined,
+): Record<string, unknown> | null {
+  if (!metadata) return null;
+  const { [DEFAULT_PROJECT_WORKSPACE_PATH_METADATA_KEY]: _marker, ...rest } = metadata;
+  return rest;
+}
 type CreateWorkspaceInput = {
   name?: string | null;
   sourceType?: string | null;
@@ -297,9 +317,12 @@ export function resolveDefaultProjectWorkspacePath(input: {
     .replace(/\{project_id\}/g, input.project.id)
     .replace(/\{company_id\}/g, input.project.companyId)
     .replace(/\{repo_name\}/g, repoName ? sanitizeProjectPathSegment(repoName) : "repo");
+  // Placeholders are sanitized, but a project or repo name of "." or ".." survives
+  // sanitization. Check before home expansion normalizes the traversal segment away.
+  if (rendered.split(/[\\/]+/).some((segment) => segment === "." || segment === "..")) return null;
   const resolved = expandHomePrefix(rendered);
   if (!path.isAbsolute(resolved)) return null;
-  if (resolved.split(/[\\/]+/).includes("..")) return null;
+  if (resolved.split(/[\\/]+/).some((segment) => segment === "." || segment === "..")) return null;
   return resolved;
 }
 
@@ -1172,8 +1195,13 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
           repoUrl,
         });
         if (rendered) {
-          cwd = normalizeWorkspaceCwd(rendered);
-          cwdFromTemplate = cwd !== null;
+          // A managed-sandbox-only instance must not steer runs at a local folder, even
+          // through an admin template. Keep the managed checkout default instead.
+          const experimental = await instanceSettingsService(db).getExperimental();
+          if (experimental.enableManagedSandboxOnly !== true) {
+            cwd = normalizeWorkspaceCwd(rendered);
+            cwdFromTemplate = cwd !== null;
+          }
         }
       }
       if (cwdFromTemplate && cwd) {
@@ -1209,6 +1237,12 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       });
 
       const shouldBePrimary = data.isPrimary === true || existing.length === 0;
+      const inputMetadata = withoutDefaultProjectWorkspacePathMarker(
+        data.metadata as Record<string, unknown> | null | undefined,
+      );
+      const workspaceMetadata = cwdFromTemplate
+        ? { ...(inputMetadata ?? {}), [DEFAULT_PROJECT_WORKSPACE_PATH_METADATA_KEY]: true }
+        : inputMetadata;
       const created = await db.transaction(async (tx) => {
         if (shouldBePrimary) {
           await tx
@@ -1242,10 +1276,10 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
             metadata:
               data.runtimeConfig !== undefined
                 ? mergeProjectWorkspaceRuntimeConfig(
-                    (data.metadata as Record<string, unknown> | null | undefined) ?? null,
+                    workspaceMetadata,
                     data.runtimeConfig ?? null,
                   )
-                : (data.metadata as Record<string, unknown> | null | undefined) ?? null,
+                : workspaceMetadata,
             isPrimary: shouldBePrimary,
           })
           .returning()
@@ -1321,15 +1355,28 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
       if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
+        const baseMetadata = withoutDefaultProjectWorkspacePathMarker(
+          data.metadata !== undefined
+            ? (data.metadata as Record<string, unknown> | null | undefined)
+            : ((existing.metadata as Record<string, unknown> | null | undefined) ?? null),
+        );
+        // A client may edit the metadata, but only a cwd that came from the template keeps the
+        // server-owned approval marker.
+        const keepMarker =
+          isApprovedDefaultProjectWorkspacePath(
+            existing.metadata as Record<string, unknown> | null | undefined,
+          )
+          && (data.cwd === undefined || nextCwd === normalizeWorkspaceCwd(existing.cwd));
+        const mergedMetadata = keepMarker
+          ? { ...(baseMetadata ?? {}), [DEFAULT_PROJECT_WORKSPACE_PATH_METADATA_KEY]: true }
+          : baseMetadata;
         patch.metadata =
           data.runtimeConfig !== undefined
             ? mergeProjectWorkspaceRuntimeConfig(
-                data.metadata !== undefined
-                  ? (data.metadata as Record<string, unknown> | null | undefined)
-                  : ((existing.metadata as Record<string, unknown> | null | undefined) ?? null),
+                mergedMetadata,
                 data.runtimeConfig ?? null,
               )
-            : data.metadata;
+            : mergedMetadata;
       }
 
       if (["repoUrl", "repoRef", "defaultRef", "sourceType", "remoteProvider", "remoteWorkspaceRef"].some(key =>

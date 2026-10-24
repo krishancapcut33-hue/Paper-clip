@@ -42,19 +42,39 @@ const support = await getEmbeddedPostgresTestSupport();
       await settings.updateGeneral({ defaultProjectWorkspacePathTemplate: `${templateRoot}/{project_slug}` });
       const svc = projectService(db);
       const project = await svc.create(companyId, { name: "项目一" });
-      const created = await svc.createWorkspace(project.id, {});
-      expect(created).toMatchObject({ cwd: `${templateRoot}/project`, sourceType: "local_path", isPrimary: true });
+      const created = await svc.createWorkspace(project.id, {
+        metadata: { custom: "keep", _paperclipDefaultWorkspacePath: false },
+      });
+      expect(created).toMatchObject({
+        cwd: `${templateRoot}/project`,
+        sourceType: "local_path",
+        isPrimary: true,
+        // The server sets the approval marker; a client value cannot suppress it.
+        metadata: { custom: "keep", _paperclipDefaultWorkspacePath: true },
+      });
       // Only the first workspace comes from the template.
       const second = await svc.createWorkspace(project.id, { repoUrl: "https://git.example/second/repo" });
       expect(second?.cwd).toBeNull();
+      // A client cannot mark an explicit cwd as template-approved.
+      const explicit = await svc.createWorkspace(project.id, {
+        cwd: "/tmp/manual-workspace",
+        metadata: { _paperclipDefaultWorkspacePath: true },
+      });
+      expect(explicit?.metadata).toEqual({});
       // A different project that renders the same folder must not adopt it.
       const colliding = await svc.create(companyId, { name: "项目二" });
       await expect(svc.createWorkspace(colliding.id, {})).rejects.toThrow(/already used by another project workspace/);
+      // A managed-sandbox-only instance keeps the managed checkout default.
+      const sandboxed = await svc.create(companyId, { name: "sandboxed-project" });
+      await settings.updateExperimental({ enableManagedSandboxOnly: true });
+      await expect(svc.createWorkspace(sandboxed.id, {})).resolves.toBeNull();
+      await settings.updateExperimental({ enableManagedSandboxOnly: false });
       // Without a template, a workspace with no cwd or repo is still invalid.
       await settings.updateGeneral({ defaultProjectWorkspacePathTemplate: null });
       await expect(svc.createWorkspace(colliding.id, {})).resolves.toBeNull();
     } finally {
       await settings.updateGeneral({ defaultProjectWorkspacePathTemplate: null });
+      await settings.updateExperimental({ enableManagedSandboxOnly: false });
     }
   });
   it("adds/removes repos, promotes the remaining primary, and preserves legacy and local config", async () => {

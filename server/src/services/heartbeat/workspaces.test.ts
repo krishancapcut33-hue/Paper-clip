@@ -35,10 +35,15 @@ function agent(id = "agent-one") {
   return { id, companyId: "company-one" } as typeof agents.$inferSelect;
 }
 
-function workspace(id: string, projectId: string, cwd: string) {
+function workspace(
+  id: string,
+  projectId: string,
+  cwd: string,
+  metadata: Record<string, unknown> | null = null,
+) {
   return {
     id, projectId, companyId: "company-one", cwd,
-    repoUrl: null, repoRef: null, sourceType: "local_path",
+    repoUrl: null, repoRef: null, sourceType: "local_path", metadata,
   } as typeof projectWorkspaces.$inferSelect;
 }
 
@@ -172,14 +177,11 @@ describe("heartbeat workspace module", () => {
     expect(await fs.stat(missingCwd).catch(() => null)).toBeNull();
   });
 
-  it("materializes a missing configured directory when it is the approved default project template", async () => {
+  it("materializes a missing configured directory approved by the default project template", async () => {
     const cwd = path.join(testRoot, "workspaces", "my-project");
-    const database = databaseWithResults(
-      [workspace("template-workspace", "project-one", cwd)],
-      [],
-      [{ id: "project-one", name: "My Project", companyId: "company-one" }],
-      [{ general: { defaultProjectWorkspacePathTemplate: path.join(testRoot, "workspaces", "{project_slug}") } }],
-    );
+    const database = databaseWithResults([
+      workspace("template-workspace", "project-one", cwd, { _paperclipDefaultWorkspacePath: true }),
+    ]);
     const result = await createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
       agent(), { projectId: "project-one" }, null,
     );
@@ -187,14 +189,11 @@ describe("heartbeat workspace module", () => {
     expect((await fs.stat(cwd)).isDirectory()).toBe(true);
   });
 
-  it("does not materialize a missing configured directory that differs from the default project template", async () => {
+  it("does not materialize a missing configured directory without the template approval marker", async () => {
     const cwd = path.join(testRoot, "workspaces", "another-folder");
-    const database = databaseWithResults(
-      [workspace("configured-workspace", "project-one", cwd)],
-      [],
-      [{ id: "project-one", name: "My Project", companyId: "company-one" }],
-      [{ general: { defaultProjectWorkspacePathTemplate: path.join(testRoot, "workspaces", "{project_slug}") } }],
-    );
+    const database = databaseWithResults([
+      workspace("configured-workspace", "project-one", cwd),
+    ]);
     await expect(createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
       agent(), { projectId: "project-one" }, null,
     )).rejects.toMatchObject({

@@ -67,8 +67,10 @@ import {
 import { resolvePersistedGitWorkspaceSource } from "../persisted-workspace-source.js";
 import { verifiedRecordedIsolatedRemoteSource } from "../isolated-remote-workspace-source.js";
 import { issueService } from "../issues.js";
-import { projectService, resolveDefaultProjectWorkspacePath } from "../projects.js";
-import { instanceSettingsService } from "../instance-settings.js";
+import {
+  isApprovedDefaultProjectWorkspacePath,
+  projectService,
+} from "../projects.js";
 import {
   authorizationService,
   type AuthorizationActor,
@@ -581,23 +583,20 @@ export async function prepareProjectRepositoryWorkspaces(input: {
  * checkout cannot be prepared (for example, a clone failure).
  */
 async function resolveConfiguredOrManagedProjectCwd(input: {
-  /** Database used to verify that a missing configured cwd is the approved instance template path. */
-  db?: Db;
   companyId: string;
   projectId: string;
   cwd: string | null;
   repoUrl: string | null;
   repoRef?: string | null;
+  /** True when the stored cwd was created by the admin-controlled default folder template. */
+  cwdFromDefaultTemplate?: boolean;
   resolveGitAuth?: GitRemoteAuthProvider | null;
   prepareLocalSource?: PrepareManagedLocalSource;
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
-    if (input.db) {
+    if (input.cwdFromDefaultTemplate) {
       const materialized = await materializeDefaultProjectWorkspaceCwd({
-        db: input.db,
-        companyId: input.companyId,
-        projectId: input.projectId,
         cwd: configuredCwd,
         repoUrl: readNonEmptyString(input.repoUrl),
         repoRef: readNonEmptyString(input.repoRef),
@@ -618,16 +617,12 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
 }
 
 /**
- * Materialize a missing configured workspace directory only when it is exactly the path the
- * instance "default project folder" template renders for this project. That template is
- * admin-controlled, so this is the only configured cwd the server may create, clone into, or
- * repair. Any other missing cwd keeps the fail-closed behavior. An existing path is never
- * adopted or replaced here.
+ * Materialize a missing cwd that workspace creation recorded as coming from the instance
+ * "default project folder" template. The server owns that metadata marker, so this is the only
+ * configured cwd the server may create, clone into, or repair. Any other missing cwd keeps the
+ * fail-closed behavior, and an existing path is never adopted or replaced here.
  */
 async function materializeDefaultProjectWorkspaceCwd(input: {
-  db: Db;
-  companyId: string;
-  projectId: string;
   cwd: string;
   repoUrl: string | null;
   repoRef: string | null;
@@ -635,23 +630,6 @@ async function materializeDefaultProjectWorkspaceCwd(input: {
   prepareLocalSource?: PrepareManagedLocalSource;
 }): Promise<{ cwd: string; warning: string | null } | null> {
   if (await fs.lstat(input.cwd).catch(() => null)) return null;
-  const [project] = await input.db
-    .select({ id: projects.id, name: projects.name, companyId: projects.companyId })
-    .from(projects)
-    .where(
-      and(
-        eq(projects.id, input.projectId),
-        eq(projects.companyId, input.companyId),
-      ),
-    );
-  if (!project) return null;
-  const settings = await instanceSettingsService(input.db).getGeneral();
-  const approvedCwd = resolveDefaultProjectWorkspacePath({
-    template: settings.defaultProjectWorkspacePathTemplate,
-    project,
-    repoUrl: input.repoUrl,
-  });
-  if (!approvedCwd || path.resolve(approvedCwd) !== path.resolve(input.cwd)) return null;
   const localSource = input.repoUrl ? localRepositoryPath(input.repoUrl) : null;
   const guardLocalSource = localSource
     ? await input.prepareLocalSource?.(localSource, input.cwd)
@@ -709,7 +687,6 @@ function defaultAdditionalProjectWorkspaceDeps(
     resolveConfiguredOrManagedProjectCwd: (input) =>
       resolveConfiguredOrManagedProjectCwd({
         ...input,
-        db: input.db ?? db,
         prepareLocalSource: input.prepareLocalSource ?? prepareLocalSource,
         resolveGitAuth:
           input.resolveGitAuth ??
@@ -779,6 +756,9 @@ export async function resolveAdditionalProjectWorkspace(
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
       repoRef: workspace.repoRef,
+      cwdFromDefaultTemplate: isApprovedDefaultProjectWorkspacePath(
+        workspace.metadata as Record<string, unknown> | null,
+      ),
     });
     // A directory that exists but holds no content is not a realized workspace. Accept the row only
     // when the resolved directory has real content, so an empty directory never masks a missing one.
@@ -3615,13 +3595,15 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
         let managedWorkspaceWarning: string | null = null;
         try {
           const resolvedCwd = await resolveConfiguredOrManagedProjectCwd({
-            db,
             companyId: agent.companyId,
             projectId:
               workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
             cwd: workspace.cwd,
             repoUrl: workspace.repoUrl,
             repoRef: workspace.repoRef,
+            cwdFromDefaultTemplate: isApprovedDefaultProjectWorkspacePath(
+              workspace.metadata as Record<string, unknown> | null,
+            ),
             resolveGitAuth,
             prepareLocalSource: managedLocalSourceGuard(agent, issueId, readNonEmptyString(context.executionIdentityRunId)),
           });

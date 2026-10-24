@@ -43,6 +43,21 @@ describe("resolveDefaultProjectWorkspacePath", () => {
     expect(result).toBe("/tmp/a-b-c");
   });
 
+  it("rejects traversal or current-dir segments that a placeholder would introduce", () => {
+    expect(
+      resolveDefaultProjectWorkspacePath({
+        template: "~/{project_name}",
+        project: { id: "p", name: "..", companyId: "c" },
+      }),
+    ).toBeNull();
+    expect(
+      resolveDefaultProjectWorkspacePath({ template: "/tmp/{project_name}", project: { id: "p", name: "..", companyId: "c" } }),
+    ).toBeNull();
+    expect(
+      resolveDefaultProjectWorkspacePath({ template: "~/{project_name}", project: { id: "p", name: ".", companyId: "c" } }),
+    ).toBeNull();
+  });
+
   it("renders repo_name when provided", () => {
     const result = resolveDefaultProjectWorkspacePath({
       template: "/tmp/{project_name}/{repo_name}",
