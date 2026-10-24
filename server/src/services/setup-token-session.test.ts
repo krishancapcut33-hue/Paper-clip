@@ -707,7 +707,8 @@ describe("SetupTokenSessionService durable reaper", () => {
     };
     const { service } = buildService({ store, leases, now: () => 5_000 });
     const summary = await service.reap(5_000);
-    expect(summary.released).toBe(1);
+    // No lease was bound, so no lease was released even though the row cleared.
+    expect(summary.released).toBe(0);
     expect(leases.releaseByIdCalls).toEqual([]);
     expect(store.rows.size).toBe(0);
   });
@@ -748,7 +749,9 @@ describe("SetupTokenSessionService durable reaper", () => {
     };
     const { service } = buildService({ store, leases, now: () => 5_000 });
     const summary = await service.reap(5_000);
-    expect(summary.released).toBe(1);
+    // Only the setup-token row was cleared, and it had no bound lease, so no
+    // lease release is reported.
+    expect(summary.released).toBe(0);
     expect(leases.releaseByIdCalls).toEqual([]);
     expect(store.rows.has("local-subscription-1")).toBe(true);
     expect(store.rows.has("setup-token-1")).toBe(false);
@@ -1634,6 +1637,80 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
     expect(summary.released).toBe(1);
     expect(await readRow(localSignIn.sessionId)).toBeDefined();
     expect(await readRow(setupToken.sessionId)).toBeUndefined();
+  });
+
+  it("still lists a completed setup-token row whose AI connection wrote a subscription method", async () => {
+    const store = createDbSetupTokenCleanupStore(db);
+    const now = Date.now();
+
+    // A completed setup-token login that also created an AI connection has its
+    // connection method rewritten to "subscription" by aiConnectionService.save.
+    // It is still setup-token-owned, so it must stay reapable.
+    const setupTokenWithConnection = await seedScope();
+    await db.insert(adapterAuthSessions).values({
+      id: randomUUID(),
+      publicSessionId: setupTokenWithConnection.sessionId,
+      companyId: setupTokenWithConnection.companyId,
+      environmentId: setupTokenWithConnection.environmentId,
+      adapterType: setupTokenWithConnection.adapterType,
+      startedByUserId: setupTokenWithConnection.ownerUserId,
+      connectionMethod: "subscription",
+      status: "timed_out",
+      expiresAt: new Date(now - 1_000),
+    });
+
+    const reapable = await store.listReapable(now);
+    const ids = new Set(reapable.map((record) => record.sessionId));
+    expect(ids.has(setupTokenWithConnection.sessionId)).toBe(true);
+  });
+
+  it("findActiveDurable ignores a local sign-in row and keeps a setup-token row active", async () => {
+    const store = createDbSetupTokenCleanupStore(db);
+    const now = Date.now();
+
+    // A local sign-in row matches the adapter/status/deadline predicate but is
+    // owned by the local-login flow. It must not surface as an active setup-token
+    // session.
+    const localSignIn = await seedScope();
+    await db.insert(adapterAuthSessions).values({
+      id: randomUUID(),
+      publicSessionId: localSignIn.sessionId,
+      companyId: localSignIn.companyId,
+      environmentId: localSignIn.environmentId,
+      adapterType: localSignIn.adapterType,
+      startedByUserId: localSignIn.ownerUserId,
+      connectionMethod: "local_subscription",
+      status: "waiting_for_user",
+      expiresAt: new Date(now + 60_000),
+    });
+
+    // A setup-token row that completed into an AI connection (method
+    // "subscription") is still an active setup-token session, not a local sign-in.
+    const setupToken = await seedScope();
+    await db.insert(adapterAuthSessions).values({
+      id: randomUUID(),
+      publicSessionId: setupToken.sessionId,
+      companyId: setupToken.companyId,
+      environmentId: setupToken.environmentId,
+      adapterType: setupToken.adapterType,
+      startedByUserId: setupToken.ownerUserId,
+      connectionMethod: "subscription",
+      status: "stored",
+      expiresAt: new Date(now + 60_000),
+    });
+
+    expect(
+      await store.findActiveDurable(
+        { companyId: localSignIn.companyId, ownerUserId: localSignIn.ownerUserId, adapterType: localSignIn.adapterType },
+        now,
+      ),
+    ).toBeNull();
+    expect(
+      await store.findActiveDurable(
+        { companyId: setupToken.companyId, ownerUserId: setupToken.ownerUserId, adapterType: setupToken.adapterType },
+        now,
+      ),
+    ).not.toBeNull();
   });
 
   it("returns no row when the claim row lock holds until after the deadline", async () => {

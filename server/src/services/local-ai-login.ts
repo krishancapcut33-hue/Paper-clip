@@ -14,7 +14,7 @@ const LOCAL_LOGIN_METHOD = "local_subscription";
 const ATTEMPT_DURATION_MS = 30 * 60 * 1000;
 // The terminal states a local attempt can reach. `reapExpired` writes
 // `authenticated`/`timed_out`, and cancel writes `cancelled`.
-const TERMINAL_LOCAL_STATES = ["authenticated", "failed", "timed_out", "cancelled"] as const;
+const TERMINAL_LOCAL_STATES = ["authenticated", "timed_out", "cancelled"] as const;
 // A terminal attempt stays readable for one more attempt horizon, so a client
 // that is still polling reads `expired` rather than a missing attempt. After
 // that the row is reclaimed; its on-disk home is already gone.

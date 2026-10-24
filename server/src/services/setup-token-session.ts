@@ -32,7 +32,7 @@
 //     testable.
 
 import { randomBytes } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
@@ -55,6 +55,13 @@ import type { AgentAdapterType } from "@paperclipai/shared";
 // all three consumers, not just one, or a served adapter will create a row
 // that a follow-up route or the reaper cannot find.
 export const SETUP_TOKEN_ADAPTER_TYPE: AgentAdapterType = "claude_local";
+
+// The `connection_method` value a local terminal sign-in writes to the shared
+// `adapter_auth_sessions` table. The setup-token reaper excludes exactly these
+// rows (and only these): the setup-token flow leaves the method null, and when
+// it also creates an AI connection it writes "subscription". Keep in sync with
+// `LOCAL_LOGIN_METHOD` in local-ai-login.ts.
+const LOCAL_SIGN_IN_CONNECTION_METHOD = "local_subscription";
 
 /**
  * The session states. The four terminal states end the login. The `stored`
@@ -312,7 +319,9 @@ export interface SetupTokenCleanupStore {
 
 /** The counts one reaper sweep produced over the durable cleanup store. */
 export interface SetupTokenReapResult {
-  /** The reapable records whose lease released and whose row cleared. */
+  /** The reapable records whose sandbox lease released and whose row cleared.
+   * A record with no bound lease is cleared without a release and is not
+   * counted here. */
   released: number;
   /** The reapable records whose lease release failed. The row stays for a retry. */
   failed: number;
@@ -339,11 +348,11 @@ export async function reapSetupTokenLeases(
   let released = 0;
   let failed = 0;
   for (const record of records) {
-    // A local terminal sign-in row carries a connection method and owns its own
+    // A local terminal sign-in row carries `local_subscription` and owns its own
     // on-disk sign-in home. The local-login service removes that home using the
     // row id; clearing the row here first would strand the directory and any
     // credentials written there. Leave those rows to the local-login reaper.
-    if (record.connectionMethod) {
+    if (record.connectionMethod === LOCAL_SIGN_IN_CONNECTION_METHOD) {
       continue;
     }
     try {
@@ -359,7 +368,12 @@ export async function reapSetupTokenLeases(
         ownerUserId: record.ownerUserId,
         adapterType: record.adapterType,
       });
-      released += 1;
+      // `released` counts only a lease that was actually torn down. A record
+      // with no bound lease is cleared without a release and is not a lease
+      // release, so it stays out of this count.
+      if (record.leaseId) {
+        released += 1;
+      }
     } catch {
       failed += 1;
       log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
@@ -1603,10 +1617,14 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         .where(
           and(
             eq(adapterAuthSessions.adapterType, SETUP_TOKEN_ADAPTER_TYPE),
-            // Local terminal sign-ins share this adapter type but carry a
-            // connection method and their own on-disk home. Only the null rows
-            // are setup-token-owned and reapable by this store.
-            isNull(adapterAuthSessions.connectionMethod),
+            // Local terminal sign-ins share this adapter type but carry
+            // `local_subscription` and their own on-disk home. Reap every other
+            // row: the setup-token flow leaves the method null, and when it also
+            // creates an AI connection it writes "subscription".
+            or(
+              isNull(adapterAuthSessions.connectionMethod),
+              ne(adapterAuthSessions.connectionMethod, LOCAL_SIGN_IN_CONNECTION_METHOD),
+            ),
             or(
               inArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
               lte(adapterAuthSessions.expiresAt, new Date(now)),
@@ -1669,6 +1687,14 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
             eq(adapterAuthSessions.companyId, key.companyId),
             eq(adapterAuthSessions.startedByUserId, key.ownerUserId),
             eq(adapterAuthSessions.adapterType, key.adapterType as AgentAdapterType),
+            // Local terminal sign-ins share this adapter type but are owned by
+            // the local-login flow, not the setup-token flow. Only a setup-token
+            // row (a null method, or "subscription" once it also created an AI
+            // connection) is an active setup-token session.
+            or(
+              isNull(adapterAuthSessions.connectionMethod),
+              ne(adapterAuthSessions.connectionMethod, LOCAL_SIGN_IN_CONNECTION_METHOD),
+            ),
             notInArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
             gt(adapterAuthSessions.expiresAt, new Date(now)),
           ),
