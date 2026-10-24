@@ -76,6 +76,9 @@ describe("default project folder template validation", () => {
     expect(
       patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: "/tmp/{project_name}/../other" }).success,
     ).toBe(false);
+    expect(
+      patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: "/tmp/./{project_name}" }).success,
+    ).toBe(false);
   });
 
   it("accepts absolute and home-relative templates, and null to clear", () => {

@@ -37,9 +37,13 @@ const defaultProjectWorkspacePathTemplateSchema = z
   .refine((value) => {
     const trimmed = value.trim();
     if (trimmed === "") return true;
-    return isAbsoluteTemplatePath(trimmed) && !trimmed.split(/[\\/]+/).includes("..");
+    // Match the renderer: '.' and '..' segments cannot be resolved into a
+    // stable project folder, so reject them at save time instead of silently
+    // ignoring the setting later.
+    return isAbsoluteTemplatePath(trimmed)
+      && !trimmed.split(/[\\/]+/).some((segment) => segment === "." || segment === "..");
   }, {
-    message: "Template must be an absolute path (or start with ~/) and must not contain '..' segments",
+    message: "Template must be an absolute path (or start with ~/) and must not contain '.' or '..' segments",
   })
   .nullable()
   .optional();
