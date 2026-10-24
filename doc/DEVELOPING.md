@@ -1776,6 +1776,11 @@ preparation. Both phases keep their original ordering in `heartbeat.ts`; they
 acquire no runtime resources. Public-path characterization tests live in
 `server/src/__tests__/heartbeat-session-preparation.test.ts`.
 
+Session compatibility uses effective workspace policy and settings. Generic issue
+and project row timestamps do not reset a session. This includes the first
+project-owned directory binding. Changes to effective execution configuration
+still require a fresh session.
+
 Run-log formatting is in `server/src/services/heartbeat/run-log.ts`. It bounds
 stored event payloads, redacts and shortens log chunks, and caps stdout/stderr
 excerpts. `run-output.ts` owns per-attempt log handles, current-user redaction,
