@@ -1614,12 +1614,14 @@ const actor = { actorType: "user" as const, actorId: "browser-reviewer" };
     });
     it("forwards an optional proxy exit country and rejects an invalid code", async () => {
       const f = await fixture();
-      await expect(
-        f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", {
-          task: "Read",
-          proxyCountryCode: "CH",
-        }),
-      ).rejects.toThrow();
+      // "CH" has the wrong case and "zz" is unassigned; both stop here.
+      for (const proxyCountryCode of ["CH", "zz"])
+        await expect(
+          f.service.execute(f.binding, f.grant, randomUUID(), "browser_start", {
+            task: "Read",
+            proxyCountryCode,
+          }),
+        ).rejects.toThrow();
       const start = (await f.service.execute(
         f.binding,
         f.grant,

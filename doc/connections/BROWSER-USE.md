@@ -42,7 +42,9 @@ through the existing catalog review/quarantine configuration. Arbitrary HTTP
 endpoints, CDP, provider run IDs and browser IDs are not agent inputs.
 
 `browser_start` and `browser_continue` accept an optional `proxyCountryCode`,
-validated as a lower-case ISO 3166-1 alpha-2 code and forwarded unchanged as
+checked against the officially assigned lower-case ISO 3166-1 alpha-2 codes, so
+an unassigned pair such as `zz` is an input error rather than a provider call.
+An accepted code is forwarded unchanged as
 `browserSettings.proxyCountryCode`. The provider
 [enables a US residential proxy by default](https://docs.browser-use.com/cloud/browser/proxies)
 and documents residential exits in 195+ countries; `null` disables the proxy for

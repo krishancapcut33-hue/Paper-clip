@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { describe, it, expect, vi } from "vitest";
 import {
+  BROWSER_USE_PROXY_COUNTRY_CODES,
   BROWSER_USE_TOOLS,
   browserUseProxyCountryCodeSchema,
 } from "@paperclipai/shared";
@@ -98,12 +99,18 @@ describe("Browser Use v4 transport", () => {
       const schema = BROWSER_USE_TOOLS.find((t) => t.name === name)!.inputSchema;
       expect(schema.properties.proxyCountryCode).toMatchObject({
         type: ["string", "null"],
-        pattern: "^[a-z]{2}$",
+        enum: [...BROWSER_USE_PROXY_COUNTRY_CODES, null],
       });
       expect(schema.required).not.toContain("proxyCountryCode");
     }
-    expect(browserUseProxyCountryCodeSchema.safeParse("ch").success).toBe(true);
-    for (const value of ["CH", "che", "c", "", "ch ", "switzerland"])
+    for (const value of ["ch", "de", "us"]) {
+      expect(browserUseProxyCountryCodeSchema.safeParse(value).success).toBe(
+        true,
+      );
+      expect(BROWSER_USE_PROXY_COUNTRY_CODES).toContain(value);
+    }
+    // "zz" and "xx" are unassigned, so they must not reach the provider.
+    for (const value of ["zz", "xx", "CH", "che", "c", "", "ch ", "switzerland"])
       expect(browserUseProxyCountryCodeSchema.safeParse(value).success).toBe(
         false,
       );
