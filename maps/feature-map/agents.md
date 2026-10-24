@@ -138,7 +138,7 @@ recorded execution. Keep runner choice in Advanced and verify the next eligible
 run separately from historical transcripts.
 
 Existing legacy Claude and Codex agents on qualified default environments, or
-probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Exercise that action with
+probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Verify a company owner with `agents:configure` and no instance-admin role can qualify the saved computer and upgrade. A caller without configuration permission must be denied before a probe starts. Exercise that action with
 pending edits and an environment-variable draft; reopen the page and compare the
 saved harness, model, account bindings, instructions, and run policy. Check a
 saved `maxTurnsPerRun: 1000`: upgrade must warn and remove it. Test an initially

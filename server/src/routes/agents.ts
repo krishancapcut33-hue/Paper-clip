@@ -4,6 +4,7 @@ import { cancellationRequestId } from "../services/native-runtime/native-cancell
 import { agentHarnessType, isEnvironmentDriverSupportedForAdapter, normalizeClaudeRunnerOptions, type AgentConfigurationWarning, type AgentRunnerChoice } from "@paperclipai/shared";
 import { resolveNewAgentRunnerForCompany } from "../services/agent-runner-selection.js";
 import { agentEnvironmentTestService } from "../services/agent-environment-test.js";
+import { qualifyAgentRunner } from "../services/agent-runner-qualification.js";
 import { createAgentLifecycle } from "../services/agent-lifecycle.js";
 
 import { agentIdentityService } from "../services/agent-identity.js";
@@ -65,6 +66,7 @@ import {
   normalizeIssueIdentifier,
   resetAgentSessionSchema,
   testAdapterEnvironmentSchema,
+  qualifyAgentRunnerSchema,
   type AgentDesiredSkillEntry,
   type AgentSkillAssignmentMode,
   type AgentSkillSnapshot,
@@ -1799,6 +1801,25 @@ export function agentRoutes(
     }
     await assertCanUpdateAgent(req, targetAgent);
   }
+
+  router.post("/agents/:id/qualify-runner", validate(qualifyAgentRunnerSchema), async (req, res) => {
+    const agent = await getAccessibleResource(req, res, svc.getById(req.params.id as string), "Agent not found");
+    if (!agent) return;
+    await assertCanUpdateAgent(req, agent);
+    const result = await qualifyAgentRunner(db, agent, req.body.expectedEnvironmentId, options.pluginWorkerManager);
+    const actor = getActorInfo(req);
+    await logActivity(db, {
+      companyId: agent.companyId,
+      actorType: actor.actorType,
+      actorId: actor.actorId,
+      action: "agent.runner_qualification_tested",
+      entityType: "agent",
+      entityId: agent.id,
+      details: { environmentId: req.body.expectedEnvironmentId, ok: result.ok,
+        platformQualificationRecorded: result.details?.platformQualificationRecorded === true },
+    });
+    res.json(result);
+  });
 
   async function assertCanReadAgent(req: Request, targetAgent: { id: string; companyId: string }) {
     if (!hasCompanyAccess(req, targetAgent.companyId)) {

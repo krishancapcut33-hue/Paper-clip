@@ -106,6 +106,7 @@ API: `present` — representative operation IDs:
 - `GET /api/agents/{id}/instructions-bundle/file`.
 - `PUT /api/agents/{id}/instructions-bundle/file`.
 - `PATCH /api/agents/{id}` with an explicit `runner: "paperclip"` upgrade.
+- `POST /api/agents/{id}/qualify-runner` to qualify the saved effective sandbox before upgrading.
 - `PATCH /api/agents/{id}` with `runtimeSettings: { harness, model?, aiConnection?, expected: { model, aiConnection } }` for a narrow roster edit. Each request handles one agent; the UI batches at most four writes and collects per-agent outcomes.
 
 Agent access: `available` — Native read/update/history/restore instruction tools; REST /
@@ -125,9 +126,13 @@ The existing-agent upgrade notice uses this configuration PATCH. It does not
 grant configuration, account, or environment access. The server resolves the
 saved settings under normal company/configuration authorization. Obsolete Claude
 tuning fields are removed with `configurationWarnings`; security incompatibilities
-remain errors. Unqualified sandbox upgrades first use the existing
-`POST /api/environments/{id}/probe?companyId=...`, retaining its instance-admin
-authorization and company-scoped qualification. No probe runs merely on page load. Operator browser evidence does not
+remain errors. Unqualified sandbox upgrades first use the agent-scoped
+`POST /api/agents/{id}/qualify-runner` under the same `agent_config:update`
+authorization as saving the upgrade. The server resolves the saved computer;
+`expectedEnvironmentId` rejects stale state and cannot select another computer.
+Qualification checks company binding, returns only its receipt, and audits within
+the agent's company. General instance environment probes still require instance
+admin. No probe runs merely on page load. Operator browser evidence does not
 qualify the agent permission paths for this operation.
 
 Evidence: `source-only` — [implementation](../../server/src/routes/agents.ts#L1395) at

@@ -929,7 +929,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
         const qualified = await qualifyRunnerEnvironment({
           adapterType: harnessType,
           readAdapters: () => adaptersApi.list({ companyId: selectedCompanyId, environmentId: upgradeEnvironmentId }),
-          probeEnvironment: () => environmentsApi.probe(upgradeEnvironmentId, selectedCompanyId),
+          probeEnvironment: () => agentsApi.qualifyRunner(agentId, upgradeEnvironmentId, selectedCompanyId),
           isCurrent: () => upgradeTargetRef.current === pendingTarget,
         });
         if (!qualified) throw new Error("Agent settings changed during verification. Retry the upgrade with the current settings.");
