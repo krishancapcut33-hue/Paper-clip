@@ -16,7 +16,7 @@ import { prepareProjectRepositoryWorkspaces } from "../services/heartbeat/worksp
 import { expireReconstructableGitWorkspace } from "../services/git-workspace-expiration.js";
 import { currentRestorePointSnapshot } from "../services/git-restore-point.js";
 import { nestedRepositoryBaseCandidates, nestedWorktreeBranchPrefix, readLinkedNestedCheckout, withNestedRepositoryBaseLock } from "../services/nested-repository-worktrees.js";
-import { listNestedCloneMigrationNames, migrateNestedRepositoryClone, type NestedCloneMigrationOptions } from "../services/nested-clone-migration.js";
+import { listNestedCloneMigrationNames, migrateNestedRepositoryClone, nextNestedCloneMigrationBatch, type NestedCloneMigrationOptions } from "../services/nested-clone-migration.js";
 import { getStorageService } from "../storage/index.js";
 
 const gitEnv = { ...process.env, GIT_AUTHOR_NAME: "Fixture", GIT_AUTHOR_EMAIL: "fixture@example.test",
@@ -25,6 +25,22 @@ const git = (cwd: string, ...args: string[]) => execFileSync("git", args, { cwd,
 const exists = (target: string) => fs.lstat(target).then(() => true, () => false);
 const DAY_MS = 24 * 60 * 60 * 1000;
 const noAuth = async () => null;
+
+describe("nested clone migration batches", () => {
+  it("puts pending recoveries first and rotates through the rest across sweeps", () => {
+    const listed = Array.from({ length: 10 }, (_, index) => `repo-${index.toString(16).padStart(12, "0")}`);
+    const first = nextNestedCloneMigrationBatch(listed, [listed[9]!], new Set(), 4);
+    expect(first.names).toEqual([listed[9], listed[0], listed[1], listed[2]]);
+    expect(first).toMatchObject({ cycleOpen: true, overflow: true });
+    const second = nextNestedCloneMigrationBatch(listed, [], first.visited, 4);
+    expect(second.names).toEqual([listed[3], listed[4], listed[5], listed[6]]);
+    const third = nextNestedCloneMigrationBatch(listed, [], second.visited, 4);
+    expect(third.names).toEqual([listed[7], listed[8], listed[0], listed[1]]);
+    expect(third).toMatchObject({ cycleOpen: false, overflow: true });
+    expect([...third.visited]).toEqual([]);
+    expect(nextNestedCloneMigrationBatch(listed.slice(0, 3), [], new Set(), 4)).toMatchObject({ names: listed.slice(0, 3), cycleOpen: false, overflow: false });
+  });
+});
 
 const support = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = support.supported ? describe : describe.skip;

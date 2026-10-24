@@ -90,6 +90,20 @@ function pendingRecords(workspace: Pick<Workspace, "metadata">) {
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
 }
 
+export function pendingNestedCloneMigrationNames(workspace: Pick<Workspace, "metadata">) {
+  return Object.keys(pendingRecords(workspace)).filter(name => CHECKOUT_NAME.test(name));
+}
+
+export function nextNestedCloneMigrationBatch(listed: string[], pending: string[], visited: ReadonlySet<string>,
+  limit = NESTED_CLONE_MIGRATIONS_PER_SWEEP) {
+  const first = pending.filter(name => listed.includes(name));
+  const rest = listed.filter(name => !first.includes(name));
+  const names = [...first, ...rest.filter(name => !visited.has(name)), ...rest.filter(name => visited.has(name))].slice(0, limit);
+  const seen = new Set([...[...visited].filter(name => listed.includes(name)), ...names]);
+  const cycleOpen = listed.some(name => !seen.has(name));
+  return { names, visited: cycleOpen ? seen : new Set<string>(), cycleOpen, overflow: listed.length > names.length };
+}
+
 export function hasPendingNestedCloneMigration(workspace: Pick<Workspace, "metadata">) {
   return Object.keys(pendingRecords(workspace)).length > 0;
 }

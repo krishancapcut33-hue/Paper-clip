@@ -340,8 +340,10 @@ during that hour. A retry deadline is registered only while a pending record
 exists or the skip comes from a live consumer, a busy lock or a changed workspace row; other
 skips, including a change caught by verification, wait for a later sweep. The reaper looks
 only at checkouts named after the project's configured repositories (plus pending records),
-never at arbitrary directories, and converts at most 8 per workspace per sweep; when more
-remain, it registers a retry deadline. `PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN=true` reports candidates
+never at arbitrary directories, and attempts at most 8 per workspace per sweep. Pending
+recoveries go first, and the rest rotate across sweeps. While a rotation has not yet visited
+every checkout it registers a retry deadline; after a full rotation without progress it waits
+for a later sweep. `PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN=true` reports candidates
 without changing anything and registers no deadlines.
 
 Reopening the issue, or the next run that recreates the worktree, imports the bundle,
