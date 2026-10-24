@@ -1,4 +1,5 @@
 import { randomUUID } from "node:crypto";
+import { compileFunction } from "node:vm";
 import { eq, sql } from "drizzle-orm";
 import { pgTable, text } from "drizzle-orm/pg-core";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -95,6 +96,36 @@ describe.skipIf(!support.supported)("database response capture PostgreSQL behavi
     f.capture.flush();
     expect(summary(f.events)).toMatchObject({ startedQueries: 3, completedQueries: 3 });
     expect(JSON.stringify(f.events)).not.toContain("prepared-value");
+  });
+  it("retains distinct builder callers through normal, prepared, and transaction execution", async () => {
+    const f = fixture(), id = randomUUID();
+    const setup = createDb(temporary.connectionString); clients.push(setup);
+    await setup.insert(table).values({ id, payload: "caller-sentinel" });
+    const shape = f.db.select().from(table);
+    const caller = (name: string) => compileFunction(
+      "return db.select().from(table).where(eq(table.id, id))", ["db", "id"],
+      { filename: `/fixture/server/src/services/${name}.ts`, contextExtensions: [{ table, eq }] },
+    ) as (db: Pick<typeof f.db, "select">, id: string) => typeof shape;
+    const fromA = caller("capture-caller-a"), fromB = caller("capture-caller-b");
+    const normalA = fromA(f.db, id), normalB = fromB(f.db, id);
+    expect(await normalA).toEqual([{ id, payload: "caller-sentinel" }]);
+    expect(await normalB).toEqual([{ id, payload: "caller-sentinel" }]);
+    const prepared = fromA(f.db, id).prepare("capture_caller_prepared");
+    expect(await prepared.execute()).toEqual([{ id, payload: "caller-sentinel" }]);
+    await f.db.transaction(async tx => {
+      expect(await fromB(tx, id)).toEqual([{ id, payload: "caller-sentinel" }]);
+    });
+    f.capture.flush();
+    const entries = f.events.filter(event => event.event === "paperclip.db_response_capture.entry.v1");
+    expect(entries).toHaveLength(2);
+    for (const name of ["a", "b"]) {
+      expect(entries.find(event => (event.callers as string[]).some(location => location.startsWith(`services/capture-caller-${name}.ts:`))))
+        .toMatchObject({ operation: "select", table: "response_capture_fixture", calls: 2, rows: 2 });
+    }
+    expect(summary(f.events)).toMatchObject({ startedQueries: 4, completedQueries: 4 });
+    expect(JSON.stringify(f.events)).not.toContain("/fixture/");
+    expect(JSON.stringify(f.events)).not.toContain("caller-sentinel");
+    expect(JSON.stringify(f.events)).not.toContain(id);
   });
   it("records the executed CTE rather than its unexecuted inner select", async () => {
     const f = fixture(), id = randomUUID();

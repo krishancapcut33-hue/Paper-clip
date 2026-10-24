@@ -92,6 +92,19 @@ describe("bounded database response capture", () => {
     expect(f.capture.execute(() => direct, metadata)).toBe(direct);
     expect(f.events).toHaveLength(1);
   });
+  it("retains the deadline count when a query resolves before a delayed flush", async () => {
+    const f = fixture();
+    let resolve!: (rows: unknown[]) => void;
+    const pending = new Promise<unknown[]>(done => { resolve = done; });
+    const result = f.capture.execute(() => pending, metadata);
+    f.now(epoch + 60_001);
+    const rows = [{ marker: "late-before-flush-sentinel" }]; resolve(rows);
+    expect(await result).toBe(rows);
+    f.capture.flush();
+    expect(f.events).toHaveLength(1);
+    expect(f.events[0]).toMatchObject({ startedQueries: 1, completedQueries: 0, inFlightAtEnd: 1, responseValueBytes: 0 });
+    expect(JSON.stringify(f.events)).not.toContain("late-before-flush-sentinel");
+  });
   it("bounds cardinality without dropping response-byte totals", () => {
     const f = fixture();
     for (let i = 0; i < 200; i += 1) f.capture.execute(() => [i], { ...metadata, callers: [`services/f${i}.ts:1:1`] });

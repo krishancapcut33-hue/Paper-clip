@@ -94,8 +94,8 @@ export function createDatabaseResponseCapture(
   const timer = setTimeout(flush, Math.max(0, window.end - now()));
   timer.unref();
   function finish(metadata: Metadata, value: unknown, failed: boolean) {
-    inFlight -= 1;
     if (!active()) return;
+    inFlight -= 1;
     completed += 1;
     try {
       let key = JSON.stringify(metadata);
