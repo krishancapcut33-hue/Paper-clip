@@ -87,6 +87,7 @@ export function explicitlyRequestsFileOutput(objective: string): boolean {
       const creates = [...clause.matchAll(/\b(?:create|make|write|save|export|attach|send|generate|produce|prepare|provide|give|return|build)\b/giu)];
       return creates.flatMap((create, createIndex) => {
         const before = clause.slice(0, create.index);
+        if (/\b(?:do not|don['’]t|never|no need to)\s*$/iu.test(before)) return [];
         const negation = /\b(?:do not|don['’]t|never|no need to)\b/iu.exec(before);
         if (negation) {
           const rest = before.slice(negation.index + negation[0].length);

@@ -42,6 +42,8 @@ describe("explicit file output requirements", () => {
     "Do not create a file; answer inline.",
     "Run hostname, id, and pwd on your assigned computer. Report their output in a short completion comment, followed by CONTROL_PLANE_CHECK_OK. Do not modify repository files or create attachments. Mark the task done when finished.",
     "Do not modify repository files or create attachments.",
+    "Do not edit files and do not create attachments.",
+    "Do not create files; instead, don't create attachments either.",
     "Do not create files and attach them.",
     "Don’t edit files or create attachments.",
     "Never edit files nor create attachments.",
