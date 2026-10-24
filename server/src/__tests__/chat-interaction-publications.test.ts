@@ -323,6 +323,40 @@ describeEmbeddedPostgres(
       }
     });
 
+    it.each([100, 101, 128])("preserves the complete response path for %i choices plus Other", async count => {
+      const fixture = await seedBoundIssue(["slack"]);
+      const service = issueThreadInteractionService(db);
+      const options = Array.from({ length: count }, (_, index) => ({ id: `choice-${index}`, label: `Choice ${index}` }));
+      const interaction = await service.create({ id: fixture.issueId, companyId: fixture.companyId }, {
+        kind: "ask_user_questions",
+        payload: { version: 1, questionSet: { schema: "paperclip.question_set.v1", questions: [{
+          id: "choice", prompt: "Choose a fixture", answerMode: "single_select", required: true,
+          options, customAnswer: { enabled: true },
+        }] } },
+      }, { agentId: fixture.agentId });
+      const [publication] = await publicationsForInteraction(fixture.companyId, interaction.id);
+      const tokens = await db.select().from(chatActions).where(eq(chatActions.endpointId, publication.endpointId));
+      if (count === 100) {
+        expect(publication.payload.card?.selection?.options).toHaveLength(count);
+        expect(publication.payload.card?.actions).toEqual([
+          expect.objectContaining({ type: "callback", label: "Other…" }),
+        ]);
+        expect(tokens.filter(token => token.kind === "question_answer")).toHaveLength(count);
+      } else {
+        expect(publication.payload.card?.selection).toBeUndefined();
+        expect(publication.payload.card?.actions).toEqual([
+          { type: "link", label: "Open in Paperclip", url: expect.stringContaining(fixture.issueId) },
+        ]);
+        expect(tokens).toEqual([]);
+        await markInteractionCardsPublished(fixture.companyId, interaction.id);
+        await service.answerQuestions({ id: fixture.issueId, companyId: fixture.companyId }, interaction.id, {
+          answers: [{ questionId: "choice", optionIds: [options[count - 1]!.id] }],
+        }, { userId: "board-user" });
+        const settled = await publicationsForInteraction(fixture.companyId, interaction.id);
+        expect(settled.find(row => row.id !== publication.id)?.payload.card?.body).toContain(`Answered: Choice ${count - 1}`);
+      }
+    });
+
     it("keeps repeated choices and help under each question", async () => {
       const fixture = await seedBoundIssue(["slack"]);
       const interaction = await issueThreadInteractionService(db).create(
