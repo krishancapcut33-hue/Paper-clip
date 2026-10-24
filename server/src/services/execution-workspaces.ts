@@ -8,7 +8,7 @@ import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock 
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration } from "./git-workspace-expiration.js";
 import { hasPendingIsolatedRepositoryRehomeCleanup, isIsolatedRepositoryRehomeCandidate, rehomeExpiredIsolatedRestoration, rehomeIsolatedRepositoryWorkspace } from "./isolated-repository-rehome.js";
 import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, nextNestedCloneMigrationBatch, pendingNestedCloneMigrationNames, listNestedCloneMigrationNames, migrateNestedRepositoryClone,
-  NESTED_CLONE_MIGRATION_RETRY_REASONS } from "./nested-clone-migration.js";
+  NESTED_CLONE_MIGRATION_RETRY_REASONS, type NestedCloneMigrationRotation } from "./nested-clone-migration.js";
 import type { StorageService } from "../storage/types.js";
 import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired } from "./git-workspace-restoration.js";
 
@@ -1755,8 +1755,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const nestedCloneMigrationDeadlines = new Map<string, number>();
   const nestedCloneMigrationNotBefore = new Map<string, number>();
   const nestedCloneMigrationRetryAt = new Map<string, number>();
-  const nestedCloneMigrationVisited = new Map<string, Set<string>>();
-  const nestedCloneMigrationCycled = new Set<string>();
+  const nestedCloneMigrationRotations = new Map<string, NestedCloneMigrationRotation>();
   let terminalSweepRescanRequested = false;
   // The reaper freezes an upper bound on updatedAt at the start of each
   // rotation. The scan only reads candidates at or below the bound, so a steady
@@ -3373,26 +3372,18 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           } else {
             const listed = await listNestedCloneMigrationNames(db, workspace).catch(() => [] as string[]);
             const batch = nextNestedCloneMigrationBatch(listed, pendingNestedCloneMigrationNames(workspace),
-              nestedCloneMigrationVisited.get(workspace.id) ?? new Set<string>());
+              nestedCloneMigrationRotations.get(workspace.id));
             const names = batch.names;
-            if (batch.cycleOpen) {
-              if (nestedCloneMigrationVisited.size >= 4096) nestedCloneMigrationVisited.delete(nestedCloneMigrationVisited.keys().next().value!);
-              nestedCloneMigrationVisited.set(workspace.id, batch.visited);
-            } else {
-              nestedCloneMigrationVisited.delete(workspace.id);
-              if (batch.overflow) {
-                if (nestedCloneMigrationCycled.size >= 4096) nestedCloneMigrationCycled.delete(nestedCloneMigrationCycled.values().next().value!);
-                nestedCloneMigrationCycled.add(workspace.id);
-              }
-            }
+            if (nestedCloneMigrationRotations.size >= 4096) nestedCloneMigrationRotations.delete(nestedCloneMigrationRotations.keys().next().value!);
+            nestedCloneMigrationRotations.set(workspace.id, batch.rotation);
             const dryRun = opts.nestedCloneMigrationDryRun ?? false;
-            let remaining = batch.overflow, retry = batch.cycleOpen && !dryRun && !nestedCloneMigrationCycled.has(workspace.id);
+            let remaining = batch.overflow, retry = batch.retryOverflow && !dryRun;
             for (const name of names) {
               const migration = await migrateNestedRepositoryClone(db, workspace, name, { dryRun, signal });
               logger.info({ event: "execution_workspace.nested_clone_migration", executionWorkspaceId: workspace.id,
                 companyId: workspace.companyId, dryRun, ...migration }, "Nested repository clone migration inspected");
               if (migration.outcome !== "migrated" && migration.outcome !== "recovered") remaining = true;
-              else nestedCloneMigrationCycled.delete(workspace.id);
+              else nestedCloneMigrationRotations.set(workspace.id, { ...batch.rotation, exhausted: null });
               if (!dryRun && migration.reason && NESTED_CLONE_MIGRATION_RETRY_REASONS.has(migration.reason)) retry = true;
             }
             const [after] = names.length > 0 ? await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)) : [workspace];

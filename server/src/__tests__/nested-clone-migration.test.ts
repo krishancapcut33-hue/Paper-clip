@@ -27,18 +27,20 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const noAuth = async () => null;
 
 describe("nested clone migration batches", () => {
-  it("puts pending recoveries first and rotates through the rest across sweeps", () => {
+  it("puts pending recoveries first, rotates through the rest and stops retrying an exhausted rotation until the list changes", () => {
     const listed = Array.from({ length: 10 }, (_, index) => `repo-${index.toString(16).padStart(12, "0")}`);
-    const first = nextNestedCloneMigrationBatch(listed, [listed[9]!], new Set(), 4);
-    expect(first.names).toEqual([listed[9], listed[0], listed[1], listed[2]]);
-    expect(first).toMatchObject({ cycleOpen: true, overflow: true });
-    const second = nextNestedCloneMigrationBatch(listed, [], first.visited, 4);
-    expect(second.names).toEqual([listed[3], listed[4], listed[5], listed[6]]);
-    const third = nextNestedCloneMigrationBatch(listed, [], second.visited, 4);
-    expect(third.names).toEqual([listed[7], listed[8], listed[0], listed[1]]);
-    expect(third).toMatchObject({ cycleOpen: false, overflow: true });
-    expect([...third.visited]).toEqual([]);
-    expect(nextNestedCloneMigrationBatch(listed.slice(0, 3), [], new Set(), 4)).toMatchObject({ names: listed.slice(0, 3), cycleOpen: false, overflow: false });
+    const first = nextNestedCloneMigrationBatch(listed, [listed[9]!], undefined, 4);
+    expect(first).toMatchObject({ names: [listed[9], listed[0], listed[1], listed[2]], overflow: true, retryOverflow: true });
+    const second = nextNestedCloneMigrationBatch(listed, [], first.rotation, 4);
+    expect(second).toMatchObject({ names: [listed[3], listed[4], listed[5], listed[6]], retryOverflow: true });
+    const third = nextNestedCloneMigrationBatch(listed, [], second.rotation, 4);
+    expect(third).toMatchObject({ names: [listed[7], listed[8], listed[0], listed[1]], retryOverflow: false });
+    expect([...third.rotation.visited]).toEqual([]);
+    const fourth = nextNestedCloneMigrationBatch(listed, [], third.rotation, 4);
+    expect(fourth).toMatchObject({ names: listed.slice(0, 4), retryOverflow: false });
+    const grown = [...listed, "repo-aaaaaaaaaaaa"];
+    expect(nextNestedCloneMigrationBatch(grown, [], fourth.rotation, 4)).toMatchObject({ retryOverflow: true });
+    expect(nextNestedCloneMigrationBatch(listed.slice(0, 3), [], undefined, 4)).toMatchObject({ names: listed.slice(0, 3), overflow: false, retryOverflow: false });
   });
 });
 

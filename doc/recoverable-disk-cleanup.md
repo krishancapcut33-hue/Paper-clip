@@ -343,7 +343,7 @@ only at checkouts named after the project's configured repositories (plus pendin
 never at arbitrary directories, and attempts at most 8 per workspace per sweep. Pending
 recoveries go first, and the rest rotate across sweeps. While a rotation has not yet visited
 every checkout it registers a retry deadline; after a full rotation without progress it waits
-for a later sweep. `PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN=true` reports candidates
+for a later sweep, until a conversion succeeds or the set of candidate checkouts changes. `PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN=true` reports candidates
 without changing anything and registers no deadlines.
 
 Reopening the issue, or the next run that recreates the worktree, imports the bundle,

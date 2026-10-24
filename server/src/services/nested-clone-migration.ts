@@ -94,14 +94,21 @@ export function pendingNestedCloneMigrationNames(workspace: Pick<Workspace, "met
   return Object.keys(pendingRecords(workspace)).filter(name => CHECKOUT_NAME.test(name));
 }
 
-export function nextNestedCloneMigrationBatch(listed: string[], pending: string[], visited: ReadonlySet<string>,
+export type NestedCloneMigrationRotation = { visited: ReadonlySet<string>; exhausted: string | null };
+
+export function nextNestedCloneMigrationBatch(listed: string[], pending: string[], rotation: NestedCloneMigrationRotation | undefined,
   limit = NESTED_CLONE_MIGRATIONS_PER_SWEEP) {
+  const listing = listed.join("\n");
+  const visited = rotation?.visited ?? new Set<string>();
   const first = pending.filter(name => listed.includes(name));
   const rest = listed.filter(name => !first.includes(name));
   const names = [...first, ...rest.filter(name => !visited.has(name)), ...rest.filter(name => visited.has(name))].slice(0, limit);
   const seen = new Set([...[...visited].filter(name => listed.includes(name)), ...names]);
   const cycleOpen = listed.some(name => !seen.has(name));
-  return { names, visited: cycleOpen ? seen : new Set<string>(), cycleOpen, overflow: listed.length > names.length };
+  const overflow = listed.length > names.length;
+  const exhausted = rotation?.exhausted === listing ? listing : !cycleOpen && overflow ? listing : null;
+  return { names, overflow, retryOverflow: cycleOpen && rotation?.exhausted !== listing,
+    rotation: { visited: cycleOpen ? seen : new Set<string>(), exhausted } satisfies NestedCloneMigrationRotation };
 }
 
 export function hasPendingNestedCloneMigration(workspace: Pick<Workspace, "metadata">) {
