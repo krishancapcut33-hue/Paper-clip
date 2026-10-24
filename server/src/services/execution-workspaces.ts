@@ -8,7 +8,7 @@ import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock 
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration } from "./git-workspace-expiration.js";
 import { hasPendingIsolatedRepositoryRehomeCleanup, isIsolatedRepositoryRehomeCandidate, rehomeExpiredIsolatedRestoration, rehomeIsolatedRepositoryWorkspace } from "./isolated-repository-rehome.js";
 import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, listNestedCloneMigrationNames, migrateNestedRepositoryClone,
-  NESTED_CLONE_MIGRATION_RETRY_REASONS } from "./nested-clone-migration.js";
+  NESTED_CLONE_MIGRATION_RETRY_REASONS, NESTED_CLONE_MIGRATIONS_PER_SWEEP } from "./nested-clone-migration.js";
 import type { StorageService } from "../storage/types.js";
 import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired } from "./git-workspace-restoration.js";
 
@@ -3369,9 +3369,10 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             const retryAt = nestedCloneMigrationRetryAt.get(workspace.id);
             if (retryAt !== undefined) nestedCloneMigrationDeadlines.set(workspace.id, retryAt);
           } else {
-            const names = await listNestedCloneMigrationNames(workspace).catch(() => [] as string[]);
+            const listed = await listNestedCloneMigrationNames(db, workspace).catch(() => [] as string[]);
+            const names = listed.slice(0, NESTED_CLONE_MIGRATIONS_PER_SWEEP);
             const dryRun = opts.nestedCloneMigrationDryRun ?? false;
-            let remaining = false, retry = false;
+            let remaining = listed.length > names.length, retry = remaining && !dryRun;
             for (const name of names) {
               const migration = await migrateNestedRepositoryClone(db, workspace, name, { dryRun, signal });
               logger.info({ event: "execution_workspace.nested_clone_migration", executionWorkspaceId: workspace.id,

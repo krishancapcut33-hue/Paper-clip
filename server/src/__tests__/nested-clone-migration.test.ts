@@ -154,7 +154,7 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     const before = await currentRestorePointSnapshot(f.checkout);
     const view = gitView(f.checkout);
     const realBase = await fs.realpath(f.base);
-    expect(await listNestedCloneMigrationNames(await f.row())).toEqual([f.name]);
+    expect(await listNestedCloneMigrationNames(db, await f.row())).toEqual([f.name]);
 
     const result = await f.migrate();
     expect(result).toMatchObject({ outcome: "migrated", reason: null, branchName: `${f.prefix}main` });
@@ -187,7 +187,7 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     for (const target of staging(f.checkout)) expect(await exists(target)).toBe(false);
     expect((await f.row()).metadata?.nestedCloneMigrationPending).toBeUndefined();
     expect(await f.migrate()).toMatchObject({ outcome: "skipped", reason: "already_worktree_backed" });
-    expect(await listNestedCloneMigrationNames(await f.row())).toEqual([]);
+    expect(await listNestedCloneMigrationNames(db, await f.row())).toEqual([]);
   });
 
   it("keeps commits that only the clone's remote-tracking refs still hold", async () => {
@@ -294,7 +294,8 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     const stray = path.join(path.dirname(f.checkout), "stray-0123456789ab");
     git(path.dirname(stray), "clone", "-q", f.nested.url, stray);
     const before = await currentRestorePointSnapshot(stray);
-    expect(await listNestedCloneMigrationNames(await f.row())).toEqual([f.name, "stray-0123456789ab"].sort());
+    for (let index = 0; index < 20; index += 1) await fs.mkdir(path.join(path.dirname(f.checkout), `agent-${index.toString(16).padStart(12, "0")}`, ".git"), { recursive: true });
+    expect(await listNestedCloneMigrationNames(db, await f.row())).toEqual([f.name]);
     expect(await migrateNestedRepositoryClone(db, await f.row(), "stray-0123456789ab", { resolveGitAuth: noAuth }))
       .toMatchObject({ outcome: "skipped", reason: "unknown_managed_checkout" });
     await expectUntouched(f, before, stray, await nestedWorktreeBranchPrefix(stray));
@@ -364,7 +365,7 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     expect(crashed).toMatchObject({ outcome: "skipped" });
     expect(await exists(`${f.checkout}.clone-standalone`)).toBe(true);
     expect((await f.row()).metadata?.nestedCloneMigrationPending).toMatchObject({ [f.name]: { phase: step === "afterFinalize" ? "cleanup" : "swap" } });
-    expect(await listNestedCloneMigrationNames(await f.row())).toEqual([f.name]);
+    expect(await listNestedCloneMigrationNames(db, await f.row())).toEqual([f.name]);
     expect(await f.migrate({ dryRun: true })).toMatchObject({ outcome: "dry_run", reason: "interrupted_migration_pending" });
     expect(await exists(`${f.checkout}.clone-standalone`)).toBe(true);
 

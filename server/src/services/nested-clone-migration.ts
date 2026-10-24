@@ -29,6 +29,7 @@ const LOCAL_CONFIG = /^(core\.(repositoryformatversion|filemode|bare|logallrefup
 const UNSUPPORTED_GIT_STATE = ["shallow", "MERGE_HEAD", "CHERRY_PICK_HEAD", "REVERT_HEAD", "BISECT_LOG", "rebase-apply", "rebase-merge", "sequencer",
   "info/sparse-checkout", "info/attributes", "refs/replace", "modules", "lfs"];
 const FETCH_TIMEOUT_MS = 10 * 60 * 1000;
+export const NESTED_CLONE_MIGRATIONS_PER_SWEEP = 8;
 export const NESTED_CLONE_MIGRATION_PENDING_KEY = "nestedCloneMigrationPending";
 export const NESTED_CLONE_MIGRATION_RETRY_REASONS: ReadonlySet<string> = new Set(["lifecycle_busy", "source_busy", "live_or_unresolved_consumer",
   "worktree_git_busy", "workspace_changed"]);
@@ -115,18 +116,24 @@ async function writePending(db: Db, workspaceId: string, name: string, value: Ne
         ELSE ${executionWorkspaces.metadata} #- ${`{${key},${name}}`}::text[] END` }).where(eq(executionWorkspaces.id, workspaceId));
 }
 
-export async function listNestedCloneMigrationNames(workspace: Workspace) {
+export async function listNestedCloneMigrationNames(db: Db, workspace: Workspace) {
   const names = new Set(Object.keys(pendingRecords(workspace)).filter(name => CHECKOUT_NAME.test(name)));
   if (!workspace.cwd || !isNestedCloneMigrationCandidate(workspace)) return [...names].sort();
   const root = path.join(workspace.cwd, PROJECT_REPOSITORIES_DIR);
   const stat = await fs.lstat(root).catch(() => null);
   if (!stat?.isDirectory() || stat.isSymbolicLink()) return [...names].sort();
-  for (const entry of await fs.readdir(root)) {
-    const staged = Object.values(STAGING_SUFFIXES).find(suffix => entry.endsWith(suffix));
-    if (staged && CHECKOUT_NAME.test(entry.slice(0, -staged.length))) { names.add(entry.slice(0, -staged.length)); continue; }
-    if (!CHECKOUT_NAME.test(entry)) continue;
-    const marker = await fs.lstat(path.join(root, entry, ".git")).catch(() => null);
-    if (marker?.isDirectory() && !marker.isSymbolicLink()) names.add(entry);
+  const rows = await db.select({ id: projectWorkspaces.id, repoUrl: projectWorkspaces.repoUrl, repoRef: projectWorkspaces.repoRef, cwd: projectWorkspaces.cwd })
+    .from(projectWorkspaces).where(and(eq(projectWorkspaces.companyId, workspace.companyId), eq(projectWorkspaces.projectId, workspace.projectId!)));
+  let selected = rows;
+  try {
+    selected = selectRestoredProjectRepositories(rows, workspace.metadata?.[GIT_CACHE_RESTORATION_KEY] === undefined ? undefined : readGitCacheRestoration(workspace)?.contents);
+  } catch { selected = rows; }
+  const configured = new Set(selected.filter(row => row.repoUrl)
+    .map(row => managedProjectCheckoutName({ id: row.id, repoUrl: row.repoUrl!, repoRef: row.repoRef, cwd: row.cwd })));
+  for (const name of configured) {
+    if ((await Promise.all(Object.values(STAGING_SUFFIXES).map(suffix => exists(path.join(root, `${name}${suffix}`))))).some(Boolean)) { names.add(name); continue; }
+    const marker = await fs.lstat(path.join(root, name, ".git")).catch(() => null);
+    if (marker?.isDirectory() && !marker.isSymbolicLink()) names.add(name);
   }
   return [...names].sort();
 }
@@ -508,6 +515,6 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
 
 export async function migrateNestedRepositoryClones(db: Db, workspace: Workspace, options: NestedCloneMigrationOptions = {}) {
   const results: NestedCloneMigrationResult[] = [];
-  for (const name of await listNestedCloneMigrationNames(workspace)) results.push(await migrateNestedRepositoryClone(db, workspace, name, options));
+  for (const name of await listNestedCloneMigrationNames(db, workspace)) results.push(await migrateNestedRepositoryClone(db, workspace, name, options));
   return results;
 }
