@@ -41,6 +41,7 @@ export type NestedCloneMigrationPending = {
   base: string; head: string; branch: string | null; refs: PlannedRef[]; moves: string[]; phase: "transfer" | "swap" | "cleanup";
 };
 export type NestedCloneMigrationHooks = {
+  beforeWorktreeAdd?: (input: { from: string; to: string }) => Promise<void>;
   beforeVerify?: (input: { from: string; to: string }) => Promise<void>;
   afterAside?: (input: { checkout: string; aside: string }) => Promise<void>;
   afterMove?: (input: { checkout: string; aside: string }) => Promise<void>;
@@ -414,6 +415,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
         await assertSafeBaseConfig(base, signal);
         await fetchBase(base, source.repoUrl, options.resolveGitAuth
           ?? withAnonymousGitFallback(createGitRemoteAuthProvider(db, row!.companyId, { issueId: row!.sourceIssueId! })), signal);
+        await assertSafeBaseConfig(base, signal);
         await assertNoBranchOnlyReflogHistory(inspected, signal);
         const planned = await planRefs(inspected, base, prefix, signal);
         const moves = await transferPlan(inspected.checkout, signal);
@@ -441,9 +443,12 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
             await git(base, ["update-ref", ref.ref, ref.commit, ""], { signal });
             await trackNestedWorktreeUpstream(base, ref.ref.slice("refs/heads/".length), ref.upstream);
           }
+          await hooks?.beforeWorktreeAdd?.({ from: inspected.checkout, to: paths.worktree });
+          await assertSafeBaseConfig(base, signal);
           await git(base, ["worktree", "add", "--quiet", ...(result.branchName ? [paths.worktree, result.branchName] : ["--detach", paths.worktree, inspected.head])],
             { signal, timeout: FETCH_TIMEOUT_MS });
           const staged = await canonicalPath(paths.worktree);
+          await assertSafeBaseConfig(base, signal);
           if (manifest) await applyRestorePoint({ cwd: staged, manifest, signal });
           const admin = (await git(staged, ["rev-parse", "--absolute-git-dir"], { signal })).trim();
           await fs.mkdir(path.join(admin, "logs"), { recursive: true });
@@ -453,6 +458,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
           });
           if (SHA.test(original)) await fs.copyFile(path.join(inspected.admin, "ORIG_HEAD"), path.join(admin, "ORIG_HEAD"));
           else await fs.rm(path.join(admin, "ORIG_HEAD"), { force: true });
+          await assertSafeBaseConfig(base, signal);
           await moveTransferItems(inspected.checkout, staged, moves, linkedBases);
           await hooks?.beforeVerify?.({ from: inspected.checkout, to: staged });
           const after = await currentRestorePointSnapshot(inspected.checkout, signal);

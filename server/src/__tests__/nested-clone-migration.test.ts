@@ -251,6 +251,24 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     await expectUntouched(f, before);
   });
 
+  it("never checks out through filters planted in the shared clone during the conversion", async () => {
+    const f = await fixture();
+    await fs.writeFile(path.join(f.checkout, ".gitattributes"), "*.dat filter=evil\n");
+    await fs.writeFile(path.join(f.checkout, "blob.dat"), "payload\n");
+    git(f.checkout, "add", ".gitattributes", "blob.dat"); git(f.checkout, "commit", "-qm", "Attributes");
+    await fs.writeFile(path.join(f.checkout, "draft.md"), "untracked work\n");
+    const marker = path.join(path.dirname(f.nested.remote), "smudge-ran");
+    const before = await currentRestorePointSnapshot(f.checkout);
+    const result = await f.migrate({ hooks: { beforeWorktreeAdd: async () => {
+      git(f.base, "config", "filter.evil.smudge", `sh -c 'touch ${marker}; cat'`);
+      git(f.base, "config", "filter.evil.required", "true");
+    } } });
+    expect(result).toMatchObject({ outcome: "skipped", reason: "unsupported_base_git_config" });
+    expect(await exists(marker)).toBe(false);
+    git(f.base, "config", "--remove-section", "filter.evil");
+    await expectUntouched(f, before);
+  });
+
   it("skips while a run is live", async () => {
     const f = await fixture();
     await nestedWork(f.checkout);
