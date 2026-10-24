@@ -42,7 +42,7 @@ async function fixture(provider = "codex", acpxAgent?: string) {
   return { root, request, descriptor, descriptorPath };
 }
 
-it.each([["codex", undefined], ["acpx", "codex"], ["acpx", "claude"]])("routes %s/%s with only its proxy credential and an owned home", async (provider, agent) => {
+it.each([["codex", undefined], ["acpx", "claude"]])("routes %s/%s with only its proxy credential and an owned home", async (provider, agent) => {
   const f = await fixture(provider, agent);
   const gateway = await prepareEvalGatewayRuntime(f.descriptorPath, f.request, {
     PATH: process.env.PATH, HOME: "/ambient/home", CODEX_HOME: "/ambient/codex", CLAUDE_CONFIG_DIR: "/ambient/claude",
@@ -140,4 +140,17 @@ it.each([false, true])("the real CLI retains route identity and removes the owne
   expect(raw).not.toContain(token);
   expect(raw).not.toContain("upstream-must-not-reach-provider");
   if (fail) expect(artifact.infrastructureError).toBe("simulated provider failure");
+});
+
+
+it.each(["codex", undefined])("rejects ACPX Codex (%s) before creating any provider service", async (agent) => {
+  const f = await fixture("acpx", agent);
+  vi.stubEnv("PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN", token);
+  const requestPath = join(f.root, "request.json"), outputPath = join(f.root, "artifact.json");
+  await writeFile(requestPath, JSON.stringify(f.request));
+  const factory = vi.fn(() => { throw new Error("must not create a provider service"); });
+  await expect(runEvalSessionCli(["--request", requestPath, "--output", outputPath, "--gateway-config", f.descriptorPath], { serviceFactory: factory }))
+    .rejects.toThrow("Controller gateway does not support this eval provider");
+  expect(factory).not.toHaveBeenCalled();
+  expect(existsSync(outputPath)).toBe(false);
 });

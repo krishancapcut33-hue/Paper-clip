@@ -43,7 +43,7 @@ export async function prepareEvalGatewayRuntime(
     throw new Error("Invalid controller gateway descriptor");
   }
   const provider = request.provider ?? "codex";
-  const codex = provider === "codex" || provider === "acpx" && (request.acpxAgent ?? "codex") === "codex";
+  const codex = provider === "codex";
   const claude = provider === "acpx" && request.acpxAgent === "claude";
   if (!codex && !claude || descriptor.provider !== (codex ? "openai" : "anthropic")) {
     throw new Error("Controller gateway does not support this eval provider");

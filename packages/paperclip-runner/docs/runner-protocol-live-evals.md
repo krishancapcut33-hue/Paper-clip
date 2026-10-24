@@ -107,8 +107,10 @@ must not replace that runtime identity in a report.
 ## Controller-assigned gateway route
 
 The Runner eval CLI accepts `--gateway-config /absolute/path/gateway.json` for
-native Codex and ACPX Codex/Claude. This is an explicit route for a controller
+native Codex and ACPX Claude. This is an explicit route for a controller
 that owns a local budget proxy. Normal invocations keep the direct path.
+ACPX Codex is rejected before service creation because its runtime prohibits
+preconfigured homes to protect Runner state.
 The descriptor must bind the exact model and attempt ID from `request.json`:
 
 ```json
