@@ -113,6 +113,14 @@ Identity task locks and activation receipts project typed legacy task keys with
 the native and first-class issue IDs. These projections preserve task binding
 precedence and validation without transferring prompts or output.
 
+Recovery's latest-run and legacy-continuation eligibility reads select structured
+result fields for error families,
+workspace/configuration receipts, cancellation attribution, retry deadlines, and
+conversation finalization. The `adapter_failed`, `provider_quota`, and
+`configuration_incomplete` classifiers retain full results because they inspect
+arbitrary provider error text. Stored results and execution/detail reads remain
+complete; no recovery decision is cached.
+
 To measure authentication query responses on disposable synthetic data:
 
 ```sh

@@ -1,4 +1,5 @@
 import { recoveryRunContextColumn, recoveryRunVersionColumn } from "./run-context-read.js";
+import { recoveryRunResultColumn } from "./run-result-read.js";
 import { isAgentAwaitingSetup } from "../../modules/agent-lifecycle/index.js";
 import { onboardingFirstTaskAwaitingUserSql } from "./onboarding-first-task-wait.js";
 import { isAiAuthenticationBlocked } from "../ai-auth-failure.js";
@@ -233,6 +234,11 @@ type ResolvedDependencyWakeBackstopOptions = {
   companyId?: string | null;
   blockerIssueId?: string | null;
   source?: ResolvedDependencyWakeBackstopSource;
+};
+
+const recoveryRunFields = {
+  ...getTableColumns(heartbeatRuns),
+  resultJson: recoveryRunResultColumn,
 };
 
 type LatestIssueRun =
@@ -983,7 +989,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
-        resultJson: heartbeatRuns.resultJson,
+        resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -1014,7 +1020,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
-        resultJson: heartbeatRuns.resultJson,
+        resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -1915,7 +1921,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
-        resultJson: heartbeatRuns.resultJson,
+        resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
       })
@@ -3786,7 +3792,7 @@ export function recoveryService(
     episode: LegacyDispositionEpisode,
     dispatchRunId?: string,
   ) {
-    const [run] = await db.select().from(heartbeatRuns).where(and(
+    const [run] = await db.select(recoveryRunFields).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, issue.companyId),
     )).limit(1);
     if (!run) return { kind: "skip" as const, reason: "missing_run" };
@@ -3825,7 +3831,7 @@ export function recoveryService(
   }
 
   async function legacyRepairDispatchBlock(runId: string): Promise<string | null> {
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
+    const [run] = await db.select(recoveryRunFields).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
     const context = parseObject(run?.contextSnapshot);
     if (!run || !parseObject(context.legacyDispositionEpisode).id) return null;
     if (!["queued", "running", "scheduled_retry"].includes(run.status)) return "repair_not_active";
@@ -3835,7 +3841,7 @@ export function recoveryService(
     const sourceId = readNonEmptyString(context.dispositionRepairSourceRunId) ?? readNonEmptyString(context.retryOfRunId);
     const issueId = readNonEmptyString(context.issueId);
     if (!sourceId || !issueId || episode.attempt < 1 || episode.attempt > episode.maxAttempts) return "invalid_repair_binding";
-    const [source] = await db.select().from(heartbeatRuns).where(and(eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, run.companyId))).limit(1);
+    const [source] = await db.select(recoveryRunFields).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, sourceId), eq(heartbeatRuns.companyId, run.companyId))).limit(1);
     if (!source || source.agentId !== run.agentId || legacyDispositionEpisode(source).id !== episode.id) return "invalid_repair_source";
     const [issue] = await db.select().from(issues).where(and(eq(issues.id, issueId), eq(issues.companyId, run.companyId))).limit(1);
     if (!issue) return "missing_issue";
@@ -3847,7 +3853,7 @@ export function recoveryService(
   }
 
   async function reconcileLegacyContinuation(runId: string) {
-    const [run] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
+    const [run] = await db.select(recoveryRunFields).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).limit(1);
     if (!run || run.runtimeMode === "native" || run.status !== "succeeded") return "skipped" as const;
     const context = parseObject(run.contextSnapshot);
     const issueId = readNonEmptyString(context.issueId) ?? readNonEmptyString(context.taskId);
