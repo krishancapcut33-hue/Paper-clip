@@ -832,6 +832,10 @@ export interface WakeupOptions {
   queuedCommentInterruptId?: string;
   /** Internal delivery of an existing undelivered user comment. */
   queuedCommentRequestId?: string;
+  /** Internal resume of a wake parked behind a released execution ownership hold. */
+  executionWaitResumeId?: string;
+  /** Exact server-read receipt payload; admission rejects a concurrent merge. */
+  executionWaitResumePayload?: Record<string, unknown>;
   /** Internal delivery of the authenticated task-level Retry receipt. */
   taskRetryRequestId?: string;
   /** Exact failed run selected by an authenticated board Retry request. */
@@ -1765,7 +1769,7 @@ export function enrichWakeContextSnapshot(input: {
   };
 }
 
-const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
+export const INTERACTION_CONTINUATION_CONTEXT_KEYS = [
   "interactionId",
   "interactionKind",
   "interactionStatus",
