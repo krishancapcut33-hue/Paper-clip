@@ -8,6 +8,8 @@ import {
   buildMigratedAgentEnv,
   collectInlineSecretMigrationCandidates,
   collectRedactedInlineEnvValues,
+  formatRedactedSkipWarning,
+  isServerMigratableEnvKey,
   parseSecretsInclude,
   registerSecretCommands,
   toPlainEnvValue,
@@ -228,6 +230,28 @@ describe("secrets CLI helpers", () => {
       { agentId: "agent-12345678", agentName: "Coder", envKey: "ANTHROPIC_API_KEY" },
       { agentId: "agent-12345678", agentName: "Coder", envKey: "GH_TOKEN" },
     ]);
+  });
+
+  it("only points skipped keys at the server script when that script would migrate them", () => {
+    expect(isServerMigratableEnvKey("ANTHROPIC_API_KEY")).toBe(true);
+    expect(isServerMigratableEnvKey("GH_TOKEN")).toBe(false);
+    expect(isServerMigratableEnvKey("TOKEN")).toBe(false);
+
+    const row = (envKey: string) => ({ agentId: "agent-12345678", agentName: "Coder", envKey });
+    expect(formatRedactedSkipWarning([])).toBeNull();
+
+    const covered = formatRedactedSkipWarning([row("ANTHROPIC_API_KEY")])!;
+    expect(covered).toContain("pnpm secrets:migrate-inline-env");
+    expect(covered).not.toContain("does not pick up");
+
+    const tokenOnly = formatRedactedSkipWarning([row("GH_TOKEN"), row("TOKEN"), row("GH_TOKEN")])!;
+    expect(tokenOnly).not.toContain("pnpm secrets:migrate-inline-env");
+    expect(tokenOnly).toContain("does not pick up GH_TOKEN, TOKEN,");
+
+    const mixed = formatRedactedSkipWarning([row("ANTHROPIC_API_KEY"), row("GH_TOKEN")])!;
+    expect(mixed).toContain("Skipping 2 env value(s)");
+    expect(mixed).toContain("pnpm secrets:migrate-inline-env");
+    expect(mixed).toContain("does not pick up GH_TOKEN,");
   });
 
   it("builds migrated env bindings without preserving secret values", () => {

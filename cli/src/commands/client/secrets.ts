@@ -111,6 +111,12 @@ export const REDACTED_ENV_VALUE = "***REDACTED***";
 const SENSITIVE_ENV_KEY_RE =
   /(^token$|[-_]?token$|api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
 
+// Same key list as scripts/migrate-inline-env-secrets.ts. That script does not
+// match plain token names like GH_TOKEN or TOKEN, so the warning below must not
+// send those keys to it.
+const SERVER_MIGRATION_ENV_KEY_RE =
+  /(api[-_]?key|access[-_]?token|auth(?:_?token)?|authorization|bearer|secret|passwd|password|credential|jwt|private[-_]?key|cookie|connectionstring)/i;
+
 const DEFAULT_DECLARATION_INCLUDE: CompanyPortabilityInclude = {
   company: true,
   agents: true,
@@ -192,6 +198,29 @@ export function collectRedactedInlineEnvValues(agents: Agent[]): RedactedInlineE
     }
   }
   return redacted;
+}
+
+export function isServerMigratableEnvKey(key: string): boolean {
+  return SERVER_MIGRATION_ENV_KEY_RE.test(key);
+}
+
+export function formatRedactedSkipWarning(redacted: RedactedInlineEnvValue[]): string | null {
+  if (redacted.length === 0) return null;
+  const notCoveredRows = redacted.filter((row) => !isServerMigratableEnvKey(row.envKey));
+  const notCovered = [...new Set(notCoveredRows.map((row) => row.envKey))];
+  const covered = redacted.length - notCoveredRows.length;
+  let message =
+    `Skipping ${redacted.length} env value(s) that the API returned as ${REDACTED_ENV_VALUE}. ` +
+    "They cannot be migrated through the API.";
+  if (covered > 0) {
+    message += " Use pnpm secrets:migrate-inline-env on the server host for these.";
+  }
+  if (notCovered.length > 0) {
+    message +=
+      ` The server script does not pick up ${notCovered.join(", ")}, ` +
+      "so move those into secrets by hand in the agent env settings.";
+  }
+  return message;
 }
 
 export function buildMigratedAgentEnv(
@@ -310,11 +339,9 @@ async function migrateInlineEnv(opts: SecretMigrateInlineEnvOptions): Promise<vo
   const secrets = (await ctx.api.get<CompanySecret[]>(apiPath`/api/companies/${companyId}/secrets`)) ?? [];
   const candidates = collectInlineSecretMigrationCandidates(agents, secrets);
   const redacted = collectRedactedInlineEnvValues(agents);
-  if (redacted.length > 0 && !ctx.json) {
-    console.log(pc.yellow(
-      `Skipping ${redacted.length} env value(s) that the API returned as ${REDACTED_ENV_VALUE}. ` +
-      "They cannot be migrated through the API. Use pnpm secrets:migrate-inline-env on the server host for these.",
-    ));
+  const redactedWarning = formatRedactedSkipWarning(redacted);
+  if (redactedWarning && !ctx.json) {
+    console.log(pc.yellow(redactedWarning));
   }
 
   if (!opts.apply) {
