@@ -2871,6 +2871,13 @@ package avatar PNGs using the API renderer; static hosting needs no API proxy.
 
 ### Investigating polling load
 
+Deferred-message recovery reads run admission fields before calling the release
+policy. The release coordinator reads authentication evidence and then refreshes
+completion identity after post-commit effects. These checks do not load stored
+prompts, Runner profiles, or output excerpts. Full execution and detail reads
+retain those fields. Queue cadence, delivery admission, and cleanup ownership
+remain unchanged.
+
 Runtime progress updates recheck the persisted run status before publication.
 This check selects only the run ID, company ID, agent ID, and status through
 `createHeartbeatRunState().getRunStatus`. It does not fetch prompts, runner
