@@ -270,9 +270,20 @@ and useful context in the channel; a title and **Respond** button alone do not
 satisfy that contract. Unsupported native controls need an explicit, usable
 handoff, not a missing request.
 
+Use the [eleven-experience inventory](./CONNECTOR-PLAYBOOK.md#question-experience-inventory)
+and [provider coverage index](./CHAT-QUESTION-COVERAGE.md) to record the best
+supported controls and justified handoffs. Grade functional correctness, good
+experience, and best feasible experience separately. Review actual unanswered,
+answering, and settled screens yourself; saved answers must remain readable
+within the conversation's authorized audience. A browser fallback does not pass
+the quality bar when a suitable native control avoids it.
+
 The optional first-message test in onboarding does not replace engineering
-qualification of these conversation loops. Verify affected forms in the actual
-provider and record real-provider evidence separately from local simulations.
+qualification of these conversation loops. Follow the
+[per-format evidence standard](./CONNECTOR-PLAYBOOK.md#retain-inspectable-per-format-evidence),
+including actual link clicks, saved responses, continuation and delivery receipts,
+and retained failures. Keep real-provider evidence separate from local simulations,
+live-model runs, and deployed verification.
 
 ## Apply and verify
 
