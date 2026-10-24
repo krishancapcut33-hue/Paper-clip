@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
-import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, plugins } from "@paperclipai/db";
+import { agents, companies, createDb, environmentLeases, environments, heartbeatRuns, issues, plugins, projects } from "@paperclipai/db";
 import { environmentRuntimeService } from "../services/environment-runtime.js";
 import * as orphanCleanup from "../services/sandbox-orphan-cleanup-spool.js";
 import { resolvePluginTaskResume } from "../services/environment-task-runtime.js";
@@ -13,12 +13,14 @@ const support=await getEmbeddedPostgresTestSupport();
  let db:ReturnType<typeof createDb>,stop:()=>Promise<void>;
  beforeAll(async()=>{const started=await startEmbeddedPostgresTestDatabase("plugin-warm-tasks");db=createDb(started.connectionString);stop=started.stop;});
  afterAll(async()=>{await stop?.();});
- async function fixture(){
+ async function fixture(initialProjects:string[]=[]){
   const companyId=randomUUID(),agentId=randomUUID(),issueId=randomUUID(),environmentId=randomUUID(),pluginId=randomUUID();
   let runId=randomUUID(),allocation=0,stopped=false,outage=false,releaseFails=false;
   const calls:string[]=[];
+  let projectIds=[...initialProjects];
   let resumeGate:Promise<void>|undefined,releaseResume:(()=>void)|undefined,resumes=0;
   await db.insert(companies).values({id:companyId,name:"Warm fixture",issuePrefix:`W${companyId.slice(0,7)}`});
+  for(const id of initialProjects) await db.insert(projects).values({id,companyId,name:"Authorized project"});
   await db.insert(agents).values({id:agentId,companyId,name:"Codex",adapterType:"paperclip_runner"});
   await db.insert(issues).values({id:issueId,companyId,title:"Warm task",status:"in_progress",assigneeAgentId:agentId});
   await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,nativeIssueId:issueId,invocationSource:"manual",status:"running"});
@@ -43,18 +45,18 @@ const support=await getEmbeddedPostgresTestSupport();
     return {kind:"accepted",taskId:p.taskId};
    }} as unknown as PluginWorkerManager;
   const runtime=()=>environmentRuntimeService(db,{pluginWorkerManager:workers});
-  const acquire=()=>runtime().acquireRunLease({companyId,environment:environment as never,issueId,agentId,heartbeatRunId:runId,persistedExecutionWorkspace:null,adapterType:"paperclip_runner"});
+  const acquire=()=>runtime().acquireRunLease({companyId,environment:environment as never,issueId,agentId,heartbeatRunId:runId,persistedExecutionWorkspace:null,adapterType:"paperclip_runner",runnerTaskProjectIds:projectIds});
   const first=await acquire();
   const identity={runnerInstanceId:"runner",environmentLeaseId:first.lease.id,runId,normalizedSessionId:"session",turnId:"turn",itemId:"item"};
-  await runtime().task({companyId,leaseId:first.lease.id,operation:{kind:"check_project_auth",configurationId:"configuration",provider:"openai",projectIds:[]}});
-  await runtime().task({companyId,leaseId:first.lease.id,operation:{kind:"submit",preparedLaunchId:"configuration",projectIds:[],bootstrapTicket:"synthetic",accountIdentity:"account",
+  await runtime().task({companyId,leaseId:first.lease.id,operation:{kind:"check_project_auth",configurationId:"configuration",provider:"openai",projectIds:initialProjects}});
+  await runtime().task({companyId,leaseId:first.lease.id,operation:{kind:"submit",preparedLaunchId:"configuration",projectIds:initialProjects,bootstrapTicket:"synthetic",accountIdentity:"account",
    runner:{harness:"codex",protocolMin:1,protocolMax:3,runnerId:identity.runnerInstanceId,leaseId:identity.environmentLeaseId,runId,sessionId:identity.normalizedSessionId,turnId:identity.turnId,itemId:identity.itemId},
    launch:{runnerVersion:"fixture",runnerDigest:`sha256:${"a".repeat(64)}`,maxOutboxBytes:262144,p0ReserveBytes:65536,lifecyclePolicy:{mode:"warm",idleTimeoutMs:300000}}}});
   await runtime().releaseRunLeases(runId,"released",undefined,"keep_running");
   await db.update(heartbeatRuns).set({status:"succeeded"}).where(eq(heartbeatRuns.id,runId));
   return {companyId,first,identity,calls,runtime,acquire,
    async nextRun(){runId=randomUUID();await db.insert(heartbeatRuns).values({id:runId,companyId,agentId,nativeIssueId:issueId,invocationSource:"manual",status:"running"});return runId;},
-   stopped(){stopped=true;},failRelease(){releaseFails=true;},outage(){outage=true;},
+   setProjects(next:string[]){projectIds=next;},stopped(){stopped=true;},failRelease(){releaseFails=true;},outage(){outage=true;},
    raceResume(){resumeGate=new Promise<void>(resolve=>{releaseResume=resolve;});}};
  }
  it("hands a retained process to a new run after controller reconstruction",async()=>{
@@ -126,6 +128,18 @@ const support=await getEmbeddedPostgresTestSupport();
   const rows=await db.select().from(environmentLeases).where(eq(environmentLeases.companyId,f.companyId));
   expect(rows.filter(row=>row.providerLeaseId === "task-2")).toEqual(mode==="cleanup-error"
    ? [expect.objectContaining({status:"pending_cleanup",failureReason:"plugin_task_replacement_unowned",metadata:expect.objectContaining({runnerTaskDispatched:false})})] : []);
+ });
+
+ it.each(["added","removed"] as const)("retires retained mounts when an authorized project is %s after controller restart",async mode=>{
+  const projectId=randomUUID(),f=await fixture(mode==="removed" ? [projectId] : []);
+  if(mode==="added") await db.insert(projects).values({id:projectId,companyId:f.companyId,name:"Added project"});
+  f.setProjects(mode==="added" ? [projectId] : []);await f.nextRun();
+  const next=await f.acquire();
+  expect(next.lease.providerLeaseId).not.toBe(f.first.lease.providerLeaseId);
+  expect(next.lease.metadata?.runnerTaskProjectIds).toEqual(mode==="added" ? [projectId] : []);
+  expect(f.calls).toContain("stop");expect(f.calls).toContain("complete");
+  expect(f.calls).not.toContain("environmentResumeLease");
+  await expect(resolvePluginTaskResume(db,{companyId:f.companyId,leaseId:next.lease.id,priorIdentity:f.identity})).resolves.toBe(f.first.lease.providerLeaseId);
  });
 
 });

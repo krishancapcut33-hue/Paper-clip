@@ -58,10 +58,19 @@ export function createPluginRunnerTaskOwner(input: {
     }
     return result;
   };
+  const checkProjectAuth = async (configurationId:string) => {
+    if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
+    const provider = input.harness === "codex" ? "openai" : input.harness === "claude" ? "anthropic" : input.harness;
+    const validation = await call({kind:"check_project_auth",configurationId,provider,projectIds:[...input.projectIds]});
+    if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
+    if (validation.kind !== "project_auth" || !validation.allowed || validation.configurationId !== configurationId
+      || validation.provider !== provider) throw new Error("Plugin Runner project authentication conflicts with the selected managed account");
+  };
   const prepareLaunch: RunnerLaunchPreparer = async (requirements, recovery) => {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     // Reconnecting the previous authority must not prepare it through the new run's lease.
     if (recovery && input.adoptIdentity && Object.entries(input.adoptIdentity).every(([key,value]) => requirements.identity[key as keyof DurableRecoveryIdentity] === value)) {
+      await checkProjectAuth(recovery.configurationId);
       preparedLaunchId = recovery.configurationId;
       return recovery;
     }
@@ -74,14 +83,7 @@ export function createPluginRunnerTaskOwner(input: {
     if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
     if (result.kind !== "prepared") throw new Error("Plugin Runner preparation unavailable");
     if (input.projectAuthCheckVersion !== 1) throw new Error("Plugin Runner managed project authentication validation unavailable");
-    if (!result.projectAuthCheckAtSubmit) {
-      const provider = input.harness === "codex" ? "openai" : input.harness === "claude" ? "anthropic" : input.harness;
-      const validation = await call({ kind: "check_project_auth", configurationId: result.launch.configurationId,
-        provider, projectIds: [...input.projectIds] });
-      if (released || stopRequested) throw new Error("Plugin Runner preparation cancelled");
-      if (validation.kind !== "project_auth" || !validation.allowed || validation.configurationId !== result.launch.configurationId
-        || validation.provider !== provider) throw new Error("Plugin Runner project authentication conflicts with the selected managed account");
-    }
+    if (launched || !result.projectAuthCheckAtSubmit) await checkProjectAuth(result.launch.configurationId);
     preparedLaunchId = result.launch.configurationId;
     preparedIdentity = requirements.identity;
     return result.launch;

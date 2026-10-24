@@ -128,6 +128,8 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
       issueId: lease.issueId, ...freshWorkspace, existing: freshWorkspace });
   }
   const projectIds = scopesProjects ? operation.projectIds : [];
+  if (scopesProjects && Array.isArray(metadata.runnerTaskProjectIds) &&
+      JSON.stringify(projectIds) !== JSON.stringify(metadata.runnerTaskProjectIds)) throw new Error("Plugin Runner project scope changed");
   if (activeProbe && projectIds.length > 0) throw new Error("Plugin Runner probe cannot use project mounts");
   if (projectIds.length > 0) {
     const authorizedProjects = await db.select({ id: projects.id }).from(projects)

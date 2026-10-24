@@ -171,7 +171,10 @@ supports authorized run attachment. Select the agent's warm lifecycle or set
 Core requires an explicitly selected account. Setup probes remain ephemeral.
 
 A Launcher task owns one Runner process, independently of Core heartbeat runs.
-Successful warm run completion retains the task and its mounts. Core atomically
+Successful warm run completion retains the task and its mounts. The reuse
+fingerprint includes the authorized project set; changing it retires the previous
+task before checkpoint recovery. Adoption and each warm handoff require a current,
+configuration-bound project-auth check against the exact retained mount scope. Core atomically
 hands its retained provider identity to one new run lease, revalidates current
 project authentication, prepares the new run's resources, and uses PRP
 `run.attach`. Preparation includes the exact `priorIdentity` and stable
