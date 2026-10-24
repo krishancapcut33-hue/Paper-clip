@@ -1294,7 +1294,6 @@ export function AgentDetail() {
             companyId={resolvedCompanyId}
             assignLabel="Assign Task"
             showStatus={false}
-            canRunWithProviderTrace={canUseProviderTrace && supportsRawProviderTrace(currentAgent.adapterType, currentAgent.adapterConfig)}
             actionsDisabled={agentAction.isPending}
             workActionsDisabled={hasInvalidOrgChain}
             workActionsDisabledReason="Repair this agent's reporting chain before assigning tasks or starting runs"
@@ -2061,7 +2060,8 @@ export function ConfigurationTab({
         || !syncAgentRouteAfterRename(queryClient, navigate, target, updated, urlTab ?? content)) {
         queryClient.invalidateQueries({ queryKey: queryKeys.agents.detail(target.urlKey) });
       }
-      pushToast({ title: "Agent saved", tone: "success" });
+      pushToast({ title: "Agent saved", tone: updated.configurationWarnings?.length ? "warn" : "success",
+        body: updated.configurationWarnings?.map(warning => warning.message).join("\n") });
     },
     onError: (err) => {
       setAwaitingRefreshAfterSave(false);

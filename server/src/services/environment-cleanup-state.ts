@@ -24,4 +24,3 @@ export async function nextEnvironmentCleanupAt(db: Db, backoffMs = ENVIRONMENT_C
   const buffered = hasDeferredEnvironmentCleanup(db) ? Date.now() + backoffMs : null;
   return saved === null ? buffered : buffered === null ? saved : Math.min(saved, buffered);
 }
-

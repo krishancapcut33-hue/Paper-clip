@@ -458,6 +458,7 @@ export interface EnvironmentDriverAcquireInput {
   executionWorkspaceId: string | null;
   executionWorkspaceMode: ExecutionWorkspace["mode"] | null;
   executionWorkspaceSettings: IssueExecutionWorkspaceSettings | null;
+  runnerTaskProjectIds?: readonly string[];
   /**
    * The harness/adapter type for this run (the agent's adapter). Drivers that
    * materialize a per-run sandbox use it to select the runtime image so a single
@@ -1376,8 +1377,6 @@ function createSandboxEnvironmentDriver(
 
   // Add one orphan record to the in-process buffer. Report `false` only when the
   // buffer is full, so the caller keeps the error log as the last durable handle.
-  let spoolDirty = true;
-  let spoolLoadPromise: Promise<void> | null = null;
   const enqueueDeferredOrphanCleanup = (record: DeferredOrphanCleanupRecord): boolean => {
     trackOrphanIdleWork(record);
     // Dedup by the provider lease id, so a repeated failure for the same orphan
@@ -1388,31 +1387,19 @@ function createSandboxEnvironmentDriver(
       record.providerLeaseId !== null &&
       deferredOrphanCleanups.some((entry) => entry.providerLeaseId === record.providerLeaseId);
     if (alreadyBuffered) return true;
-    if (deferredOrphanCleanups.length >= deferredOrphanCleanupBufferLimit) { spoolDirty = true; return false; }
+    if (deferredOrphanCleanups.length >= deferredOrphanCleanupBufferLimit) return false;
     deferredOrphanCleanups.push(record);
     return true;
   };
 
-  const ensureSpoolLoaded = async (): Promise<void> => {
-    if (spoolLoadPromise) return spoolLoadPromise;
-    if (!spoolDirty) return;
-    spoolDirty = false;
-    spoolLoadPromise = (async () => {
-      try { for (const record of await orphanCleanupSpool.load()) enqueueDeferredOrphanCleanup(record); }
-      catch (error) { spoolDirty = true; throw error; }
-    })().finally(() => { spoolLoadPromise = null; });
-    return spoolLoadPromise;
-  };
-
-  const flushDeferredOrphanCleanups = async (): Promise<{ recovered: number; pending: number }> => {
-    // Load the durable spool into the buffer first, so a restart-recovered record
-    // flushes on this pass. Reload only after a failed or capacity-limited load.
-    await ensureSpoolLoaded();
+  const flushDeferredOrphanCleanupsOnce = async (): Promise<{ recovered: number; pending: number }> => {
+    // Other task paths append after startup. Read on each concrete cleanup pass;
+    // the worker disarms entirely when no pending obligation remains.
+    for (const record of await orphanCleanupSpool.load()) enqueueDeferredOrphanCleanup(record);
     if (deferredOrphanCleanups.length === 0) {
       return { recovered: 0, pending: orphanIdleWork.size };
     }
-    // Take the whole batch synchronously before the first await, so a second
-    // concurrent flush sees an empty buffer and never re-inserts the same record.
+    // New acquisitions can enqueue while this batch is being persisted.
     const batch = deferredOrphanCleanups.splice(0, deferredOrphanCleanups.length);
     let recovered = 0;
     for (const record of batch) {
@@ -1460,6 +1447,11 @@ function createSandboxEnvironmentDriver(
     }
     if (orphanIdleWork.size === 0) { unregisterDeferredCleanup?.(); unregisterDeferredCleanup = undefined; }
     return { recovered, pending: orphanIdleWork.size };
+  };
+  let orphanFlush: Promise<{ recovered: number; pending: number }> | null = null;
+  const flushDeferredOrphanCleanups = (): Promise<{ recovered: number; pending: number }> => {
+    orphanFlush ??= flushDeferredOrphanCleanupsOnce().finally(() => { orphanFlush = null; });
+    return orphanFlush;
   };
 
   // Build the safe diagnostic fields for an orphan record. The provider
@@ -3668,7 +3660,38 @@ function createPluginEnvironmentDriver(
         driver.defaultAcquireTimeoutMs,
       );
       const timeoutOverride: [number?] = rpcTimeoutMs === undefined ? [] : [rpcTimeoutMs];
-      const providerLease = await workerManager.call(plugin.id, "environmentAcquireLease", {
+      const warm = input.adapterType === "paperclip_runner" && parsed.config.runnerLifecycleMode === "warm" &&
+        driver.warmTaskVersion === 1 && !!input.issueId && !!input.agentId && !!input.heartbeatRunId &&
+        workerManager.getWorker(plugin.id)?.supportedMethods.includes("environmentResumeLease");
+      const lifecyclePolicy = warm ? { mode: "warm", idleTimeoutMs: parsed.config.runnerIdleTimeoutMs ?? 300_000 } : { mode: "per_turn", idleTimeoutMs: null };
+      const fingerprint = createHash("sha256").update(JSON.stringify([parsed.config, input.agentId, input.runnerTaskProjectIds ?? []])).digest("hex");
+      const candidates = warm ? await db.select().from(environmentLeases).where(and(
+        eq(environmentLeases.companyId, input.companyId), eq(environmentLeases.environmentId, input.environment.id),
+        eq(environmentLeases.status, "retained"), eq(environmentLeases.issueId, input.issueId!),
+        sql`${environmentLeases.executionWorkspaceId} IS NOT DISTINCT FROM ${input.executionWorkspaceId ?? null}::uuid`,
+        sql`${environmentLeases.metadata}->>'agentId' = ${input.agentId!}`,
+        sql`${environmentLeases.metadata}->>'pluginId' = ${plugin.id}`,
+        sql`${environmentLeases.metadata}->>'driverKey' = ${parsed.config.driverKey}`,
+      )) : [];
+      if (candidates.length > 1) throw new Error("Ambiguous retained plugin task ownership");
+      const previous = candidates[0];
+      let resumed: PluginEnvironmentLease | undefined;
+      if (previous?.providerLeaseId && previous.metadata?.runnerTaskFingerprint !== fingerprint) {
+        // A changed mount scope must retire the old process before checkpoint recovery.
+        await this.releaseRunLease({environment:input.environment,lease:toEnvironmentLeaseSnapshot(previous),status:"released"});
+      } else if (previous?.providerLeaseId) {
+        // Resume only inspects the exact computer; an unavailable reply must not create a replacement.
+        resumed = await workerManager.call(plugin.id, "environmentResumeLease", {
+          driverKey: parsed.config.driverKey, companyId: input.companyId, environmentId: input.environment.id,
+          issueId: input.issueId, config: parsed.config.driverConfig, runId: input.heartbeatRunId!,
+          providerLeaseId: previous.providerLeaseId, leaseMetadata: previous.metadata ?? undefined,
+        });
+        if (!resumed?.providerLeaseId) {
+          await this.releaseRunLease({ environment: input.environment, lease: toEnvironmentLeaseSnapshot(previous), status: "released" });
+          resumed = undefined;
+        }
+      }
+      const providerLease = resumed ?? await workerManager.call(plugin.id, "environmentAcquireLease", {
         driverKey: parsed.config.driverKey,
         companyId: input.companyId,
         environmentId: input.environment.id,
@@ -3693,11 +3716,16 @@ function createPluginEnvironmentDriver(
         executionWorkspaceId: input.executionWorkspaceId,
         issueId: input.issueId,
         heartbeatRunId: input.heartbeatRunId,
-        leasePolicy: "ephemeral",
+        leasePolicy: warm ? "reuse_by_environment" : "ephemeral",
+        ...(resumed && previous ? { replacesReusableLeaseId: previous.id } : {}),
         provider: `plugin:${parsed.config.pluginKey}:${parsed.config.driverKey}`,
         providerLeaseId: providerLease.providerLeaseId,
         expiresAt: providerAttestedLeaseExpiry(input.requestedExpiresAt, parseExpiresAt(providerLease.expiresAt)),
         metadata: {
+          ...(resumed && previous ? { ...previous.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: previous.id } : {}),
+          runnerTaskLifecyclePolicy: lifecyclePolicy, runnerTaskFingerprint: fingerprint,
+          runnerTaskRequestedExpiresAt:requestedExpiresAtParam(input.requestedExpiresAt) ?? null,
+          ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},
           environmentId: input.environment.id,
@@ -4103,6 +4131,7 @@ export function environmentRuntimeService(
       heartbeatRunId: string | null;
       persistedExecutionWorkspace: Pick<ExecutionWorkspace, "id" | "mode"> | null;
       executionWorkspaceSettings?: IssueExecutionWorkspaceSettings | null;
+      runnerTaskProjectIds?: readonly string[];
       /** The agent's adapter type for this run (mixed-harness environments). */
       adapterType?: string | null;
       resolveSnapshotIdentity?: boolean;
@@ -4143,6 +4172,7 @@ export function environmentRuntimeService(
         executionWorkspaceId: leaseContext.executionWorkspaceId,
         executionWorkspaceMode: leaseContext.executionWorkspaceMode,
         executionWorkspaceSettings: input.executionWorkspaceSettings ?? null,
+        runnerTaskProjectIds: input.runnerTaskProjectIds,
         adapterType: input.adapterType ?? null,
         resolveSnapshotIdentity: input.resolveSnapshotIdentity,
         applyCustomImageTemplate: input.applyCustomImageTemplate ?? false,

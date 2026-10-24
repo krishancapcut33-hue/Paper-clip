@@ -1,5 +1,8 @@
 import * as fs from "node:fs/promises";
 import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
+import { createServer } from "node:http";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
 import express from "express";
 import request from "supertest";
 import {
@@ -92,7 +95,7 @@ import { errorHandler } from "../middleware/index.js";
 import * as sentry from "../sentry.js";
 import { HttpError } from "../errors.js";
 import type { VercelConnectClient } from "../services/vercel-connect.js";
-import { invalidatePaperclipCloudConnectorCapabilities, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
+import { invalidatePaperclipCloudConnectorCapabilities, PaperclipCloudConnectorError, type PaperclipCloudConnector } from "../services/paperclip-cloud-connector.js";
 
 const externalDatabaseUrl = process.env.PAPERCLIP_TOOL_ACCESS_TEST_DATABASE_URL?.trim();
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -977,6 +980,70 @@ describeEmbeddedPostgres("tool access service", () => {
     }
     return false;
   }
+
+  it.each(["pages", "rfc8693"] as const)("mints %s tokens over real HTTP and records upstream failures without token material", async (protocol) => {
+    vi.stubEnv("PAPERCLIP_TOKEN_BROKER_ALLOWED_HOSTS", "127.0.0.1");
+    const received: Array<{ authorization: string | undefined; body: string }> = [];
+    let failExchange = false;
+    const server = createServer(async (incoming, response) => {
+      const chunks: Buffer[] = [];
+      for await (const chunk of incoming) chunks.push(Buffer.from(chunk));
+      received.push({ authorization: incoming.headers.authorization, body: Buffer.concat(chunks).toString() });
+      response.writeHead(failExchange ? 503 : 200, { "content-type": "application/json" });
+      response.end(JSON.stringify(failExchange
+        ? { error: "temporarily_unavailable" }
+        : { access_token: "real-http-child-token", expires_in: 600, scope: "pages:publish:ns/dotta" }));
+    });
+    await new Promise<void>((resolve) => server.listen(0, "127.0.0.1", resolve));
+    try {
+      const company = await createCompany(db);
+      const agent = await createAgent(db, company.id);
+      const { run } = await createIssueAndRun(db, company.id, agent.id);
+      const port = (server.address() as { port: number }).port;
+      const { connection } = await createBrokerConnection(db, company.id, {
+        tokenUrl: `http://127.0.0.1:${port}/exchange`, protocol,
+      });
+      await allowConnectionForAgent(db, company.id, agent.id, connection.id);
+      const app = createRouteApp(db, agentJwtActor(company.id, agent.id, run.id));
+      const mint = () => request(app)
+        .post(`/api/agents/me/connections/${connection.id}/token`)
+        .send({ scope: "pages:publish:ns/dotta" });
+      const result = await mint();
+      expect(result.status).toBe(200);
+      expect(result.body).toMatchObject({ status: "minted", token: "real-http-child-token", scope: ["pages:publish:ns/dotta"] });
+      expect(received).toHaveLength(1);
+      if (protocol === "pages") {
+        expect(received[0].authorization).toBe("Bearer parent-deploy-token");
+        expect(JSON.parse(received[0].body)).toMatchObject({ namespace: "dotta", actor: { id: agent.id, runId: run.id, onBehalfOf: "user:user-for-run" } });
+      } else {
+        const form = new URLSearchParams(received[0].body);
+        expect(form.get("grant_type")).toBe("urn:ietf:params:oauth:grant-type:token-exchange");
+        expect(form.get("subject_token")).toBe("parent-deploy-token");
+        expect(form.get("scope")).toBe("pages:publish:ns/dotta");
+      }
+      failExchange = true;
+      const failed = await mint();
+      expect(failed.status).toBe(502);
+      expect(failed.body).toMatchObject({ code: "upstream_error" });
+      expect(received).toHaveLength(2);
+      const issuances = await db.select().from(connectionTokenIssuances)
+        .where(eq(connectionTokenIssuances.connectionId, connection.id));
+      expect(issuances).toHaveLength(2);
+      expect(issuances.find(row => row.outcome === "success")).toMatchObject({
+        tokenHash: createHash("sha256").update("real-http-child-token").digest("hex"),
+        companyId: company.id, agentId: agent.id, runId: run.id,
+      });
+      expect(issuances.find(row => row.outcome === "upstream_error")).toMatchObject({ tokenHash: null, errorCode: "upstream_error" });
+      const audits = await db.select().from(toolAccessAuditEvents)
+        .where(eq(toolAccessAuditEvents.connectionId, connection.id));
+      const persisted = JSON.stringify({ issuances, audits });
+      expect(persisted).not.toContain("parent-deploy-token");
+      expect(persisted).not.toContain("real-http-child-token");
+    } finally {
+      server.closeAllConnections();
+      await new Promise<void>((resolve, reject) => server.close(error => error ? reject(error) : resolve()));
+    }
+  });
 
   it("mints generic exchange connection tokens through the agent route and stores only hashes", async () => {
     const company = await createCompany(db);
@@ -3841,7 +3908,7 @@ describeEmbeddedPostgres("tool access service", () => {
     );
   });
 
-  it("cancels an ask-first test request when approval signing is unavailable", async () => {
+  it("cancels an ask-first test request when approval signing is unavailable", async ({ onTestFinished }) => {
     vi.stubEnv("PAPERCLIP_TOOL_ACTION_SIGNING_SECRET", "");
     const company = await createCompany(db);
     const userId = `tool-tester-${randomUUID()}`;
@@ -3860,6 +3927,12 @@ describeEmbeddedPostgres("tool access service", () => {
       boardSessionActor(company.id, "operator", userId),
       createToolGatewayService(db, { toolActionSigningSecret: " " }),
     );
+    const keyDirectory = await fs.mkdtemp(join(tmpdir(), "tool-access-signing-failure-"));
+    onTestFinished(() => fs.rm(keyDirectory, { recursive: true, force: true }));
+    const keyFile = join(keyDirectory, "master.key");
+    await fs.writeFile(keyFile, "corrupt-fixture-master-key", { mode: 0o600 });
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY", "");
+    vi.stubEnv("PAPERCLIP_SECRETS_MASTER_KEY_FILE", keyFile);
 
     const res = await request(app)
       .post(`/api/tool-connections/${connection.id}/test-calls`)
@@ -5294,6 +5367,7 @@ describeEmbeddedPostgres("tool access service", () => {
         "github-code-review-bot",
         "youcom",
         "enterpret",
+        "vercel",
         "openrouter",
         "bedrock",
         "responses-api",
@@ -5334,7 +5408,7 @@ describeEmbeddedPostgres("tool access service", () => {
       [...APP_STORE_HIDDEN_SLUGS].filter((slug) => gallerySlugs.has(slug)),
     ).toEqual([]);
     expect(
-      ["g2", "vercel", "zomato"].filter((slug) => gallerySlugs.has(slug)),
+      ["g2", "zomato"].filter((slug) => gallerySlugs.has(slug)),
     ).toEqual([]);
     expect(res.body.apps).toEqual(
       expect.arrayContaining([
@@ -6587,7 +6661,7 @@ describeEmbeddedPostgres("tool access service", () => {
         connectionMethodKey: "mcp-oauth",
         name,
         configValues: {
-          projectRef: "firstprojectref12345",
+          projectRef: "abcdefghijklmnopqrst",
           readOnly: true,
         },
       },
@@ -6601,7 +6675,7 @@ describeEmbeddedPostgres("tool access service", () => {
         connectionMethodKey: "mcp-oauth",
         name,
         configValues: {
-          projectRef: "secondprojectref1234",
+          projectRef: "tsrqponmlkjihgfedcba",
           readOnly: true,
           features: "database",
         },
@@ -6615,11 +6689,11 @@ describeEmbeddedPostgres("tool access service", () => {
       status: "draft",
       enabled: false,
       config: {
-        url: "https://mcp.supabase.com/mcp?project_ref=secondprojectref1234&read_only=true&features=database",
+        url: "https://mcp.supabase.com/mcp?project_ref=tsrqponmlkjihgfedcba&read_only=true&features=database",
         sourceTemplateKey: "supabase",
         connectionMethodKey: "mcp-oauth",
         methodConfig: {
-          projectRef: "secondprojectref1234",
+          projectRef: "tsrqponmlkjihgfedcba",
           readOnly: true,
           features: "database",
         },
@@ -6649,7 +6723,7 @@ describeEmbeddedPostgres("tool access service", () => {
         connectionMethodKey: "mcp-oauth",
         name: "Supabase for the company",
         configValues: {
-          projectRef: "firstprojectref12345",
+          projectRef: "abcdefghijklmnopqrst",
           readOnly: true,
         },
       },
@@ -6668,7 +6742,7 @@ describeEmbeddedPostgres("tool access service", () => {
         resumeConnectionId: first.connectionId,
         name: "Supabase for the company",
         configValues: {
-          projectRef: "secondprojectref1234",
+          projectRef: "tsrqponmlkjihgfedcba",
           readOnly: true,
         },
       },
@@ -6681,7 +6755,7 @@ describeEmbeddedPostgres("tool access service", () => {
       sourceTemplateKey: "supabase",
       connectionMethodKey: "mcp-oauth",
       methodConfig: {
-        projectRef: "secondprojectref1234",
+        projectRef: "tsrqponmlkjihgfedcba",
         readOnly: true,
       },
     });
@@ -9418,6 +9492,36 @@ describeEmbeddedPostgres("tool access service", () => {
       ).resolves.toEqual([]);
     } finally {
       driveDefinition.ownershipAvailability = previousOwnershipAvailability;
+    }
+  });
+
+  it("marks a managed grant for reconnection when the provider rejects its refresh", async () => {
+    const company = await createCompany(db);
+    await createAgent(db, company.id);
+    const userId = `managed-refresh-rejected-${randomUUID()}`;
+    await grantBoardUser(db, company.id, userId, [], "owner");
+    const actor = { actorType: "user" as const, actorId: userId };
+    const connector = fakeGmailConnector(company.id, userId);
+    const service = createTestToolAccessService(db, { paperclipCloudConnector: connector });
+    const definition = getConnectableAppDefinition("gmail")!;
+    const availability = definition.ownershipAvailability;
+    definition.ownershipAvailability = { ...availability, platform_shared: true };
+    mockToolsList([]);
+    try {
+      const connected = await service.connectGalleryApp(company.id, { galleryKey: "gmail", connectionMethodKey: "paperclip-draft", grantKind: "user", name: "Managed rejected refresh" }, actor);
+      const started = await service.startOAuth(company.id, connected.connectionId, { redirectUri: "https://paperclip.example/api/tools/oauth/cloud-connector/callback", actor });
+      await service.completePaperclipCloudConnectorCallback({ state: new URL(started.authorizationUrl).searchParams.get("state")!, claimId: "initial", actor });
+      const [grant] = await db.select().from(connectionGrants).where(and(eq(connectionGrants.connectionId, connected.connectionId), eq(connectionGrants.subjectUserId, userId)));
+      vi.mocked(connector.refresh).mockRejectedValueOnce(new PaperclipCloudConnectorError(
+        "Paperclip Cloud connector rejected the request (operation=refresh, status=409, reason=PROVIDER_REAUTHORIZATION_REQUIRED)",
+        "REAUTHORIZATION_REQUIRED",
+        409,
+      ));
+      await expect(service.refreshOAuthGrantCredentials({ companyId: company.id, connectionId: connected.connectionId, grantId: grant.id, forceRefresh: true, actor }))
+        .rejects.toMatchObject({ status: 422, details: { code: "oauth_reauthorization_required" } });
+      expect((await db.select().from(connectionGrants).where(eq(connectionGrants.id, grant.id)))[0].status).toBe("needs_reauthorization");
+    } finally {
+      definition.ownershipAvailability = availability;
     }
   });
 
@@ -12891,7 +12995,7 @@ describeEmbeddedPostgres("tool access service", () => {
       connectionMethodKey: "mcp-oauth",
       name: "Supabase confidential DCR",
       configValues: {
-        projectRef: "supabaseproject12345",
+        projectRef: "abcdefghijklmnopqrst",
         readOnly: true,
         features: "database",
       },
@@ -12963,7 +13067,7 @@ describeEmbeddedPostgres("tool access service", () => {
         }
         if (
           href ===
-          "https://mcp.supabase.com/mcp?project_ref=supabaseproject12345&read_only=true&features=database"
+          "https://mcp.supabase.com/mcp?project_ref=abcdefghijklmnopqrst&read_only=true&features=database"
         ) {
           expect(init?.headers).toEqual(
             expect.objectContaining({

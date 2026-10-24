@@ -44,7 +44,9 @@ settlement and uncertainty handling through the shared DB implementation.
   bounded timer; it cannot create new pending work.
 - `heartbeat/recovery.ts` and `heartbeat/run-control.ts`: orphan-active recovery,
   retry settlement, and explicit recovery of historical leases.
-- `environment-task-runtime.ts`: unconfirmed plugin task termination.
+- `environment-task-runtime.ts`: unconfirmed plugin task termination and plugin
+  replacement orphans, including a registered deferred flusher when the row
+  cannot be written. The flusher retains an idle hold until the row is durable.
 - `sandbox-stop-and-retain.ts`: persisted Stop intent and its settlement.
 - `native-workspace-export-resume.ts` and `native-workspace-export-retry.ts`:
   terminal-export cleanup, resumed-export cleanup claims, and settlement.
@@ -69,9 +71,10 @@ this reaches a producer runtime's buffer even when it differs from the heartbeat
 runtime. The registry retains only runtimes with unresolved buffer ownership.
 
 A spool read failure still allows other runtimes to flush their buffers and
-persisted leases to clean up, then fails the sweep so recovery stays scheduled. Buffer overflow leaves the spool dirty so the next
-concrete retry can load entries after capacity is freed. No empty-spool filesystem
-or database polling is introduced. Existing limits on a simultaneous database,
+persisted leases to clean up, then fails the sweep so recovery stays scheduled.
+Each concrete cleanup pass reloads the spool, including entries appended by
+plugin task replacement after startup and entries beyond buffer capacity.
+No empty-spool filesystem or database polling is introduced. Existing limits on a simultaneous database,
 spool, and buffer-capacity failure remain; this is not a new durable queue.
 
 ## Verification and boundaries
