@@ -121,6 +121,28 @@ describe("prepareOpenCodeRuntimeConfig", () => {
     }
   });
 
+  it("materializes linked plugin directories without writing into the operator configuration", async () => {
+    const configHome = await makeConfigHome();
+    const operatorRoot = await makeConfigHome();
+    const operatorPlugins = path.join(operatorRoot, "plugins");
+    await fs.mkdir(operatorPlugins);
+    const operatorPlugin = "export const Operator = async () => ({});\n";
+    await fs.writeFile(path.join(operatorPlugins, "operator.js"), operatorPlugin);
+    await fs.symlink(operatorPlugins, path.join(configHome, "opencode", "plugins"), "dir");
+    const prepared = await prepareOpenCodeRuntimeConfig({
+      env: { XDG_CONFIG_HOME: configHome }, config: {}, sandboxToolOomPreference: true,
+    });
+    cleanupPaths.add(prepared.env.XDG_CONFIG_HOME);
+    expect(await fs.readdir(operatorPlugins)).toEqual(["operator.js"]);
+    const plugins = path.join(prepared.env.XDG_CONFIG_HOME, "opencode", "plugins");
+    expect((await fs.lstat(plugins)).isDirectory()).toBe(true);
+    expect(await fs.readdir(plugins)).toHaveLength(2);
+    expect(await fs.readFile(path.join(plugins, "operator.js"), "utf8")).toBe(operatorPlugin);
+    await prepared.cleanup();
+    expect(await fs.readdir(operatorPlugins)).toEqual(["operator.js"]);
+    expect((await fs.lstat(path.join(configHome, "opencode", "plugins"))).isSymbolicLink()).toBe(true);
+  });
+
   it("attributes custom OpenRouter aliases and inline overrides without changing other endpoints", async () => {
     const other = { options: { baseURL: "https://other.example/v1", headers: { "X-Title": "Other" } } };
     const configHome = await makeConfigHome({ provider: { other, openrouter: other } });

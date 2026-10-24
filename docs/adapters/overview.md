@@ -55,7 +55,7 @@ Worked examples:
 
 ### OpenCode sandbox memory pressure
 
-On managed Linux sandboxes, the OpenCode adapter adds a local plugin through
+On managed Linux sandboxes, the Legacy OpenCode adapter adds a local plugin through
 OpenCode's [`shell.env` hook](https://opencode.ai/docs/plugins/#inject-environment-variables).
 The hook supplies a Bash startup file only to shell subprocesses. It sets their
 Linux `oom_score_adj` to `1000`, so the kernel prefers to kill memory-heavy tool
