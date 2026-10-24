@@ -3,6 +3,8 @@ import { and, eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import {
   agents,
+  applyPendingMigrations,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   chatActions,
   chatConversations,
   chatEndpoints,
@@ -23,12 +25,14 @@ import type { ChatProvider } from "@paperclipai/shared";
 import { enqueueIssueInteractionChatPublications, enqueueTerminalIssueInteractionChatPublications } from "../services/chat-interaction-publications.js";
 import { issueThreadInteractionService } from "../services/issue-thread-interactions.js";
 import {
-  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
 
-const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
+
+const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_CHAT_PUBLICATIONS_TEST_DATABASE_URL");
+const embeddedPostgresSupport = externalUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported
   ? describe
   : describe.skip;
@@ -44,16 +48,16 @@ describeEmbeddedPostgres(
 
     beforeAll(async () => {
       process.env.PAPERCLIP_PUBLIC_URL = "https://paperclip.example";
-      tempDb = await startEmbeddedPostgresTestDatabase(
-        "paperclip-terminal-chat-interaction-",
-      );
-      db = createDb(tempDb.connectionString);
+      if (externalUrl) await applyPendingMigrations(externalUrl);
+      else tempDb = await startEmbeddedPostgresTestDatabase("paperclip-terminal-chat-interaction-");
+      db = createDb(externalUrl ?? tempDb!.connectionString);
     }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
     afterAll(async () => {
       if (previousPublicUrl === undefined)
         delete process.env.PAPERCLIP_PUBLIC_URL;
       else process.env.PAPERCLIP_PUBLIC_URL = previousPublicUrl;
+      await db?.$client.end({ timeout: 1 });
       await tempDb?.cleanup();
     });
 
@@ -231,6 +235,24 @@ describeEmbeddedPostgres(
       };
     }
 
+    it("publishes a larger Slack choice as an inline selection backed by durable answer tokens", async () => {
+      const fixture = await seedBoundIssue(["slack", "microsoft-teams"]);
+      const interaction = await issueThreadInteractionService(db).create(
+        { id: fixture.issueId, companyId: fixture.companyId },
+        { kind: "ask_user_questions", payload: { version: 1, questions: [{
+          id: "fixture", prompt: "Which fixture?", selectionMode: "single", options: Array.from({ length: 13 }, (_, i) => ({ id: `fixture-${i}`, label: `Fixture ${i + 1}` })),
+        }] } }, { agentId: fixture.agentId },
+      );
+      const publications = await publicationsForInteraction(fixture.companyId, interaction.id);
+      const native = publications.find(row => row.payload.card?.selection);
+      expect(native?.payload.card?.selection?.options).toHaveLength(13);
+      expect(native?.payload.card?.actions).toBeUndefined();
+      expect(native?.payload.card?.body).not.toContain("- Fixture");
+      const tokens = await db.select().from(chatActions).where(eq(chatActions.endpointId, native!.endpointId));
+      expect(tokens.filter(token => token.kind === "question_answer")).toHaveLength(13);
+      expect(publications.find(row => row.id !== native!.id)?.payload.card?.actions).toEqual([expect.objectContaining({ label: "Respond" })]);
+    });
+
     it("shows the free-text question and context alongside Respond", async () => {
       const fixture = await seedBoundIssue(["slack"]);
       const interaction = await issueThreadInteractionService(db).create(
@@ -280,14 +302,23 @@ describeEmbeddedPostgres(
       expect(publication.payload.card?.body).toContain(question.helpText);
       expect(publication.payload.card?.body).toContain("The answer determines the next test.");
       expect(publication.payload.text).toContain(question.prompt);
-      if (question.options) {
+      if (shape === "multi_select") {
+        expect(publication.payload.card?.selection).toMatchObject({ multiple: true, options: [
+          { label: "Codie (recommended)", description: "Native runner" }, { label: "Claude", description: "Legacy runner" },
+        ] });
+      } else if (question.options && shape !== "custom") {
         expect(publication.payload.card?.body).toContain("Codie (recommended): Native runner");
         expect(publication.payload.card?.body).toContain("Claude: Legacy runner");
       }
-      if (shape === "custom") expect(publication.payload.card?.body).toContain("Another agent: Paste the agent link");
-      if (["multi_select", "custom", "pattern", "oversized"].includes(shape)) {
+      if (shape === "custom") {
+        expect(publication.payload.card?.body).toContain("- Codie (recommended): Native runner");
+        expect(publication.payload.card?.actions?.map(action => action.label)).toEqual(["Codie", "Claude", "Other…"]);
+        const tokens = await db.select().from(chatActions).where(eq(chatActions.endpointId, publication.endpointId));
+        expect(tokens.map(token => token.kind).sort()).toEqual(["question_answer", "question_answer", "question_form_open", "question_form_submit"].sort());
+      }
+      if (shape === "oversized") {
         expect(publication.payload.card?.actions).toEqual([{ type: "link", label: "Open in Paperclip", url: expect.stringContaining(fixture.issueId) }]);
-      } else {
+      } else if (shape !== "multi_select") {
         expect(publication.payload.card?.actions?.every(action => action.type === "callback")).toBe(true);
       }
     });
@@ -419,7 +450,7 @@ describeEmbeddedPostgres(
       expect(await publicationsForInteraction(fixture.companyId, interaction.id)).toEqual([]);
     });
 
-    it("delivers checkbox reviews in Slack while keeping the decision in Paperclip", async () => {
+    it("delivers native checkbox reviews in Slack", async () => {
       const fixture = await seedBoundIssue();
       const interaction = await issueThreadInteractionService(db).create(
         { id: fixture.issueId, companyId: fixture.companyId },
@@ -438,8 +469,8 @@ describeEmbeddedPostgres(
       expect(publications).toHaveLength(1);
       expect(publications[0].endpointId).toBe(fixture.endpointIds.slack);
       expect(publications[0].payload.card).toMatchObject({
-        body: expect.stringContaining("US"),
-        actions: [{ type: "link", label: "Open in Paperclip", url: expect.stringContaining(fixture.issueId) }],
+        selection: { multiple: true, options: [{ label: "US" }] },
+        actions: [{ type: "callback", label: "Reject" }],
       });
       await markInteractionCardsPublished(fixture.companyId, interaction.id);
       await issueThreadInteractionService(db).rejectInteraction(
@@ -463,7 +494,7 @@ describeEmbeddedPostgres(
       expect(original?.endpointId).toBe(fixture.endpointIds.slack);
       expect(original?.payload.card?.body).toContain(expected);
       expect(original?.payload.card?.body).toContain("Verify preserved configuration");
-      expect(original?.payload.card?.actions).toEqual([{ type: "link", label: "Open in Paperclip", url: expect.stringContaining(fixture.issueId) }]);
+      expect(original?.payload.card?.actions).toEqual(kind === "request_item_verdicts" ? [{ type: "callback", actionId: expect.any(String), label: "Review decisions", style: "primary" }] : [{ type: "callback", actionId: expect.any(String), label: "Create task", style: "primary" }, { type: "callback", actionId: expect.any(String), label: "Dismiss", style: "default" }, { type: "link", label: "Revise in Paperclip", url: expect.stringContaining(fixture.issueId) }]);
       await markInteractionCardsPublished(fixture.companyId, interaction.id);
       if (kind === "request_item_verdicts") {
         await service.submitItemVerdicts(issue, interaction.id, { verdicts: [{ id: "docs", verdict: "approve" }] }, { userId: "board-user" });
@@ -472,7 +503,7 @@ describeEmbeddedPostgres(
       }
       const settled = await publicationsForInteraction(fixture.companyId, interaction.id);
       expect(settled).toHaveLength(2);
-      expect(settled.find(row => row.id !== original.id)?.payload.card?.body).toBe(kind === "request_item_verdicts" ? "Answered" : "Rejected");
+      expect(settled.find(row => row.id !== original.id)?.payload.card?.body).toBe(kind === "request_item_verdicts" ? "Migration notes: approve" : "Dismissed — no tasks created.");
       expect(settled.find(row => row.id !== original.id)?.payload.card?.actions).toBeUndefined();
     });
 
@@ -502,7 +533,7 @@ describeEmbeddedPostgres(
       await service.createConnectionIntent(issue, input);
       const [original] = await publicationsForInteraction(fixture.companyId, interaction.id);
       expect(original?.payload.card?.body).toContain("Codie needs Notion");
-      expect(original?.payload.card?.actions).toEqual([{ type: "link", label: "Open in Paperclip", url: expect.stringContaining(fixture.issueId) }]);
+      expect(original?.payload.card?.actions).toEqual([{ type: "link", label: "Review connection", url: expect.stringContaining(fixture.issueId) }, { type: "callback", actionId: expect.any(String), label: "Not now", style: "default" }]);
       expect(await publicationsForInteraction(fixture.companyId, interaction.id)).toHaveLength(1);
       await markInteractionCardsPublished(fixture.companyId, interaction.id);
       await expect(service.resolveConnectionIntent(issue, interaction.id, { version: 1, outcome: "declined" }, { userId: "different-user" })).rejects.toMatchObject({ status: 403 });
@@ -510,8 +541,8 @@ describeEmbeddedPostgres(
       else await db.transaction(async tx => issueThreadInteractionService(tx as unknown as typeof db).expireConnectionIntentsForOwnershipChange(issue));
       const settled = await publicationsForInteraction(fixture.companyId, interaction.id);
       expect(settled).toHaveLength(2);
-      expect(settled.find(row => row.id !== original.id)?.payload.card?.body).toBe(outcome === "decline" ? "Rejected" : "Expired in Paperclip");
-      expect(await db.select().from(chatActions).where(eq(chatActions.companyId, fixture.companyId))).toEqual([]);
+      expect(settled.find(row => row.id !== original.id)?.payload.card?.body).toBe(outcome === "decline" ? "Declined: Notion. No access was granted." : "Expired in Paperclip");
+      expect((await db.select().from(chatActions).where(eq(chatActions.companyId, fixture.companyId))).filter(action => action.kind === "interaction_wakeup")).toEqual([]);
     });
 
     it("settles a card when the dispatcher claims it between the read and cancellation CAS", async () => {
@@ -655,7 +686,7 @@ describeEmbeddedPostgres(
       ]);
     });
 
-    it("settles form answers without claiming a surface or exposing free text", async () => {
+    it("retains question and answer context while redacting credentials in settled form cards", async () => {
       const fixture = await seedBoundIssue();
       const service = issueThreadInteractionService(db);
       const interaction = await service.create(
@@ -696,7 +727,7 @@ describeEmbeddedPostgres(
             {
               questionId: "label",
               optionIds: [],
-              otherText: "private free-text label",
+              otherText: "Runner conversion failed. password=do-not-publish-this",
             },
           ],
         },
@@ -708,12 +739,12 @@ describeEmbeddedPostgres(
       expect(settlements).toHaveLength(2);
       for (const settlement of settlements) {
         expect(settlement.payload).toMatchObject({
-          text: "Answered.",
-          card: { kind: "question", body: "Answered." },
+          text: expect.stringContaining("Enter a label\n\nAnswered: Runner conversion failed."),
+          card: { kind: "question", body: expect.stringContaining("Choose a tree\n\nAnswered: Cedar") },
         });
         expect(settlement.payload.card?.actions ?? []).toHaveLength(0);
         expect(JSON.stringify(settlement.payload)).not.toContain(
-          "private free-text label",
+          "do-not-publish-this",
         );
         expect(JSON.stringify(settlement.payload)).not.toContain(
           "Answered in Paperclip",
@@ -898,7 +929,8 @@ describeEmbeddedPostgres(
           originals.find((row) => row.endpointId === fixture.endpointIds.slack)
             ?.payload.card?.actions,
         ).toEqual([
-          expect.objectContaining({ type: "link", label: "Open in Paperclip" }),
+          expect.objectContaining({ type: "callback", label: "Accept" }),
+          expect.objectContaining({ type: "callback", label: "Reject" }),
         ]);
         expect(
           originals.find(
@@ -1114,7 +1146,7 @@ describeEmbeddedPostgres(
       );
       expect(
         publications.some((row) =>
-          row.payload.card?.actions?.some((action) => action.type === "link"),
+          row.payload.card?.actions?.some((action) => action.type === "callback"),
         ),
       ).toBe(true);
     });

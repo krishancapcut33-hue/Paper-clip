@@ -75,6 +75,23 @@ const ids = (value: unknown): string[] =>
     ? value.filter((id): id is string => typeof id === "string")
     : [];
 
+function completedMultiChoiceMatches(question: Record<string, unknown>, answer: Record<string, unknown>, payload: Record<string, unknown>): boolean {
+  const selected = ids(payload.selectionValues);
+  const answered = ids(answer.optionIds);
+  const mappings = Array.isArray(payload.selectionOptions) ? payload.selectionOptions.map(record) : [];
+  const options = Array.isArray(question.options) ? question.options.map(record) : [];
+  if (question.selectionMode !== "multi" || question.allowOther === true ||
+      !Array.isArray(payload.selectionValues) || selected.length !== payload.selectionValues.length ||
+      !Array.isArray(answer.optionIds) || answered.length !== answer.optionIds.length ||
+      new Set(selected).size !== selected.length || new Set(answered).size !== answered.length ||
+      mappings.length !== options.length || new Set(mappings.map(item => item.value)).size !== mappings.length ||
+      new Set(mappings.map(item => item.optionId)).size !== mappings.length ||
+      (question.required !== false && selected.length === 0) ||
+      selected.length !== answered.length ||
+      mappings.some(item => typeof item.value !== "string" || typeof item.optionId !== "string" || !options.some(option => option.id === item.optionId && option.freeText !== true))) return false;
+  return selected.every((value, index) => mappings.find(item => item.value === value)?.optionId === answered[index]);
+}
+
 function completedQuestionFormMatchesInteraction(
   interaction: AskUserQuestionsInteraction,
   action: typeof chatActions.$inferSelect,
@@ -813,13 +830,16 @@ async function resolveQuestionResponseChain(
       record(action.result).interactionStatus !== "answered" ||
       !selectedAnswer ||
       !selectedQuestion ||
-      selectedQuestion.selectionMode !== "single" ||
-      ids(selectedAnswer.optionIds).length !== 1 ||
-      ids(selectedAnswer.optionIds)[0] !== action.payload.optionId ||
       !Array.isArray(selectedQuestion.options) ||
-      !selectedQuestion.options.some(
-        (option) => record(option).id === action.payload.optionId,
-      )
+      !Array.isArray(answers) || answers.length !== 1 ||
+      !Array.isArray(questions) || questions.length !== 1 ||
+      Boolean(selectedAnswer.otherText) ||
+      (Array.isArray(action.payload.selectionOptions)
+        ? provider !== "slack" || !completedMultiChoiceMatches(selectedQuestion, selectedAnswer, action.payload)
+        : selectedQuestion.selectionMode !== "single" ||
+          ids(selectedAnswer.optionIds).length !== 1 ||
+          ids(selectedAnswer.optionIds)[0] !== action.payload.optionId ||
+          !selectedQuestion.options.some(option => record(option).id === action.payload.optionId))
     )
       return null;
   } else if (action.kind === "photon_interaction") {

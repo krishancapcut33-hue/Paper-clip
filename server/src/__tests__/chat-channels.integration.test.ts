@@ -40881,7 +40881,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const rows = () => db.select().from(chatPublications).where(and(eq(chatPublications.endpointId, endpoint.id), eq(sql<string>`${chatPublications.payload}->>'interactionId'`, interaction.id)));
       const [original] = await rows();
       expect(original?.state).toBe("published");
-      expect(original?.payload.card?.actions).toEqual([{ type: "link", label: "Open in Paperclip", url: expect.any(String) }]);
+      expect(original?.payload.card?.actions).toEqual(expect.arrayContaining([expect.objectContaining({ type: "callback" })]));
+      if (kind === "connection_intent") expect(original?.payload.card?.actions).toContainEqual({ type: "link", label: "Review connection", url: expect.any(String) });
       if (kind === "connection_intent") await interactions.resolveConnectionIntent(issue, interaction.id, { version: 1, outcome: "declined" }, { userId: "owner-user" });
       else if (kind === "request_item_verdicts") await interactions.submitItemVerdicts(issue, interaction.id, { verdicts: [{ id: "docs", verdict: "approve" }] }, { userId: "owner-user" });
       else await interactions.rejectInteraction(issue, interaction.id, {}, { userId: "owner-user" });
@@ -41956,7 +41957,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
       expect(metadata).toEqual({ c: expect.any(String), m: view.callback_id });
       const select = view.blocks.find(
-        (block) => block.element.type === "static_select",
+        (block) => block.element.type === "radio_buttons",
       )!;
       const text = view.blocks.find(
         (block) => block.element.type === "plain_text_input",
@@ -41978,7 +41979,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
               values: {
                 [select.block_id]: {
                   [select.element.action_id]: {
-                    type: "static_select",
+                    type: "radio_buttons",
                     selected_option: production,
                   },
                 },
@@ -42643,7 +42644,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         privateMetadata?: string;
       };
       const selectField = modal.children.find(
-        (child) => child.type === "select",
+        (child) => child.type === (provider === "slack" ? "radio_select" : "select"),
       );
       const textField = modal.children.find(
         (child) => child.type === "text_input",

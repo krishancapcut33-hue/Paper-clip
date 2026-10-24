@@ -197,7 +197,7 @@ export type IssueThreadInteractionServiceOptions = {
 };
 
 type DbTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
-type InteractionResolutionMutationOptions = {
+export type InteractionResolutionMutationOptions = {
   /** Confirmation accept/reject nested in an outer transaction must defer these
    * effects and flush them with the root database only after its commit. */
   deferConfirmationCommitEffects?: (effect: (committedDb: Db) => Promise<void>) => void;
@@ -2800,6 +2800,7 @@ export function issueThreadInteractionService(
         ? NonNullable<T>
         : never,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       const result = connectionIntentResultSchema.parse(resultInput);
       const current = await getPendingInteractionForResolution({
@@ -2822,6 +2823,7 @@ export function issueThreadInteractionService(
             : "expired";
       const resolvedAt = now();
       const updated = await db.transaction(async (tx) => {
+        await mutationOptions.beforeResolveInTransaction?.(tx);
         const [row] = await tx
         .update(issueThreadInteractions)
         .set({
@@ -2845,6 +2847,7 @@ export function issueThreadInteractionService(
           await notifyDeliveryWork(tx, DELIVERY_QUEUES.connection);
           await tx.insert(connectionIntentDeliveries).values({ interactionId, companyId: issue.companyId }).onConflictDoNothing();
         }
+        await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(row));
         await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(row));
         return row;
       });
@@ -3878,6 +3881,7 @@ export function issueThreadInteractionService(
             interactionId,
             data,
             actor,
+            mutationOptions,
           );
         case "request_confirmation": {
           await assertIssueWorkspaceFinalizedForAccept({
@@ -3935,6 +3939,7 @@ export function issueThreadInteractionService(
       interactionId: string,
       input: AcceptIssueThreadInteraction,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       assertIssueOpenForInteractionResolution(issue);
       const current = await db
@@ -4018,6 +4023,7 @@ export function issueThreadInteractionService(
       const createdWakeTargets: IssueWakeTarget[] = [];
 
       await db.transaction(async (tx) => {
+        await mutationOptions.beforeResolveInTransaction?.(tx);
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         const resolvedAt = new Date();
         const [claimed] = await tx
@@ -4108,6 +4114,7 @@ export function issueThreadInteractionService(
           .returning();
 
         await touchIssue(tx, issue.id);
+        await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(updated));
         await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(updated));
         current.status = updated.status;
         current.result = updated.result;
@@ -4148,6 +4155,7 @@ export function issueThreadInteractionService(
             data,
             actor,
             current,
+            mutationOptions,
           );
         case "request_confirmation":
         case "request_checkbox_confirmation":
@@ -4170,6 +4178,7 @@ export function issueThreadInteractionService(
       interactionId: string,
       input: SubmitIssueThreadInteractionVerdicts,
       actor: InteractionActor,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ): Promise<{
       interaction: IssueThreadInteraction;
       newlyResolvedItemIds: string[];
@@ -4177,6 +4186,7 @@ export function issueThreadInteractionService(
       assertIssueOpenForInteractionResolution(issue);
       const data = submitIssueThreadInteractionVerdictsSchema.parse(input);
       const submission = await db.transaction(async (tx) => {
+        await mutationOptions.beforeResolveInTransaction?.(tx);
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         const current = await tx
           .select()
@@ -4280,6 +4290,7 @@ export function issueThreadInteractionService(
         }
 
         await touchIssue(tx, issue.id);
+        await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(updated));
         if (complete) await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(updated));
         return {
           interaction: hydrateInteraction(updated),
@@ -4301,6 +4312,7 @@ export function issueThreadInteractionService(
       input: RejectIssueThreadInteraction,
       actor: InteractionActor,
       current: IssueThreadInteractionRow,
+      mutationOptions: InteractionResolutionMutationOptions = {},
     ) => {
       assertIssueOpenForInteractionResolution(issue);
       if (
@@ -4317,6 +4329,7 @@ export function issueThreadInteractionService(
       }
 
       const [updated] = await db.transaction(async (tx) => {
+        await mutationOptions.beforeResolveInTransaction?.(tx);
         await assertInteractionRunWriteAllowed(tx as unknown as Db, issue, actor);
         const rows = await tx.update(issueThreadInteractions)
         .set({
@@ -4338,6 +4351,7 @@ export function issueThreadInteractionService(
           ),
         )
         .returning();
+        if (rows[0]) await mutationOptions.afterResolveInTransaction?.(tx, hydrateInteraction(rows[0]));
         if (rows[0]) await enqueueTerminalIssueInteractionChatPublications(tx as unknown as Db, hydrateInteraction(rows[0]));
         return rows;
       });

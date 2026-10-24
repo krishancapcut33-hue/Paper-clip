@@ -112,6 +112,23 @@ describe("chat interaction continuation delivery", () => {
     if (fault === "skipped") await db.update(agentWakeupRequests).set({ status: "skipped" }).where(eq(agentWakeupRequests.id, f.wake.id));
     expect(await f.bindings()).toEqual([]);
   });
+  it.each(["accepted", "rejected"])("delivers an automation-origin connection %s through its published Slack prompt", async status => {
+    const f = await fixture("connection_intent", status);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { source: "automation", issueId: f.issue.id } }).where(eq(heartbeatRuns.id, f.source.id));
+    expect(await f.bindings()).toEqual([{ companyId: f.company.id, endpointId: f.endpoint.id, conversationId: f.conversation.id }]);
+    expect(await resolveChatRunPresentationAuthorizationReason(db, { companyId: f.company.id, issueId: f.issue.id, runId: f.successor.id })).toBe(CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.successor.id));
+  });
+
+  it.each(["publication", "receipt"])("withholds automation-origin connection replies without the %s", async missing => {
+    const f = await fixture("connection_intent", "rejected");
+    await db.update(heartbeatRuns).set({ contextSnapshot: { source: "automation", issueId: f.issue.id } }).where(eq(heartbeatRuns.id, f.source.id));
+    if (missing === "publication") await db.update(chatPublications).set({ state: "pending" }).where(eq(chatPublications.issueId, f.issue.id));
+    if (missing === "receipt") await db.delete(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, f.interaction.id));
+    expect(await f.bindings()).toEqual([]);
+    await db.update(heartbeatRuns).set({ status: "cancelled" }).where(eq(heartbeatRuns.id, f.successor.id));
+  });
+
   it.each(["delivery", "wake", "key", "pending", "source"])("rejects connection continuation with missing %s proof", async fault => {
     const f = await fixture("connection_intent", "rejected");
     if (fault === "delivery") await db.delete(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, f.interaction.id));

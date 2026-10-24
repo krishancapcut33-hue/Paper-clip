@@ -459,7 +459,7 @@ describe("native external-chat response wait", () => {
       fixture: Awaited<ReturnType<typeof seedWaitTurn>>;
       gate: Awaited<ReturnType<typeof seedPriorCompletionReview>>;
     },
-    responseKind: "button" | "form" = "button",
+    responseKind: "button" | "form" | "multi" = "button",
   ) {
     const fixture = target?.fixture ?? await seedWaitTurn(provider);
     const gate = target?.gate ?? await seedPriorCompletionReview(fixture);
@@ -512,7 +512,7 @@ describe("native external-chat response wait", () => {
               {
                 id: "color",
                 prompt: "Choose a color",
-                selectionMode: "single" as const,
+                selectionMode: responseKind === "multi" ? "multi" as const : "single" as const,
                 required: true,
                 allowOther: false,
                 options: [
@@ -537,7 +537,7 @@ describe("native external-chat response wait", () => {
           }
         : {
             version: 1 as const,
-            answers: [{ questionId: "color", optionIds: ["cobalt"] }],
+            answers: [{ questionId: "color", optionIds: responseKind === "multi" ? ["cobalt", "amber"] : ["cobalt"] }],
           };
     await db.insert(heartbeatRuns).values({
       id: sourceRunId,
@@ -633,7 +633,7 @@ describe("native external-chat response wait", () => {
               interactionId,
               publicationId,
               questionId: "color",
-              optionId: "cobalt",
+              ...(responseKind === "multi" ? { selectionOptions: [{ value: "opaque-cobalt", optionId: "cobalt" }, { value: "opaque-amber", optionId: "amber" }], selectionValues: ["opaque-cobalt", "opaque-amber"] } : { optionId: "cobalt" }),
             },
       result:
         responseKind === "form"
@@ -752,9 +752,10 @@ describe("native external-chat response wait", () => {
               {
                 id: "color",
                 prompt: "Choose a color",
+                // Multi-select plus a custom answer intentionally needs Board.
                 selectionMode: provider === "slack" ? "multi" : "single",
                 required: true,
-                allowOther: false,
+                allowOther: provider === "slack",
                 options: [
                   { id: "cobalt", label: "Cobalt" },
                   { id: "amber", label: "Amber" },
@@ -1439,6 +1440,16 @@ describe("native external-chat response wait", () => {
       ).resolves.toBe(false);
     },
   );
+
+  it.each(["valid", "tampered_selection", "revoked_identity"])("attests only the committed Slack multiple-choice response: %s", async condition => {
+    const fixture = await seedAnsweredChatTurn("slack", undefined, "multi");
+    if (condition === "tampered_selection") {
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.id, fixture.actionId));
+      await db.update(chatActions).set({ payload: { ...action!.payload, selectionValues: ["opaque-amber", "opaque-cobalt"] } }).where(eq(chatActions.id, fixture.actionId));
+    }
+    if (condition === "revoked_identity") await db.update(chatIdentityLinks).set({ status: "revoked" }).where(eq(chatIdentityLinks.principalId, fixture.principalId));
+    expect(await attestReviewedExternalChatRun({ db, ...fixture, contextSnapshot: fixture.context })).toBe(condition === "valid");
+  });
 
   it("attests a genuine Slack mixed-question modal answer for its native continuation", async () => {
     const fixture = await seedAnsweredChatTurn("slack", undefined, "form");

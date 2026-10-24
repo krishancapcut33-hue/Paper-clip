@@ -273,6 +273,14 @@ silently omitting the request is a defect. Record which path each row uses.
   option labels/details, recommendations, and required/optional status. A title
   such as “Identify the failed runner change” plus **Respond** is insufficient
   when the payload contains a more specific question.
+- Prefer direct buttons for a few closed choices, a searchable selector for a
+  longer list, and a checklist with an explicit submit action for multiple choices.
+  Use a native modal for free text, custom answers, and per-item verdicts with
+  reasons. Show errors next to the relevant input without discarding the draft.
+  Task suggestions must support selecting which tasks to create and dismissing
+  them. Connection requests may offer a native decline; granting access stays
+  on the authenticated review surface. Keep the saved labels, answers, verdicts,
+  and reasons readable after the controls disappear.
 - Preserve text, numeric, pattern, length, and selection validation. Starting
   text is editable draft content, never an implicit answer. Preserve repeated
   choices within separate questions. If native controls cannot do this, use the

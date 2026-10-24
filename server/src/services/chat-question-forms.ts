@@ -13,6 +13,7 @@ import {
   Modal,
   CardText,
   Select,
+  RadioSelect,
   SelectOption,
   TextInput,
   type ModalElement,
@@ -63,7 +64,7 @@ export type ChatQuestionFormField =
   ChatQuestionFormTextField | ChatQuestionFormSelectField;
 
 export interface ChatQuestionFormDraft {
-  nativeProvider?: "discord";
+  nativeProvider?: "discord" | "slack";
   expiresAt: string;
   fields: ChatQuestionFormField[];
   interactionId: string;
@@ -80,7 +81,7 @@ export interface ChatQuestionFormOpenTokenPayload {
 }
 
 export interface ChatQuestionFormSubmitTokenPayload {
-  nativeProvider?: "discord";
+  nativeProvider?: "discord" | "slack";
   expiresAt: string;
   fields: ChatQuestionFormField[];
   formActionId: string;
@@ -215,14 +216,16 @@ function questionSetQuestion(
 function formKind(
   interaction: AskUserQuestionsInteraction,
   question: AskUserQuestionsQuestion,
+  nativeProvider?: "discord" | "slack",
 ): "single_select" | "text" | null {
   const source = questionSetQuestion(interaction, question.id);
   if (source) {
+    if (nativeProvider === "slack" && source.answerMode === "single_select" && source.customAnswer && interaction.payload.questions.length === 1) return "text";
     if (source.answerMode === "text") {
-      // Regex evaluation supplied by an agent can be computationally unsafe.
-      // Keep those uncommon forms in Paperclip, whose canonical validator owns
-      // that policy, instead of evaluating a pattern inside a webhook callback.
-      return source.textValidation?.pattern ? null : "text";
+      // Slack can show canonical validation errors without closing the modal.
+      // The canonical resolver evaluates patterns in its bounded worker, never
+      // synchronously on the webhook event loop.
+      return source.textValidation?.pattern && nativeProvider !== "slack" ? null : "text";
     }
     return source.answerMode === "single_select" && !source.customAnswer
       ? "single_select"
@@ -256,7 +259,7 @@ function formKind(
  */
 export function createChatQuestionFormDraft(
   interaction: AskUserQuestionsInteraction,
-  options: { now?: Date; nativeProvider?: "discord" } = {},
+  options: { now?: Date; nativeProvider?: "discord" | "slack" } = {},
 ): ChatQuestionFormDraft | null {
   const maxTextLength =
     options.nativeProvider === "discord" ? 4000 : MAX_NATIVE_TEXT_LENGTH;
@@ -271,7 +274,7 @@ export function createChatQuestionFormDraft(
 
   const classified = interaction.payload.questions.map((question) => ({
     question,
-    kind: formKind(interaction, question),
+    kind: formKind(interaction, question, options.nativeProvider),
   }));
   if (classified.some(({ kind }) => kind === null)) return null;
   if (
@@ -481,7 +484,7 @@ export function parseChatQuestionFormSubmitTokenPayload(
     !isRecord(value) ||
     value.version !== 1 ||
     (value.nativeProvider !== undefined &&
-      value.nativeProvider !== "discord") ||
+      value.nativeProvider !== "discord" && value.nativeProvider !== "slack") ||
     typeof value.publicationId !== "string" ||
     typeof value.interactionId !== "string" ||
     !isChatQuestionFormSubmitActionId(value.formActionId) ||
@@ -514,8 +517,8 @@ export function parseChatQuestionFormSubmitTokenPayload(
     return null;
   }
   return {
-    ...(value.nativeProvider === "discord"
-      ? { nativeProvider: "discord" as const }
+    ...((value.nativeProvider === "discord" || value.nativeProvider === "slack")
+      ? { nativeProvider: value.nativeProvider }
       : {}),
     version: 1,
     publicationId: value.publicationId,
@@ -546,6 +549,10 @@ export function buildChatQuestionFormModal(
     return null;
   }
 
+  const title = interaction.payload.title ?? interaction.title ?? "Input needed";
+  const titleLimit = payload.nativeProvider === "discord" ? 45 : 24;
+  const modalTitle = Array.from(title).length <= titleLimit ? boundedLabel(title, titleLimit)
+    : payload.fields.length === 1 ? "Answer question" : "Answer questions";
   const children: ModalElement["children"] = [];
   const appendContext = (text: string | null | undefined) => {
     if (payload.nativeProvider === "discord" || !text?.trim()) return;
@@ -554,10 +561,11 @@ export function buildChatQuestionFormModal(
       children.push(CardText(points.slice(offset, offset + 2000).join("")));
     }
   };
+  if (modalTitle !== title && !interaction.payload.questions.some(question => question.prompt === title)) appendContext(title);
   for (const text of new Set([interaction.summary, interaction.payload.questionSet?.description])) appendContext(text);
   for (const field of payload.fields) {
     const question = canonicalQuestion(interaction, field.questionId);
-    if (!question || formKind(interaction, question) !== field.kind)
+    if (!question || formKind(interaction, question, payload.nativeProvider) !== field.kind)
       return null;
     const label =
       boundedLabel(
@@ -575,14 +583,14 @@ export function buildChatQuestionFormModal(
         TextInput({
           ...(source?.initialText !== undefined ? { initialValue: source.initialText } : {}),
           id: field.fieldId,
-          label,
+          label: source?.customAnswer?.label ?? label,
           maxLength: field.maxLength,
           multiline: field.inputType === "text",
           optional: !field.required,
-          ...(question.helpText
+          ...((source?.customAnswer?.placeholder ?? question.helpText)
             ? {
                 placeholder: boundedLabel(
-                  question.helpText,
+                  source?.customAnswer?.placeholder ?? question.helpText!,
                   payload.nativeProvider === "discord" ? 100 : 150,
                 ),
               }
@@ -614,7 +622,7 @@ export function buildChatQuestionFormModal(
     });
     if (mappedOptions.some((option) => option === null)) return null;
     children.push(
-      Select({
+      (payload.nativeProvider === "slack" && mappedOptions.length <= 5 ? RadioSelect : Select)({
         id: field.fieldId,
         label,
         optional: !field.required,
@@ -627,11 +635,7 @@ export function buildChatQuestionFormModal(
   if (payload.nativeProvider !== "discord" && children.length > 100) return null;
   return Modal({
     callbackId,
-    title:
-      boundedLabel(
-        interaction.payload.title ?? interaction.title ?? "Input needed",
-        payload.nativeProvider === "discord" ? 45 : 24,
-      ) || "Input needed",
+    title: modalTitle || "Input needed",
     submitLabel:
       boundedLabel(interaction.payload.submitLabel ?? "Submit", 24) || "Submit",
     closeLabel: "Cancel",
@@ -689,7 +693,7 @@ export function validateChatQuestionFormSubmission(args: {
   const fieldErrors: Record<string, string> = {};
   for (const field of payload.fields) {
     const question = canonicalQuestion(interaction, field.questionId);
-    if (!question || formKind(interaction, question) !== field.kind) {
+    if (!question || formKind(interaction, question, payload.nativeProvider) !== field.kind) {
       return invalid("stale_interaction");
     }
     const submitted = values[field.fieldId] ?? "";

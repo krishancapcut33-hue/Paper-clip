@@ -1402,6 +1402,12 @@ export async function resolveChatOriginPublicationBindings(
         companyId, issueId, interactionId, runId: originRunId, agentId: lineageAgentId!,
       });
       if (!sourceRunId) return [];
+      // An automation can request access on an already-linked Slack task.
+      // Its validated receipt and published prompt preserve that conversation.
+      const promptBindings = await resolvePublishedInteractionPromptBindings(
+        dbOrTx, companyId, issueId, interactionId, lineageAgentId!,
+      );
+      if (promptBindings.length > 0) return promptBindings;
       originRunId = sourceRunId;
       continue;
     }
