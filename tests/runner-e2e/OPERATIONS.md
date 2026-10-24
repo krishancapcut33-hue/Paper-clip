@@ -156,16 +156,17 @@ keys. The server environment strips the gateway token and upstream credentials.
 
 Every upstream attempt reserves its maximum estimated charge in an fsynced
 journal before dispatch. Requests, retries, and cancelled calls retain distinct
-IDs. Braintrust gateway requests propagate the reserved request ID, campaign,
+IDs. Braintrust gateway requests include the reserved request ID, campaign,
 execution, attempt and phase as allowlisted `paperclip_eval_*` metadata in the
-SDK-compatible parent context. The exact context is retained in the private
-receipt before dispatch, so a request canceled before response headers can
-still be looked up by `metadata.paperclip_eval_request_id` in project logs.
-This context contains no provider credential, prompt or response, and does not
-create an extra model call or a synthetic parent span. Direct provider routes
-receive no Braintrust context. Older project-only receipts cannot acquire this
-identity retroactively; time or session matches remain candidate evidence.
-A matching logged span does not itself prove complete usage or final billing.
+SDK-compatible parent context. The private receipt saves that context before
+dispatch. A live hosted probe did not retain the propagated metadata, so this
+header alone does not prove lookup by request ID after a pre-header cancellation.
+The returned `x-bt-span-id`, when present, identifies the Braintrust log row's
+`id`; the stored `span_id` and `root_span_id` can differ. The private receipt's
+historical field name `gatewaySpanId` continues to hold that returned row ID.
+Direct provider routes receive no Braintrust context. Older receipts cannot
+acquire a missing gateway row ID from a time or session match.
+A matching logged row does not itself prove complete usage or final billing.
 Unknown usage keeps the reservation held. One shared writer serializes
 admission across cells, so concurrent requests cannot each spend the same remaining
 allowance. Campaign deadline, request count, and in-flight count are also enforced.
@@ -734,6 +735,24 @@ not distinct provider requests or charges. Codex exports can be high volume and
 Braintrust can double-count native/log observations; use the deduplicated gateway
 ledger as the estimate authority. Private indexing receipts contain only counts,
 identities and verification status, without trace contents or credentials.
+
+Scheduled finalization separately verifies every non-infrastructure request in
+the campaign journal against its private gateway receipt. It queries Braintrust
+by row `id`, checks the expected provider and model, and retains the actual span
+and trace IDs in `gateway-indexing-receipt.json`. Setup, failed and canceled
+requests remain in the denominator. Missing receipts, missing row IDs, duplicate
+row attribution, conflicting records and query errors fail the gateway coverage
+gate. A receipt or journal change during inspection also prevents verification.
+The file reports whether campaign metadata was retained, independently of the
+receipt-to-row match. It contains no prompts, responses or credentials.
+
+Each lookup batches at most 100 rows, makes at most three rounds, and has a
+45-second deadline. It performs no inference, writes no vendor records, changes
+no journal amounts and releases no holds. The findings include
+`gatewayIndexVerification`; a missing match is `gateway_indexing_incomplete`.
+This verifies stored identity and coverage, not provider billing or automatic
+nesting of gateway spans under native attempt traces. Those remain separate
+qualification requirements.
 
 ## Inspection and limits
 
