@@ -35,7 +35,6 @@ describe("heartbeat queue module boundary", () => {
     expect(database.access).not.toHaveBeenCalled();
     expect(deps.getAgent).not.toHaveBeenCalled();
     expect(deps.resumeExecutionWaitComments).not.toHaveBeenCalled();
-    expect(deps.resumeExecutionOwnershipWaits).not.toHaveBeenCalled();
     expect(deps.executeRun).not.toHaveBeenCalled();
   });
 

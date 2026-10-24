@@ -1258,7 +1258,6 @@ export function heartbeatService(
     liveRunExecutions,
     getSchedulingSuppression,
     resumeExecutionWaitComments,
-    resumeExecutionOwnershipWaits,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments,
@@ -4119,6 +4118,7 @@ export function heartbeatService(
     resumeQueuedCommentInterrupt,
     resumeExecutionWaitComments,
     resumeExecutionOwnershipWaits,
+    nextExecutionOwnershipWaitAt: runControl.nextExecutionOwnershipWaitAt,
 
     sweepStaleIssueLocks,
 

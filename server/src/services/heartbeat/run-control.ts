@@ -895,8 +895,8 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
 
   /**
    * Executor cleanup calls this for the task whose lease it released; the
-   * periodic sweep covers holds released elsewhere, such as lease expiry or
-   * a restart. Bounded like the other queue sweeps.
+   * shared worker covers holds released elsewhere, such as lease expiry or
+   * a restart. It is scheduled only while durable receipts remain.
    */
   async function resumeExecutionOwnershipWaits(scope?: { companyId: string; issueId: string }) {
     if ((await getSchedulingSuppression()).suppressed) return;
@@ -926,6 +926,15 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         logger.warn({ err, wakeId: wake.id }, "failed to resume a wake parked behind an execution ownership hold");
       });
     }
+  }
+
+  async function nextExecutionOwnershipWaitAt(): Promise<number | null> {
+    // Keep the obligation while its company is paused too: activation need not
+    // manufacture another receipt. Completed/dedicated receipts schedule nothing.
+    const [pending] = await db.select({ updatedAt: agentWakeupRequests.updatedAt })
+      .from(agentWakeupRequests).where(deferredExecutionOwnershipWaitPredicate())
+      .orderBy(asc(agentWakeupRequests.updatedAt)).limit(1);
+    return pending ? Math.max(Date.now(), pending.updatedAt.getTime() + 30_000) : null;
   }
 
   async function releaseIssueExecutionAndPromote(
@@ -1778,6 +1787,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
     cancelRunInternal,
     resumeExecutionWaitComments,
     resumeExecutionOwnershipWaits,
+    nextExecutionOwnershipWaitAt,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments,
     resumeTaskRetry,

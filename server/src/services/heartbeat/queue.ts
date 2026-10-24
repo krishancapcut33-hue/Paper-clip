@@ -59,6 +59,7 @@ import { agentService } from "../agents.js";
 import { normalizeLegacyRunnerProvider } from "@paperclipai/adapter-utils";
 import { randomUUID } from "node:crypto";
 import { isDeepStrictEqual } from "node:util";
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "../delivery-work-notifications.js";
 import { parseIssueExecutionState } from "../issue-execution-policy.js";
 import {
   and,
@@ -213,7 +214,6 @@ export interface HeartbeatQueueDependencies extends Pick<HeartbeatRetryDependenc
   cancelRunInternal: (runId: string, reason?: string, options?: { errorCode?: string }) => Promise<unknown>;
   cancelActiveForAgentInternal: (agentId: string, reason: string) => Promise<unknown>;
   resumeExecutionWaitComments: () => Promise<unknown>;
-  resumeExecutionOwnershipWaits: (scope?: { companyId: string; issueId: string }) => Promise<unknown>;
   resumeQueuedCommentInterrupt: (companyId: string, queueId: string) => Promise<unknown>;
   resumeSavedLegacyComments: (companyId: string, queueId: string) => Promise<unknown>;
   formatIssueIdentifierLink: (identifier: string | null, fallback: string) => string;
@@ -441,7 +441,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     liveRunExecutions,
     getSchedulingSuppression,
     resumeExecutionWaitComments,
-    resumeExecutionOwnershipWaits,
     getWorktreeExecutionCutoff,
     resumeQueuedCommentInterrupt,
     resumeSavedLegacyComments,
@@ -1863,7 +1862,6 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
   async function resumeQueuedRuns() {
     if ((await getSchedulingSuppression()).suppressed) return;
     await resumeExecutionWaitComments();
-    await resumeExecutionOwnershipWaits();
     const cutoff = await getWorktreeExecutionCutoff();
     const pendingInterrupts = await db.select({ id: agentWakeupRequests.id, companyId: agentWakeupRequests.companyId })
       .from(agentWakeupRequests).innerJoin(companies, eq(companies.id, agentWakeupRequests.companyId))
@@ -3425,6 +3423,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 idempotencyKey: opts.idempotencyKey ?? null,
               });
             } else if (ownershipHold) {
+              // Register before the durable write; only outer settlement wakes
+              // the shared worker. A restart reconstructs the same receipts.
+              await notifyDeliveryWork(tx, DELIVERY_QUEUES.executionOwnershipWaits, issue.id);
               const parkedPayload = {
                 ...payload,
                 issueId: issue.id,
