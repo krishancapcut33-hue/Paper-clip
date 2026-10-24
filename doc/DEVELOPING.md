@@ -2885,6 +2885,10 @@ Sandbox-provider driver lookup filters plugin manifests by driver key and kind
 in Postgres before returning rows. Install order, status and worker checks still
 select the provider. Each lookup reads current registry state without a cache.
 
+Run-to-issue links authorize through `getRunReadAccess`, which reads only the run
+ID, company ID, scope kind, and issue ID. The existing visibility policy then
+filters linked issues without loading the run's prompt, output, or result.
+
 Run the deterministic native event replay with the normal server test runner:
 
 ```sh
