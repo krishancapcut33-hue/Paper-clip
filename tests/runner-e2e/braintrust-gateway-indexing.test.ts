@@ -96,6 +96,27 @@ it.each(["wrong-provider", "wrong-model", "invalid-trace", "duplicate", "foreign
   expect(JSON.stringify(result)).not.toContain("private-");
 });
 
+it.each(["request_id", "campaign_id", "execution_id", "attempt_id", "phase"])("rejects a conflicting %s even when other campaign metadata is absent", async field => {
+  const f = await fixture(), before = await readFile(f.ledgerPath, "utf8");
+  f.rows[0]![field] = "different-work";
+  const transport = vi.fn<typeof fetch>(async () => Response.json({ data: f.rows }));
+  const result = await verifyBraintrustGatewayIndexing(config, f.input, transport);
+  expect(result).toMatchObject({ status: "incomplete", expectedRequests: 1, verifiedRequests: 0 });
+  expect(result.requests[0]?.reason).toBe("indexed_identity_conflict");
+  expect(transport).toHaveBeenCalledTimes(1);
+  expect(await readFile(f.ledgerPath, "utf8")).toBe(before);
+});
+
+it.each(["absent", "partial", "complete"])("allows %s campaign metadata when no identity contradicts the receipt", async coverage => {
+  const f = await fixture();
+  Object.assign(f.rows[0]!, { request_id: null, campaign_id: null, execution_id: null, attempt_id: null, phase: null });
+  if (coverage !== "absent") f.rows[0]!.request_id = f.receipts[0]!.requestId;
+  if (coverage === "complete") Object.assign(f.rows[0]!, { campaign_id: "campaign", execution_id: "hello", attempt_id: "attempt", phase: "setup" });
+  const result = await verifyBraintrustGatewayIndexing(config, f.input, async () => Response.json({ data: f.rows }));
+  expect(result).toMatchObject({ status: "verified", expectedRequests: 1, verifiedRequests: 1 });
+  expect(result.requests[0]?.campaignMetadataPresent).toBe(coverage === "complete");
+});
+
 it("refuses to attribute one gateway row to two charged requests", async () => {
   const f = await fixture(2), transport = vi.fn<typeof fetch>();
   await writeFile(f.receiptFile(1), JSON.stringify({ ...f.receipts[1], gatewaySpanId: f.receipts[0]!.gatewaySpanId }));

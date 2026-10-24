@@ -89,16 +89,16 @@ export async function verifyBraintrustGatewayIndexing(config: EvalBraintrustConf
           row.status = "incomplete"; row.reason = "row_not_indexed";
           if (!matches.length) continue;
           const found = matches[0]!, planned = expected.get(row.executionId)!;
+          const identity = { request_id: row.requestId, campaign_id: input.campaignId,
+            execution_id: row.executionId, attempt_id: row.attemptId, phase: row.phase };
           if (matches.length !== 1 || !spanIdentity(found.span_id) || !spanIdentity(found.root_span_id)
-              || found.model !== planned.model || found.provider !== planned.provider) {
+              || found.model !== planned.model || found.provider !== planned.provider
+              || Object.entries(identity).some(([field, value]) => found[field] != null && found[field] !== value)) {
             row.reason = "indexed_identity_conflict"; continue;
           }
           row.status = "verified"; delete row.reason;
           row.spanId = found.span_id; row.traceId = found.root_span_id;
-          row.campaignMetadataPresent = found.request_id === row.requestId
-            && found.campaign_id === input.campaignId
-            && found.execution_id === row.executionId && found.attempt_id === row.attemptId
-            && found.phase === row.phase;
+          row.campaignMetadataPresent = Object.entries(identity).every(([field, value]) => found[field] === value);
         }
       } catch { for (const row of batch) { row.status = "unavailable"; row.reason = "query_unavailable"; } }
     }
