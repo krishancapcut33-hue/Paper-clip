@@ -1,3 +1,7 @@
+import { mkdtemp, writeFile, rm } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+import { createSandboxOrphanCleanupSpool } from "../services/sandbox-orphan-cleanup-spool.js";
 import { nextEnvironmentCleanupAt } from "../services/environment-cleanup-state.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 import { randomUUID } from "node:crypto";
@@ -48,12 +52,16 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
     coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => !draining, canReconcile: () => true,
       onError: error => errors.push(error) });
+    const history = historical && historicalCleanupVerificationService(db, { inspectLease: inspections, inspectSetup: inspections });
+    let historySettled = !history;
     worker = registerEnvironmentCleanupWork(db, coordinator, {
       sweepPending: sweepOverride ?? (backoffMs => heartbeat.sweepPendingCleanupLeases({ backoffMs })),
-      historical: historical ? historicalCleanupVerificationService(db, { inspectLease: inspections, inspectSetup: inspections }) : undefined,
+      historical: history ? { hasPending: history.hasPending,
+        sweep: async () => { const result = await history.sweep(); historySettled = true; return result; } } : undefined,
       canRun: () => !draining,
     });
     await worker.ready;
+    await vi.waitFor(() => expect(historySettled).toBe(true));
   }
   async function settle(ms = 30_000, wait = true) {
     await vi.advanceTimersByTimeAsync(ms);
@@ -83,6 +91,9 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     await quiet();
     await environmentService(db).updateLeaseMetadata(lease.id, { driver: "sandbox", changed: true });
     await settle(); expect(inspections).toHaveBeenCalledTimes(2);
+    await environmentService(db).updateLeaseMetadata(lease.id, { changed: "again" });
+    await settle(90_000); expect(inspections).toHaveBeenCalledTimes(2);
+    await settle(180_000); expect(inspections).toHaveBeenCalledTimes(3);
     await quiet();
   });
   it("wakes on a real orphan insert, waits for its backoff, then disarms after deletion", async () => {
@@ -166,6 +177,38 @@ describe.skipIf(!support.supported)("environment cleanup scheduling", () => {
     draining = true; const count = reads.mock.calls.length;
     await settle(90_000); expect(reads).toHaveBeenCalledTimes(count);
     stop(); draining = false; await quiet();
+  });
+  it("retains startup recovery for an unread real spool with no buffered or durable row", async () => {
+    const dir = await mkdtemp(join(tmpdir(), "cleanup-unread-spool-"));
+    try {
+      await writeFile(join(dir, "unread.json"), "{ truncated");
+      const runtime = environmentRuntimeService(db, { orphanCleanupSpool: createSandboxOrphanCleanupSpool(dir) });
+      const heartbeat = heartbeatService(db, { environmentRuntime: runtime });
+      await start(false, backoffMs => heartbeat.sweepPendingCleanupLeases({ backoffMs }));
+      expect(errors).toHaveLength(1); errors.length = 0;
+      expect(coordinator!.nextWakeAt()).not.toBeNull();
+      expect(await db.select().from(environmentLeases)).toEqual([]);
+      await rm(join(dir, "unread.json"));
+      await quiet();
+    } finally { await rm(dir, { recursive: true, force: true }); }
+  });
+  it("does not delay startup for historical provider checks but joins them on shutdown", async () => {
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const sweep = vi.fn(() => gate);
+    coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    worker = registerEnvironmentCleanupWork(db, coordinator, {
+      sweepPending: async () => {}, historical: { sweep, hasPending: async () => false }, canRun: () => true,
+    });
+    let ready = false, stopped = false;
+    void worker.ready.then(() => { ready = true; });
+    try {
+      await vi.waitFor(() => expect(ready).toBe(true));
+      expect(sweep).toHaveBeenCalledOnce();
+      const stopping = coordinator.stop().then(() => { stopped = true; });
+      await vi.advanceTimersByTimeAsync(1); expect(stopped).toBe(false);
+      release(); await stopping; expect(stopped).toBe(true);
+    } finally { release(); }
   });
   it("coalesces a write during a slow sweep and waits for it on shutdown", async () => {
     await start(); await quiet(); worker!.stop(); await coordinator!.stop();

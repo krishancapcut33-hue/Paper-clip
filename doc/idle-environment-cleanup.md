@@ -25,7 +25,9 @@ validation, and escalation rules stay with their current owners.
 `environment-cleanup-work.ts` registers two independent workers. Their generation
 counters preserve a wake until successful reconciliation, including a first write
 during drain, changes during a sweep, and failure followed by drain. The existing
-heartbeat interval bounds starts after bursts of writes; no timer remains once
+heartbeat interval bounds pending-cleanup starts after bursts of writes. Historical
+verification has a separate minimum five-minute spacing, including commit-triggered
+passes, and does not delay server readiness. No timer remains once
 there is no obligation. A self-generated write can require a final reconciliation
 before quiet. A failed sweep retains a retry. Shutdown unsubscribes local buffer
 wakes; the delivery coordinator stops subscriptions/timers and joins active work.
@@ -70,7 +72,8 @@ the database. A sweep flushes registered runtimes as well as its own startup spo
 this reaches a producer runtime's buffer even when it differs from the heartbeat's
 runtime. The registry retains only runtimes with unresolved buffer ownership.
 
-A spool read failure still allows other runtimes to flush their buffers and
+Unreadable directories, records, and malformed records retain a retry; a missing
+spool directory is an empty spool. A spool read failure still allows other runtimes to flush their buffers and
 persisted leases to clean up, then fails the sweep so recovery stays scheduled.
 Each concrete cleanup pass reloads the spool, including entries appended by
 plugin task replacement after startup and entries beyond buffer capacity.

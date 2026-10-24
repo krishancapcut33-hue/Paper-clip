@@ -1395,8 +1395,12 @@ function createSandboxEnvironmentDriver(
   const flushDeferredOrphanCleanupsOnce = async (): Promise<{ recovered: number; pending: number }> => {
     // Other task paths append after startup. Read on each concrete cleanup pass;
     // the worker disarms entirely when no pending obligation remains.
-    for (const record of await orphanCleanupSpool.load()) enqueueDeferredOrphanCleanup(record);
+    const loaded = orphanCleanupSpool.loadWithStatus
+      ? await orphanCleanupSpool.loadWithStatus()
+      : { records: await orphanCleanupSpool.load(), readFailed: false };
+    for (const record of loaded.records) enqueueDeferredOrphanCleanup(record);
     if (deferredOrphanCleanups.length === 0) {
+      if (loaded.readFailed) throw new Error("Orphan cleanup spool has unread records");
       return { recovered: 0, pending: orphanIdleWork.size };
     }
     // New acquisitions can enqueue while this batch is being persisted.
@@ -1446,6 +1450,7 @@ function createSandboxEnvironmentDriver(
       }
     }
     if (orphanIdleWork.size === 0) { unregisterDeferredCleanup?.(); unregisterDeferredCleanup = undefined; }
+    if (loaded.readFailed) throw new Error("Orphan cleanup spool has unread records");
     return { recovered, pending: orphanIdleWork.size };
   };
   let orphanFlush: Promise<{ recovered: number; pending: number }> | null = null;

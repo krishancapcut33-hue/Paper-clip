@@ -15,7 +15,7 @@ export function registerEnvironmentCleanupWork(
   },
 ) {
   const spacing = input.minimumSpacingMs ?? 30_000;
-  function register(queue: DeliveryQueue, run: () => Promise<unknown>, deadline: () => Promise<number | null>) {
+  function register(queue: DeliveryQueue, run: () => Promise<unknown>, deadline: () => Promise<number | null>, minimumSpacing = spacing) {
     let requested = 1, reconciled = 0, next: number | null = null, earliest = 0;
     const worker = coordinator.register(queue, {
       retryMs: spacing, pausePassiveMaintenance: true,
@@ -24,7 +24,7 @@ export function registerEnvironmentCleanupWork(
         if (!input.canRun()) { requested++; next = null; return; }
         if (Date.now() < earliest) { next = earliest; return; }
         const generation = ++requested;
-        earliest = Date.now() + spacing;
+        earliest = Date.now() + minimumSpacing;
         await run();
         const due = await deadline();
         next = due === null ? null : Math.max(due, earliest);
@@ -42,7 +42,10 @@ export function registerEnvironmentCleanupWork(
   }, () => nextEnvironmentCleanupAt(db));
   const unsubscribe = subscribeDeferredEnvironmentCleanup(db, pending.wake);
   const historical = input.historical;
-  const verification = historical && register(DELIVERY_QUEUES.historicalCleanup, historical.sweep,
-    async () => await historical.hasPending() ? Date.now() + ENVIRONMENT_CLEANUP_RETRY_MS : null);
-  return { ready: Promise.all([pending.ready, verification?.ready]), stop: unsubscribe };
+  if (historical) register(DELIVERY_QUEUES.historicalCleanup, historical.sweep,
+    async () => await historical.hasPending() ? Date.now() + ENVIRONMENT_CLEANUP_RETRY_MS : null,
+    Math.max(spacing, ENVIRONMENT_CLEANUP_RETRY_MS));
+  // The coordinator tracks and joins historical work; provider checks must not
+  // delay server readiness or starting the heartbeat scheduler.
+  return { ready: pending.ready, stop: unsubscribe };
 }
