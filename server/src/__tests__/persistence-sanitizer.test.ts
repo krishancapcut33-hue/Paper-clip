@@ -70,12 +70,12 @@ describe("sanitizeForPersistence", () => {
   it("preserves secret_ref bindings and redacts plain bindings under secret keys", () => {
     const out = sanitizeForPersistence({
       env: {
-        API_TOKEN: { type: "secret_ref", secretId: "secret-id-1" },
+        API_TOKEN: { type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" },
         OTHER_TOKEN: { type: "plain", value: CANARY },
       },
     });
     const env = out.env as Record<string, unknown>;
-    expect(env.API_TOKEN).toEqual({ type: "secret_ref", secretId: "secret-id-1" });
+    expect(env.API_TOKEN).toEqual({ type: "secret_ref", secretId: "11111111-1111-4111-8111-111111111111" });
     expect(env.OTHER_TOKEN).toEqual({ type: "plain", value: REDACTED_EVENT_VALUE });
   });
 
@@ -128,6 +128,19 @@ describe("sanitizeForPersistence", () => {
     expect(sanitizeForPersistence(42)).toBe(42);
     expect(sanitizeForPersistence(null)).toBeNull();
     expect(sanitizeForPersistence(undefined)).toBeUndefined();
+  });
+
+  it("preserves public run event identities while sanitizing diagnostic text", () => {
+    const payload = {
+      schema: "paperclip.run-performance-span.v1",
+      span: "runner.prp.route.register",
+      parentSpan: "native.session.execute",
+      providerHostname: "api.openai.com",
+      note: `MY_API_TOKEN=${CANARY}`,
+    };
+    const out = sanitizeForPersistence(payload);
+    expect(out).toMatchObject({ ...payload, note: `MY_API_TOKEN=${REDACTED_EVENT_VALUE}` });
+    expect(sanitizeForPersistence(out)).toEqual(out);
   });
 
   it("passes non-JSON values through untouched", () => {

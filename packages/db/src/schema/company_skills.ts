@@ -9,6 +9,7 @@ import {
   integer,
   uniqueIndex,
 } from "drizzle-orm/pg-core";
+import { sql } from "drizzle-orm";
 import type { CompanySkillFileInventoryEntry, CompanySkillSharingScope } from "@paperclipai/shared";
 import { agents } from "./agents.js";
 import { companies } from "./companies.js";
@@ -39,6 +40,8 @@ export const companySkills = pgTable(
     homepageUrl: text("homepage_url"),
     categories: text("categories").array().notNull().default([]),
     sharingScope: text("sharing_scope").$type<CompanySkillSharingScope>().notNull().default("company"),
+    // Source access is inherited by editable copies too. Orphaned sources fail closed.
+    accessSourceId: uuid("access_source_id"),
     publicShareToken: text("public_share_token"),
     forkedFromSkillId: uuid("forked_from_skill_id").references((): AnyPgColumn => companySkills.id, { onDelete: "set null" }),
     forkedFromCompanyId: uuid("forked_from_company_id").references(() => companies.id, { onDelete: "set null" }),
@@ -63,7 +66,18 @@ export const companySkills = pgTable(
 
 export type CompanySkillVersionFileInventoryEntry = CompanySkillFileInventoryEntry & {
   content: string;
+  encoding?: "utf8" | "base64";
+  executable?: boolean;
 };
+
+/** Immutable repository bytes shared by all skill versions from the same package. */
+export const companySkillRepositorySnapshots = pgTable("company_skill_repository_snapshots", {
+  id: uuid("id").primaryKey().defaultRandom(),
+  companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
+  contentHash: text("content_hash").notNull(),
+  fileInventory: jsonb("file_inventory").$type<CompanySkillVersionFileInventoryEntry[]>().notNull(),
+  createdAt: timestamp("created_at", { withTimezone: true }).notNull().defaultNow(),
+}, table => ({ content: uniqueIndex("company_skill_repository_snapshots_content_idx").on(table.companyId, table.contentHash) }));
 
 export const companySkillVersions = pgTable(
   "company_skill_versions",
@@ -71,8 +85,13 @@ export const companySkillVersions = pgTable(
     id: uuid("id").primaryKey().defaultRandom(),
     companyId: uuid("company_id").notNull().references(() => companies.id, { onDelete: "cascade" }),
     companySkillId: uuid("company_skill_id").notNull().references(() => companySkills.id, { onDelete: "cascade" }),
+    repositorySnapshotId: uuid("repository_snapshot_id").references(() => companySkillRepositorySnapshots.id, { onDelete: "restrict" }),
+    repositorySkillPath: text("repository_skill_path"),
     revisionNumber: integer("revision_number").notNull(),
     label: text("label"),
+    releaseId: text("release_id"),
+    releaseName: text("release_name"),
+    releasedAt: timestamp("released_at", { withTimezone: true }),
     fileInventory: jsonb("file_inventory").$type<CompanySkillVersionFileInventoryEntry[]>().notNull().default([]),
     authorAgentId: uuid("author_agent_id").references(() => agents.id, { onDelete: "set null" }),
     authorUserId: text("author_user_id"),
@@ -83,6 +102,9 @@ export const companySkillVersions = pgTable(
       table.companySkillId,
       table.revisionNumber,
     ),
+    companySkillReleaseUniqueIdx: uniqueIndex("company_skill_versions_skill_release_idx")
+      .on(table.companySkillId, table.releaseId)
+      .where(sql`${table.releaseId} is not null`),
     companySkillCreatedIdx: index("company_skill_versions_company_skill_created_idx").on(
       table.companyId,
       table.companySkillId,

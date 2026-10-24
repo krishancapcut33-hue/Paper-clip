@@ -22,6 +22,9 @@
 import { access, readdir, readFile } from "node:fs/promises";
 import path from "node:path";
 import { randomUUID } from "node:crypto";
+import { pluginApiUpgrade, proxyPluginApiWebSocket } from "../realtime/plugin-api-ws.js";
+import { trustedBoardMutationOrigin } from "../middleware/board-mutation-guard.js";
+import { authorizationService } from "../services/authorization.js";
 import { fileURLToPath } from "node:url";
 import { Router } from "express";
 import type { Request, Response } from "express";
@@ -72,6 +75,7 @@ import {
   assertCompanyAccess,
   assertInstanceAdmin,
   getActorInfo,
+  hasCompanyAccess,
 } from "./authz.js";
 import { validateInstanceConfig } from "../services/plugin-config-validator.js";
 import {
@@ -84,8 +88,28 @@ import {
 import {
   extractSecretRefBindingsFromConfig,
 } from "../services/plugin-secrets-handler.js";
+import {
+  canonicalizeLocalPluginPath,
+  isWithinBundledPluginRoot,
+} from "../services/plugin-install-guard.js";
+import { isCloudManagedInstance } from "../services/cloud-instance.js";
+import { getHiddenSettings } from "../services/settings-visibility.js";
 import { secretService } from "../services/secrets.js";
 import { badRequest, forbidden, notFound, unauthorized, unprocessable } from "../errors.js";
+
+/**
+ * Floor: when the hosting operator hides the Plugins settings surface
+ * (`instance.plugins` in PAPERCLIP_HIDDEN_SETTINGS), plugin lifecycle and
+ * configuration writes are rejected alongside it. Reads stay open — installed
+ * plugins keep running and `/plugins/ui-contributions` still powers their UI.
+ */
+function assertPluginManagementVisible() {
+  if (getHiddenSettings().has("instance.plugins")) {
+    throw forbidden("Plugin management is managed by the hosting operator on this instance", {
+      code: "settings_operator_managed",
+    });
+  }
+}
 
 /** UI slot declaration extracted from plugin manifest */
 type PluginUiSlotDeclaration = NonNullable<NonNullable<PaperclipPluginManifestV1["ui"]>["slots"]>[number];
@@ -446,6 +470,7 @@ interface PluginScopedApiRequest {
 }
 
 interface PluginScopedApiResponse {
+  websocket?: { url: string; headers?: Record<string, string> };
   status?: number;
   headers?: Record<string, string>;
   body?: unknown;
@@ -605,6 +630,17 @@ export function pluginRoutes(
     if (resolution.from === "query") {
       const value = req.query[resolution.key ?? ""];
       return typeof value === "string" ? value : null;
+    }
+
+    if (resolution.from === "agent") {
+      const id = params[resolution.param];
+      if (!id) return null;
+      const [agent] = await db.select({ id: agents.id, companyId: agents.companyId }).from(agents).where(eq(agents.id, id)).limit(1);
+      if (!agent || !hasCompanyAccess(req, agent.companyId)) throw notFound("Agent not found");
+      assertCompanyAccess(req, agent.companyId);
+      const decision = await authorizationService(db).decide({ actor: req.actor, action: "agent:read", resource: { type: "agent", companyId: agent.companyId, agentId: agent.id } });
+      if (!decision.allowed) throw notFound("Agent not found");
+      return agent.companyId;
     }
 
     const issueId = params[resolution.param ?? ""];
@@ -1104,14 +1140,23 @@ export function pluginRoutes(
    * 3. Registers in the database
    * 4. Transitions to `ready` state if no new capability approval is needed
    *
+   * Cloud-managed instances (identified by the harness-injected
+   * `PAPERCLIP_MANAGED_CONFIG` environment variable) enforce a positive
+   * allowlist: only local paths that canonicalize to a directory inside the
+   * bundled plugin catalog root may be installed. npm/registry installs and
+   * arbitrary local paths are rejected with `403`. Local paths are
+   * canonicalized and validated on every instance.
+   *
    * Response: `PluginRecord`
    *
    * Errors:
    * - `400` — validation failure or install error (package not found, bad manifest, etc.)
+   * - `403` — install source not permitted on a cloud-managed instance
    * - `500` — installation succeeded but manifest is missing (indicates a loader bug)
    */
   router.post("/plugins/install", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { packageName, version, isLocalPath } = req.body as PluginInstallRequest;
 
     // Input validation
@@ -1143,9 +1188,39 @@ export function pluginRoutes(
       return;
     }
 
+    // Cloud install floor: on harness-managed instances only bundled-catalog
+    // sources are installable, regardless of actor privileges or flag state.
+    const cloudManaged = isCloudManagedInstance();
+    if (cloudManaged && !isLocalPath) {
+      res.status(403).json({
+        error:
+          "npm installs are disabled on cloud-managed instances; only plugins bundled with the application may be installed",
+      });
+      return;
+    }
+
+    // Canonicalize local install paths on every instance so traversal
+    // segments and symlinks cannot smuggle an aliased path past validation.
+    let canonicalLocalPath: string | undefined;
+    if (isLocalPath) {
+      const validated = await canonicalizeLocalPluginPath(trimmedPackage);
+      if (!validated.ok) {
+        res.status(400).json({ error: `Invalid localPath: ${validated.reason}` });
+        return;
+      }
+      if (cloudManaged && !(await isWithinBundledPluginRoot(validated.canonicalPath))) {
+        res.status(403).json({
+          error:
+            "cloud-managed instances may only install plugins from the bundled plugin catalog",
+        });
+        return;
+      }
+      canonicalLocalPath = validated.canonicalPath;
+    }
+
     try {
-      const installOptions = isLocalPath
-        ? { localPath: trimmedPackage }
+      const installOptions = canonicalLocalPath !== undefined
+        ? { localPath: canonicalLocalPath }
         : { packageName: trimmedPackage, version: version?.trim() };
 
       const discovered = await loader.installPlugin(installOptions);
@@ -1810,6 +1885,20 @@ export function pluginRoutes(
     }
 
     try {
+      const upgrade = (req as Request & { [pluginApiUpgrade]?: unknown })[pluginApiUpgrade];
+      if (match.route.transport === "websocket") {
+        if (!upgrade || req.method !== "GET" || match.route.auth !== "board" || !plugin.manifestJson.capabilities.includes("http.outbound")) {
+          res.status(426).json({ error: "Browser WebSocket required" });
+          return;
+        }
+        if (!req.header("origin") || trustedBoardMutationOrigin(req) !== req.header("origin")?.toLowerCase()) {
+          res.status(403).json({ error: "Trusted browser origin required" });
+          return;
+        }
+      } else if (upgrade) {
+        res.status(400).json({ error: "Route does not accept WebSockets" });
+        return;
+      }
       assertScopedApiAuth(req, match.route);
       const companyId = await resolveScopedApiCompanyId(match.route, match.params, req);
       if (!companyId) {
@@ -1853,6 +1942,14 @@ export function pluginRoutes(
         "handleApiRequest",
         input,
       ) as PluginScopedApiResponse;
+      if (match.route.transport === "websocket") {
+        if (result.websocket) {
+          proxyPluginApiWebSocket(req, res, result.websocket, () => bridgeDeps.workerManager.isRunning(plugin.id));
+        } else {
+          res.status(result.status && result.status >= 400 && result.status <= 599 ? result.status : 502).json({ error: "Plugin connection unavailable" });
+        }
+        return;
+      }
       const status = Number.isInteger(result.status) && Number(result.status) >= 200 && Number(result.status) <= 599
         ? Number(result.status)
         : 200;
@@ -1925,6 +2022,7 @@ export function pluginRoutes(
    */
   router.delete("/plugins/:pluginId", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
     const purge = req.query.purge === "true";
 
@@ -1961,6 +2059,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/enable", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -1999,6 +2098,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/disable", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
     const body = req.body as { reason?: string } | undefined;
     const reason = body?.reason;
@@ -2161,6 +2261,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/upgrade", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
     const body = req.body as { version?: string } | undefined;
     const version = body?.version;
@@ -2242,6 +2343,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config", async (req, res) => {
     assertInstanceAdmin(req);
+    assertPluginManagementVisible();
     const { pluginId } = req.params;
 
     const plugin = await resolvePlugin(registry, pluginId);
@@ -2308,6 +2410,20 @@ export function pluginRoutes(
       // If it doesn't (METHOD_NOT_IMPLEMENTED), restart the worker so it picks
       // up the new config on re-initialize. If no worker is running, skip.
       if (bridgeDeps?.workerManager.isRunning(plugin.id)) {
+        // Refresh the worker's authorized proactive company scopes so the
+        // just-configured company can be acted on from proactive loops (e.g.
+        // the chat gateway's notifier drain) without requiring a restart
+        // (LOOA-629). The set is exactly the plugin's configured companies.
+        try {
+          const configRows = await registry.listConfigs(plugin.id);
+          bridgeDeps.workerManager.setProactiveCompanyScopes(
+            plugin.id,
+            configRows.map((row) => row.companyId),
+          );
+        } catch {
+          // Non-fatal: the set is rebuilt from the DB on the next worker start.
+        }
+
         try {
           await bridgeDeps.workerManager.call(
             plugin.id,
@@ -2360,6 +2476,7 @@ export function pluginRoutes(
    */
   router.post("/plugins/:pluginId/config/test", async (req, res) => {
     assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
 
     if (!bridgeDeps) {
       res.status(501).json({ error: "Plugin bridge is not enabled" });
@@ -2836,6 +2953,7 @@ export function pluginRoutes(
 
   router.put("/plugins/:pluginId/companies/:companyId/local-folders/:folderKey", async (req, res) => {
     assertBoardOrgAccess(req);
+    assertPluginManagementVisible();
     const { pluginId, companyId, folderKey } = req.params;
     assertCompanyAccess(req, companyId);
 

@@ -5,6 +5,7 @@ import {
   activityLog,
   companies,
   createDb,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   issueComments,
   issues,
 } from "@paperclipai/db";
@@ -12,12 +13,12 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
-import { logActivity } from "../services/activity-log.js";
+import { logActivity, persistActivity } from "../services/activity-log.js";
 import { issueService } from "../services/issues.js";
 import { REDACTED_EVENT_VALUE } from "../redaction.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
-const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe.sequential : describe.skip;
+const describeEmbeddedPostgres = describe.skipIf(!embeddedPostgresSupport.supported);
 
 if (!embeddedPostgresSupport.supported) {
   console.warn(
@@ -36,7 +37,7 @@ describeEmbeddedPostgres("pre-persistence sanitization", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-pre-persist-sanitize-");
     db = createDb(tempDb.connectionString);
-  }, 20_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     await db.delete(activityLog);
@@ -46,6 +47,7 @@ describeEmbeddedPostgres("pre-persistence sanitization", () => {
   });
 
   afterAll(async () => {
+    await db?.$client.end();
     await tempDb?.cleanup();
   });
 
@@ -95,10 +97,10 @@ describeEmbeddedPostgres("pre-persistence sanitization", () => {
     expect(row!.body).toBe(body);
   });
 
-  it("sanitizes nested activity payloads before the row is written", async () => {
+  it.each([logActivity, persistActivity])("sanitizes nested activity payloads before the row is written via %s", async (writeActivity) => {
     const { companyId, issueId } = await seedIssue();
 
-    await logActivity(db, {
+    await writeActivity(db, {
       companyId,
       actorType: "system",
       actorId: "system",

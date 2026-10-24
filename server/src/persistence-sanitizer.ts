@@ -1,4 +1,4 @@
-import { isPlainObject, redactSensitiveText, sanitizeRecord } from "./redaction.js";
+import { isPlainObject, redactEventPayload, redactSensitiveText } from "./redaction.js";
 
 /**
  * Pre-persistence sanitization boundary.
@@ -36,15 +36,16 @@ function deepRedactStrings(value: unknown): unknown {
  * Sanitize an arbitrary JSON-like value (string, array, or nested object)
  * before it is persisted.
  *
- * Plain objects first go through the key-aware `sanitizeRecord` pass (secret
+ * Plain objects first go through the key-aware `redactEventPayload` pass (secret
  * field names, secret bindings, command args, JWT-shaped values), then every
  * remaining string leaf goes through the text-level pass so credential-shaped
- * values embedded in free-text fields are also caught. Non-JSON values
+ * values embedded in free-text fields are also caught. Public event schema and
+ * span identities retain the upstream redaction exemptions. Non-JSON values
  * (dates, buffers, class instances) are returned unchanged.
  */
 export function sanitizeForPersistence<T>(value: T): T {
   if (typeof value === "string") return redactSensitiveText(value) as T;
   if (Array.isArray(value)) return value.map((entry) => sanitizeForPersistence(entry)) as T;
-  if (isPlainObject(value)) return deepRedactStrings(sanitizeRecord(value)) as T;
+  if (isPlainObject(value)) return deepRedactStrings(redactEventPayload(value)) as T;
   return value;
 }
