@@ -1,3 +1,5 @@
+import { writeLoginCleanup } from "./login-cleanup-notifications.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 // The Claude setup-token login session service. It owns a company-scoped,
 // owner-bound login session that holds one live setup-token process and one
 // sandbox lease for the whole login. The login is a two-way round-trip: the
@@ -32,7 +34,7 @@
 //     testable.
 
 import { randomBytes } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, ne, notInArray, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
@@ -55,13 +57,6 @@ import type { AgentAdapterType } from "@paperclipai/shared";
 // all three consumers, not just one, or a served adapter will create a row
 // that a follow-up route or the reaper cannot find.
 export const SETUP_TOKEN_ADAPTER_TYPE: AgentAdapterType = "claude_local";
-
-// The `connection_method` value a local terminal sign-in writes to the shared
-// `adapter_auth_sessions` table. The setup-token reaper excludes exactly these
-// rows (and only these): the setup-token flow leaves the method null, and when
-// it also creates an AI connection it writes "subscription". Keep in sync with
-// `LOCAL_LOGIN_METHOD` in local-ai-login.ts.
-const LOCAL_SIGN_IN_CONNECTION_METHOD = "local_subscription";
 
 /**
  * The session states. The four terminal states end the login. The `stored`
@@ -352,7 +347,7 @@ export async function reapSetupTokenLeases(
     // on-disk sign-in home. The local-login service removes that home using the
     // row id; clearing the row here first would strand the directory and any
     // credentials written there. Leave those rows to the local-login reaper.
-    if (record.connectionMethod === LOCAL_SIGN_IN_CONNECTION_METHOD) {
+    if (record.connectionMethod === "local_subscription") {
       continue;
     }
     try {
@@ -1547,7 +1542,7 @@ export async function transitionSetupTokenSessionToStored(
   executor: Db,
   identity: SetupTokenCleanupIdentity,
 ): Promise<boolean> {
-  const changed = await executor
+  const changed = await writeLoginCleanup(executor, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
     .update(adapterAuthSessions)
     .set({ status: "stored", updatedAt: sql`clock_timestamp()` })
     .where(
@@ -1558,7 +1553,7 @@ export async function transitionSetupTokenSessionToStored(
         isNull(adapterAuthSessions.boundAt),
       ),
     )
-    .returning();
+    .returning());
   return changed.length === 1;
 }
 
@@ -1577,7 +1572,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
     async record(record): Promise<void> {
       // The database generates `id`. The store fills `public_session_id` with the
       // service session id, which the service builds from a CSPRNG at start.
-      await db.insert(adapterAuthSessions).values({
+      await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx.insert(adapterAuthSessions).values({
         companyId: record.companyId,
         aiConnection: record.aiConnection,
         environmentId: record.environmentId,
@@ -1588,22 +1583,22 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         status: record.state,
         expiresAt: new Date(record.deadline),
         boundAt: record.boundAt === null ? null : new Date(record.boundAt),
-      });
+      }));
     },
 
     async markState(identity, state): Promise<void> {
       // The compare-and-set predicate matches the company, the owner, and the
       // adapter, so a write never updates a row by the session id alone.
-      await db
+      await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
         .update(adapterAuthSessions)
         .set({ status: state, updatedAt: sql`clock_timestamp()` })
-        .where(scopeMatch(identity));
+        .where(scopeMatch(identity)));
     },
 
     async remove(identity): Promise<void> {
       // The delete matches the company, the owner, and the adapter, so it never
       // removes a row by the session id alone.
-      await db.delete(adapterAuthSessions).where(scopeMatch(identity));
+      await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx.delete(adapterAuthSessions).where(scopeMatch(identity)));
     },
 
     async listReapable(now): Promise<SetupTokenCleanupRecord[]> {
@@ -1617,14 +1612,12 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
         .where(
           and(
             eq(adapterAuthSessions.adapterType, SETUP_TOKEN_ADAPTER_TYPE),
-            // Local terminal sign-ins share this adapter type but carry
-            // `local_subscription` and their own on-disk home. Reap every other
-            // row: the setup-token flow leaves the method null, and when it also
-            // creates an AI connection it writes "subscription".
-            or(
-              isNull(adapterAuthSessions.connectionMethod),
-              ne(adapterAuthSessions.connectionMethod, LOCAL_SIGN_IN_CONNECTION_METHOD),
-            ),
+            // Local terminal sign-ins carry `local_subscription` and own their
+            // on-disk home, so the local-login reaper owns them. `is distinct
+            // from` also keeps the null rows (no AI connection) and the
+            // "subscription" rows (a setup-token flow that also created an AI
+            // connection) reapable.
+            sql`${adapterAuthSessions.connectionMethod} is distinct from 'local_subscription'`,
             or(
               inArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
               lte(adapterAuthSessions.expiresAt, new Date(now)),
@@ -1642,7 +1635,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
       // database evaluates the current time after any row-lock wait. An expired
       // claim cannot pass the deadline condition. The write sets `bound_at` one
       // time and returns the row only on a valid consume.
-      const changed = await db
+      const changed = await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
         .update(adapterAuthSessions)
         .set({ boundAt: sql`clock_timestamp()`, updatedAt: sql`clock_timestamp()` })
         .where(
@@ -1653,7 +1646,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
             isNull(adapterAuthSessions.boundAt),
           ),
         )
-        .returning();
+        .returning());
       const row = changed[0];
       return row ? toCleanupRecord(row) : null;
     },
@@ -1662,7 +1655,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
       // One conditional write. The predicate carries the company, the owner, the
       // adapter, the session id, and one of `cancellableStates`. It never
       // interrupts a `submitting` write, a `stored` claim, or a terminal row.
-      const changed = await db
+      const changed = await writeLoginCleanup(db, DELIVERY_QUEUES.setupTokenCleanup, tx => tx
         .update(adapterAuthSessions)
         .set({
           status: "cancelled",
@@ -1670,7 +1663,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
           updatedAt: sql`clock_timestamp()`,
         })
         .where(and(scopeMatch(identity), inArray(adapterAuthSessions.status, [...cancellableStates])))
-        .returning();
+        .returning());
       const row = changed[0];
       return row ? toCleanupRecord(row) : null;
     },
@@ -1688,13 +1681,10 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
             eq(adapterAuthSessions.startedByUserId, key.ownerUserId),
             eq(adapterAuthSessions.adapterType, key.adapterType as AgentAdapterType),
             // Local terminal sign-ins share this adapter type but are owned by
-            // the local-login flow, not the setup-token flow. Only a setup-token
-            // row (a null method, or "subscription" once it also created an AI
-            // connection) is an active setup-token session.
-            or(
-              isNull(adapterAuthSessions.connectionMethod),
-              ne(adapterAuthSessions.connectionMethod, LOCAL_SIGN_IN_CONNECTION_METHOD),
-            ),
+            // the local-login flow, not the setup-token flow. `is distinct from`
+            // keeps the null rows and "subscription" rows active while excluding
+            // `local_subscription`.
+            sql`${adapterAuthSessions.connectionMethod} is distinct from 'local_subscription'`,
             notInArray(adapterAuthSessions.status, [...SETUP_TOKEN_TERMINAL_STATES]),
             gt(adapterAuthSessions.expiresAt, new Date(now)),
           ),
