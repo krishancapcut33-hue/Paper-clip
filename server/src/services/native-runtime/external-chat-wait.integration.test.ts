@@ -692,7 +692,7 @@ describe("native external-chat response wait", () => {
     };
   }
 
-  async function seedBoardAnsweredTurn(withLink = true, provider: "github" | "slack" = "github") {
+  async function seedBoardAnsweredTurn(withLink = true, provider: "github" | "slack" = "github", oversized = false) {
     const fixture = await seedWaitTurn(provider);
     if (provider === "slack") {
       await db.update(chatEndpointResources).set({ type: "channel" }).where(eq(chatEndpointResources.id, fixture.resourceId));
@@ -755,10 +755,13 @@ describe("native external-chat response wait", () => {
                 // Multi-select plus a custom answer intentionally needs Board.
                 selectionMode: provider === "slack" ? "multi" : "single",
                 required: true,
-                allowOther: provider === "slack",
+                allowOther: provider === "slack" && !oversized,
                 options: [
                   { id: "cobalt", label: "Cobalt" },
                   { id: "amber", label: "Amber" },
+                  ...(oversized ? Array.from({ length: 9 }, (_, index) => ({
+                    id: `option-${index}`, label: `Option ${index}`, description: "Detail ".repeat(550),
+                  })) : []),
                 ],
               },
             ],
@@ -854,6 +857,20 @@ describe("native external-chat response wait", () => {
       wakeId,
     };
   }
+
+  it("resumes an oversized Slack multi-select answered through its Paperclip handoff", async () => {
+    const fixture = await seedBoardAnsweredTurn(true, "slack", true);
+    const [publication] = await db.select().from(chatPublications).where(eq(chatPublications.id, fixture.publicationId));
+    expect(publication!.payload.card?.actions).toEqual([
+      { type: "link", label: "Open in Paperclip", url: expect.stringContaining(fixture.issueId) },
+    ]);
+    expect(publication!.payload.card?.selection).toBeUndefined();
+    await expect(db.select().from(chatActions).where(eq(chatActions.companyId, fixture.companyId))).resolves.toEqual([]);
+    await attestAnswer(fixture);
+    const responses = await materializeExternalChatQuestionResponseInput({ db, binding: fixture, contextSnapshot: fixture.context });
+    expect(responses).toHaveLength(1);
+    expect(JSON.stringify(responses)).toContain("cobalt");
+  });
 
   it.each((["github", "slack"] as const).flatMap(provider => [true, false].map(withLink => ({ provider, withLink }))))(
     "attests a native $provider question answered in Board without inventing a provider action (link: $withLink)",

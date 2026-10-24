@@ -477,7 +477,7 @@ export async function enqueueIssueInteractionChatPublications(
           }),
         );
       }
-      if (publication && multipleQuestion && multipleActionId) {
+      if (publication && supportsCallbacks && multipleQuestion && multipleActionId) {
         await tx.insert(chatActions).values({
           companyId: interaction.companyId, endpointId: endpoint.id, conversationId: conversation.id,
           kind: "question_answer", providerActionId: multipleActionId, status: "issued",

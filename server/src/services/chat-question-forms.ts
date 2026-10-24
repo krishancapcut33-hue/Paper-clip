@@ -220,7 +220,12 @@ function formKind(
 ): "single_select" | "text" | null {
   const source = questionSetQuestion(interaction, question.id);
   if (source) {
-    if (nativeProvider === "slack" && source.answerMode === "single_select" && source.customAnswer && interaction.payload.questions.length === 1) return "text";
+    if (nativeProvider === "slack" && source.answerMode === "single_select" && source.customAnswer && interaction.payload.questions.length === 1) {
+      // The text modal is the Other action beside native choices. Without all
+      // listed choices, keep the complete response path in Paperclip.
+      const choiceCount = question.options.filter(option => !option.freeText).length;
+      return choiceCount > 0 && choiceCount <= MAX_NATIVE_SELECT_OPTIONS ? "text" : null;
+    }
     if (source.answerMode === "text") {
       // Slack can show canonical validation errors without closing the modal.
       // The canonical resolver evaluates patterns in its bounded worker, never
@@ -561,6 +566,7 @@ export function buildChatQuestionFormModal(
       children.push(CardText(points.slice(offset, offset + 2000).join("")));
     }
   };
+  if (payload.nativeProvider === "slack") appendContext("Your answers will be shared in this Slack conversation.");
   if (modalTitle !== title && !interaction.payload.questions.some(question => question.prompt === title)) appendContext(title);
   for (const text of new Set([interaction.summary, interaction.payload.questionSet?.description])) appendContext(text);
   for (const field of payload.fields) {
