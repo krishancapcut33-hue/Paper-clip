@@ -1,3 +1,5 @@
+import { beginIdleTrackedWork } from "./task-admission.js";
+import { registerDeferredEnvironmentCleanup, writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { environmentService } from "./environments.js";
 import { createSandboxOrphanCleanupSpool, type DeferredOrphanCleanupRecord } from "./sandbox-orphan-cleanup-spool.js";
 import { logger } from "../middleware/logger.js";
@@ -245,7 +247,22 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
               await environmentService(db).insertPendingCleanupLease({...orphan,failureReason:"plugin_task_replacement_unowned"});
             } catch {
               // The existing orphan spool recovers cleanup even when the database is unavailable.
-              const persisted=await createSandboxOrphanCleanupSpool().append(orphan);
+              const spool = createSandboxOrphanCleanupSpool();
+              const persisted = await spool.append(orphan);
+              const finish = beginIdleTrackedWork();
+              let flushing: Promise<{ recovered: number; pending: number }> | null = null;
+              const unregister = registerDeferredEnvironmentCleanup(db, () => {
+                flushing ??= (async () => {
+                  await environmentService(db).insertPendingCleanupLease({...orphan,failureReason:"plugin_task_replacement_unowned"});
+                  await spool.remove(orphan);
+                  unregister();
+                  finish();
+                  return { recovered: 1, pending: 0 };
+                })().catch(error => { flushing = null; throw error; });
+                // Keep successful completion for a concurrent sweep that already
+                // captured this callback before it was unregistered.
+                return flushing;
+              });
               logger.error({providerLeaseId:fresh.providerLeaseId,persisted},"Plugin replacement cleanup requires recovery");
             }
           }
@@ -352,9 +369,9 @@ export async function settleDispatchedEnvironmentTask(db: Db, workers: PluginWor
     await executeEnvironmentTask(db, workers, { ...scope, operation: { kind: "complete" } });
     return true;
   } catch {
-    await db.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
+    await writeEnvironmentCleanup(db, tx => tx.update(environmentLeases).set({ status: "pending_cleanup", cleanupStatus: "failed",
       failureReason: "plugin_runner_task_cleanup_unconfirmed", releasedAt: new Date(), updatedAt: new Date(),
-    }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId)));
+    }).where(and(eq(environmentLeases.id, lease.id), eq(environmentLeases.companyId, lease.companyId))));
     throw new Error("Plugin Runner termination is unconfirmed; the saved lease requires cleanup");
   }
 }
