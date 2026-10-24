@@ -1,3 +1,4 @@
+import { notifyExecutionRunWork } from "../execution-control-notifications.js";
 import os from "node:os";
 import {
   DEFERRED_WAKE_CONTEXT_KEY,
@@ -192,7 +193,7 @@ type HeartbeatRun = typeof heartbeatRuns.$inferSelect;
 
 /** Lifecycle owns run writes; the service supplies reporting and admission effects. */
 export interface HeartbeatLifecycleDependencies extends Pick<ReturnType<typeof createHeartbeatRunState>,
-  "getRun" | "resolveSessionBeforeForWakeup" | "ensureRuntimeState">,
+  "getRunStatus" | "resolveSessionBeforeForWakeup" | "ensureRuntimeState">,
   Pick<ReturnType<typeof createHeartbeatRunPreparation>,
     "getIssueExecutionContext" | "resolveResponsibleUserIdForRunContext">,
   Pick<HeartbeatRetryDependencies, "getAgentInvokability"> {
@@ -387,7 +388,7 @@ export function publishHeartbeatRunRuntimeProgress(status: {
 function recordHeartbeatRunRuntimeProgress(
   run: Pick<
     typeof heartbeatRuns.$inferSelect,
-    "id" | "companyId" | "agentId" | "status" | "contextSnapshot"
+    "id" | "companyId" | "agentId" | "status"
   >,
   update: RuntimeStatusUpdate,
   issueId: string | null,
@@ -634,7 +635,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
     issuesSvc,
     recovery,
     companySkills,
-    getRun,
+    getRunStatus,
     emitTerminalAgentTaskRun,
     getIssueExecutionContext,
     budgets,
@@ -991,7 +992,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   async function recordCurrentHeartbeatRunRuntimeProgress(
     run: Pick<
       typeof heartbeatRuns.$inferSelect,
-      "id" | "companyId" | "agentId" | "status" | "contextSnapshot"
+      "id" | "companyId" | "agentId" | "status"
     >,
     update: RuntimeStatusUpdate,
     issueId: string | null,
@@ -1001,7 +1002,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       return null;
     }
 
-    const currentRun = await getRun(run.id);
+    const currentRun = await getRunStatus(run.id);
     if (!currentRun || !isHeartbeatRunRuntimeStatusActive(currentRun.status)) {
       clearHeartbeatRunRuntimeStatus(run.id);
       return null;
@@ -1011,12 +1012,12 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
   }
 
   async function writeRunStatus<T>(status: string, companyId: string | undefined, write: (tx: Db) => Promise<T>) {
-    if (!isHeartbeatRunTerminalStatus(status)) return write(db);
     // Register on the outer transaction before the terminal write. An unknown
     // commit cannot strand newly-actionable accounting after the live event.
     return db.transaction(async transaction => {
       const tx = transaction as unknown as Db;
-      await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+      if (isHeartbeatRunTerminalStatus(status)) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, companyId);
+      await notifyExecutionRunWork(tx);
       return write(tx);
     });
   }
