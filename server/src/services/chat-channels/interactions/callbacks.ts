@@ -1,3 +1,4 @@
+import { slackQuestionFormValidationError } from "../slack/question-forms.js";
 import { chatInteractionForm, chatItemVerdicts } from "../../chat-interaction-forms.js";
 import { createDiscordQuestionForms } from "../discord/question-forms.js";
 
@@ -1965,16 +1966,9 @@ export function createChatInteractionCallbacks(db: Db, options: InteractionCallb
           error && typeof error === "object"
             ? (error as { status?: unknown }).status
             : null;
-        if (event.provider === "slack" && status === 422 &&
-            (error as { details?: { code?: string } }).details?.code === "invalid_question_response") {
-          const message = error instanceof Error ? error.message : "";
-          const field = loaded.payload.fields.find(item =>
-            message === `Question ${item.questionId} does not match the required format`) ?? loaded.payload.fields[0];
-          return { action: "errors", errors: {
-            [field.fieldId]: message.includes("does not match the required format")
-              ? "Use the required format shown above."
-              : "The answer could not be validated. Please try again.",
-          } };
+        if (event.provider === "slack") {
+          const response = slackQuestionFormValidationError(error, loaded.payload.fields);
+          if (response) return response;
         }
         if (status === 403) {
           return deny(

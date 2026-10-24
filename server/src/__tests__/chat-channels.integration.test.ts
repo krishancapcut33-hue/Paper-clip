@@ -41957,10 +41957,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       };
       expect(metadata).toEqual({ c: expect.any(String), m: view.callback_id });
       const select = view.blocks.find(
-        (block) => block.element.type === "radio_buttons",
+        (block) => block.element?.type === "radio_buttons",
       )!;
       const text = view.blocks.find(
-        (block) => block.element.type === "plain_text_input",
+        (block) => block.element?.type === "plain_text_input",
       )!;
       const production = select.element.options!.find(
         (option) => option.text.text === "Production",
