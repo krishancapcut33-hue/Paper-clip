@@ -62,8 +62,8 @@ Linux `oom_score_adj` to `1000`, so the kernel prefers to kill memory-heavy tool
 commands before OpenCode when the sandbox runs out of memory.
 
 An existing `BASH_ENV` takes precedence. Local and SSH execution keep their
-existing behavior. The guard does not increase the sandbox memory limit, protect
-non-Bash commands, or prevent OpenCode itself from exhausting memory. If the
+existing behavior. The guard does not increase the sandbox memory limit, apply
+to other shells, or prevent OpenCode itself from exhausting memory. If the
 runtime cannot set the process preference, the command still runs.
 
 ### Hermes local vs gateway
