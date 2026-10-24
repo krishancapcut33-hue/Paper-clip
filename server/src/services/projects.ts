@@ -1354,7 +1354,7 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
       if (data.remoteProvider !== undefined) patch.remoteProvider = readNonEmptyString(data.remoteProvider);
       if (data.remoteWorkspaceRef !== undefined) patch.remoteWorkspaceRef = nextRemoteWorkspaceRef;
       if (data.sharedWorkspaceKey !== undefined) patch.sharedWorkspaceKey = readNonEmptyString(data.sharedWorkspaceKey);
-      if (data.metadata !== undefined || data.runtimeConfig !== undefined) {
+      if (data.metadata !== undefined || data.runtimeConfig !== undefined || data.cwd !== undefined) {
         const baseMetadata = withoutDefaultProjectWorkspacePathMarker(
           data.metadata !== undefined
             ? (data.metadata as Record<string, unknown> | null | undefined)

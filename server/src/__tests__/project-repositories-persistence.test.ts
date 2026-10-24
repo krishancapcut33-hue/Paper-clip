@@ -69,6 +69,19 @@ const support = await getEmbeddedPostgresTestSupport();
       await settings.updateExperimental({ enableManagedSandboxOnly: true });
       await expect(svc.createWorkspace(sandboxed.id, {})).resolves.toBeNull();
       await settings.updateExperimental({ enableManagedSandboxOnly: false });
+      // Editing metadata keeps the server marker for the unchanged cwd...
+      const retargetedProject = await svc.create(companyId, { name: "retargeted-project" });
+      const retargetedWorkspace = await svc.createWorkspace(retargetedProject.id, {});
+      const metadataOnly = await svc.updateWorkspace(retargetedProject.id, retargetedWorkspace!.id, {
+        metadata: { note: "edited" },
+      });
+      expect(metadataOnly?.metadata).toEqual({ note: "edited", _paperclipDefaultWorkspacePath: true });
+      // ...but changing only the cwd drops it, because the new path is not template-approved.
+      const retargeted = await svc.updateWorkspace(retargetedProject.id, retargetedWorkspace!.id, {
+        cwd: "/tmp/not-approved",
+      });
+      expect(retargeted?.cwd).toBe("/tmp/not-approved");
+      expect(retargeted?.metadata).toEqual({ note: "edited" });
       // Without a template, a workspace with no cwd or repo is still invalid.
       await settings.updateGeneral({ defaultProjectWorkspacePathTemplate: null });
       await expect(svc.createWorkspace(colliding.id, {})).resolves.toBeNull();
