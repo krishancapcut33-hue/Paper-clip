@@ -3068,6 +3068,20 @@ outcome, skip reason and reclaimed bytes. See
 [recoverable disk cleanup](recoverable-disk-cleanup.md#isolated-repository-sources)
 for the conditions and the verification it performs.
 
+### Nested clone migration
+
+Tasks prepared before nested project repositories became worktrees of a shared
+clone still hold a full standalone clone in each `.paperclip-repositories/`
+checkout. Enable `PAPERCLIP_NESTED_CLONE_MIGRATION_ENABLED=true` (default off) to
+let the terminal workspace reaper convert those checkouts in open tasks into
+worktrees of the project's shared clone, keeping their exact state and local
+history, and delete the standalone clones. Set
+`PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN=true` to log candidates without changing
+anything. Each attempt logs `execution_workspace.nested_clone_migration` with its
+outcome, skip reason and reclaimed bytes. See
+[recoverable disk cleanup](recoverable-disk-cleanup.md#converting-existing-standalone-nested-clones)
+for the conditions, verification and crash recovery.
+
 ### Terminal workspace compaction
 
 A finished task often keeps its worktree for a long time: the reaper archives a

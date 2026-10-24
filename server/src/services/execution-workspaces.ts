@@ -7,6 +7,8 @@ import { assertExecutionWorkspaceRecordAccess, assertTaskWorkspaceExecutionAcces
 import { verifiedRecordedIsolatedRemoteSource, withIsolatedRepositorySourceLock } from "./isolated-remote-workspace-source.js";
 import { expireReconstructableGitWorkspace, gitWorkspaceLastActivityAt, hasPendingGitExpiration } from "./git-workspace-expiration.js";
 import { hasPendingIsolatedRepositoryRehomeCleanup, isIsolatedRepositoryRehomeCandidate, rehomeExpiredIsolatedRestoration, rehomeIsolatedRepositoryWorkspace } from "./isolated-repository-rehome.js";
+import { hasPendingNestedCloneMigration, isNestedCloneMigrationCandidate, listNestedCloneMigrationNames, migrateNestedRepositoryClone,
+  NESTED_CLONE_MIGRATION_RETRY_REASONS } from "./nested-clone-migration.js";
 import type { StorageService } from "../storage/types.js";
 import { readGitCacheRestoration, restoreGitCacheBase, recoverGitCacheExpirationLocks, GitCacheRestorationFailure, gitRestorePointExpired } from "./git-workspace-restoration.js";
 
@@ -304,6 +306,8 @@ export type ExecutionWorkspaceServiceOptions = {
   gitCacheExpirationDryRun?: boolean;
   isolatedSourceRehomeEnabled?: boolean;
   isolatedSourceRehomeDryRun?: boolean;
+  nestedCloneMigrationEnabled?: boolean;
+  nestedCloneMigrationDryRun?: boolean;
   gitRestorePoints?: { storage: StorageService; terminalDelayMs: number; keyDurable: boolean; idleMs?: number | null };
   terminalWorkspaceInspectionBackoffMs?: number;
   resolvePullRequestDetails?: PullRequestMergeDetailsResolver;
@@ -1748,6 +1752,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const isolatedRehomeDeadlines = new Map<string, number>();
   const isolatedRehomeNotBefore = new Map<string, number>();
   const ISOLATED_REHOME_RETRY_MS = 60 * 60 * 1000;
+  const nestedCloneMigrationDeadlines = new Map<string, number>();
+  const nestedCloneMigrationNotBefore = new Map<string, number>();
   let terminalSweepRescanRequested = false;
   // The reaper freezes an upper bound on updatedAt at the start of each
   // rotation. The scan only reads candidates at or below the bound, so a steady
@@ -3271,6 +3277,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
         terminalSweepBoundary = now();
         terminalWorkspaceDeadlines.clear();
         isolatedRehomeDeadlines.clear();
+        nestedCloneMigrationDeadlines.clear();
         terminalSweepRescanRequested = false;
       }
       const boundary = terminalSweepBoundary;
@@ -3349,6 +3356,34 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             workspace = after;
           }
           if (isClosedExecutionWorkspaceStatus(workspace.status) && !hasPendingGitExpiration(workspace)) continue;
+        }
+        if (opts.nestedCloneMigrationEnabled && isNestedCloneMigrationCandidate(workspace)
+          && (nestedCloneMigrationNotBefore.get(workspace.id) ?? 0) <= now().getTime()) {
+          const names = await listNestedCloneMigrationNames(workspace).catch(() => [] as string[]);
+          if (names.length > 0) {
+            const dryRun = opts.nestedCloneMigrationDryRun ?? false;
+            let remaining = false, retry = false;
+            for (const name of names) {
+              const migration = await migrateNestedRepositoryClone(db, workspace, name, { dryRun, signal });
+              logger.info({ event: "execution_workspace.nested_clone_migration", executionWorkspaceId: workspace.id,
+                companyId: workspace.companyId, dryRun, ...migration }, "Nested repository clone migration inspected");
+              if (migration.outcome !== "migrated" && migration.outcome !== "recovered") remaining = true;
+              if (!dryRun && migration.reason && NESTED_CLONE_MIGRATION_RETRY_REASONS.has(migration.reason)) retry = true;
+            }
+            const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+            if (!dryRun && after && hasPendingNestedCloneMigration(after)) retry = true;
+            if (remaining) {
+              if (nestedCloneMigrationNotBefore.size >= 4096) nestedCloneMigrationNotBefore.delete(nestedCloneMigrationNotBefore.keys().next().value!);
+              nestedCloneMigrationNotBefore.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
+            } else nestedCloneMigrationNotBefore.delete(workspace.id);
+            if (retry) nestedCloneMigrationDeadlines.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
+            else nestedCloneMigrationDeadlines.delete(workspace.id);
+            if (!after) continue;
+            workspace = after;
+          } else {
+            nestedCloneMigrationNotBefore.delete(workspace.id);
+            nestedCloneMigrationDeadlines.delete(workspace.id);
+          }
         }
         const issueTree = await listWorkspaceIssueTree(workspace);
         const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId);
@@ -3785,8 +3820,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
     },
 
     nextTerminalWorkspaceSweepAt: async () => {
-      if (terminalWorkspaceDeadlines.size === 0 && isolatedRehomeDeadlines.size === 0) return null;
-      const next = [...terminalWorkspaceDeadlines.values(), ...isolatedRehomeDeadlines.values()].reduce((earliest, deadline) => Math.min(earliest, deadline), Infinity);
+      if (terminalWorkspaceDeadlines.size === 0 && isolatedRehomeDeadlines.size === 0 && nestedCloneMigrationDeadlines.size === 0) return null;
+      const next = [...terminalWorkspaceDeadlines.values(), ...isolatedRehomeDeadlines.values(), ...nestedCloneMigrationDeadlines.values()].reduce((earliest, deadline) => Math.min(earliest, deadline), Infinity);
       const nowMs = now().getTime();
       if (next <= nowMs && opts.terminalWorkspaceInspectionBackoffMs) {
         return Math.min(nowMs + opts.terminalWorkspaceInspectionBackoffMs,
