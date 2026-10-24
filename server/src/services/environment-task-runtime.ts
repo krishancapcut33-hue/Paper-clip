@@ -254,7 +254,9 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
                   unregister();
                   finish();
                   return { recovered: 1, pending: 0 };
-                })().finally(() => { flushing = null; });
+                })().catch(error => { flushing = null; throw error; });
+                // Keep successful completion for a concurrent sweep that already
+                // captured this callback before it was unregistered.
                 return flushing;
               });
               logger.error({providerLeaseId:fresh.providerLeaseId,persisted},"Plugin replacement cleanup requires recovery");

@@ -1,4 +1,4 @@
-import { flushDeferredEnvironmentCleanup, hasDeferredEnvironmentCleanup, subscribeDeferredEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
+import { flushDeferredEnvironmentCleanup, hasDeferredEnvironmentCleanup, registerDeferredEnvironmentCleanup, subscribeDeferredEnvironmentCleanup } from "../services/environment-cleanup-notifications.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
@@ -115,6 +115,12 @@ const support=await getEmbeddedPostgresTestSupport();
   const f=await fixture();await f.nextRun();const next=await f.acquire();f.stopped();
   if(mode==="cleanup-error" || mode==="spool") f.failRelease();
   const append=vi.fn(async()=>true);
+  let delayFlush=false,flushCalls=0,releaseFlush!:()=>void;
+  const flushGate=new Promise<void>(resolve=>{releaseFlush=resolve;});
+  const stopGate=mode==="spool" ? registerDeferredEnvironmentCleanup(db,async()=>{
+   if(delayFlush && ++flushCalls===1) await flushGate;
+   return {recovered:0,pending:0};
+  }) : undefined;
   const wake=vi.fn();
   const unsubscribe=subscribeDeferredEnvironmentCleanup(db,wake);
   const spool=mode==="spool" ? vi.spyOn(orphanCleanup,"createSandboxOrphanCleanupSpool").mockReturnValue({append,load:async()=>[],remove:async()=>{}}) : undefined;
@@ -143,8 +149,11 @@ const support=await getEmbeddedPostgresTestSupport();
   expect(rows.filter(row=>row.providerLeaseId === "task-2")).toEqual(mode==="cleanup-error"
    ? [expect.objectContaining({status:"pending_cleanup",failureReason:"plugin_task_replacement_unowned",metadata:expect.objectContaining({runnerTaskDispatched:false})})] : []);
   if(mode==="spool") {
-   expect(await Promise.all([flushDeferredEnvironmentCleanup(db),flushDeferredEnvironmentCleanup(db)]))
-    .toEqual([{recovered:1,pending:0},{recovered:1,pending:0}]);
+   delayFlush=true;
+   const delayed=flushDeferredEnvironmentCleanup(db);
+   try { expect(await flushDeferredEnvironmentCleanup(db)).toEqual({recovered:1,pending:0}); }
+   finally { releaseFlush(); stopGate!(); }
+   expect(await delayed).toEqual({recovered:1,pending:0});
    expect(hasDeferredEnvironmentCleanup(db)).toBe(false);
    const recovered=await db.select().from(environmentLeases).where(eq(environmentLeases.companyId,f.companyId));
    expect(recovered.filter(row=>row.providerLeaseId==="task-2")).toEqual([
