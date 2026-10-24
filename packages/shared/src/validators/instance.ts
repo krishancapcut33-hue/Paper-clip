@@ -31,6 +31,14 @@ export const instanceGeneralSettingsSchema = z.object({
   // Execution policy. Absent/"any" = unrestricted; "kubernetes" forces the
   // Kubernetes sandbox provider and denies local/ssh execution (cloud_tenant).
   executionMode: z.enum(["kubernetes", "any"]).optional(),
+  defaultProjectWorkspacePathTemplate: z
+    .string()
+    .max(1024)
+    .refine((value) => value.trim() === "" || /\{project_(name|slug|id)\}/.test(value), {
+      message: "Template must include {project_name}, {project_slug}, or {project_id}",
+    })
+    .nullable()
+    .optional(),
 }).strict();
 
 export const patchInstanceGeneralSettingsSchema = z

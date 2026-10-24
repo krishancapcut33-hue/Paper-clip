@@ -36,7 +36,7 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { ensureProjectAccessMember } from "../services/projects.js";
+import { ensureProjectAccessMember, resolveDefaultProjectWorkspacePath } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -448,6 +448,17 @@ export function projectRoutes(db: Db) {
       }
       const createdWorkspace = workspace ? await service.createWorkspace(project.id, workspace) : null;
       if (workspace && !createdWorkspace) throw unprocessable("Invalid project workspace payload");
+      let defaultWorkspace = createdWorkspace;
+      if (!workspace && !repositories && urlRepositories.length === 0 && typeof (db as any)?.select === "function") {
+        const settings = await instanceSettingsService(db).getGeneral();
+        const rendered = resolveDefaultProjectWorkspacePath({
+          template: settings.defaultProjectWorkspacePathTemplate,
+          project: { id: project.id, name: project.name, companyId: project.companyId },
+        });
+        if (rendered) {
+          defaultWorkspace = await service.createWorkspace(project.id, { name: project.name, cwd: rendered });
+        }
+      }
       const hydrated = await service.getById(project.id);
       const activity = await persistActivity(tx as unknown as Db, {
         companyId, actorType: actor.actorType, actorId: actor.actorId, agentId: actor.agentId,
@@ -457,9 +468,9 @@ export function projectRoutes(db: Db) {
           name: project.name, description: project.description, icon: project.icon,
           sourceIssueId: runContext?.issue.id ?? null,
           repositories: [...(repositories ?? []).map(repo => ({ id: repo.id, name: repo.fullName, url: repo.url })), ...registeredUrls.map(repo => ({ id: repo.url, name: repo.fullName, url: repo.url })),
-            ...(createdWorkspace?.repoUrl ? [{ id: createdWorkspace.id, name: createdWorkspace.name, url: createdWorkspace.repoUrl }] : []),
+            ...(defaultWorkspace?.repoUrl ? [{ id: defaultWorkspace.id, name: defaultWorkspace.name, url: defaultWorkspace.repoUrl }] : []),
           ],
-          workspaceId: createdWorkspace?.id ?? null,
+          workspaceId: defaultWorkspace?.id ?? null,
           envKeys: project.env ? Object.keys(project.env).sort() : [],
           ...(receiptKey ? { idempotencyKey: receiptKey, fingerprint } : {}),
         },

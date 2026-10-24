@@ -39,7 +39,9 @@ import { conflict, unprocessable } from "../errors.js";
 import { listCurrentRuntimeServicesForProjectWorkspaces } from "./workspace-runtime-read-model.js";
 import { parseProjectExecutionWorkspacePolicy } from "./execution-workspace-policy.js";
 import { mergeProjectWorkspaceRuntimeConfig, readProjectWorkspaceRuntimeConfig } from "./project-workspace-runtime-config.js";
-import { resolveManagedProjectWorkspaceDir } from "../home-paths.js";
+import path from "node:path";
+import { resolveManagedProjectWorkspaceDir, expandHomePrefix } from "../home-paths.js";
+import { instanceSettingsService } from "./instance-settings.js";
 import { recordProjectLifecycleEvent, recordResourceCreationEvent } from "./resource-lifecycle-events.js";
 
 type ProjectTransaction = Parameters<Parameters<Db["transaction"]>[0]>[0];
@@ -268,6 +270,37 @@ function deriveRepoNameFromRepoUrl(repoUrl: string | null): string | null {
   } catch {
     return null;
   }
+}
+
+function sanitizeProjectPathSegment(value: string): string {
+  const cleaned = value.replace(/[\\/\u0000-\u001f]+/g, "-").trim();
+  return cleaned.length > 0 ? cleaned : "project";
+}
+
+function slugifyProjectName(value: string): string {
+  const slug = value.trim().toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-+|-+$/g, "");
+  return slug.length > 0 ? slug : "project";
+}
+
+export function resolveDefaultProjectWorkspacePath(input: {
+  template: string | null | undefined;
+  project: { id: string; name: string; companyId: string };
+  repoUrl?: string | null;
+}): string | null {
+  const template = (input.template ?? "").trim();
+  if (template.length === 0) return null;
+  if (!/\{project_(name|slug|id)\}/.test(template)) return null;
+  const repoName = deriveRepoNameFromRepoUrl(input.repoUrl ?? null);
+  const rendered = template
+    .replace(/\{project_name\}/g, sanitizeProjectPathSegment(input.project.name))
+    .replace(/\{project_slug\}/g, slugifyProjectName(input.project.name))
+    .replace(/\{project_id\}/g, input.project.id)
+    .replace(/\{company_id\}/g, input.project.companyId)
+    .replace(/\{repo_name\}/g, repoName ? sanitizeProjectPathSegment(repoName) : "repo");
+  const resolved = expandHomePrefix(rendered);
+  if (!path.isAbsolute(resolved)) return null;
+  if (resolved.split(path.sep).includes("..")) return null;
+  return resolved;
 }
 
 function deriveProjectCodebase(input: {
@@ -1121,8 +1154,24 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .then((rows) => rows[0] ?? null);
       if (!project) return null;
 
-      const cwd = normalizeWorkspaceCwd(data.cwd);
       const repoUrl = readNonEmptyString(data.repoUrl);
+      const existing = await db
+        .select()
+        .from(projectWorkspaces)
+        .where(eq(projectWorkspaces.projectId, projectId))
+        .orderBy(asc(projectWorkspaces.createdAt))
+        .then((rows) => rows);
+
+      let cwd = normalizeWorkspaceCwd(data.cwd);
+      if (!cwd && repoUrl && existing.length === 0 && typeof (db as any)?.select === "function") {
+        const settings = await instanceSettingsService(db).getGeneral();
+        const rendered = resolveDefaultProjectWorkspacePath({
+          template: settings.defaultProjectWorkspacePathTemplate,
+          project: { id: project.id, name: project.name, companyId: project.companyId },
+          repoUrl,
+        });
+        if (rendered) cwd = normalizeWorkspaceCwd(rendered);
+      }
       const sourceType = readNonEmptyString(data.sourceType) ?? (repoUrl ? "git_repo" : cwd ? "local_path" : "remote_managed");
       const remoteWorkspaceRef = readNonEmptyString(data.remoteWorkspaceRef);
       if (sourceType === "remote_managed") {
@@ -1135,13 +1184,6 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         cwd,
         repoUrl,
       });
-
-      const existing = await db
-        .select()
-        .from(projectWorkspaces)
-        .where(eq(projectWorkspaces.projectId, projectId))
-        .orderBy(asc(projectWorkspaces.createdAt))
-        .then((rows) => rows);
 
       const shouldBePrimary = data.isPrimary === true || existing.length === 0;
       const created = await db.transaction(async (tx) => {

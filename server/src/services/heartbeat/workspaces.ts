@@ -584,11 +584,25 @@ async function resolveConfiguredOrManagedProjectCwd(input: {
   projectId: string;
   cwd: string | null;
   repoUrl: string | null;
+  repoRef?: string | null;
   resolveGitAuth?: GitRemoteAuthProvider | null;
   prepareLocalSource?: PrepareManagedLocalSource;
 }): Promise<{ cwd: string; warning: string | null }> {
   const configuredCwd = readNonEmptyString(input.cwd);
   if (configuredCwd && configuredCwd !== REPO_ONLY_CWD_SENTINEL) {
+    const stats = await fs.stat(configuredCwd).catch(() => null);
+    if (stats?.isDirectory()) {
+      return { cwd: configuredCwd, warning: null };
+    }
+    if (input.repoUrl) {
+      return materializeManagedProjectWorkspace(configuredCwd, {
+        repoUrl: readNonEmptyString(input.repoUrl),
+        repoRef: readNonEmptyString(input.repoRef),
+        resolveGitAuth: input.resolveGitAuth ?? null,
+        prepareLocalSource: input.prepareLocalSource,
+      });
+    }
+    await fs.mkdir(configuredCwd, { recursive: true }).catch(() => undefined);
     return { cwd: configuredCwd, warning: null };
   }
   return ensureManagedProjectWorkspace({
@@ -704,6 +718,7 @@ export async function resolveAdditionalProjectWorkspace(
       projectId,
       cwd: workspace.cwd,
       repoUrl: workspace.repoUrl,
+      repoRef: workspace.repoRef,
     });
     // A directory that exists but holds no content is not a realized workspace. Accept the row only
     // when the resolved directory has real content, so an empty directory never masks a missing one.
@@ -3545,6 +3560,7 @@ export function createHeartbeatWorkspaceResolver(db: Db) {
               workspaceProjectId ?? resolvedProjectId ?? workspace.projectId,
             cwd: workspace.cwd,
             repoUrl: workspace.repoUrl,
+            repoRef: workspace.repoRef,
             resolveGitAuth,
             prepareLocalSource: managedLocalSourceGuard(agent, issueId, readNonEmptyString(context.executionIdentityRunId)),
           });
