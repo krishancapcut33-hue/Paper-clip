@@ -75,6 +75,26 @@ describe("additive project access", () => {
     const [saved] = await db.select().from(agents).where(eq(agents.id, f.agentId)); expect(saved!.permissions).toEqual(f.permissions);
   });
 
+  it.each(["standard", "root_issue"])("rechecks actual project authority after a %s repair and acknowledges an accepted retry", async repair => {
+    const f = await seed();
+    const permissions = repair === "standard" ? { canCreateAgents: false, trustPreset: "standard", authorizationPolicy: {} }
+      : { ...f.permissions, authorizationPolicy: { ...f.permissions.authorizationPolicy,
+        trustBoundary: { ...f.permissions.authorizationPolicy.trustBoundary, rootIssueId: f.issue.id } } };
+    await db.update(agents).set({ permissions }).where(eq(agents.id, f.agentId));
+    expect(await taskInterruptionPresentation(db, f.issue)).toMatchObject({ canRetry: true, projectAccess: { ready: true } });
+    await db.insert(agentWakeupRequests).values({ companyId: f.companyId, agentId: f.agentId,
+      source: "on_demand", status: "deferred_issue_execution", requestedByActorType: "user", payload: { issueId: f.issue.id } });
+    const accepted = await taskInterruptionPresentation(db, f.issue);
+    expect(accepted).toMatchObject({ state: "working", canRetry: false });
+    expect(accepted).not.toHaveProperty("projectAccess");
+    // Current project policy remains authoritative even after agent access changes.
+    await db.update(projects).set({ executionWorkspacePolicy: { trustPreset: "low_trust_review", authorizationPolicy: {
+      trustBoundary: { mode: "low_trust_review", companyId: f.companyId, projectIds: [f.selected[0]!.id] },
+    } } }).where(eq(projects.id, f.selected[1]!.id));
+    if (repair === "standard") expect(await taskInterruptionPresentation(db, f.issue))
+      .toMatchObject({ canRetry: false, userAction: "project_access" });
+  });
+
   it("shows read-only access to viewers and denies their saves and cross-company reads", async () => {
     const f = await seed(), other = await seed(), userId = randomUUID();
     await db.insert(authUsers).values({ id: userId, name: "Viewer", email: `${userId}@example.test`, emailVerified: true, createdAt: new Date(), updatedAt: new Date() });

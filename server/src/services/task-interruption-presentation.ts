@@ -1,11 +1,11 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
-import { trustAuthorizationPolicySchema, type TaskInterruptionPresentation } from "@paperclipai/shared";
+import type { TaskInterruptionPresentation } from "@paperclipai/shared";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
 import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
-import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
+import { authorizationService } from "./authorization.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
@@ -15,12 +15,23 @@ type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
   wait?: { id: string; requestedAt: Date };
-  agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason"> & Partial<Pick<typeof agents.$inferSelect, "permissions">>;
+  agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason">;
+  projectAccessAllowed?: boolean;
   project?: Pick<typeof projects.$inferSelect, "pausedAt" | "pauseReason">;
   company?: Pick<typeof companies.$inferSelect, "status" | "pauseReason">;
   paused: boolean;
   approval: boolean;
 };
+
+/** Recognize old persisted failures without displaying arbitrary run error text. */
+function deniedProjectId(issue: ProjectionIssue, run?: ProjectionRun): string | null | undefined {
+  const historical = run?.errorCode === "setup_failed" && run.error === "Project is outside this low-trust boundary.";
+  if (!run || run.status !== "failed" || run.agentId !== issue.assigneeAgentId
+      || (run.errorCode !== PROJECT_ACCESS_DENIED && !historical)) return undefined;
+  const detail = run.resultJson?.projectAccessDenied;
+  return detail && typeof detail === "object" && "projectId" in detail && typeof detail.projectId === "string"
+    ? detail.projectId : historical ? issue.projectId : null;
+}
 
 /** Presentation never grants authority. Dispatch repeats all gates under its
  * locks. The same projection is used in detail, lists and attention surfaces. */
@@ -39,23 +50,13 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
-  // Compatibility for pre-code setup denials already visible on existing tasks.
-  // Never forward arbitrary run error text into the ordinary task surface.
-  const historicalProjectDenial = run.errorCode === "setup_failed"
-    && run.error === "Project is outside this low-trust boundary.";
-  if (run.status === "failed" && run.agentId === issue.assigneeAgentId
-      && (run.errorCode === PROJECT_ACCESS_DENIED || historicalProjectDenial)) {
-    const detail = run.resultJson?.projectAccessDenied;
-    const deniedProjectId = detail && typeof detail === "object" && "projectId" in detail
-      && typeof detail.projectId === "string" ? detail.projectId : historicalProjectDenial ? issue.projectId : null;
-    const permissions = normalizeAgentPermissions(agent?.permissions);
-    const policy = trustAuthorizationPolicySchema.safeParse(permissions.authorizationPolicy ?? {});
-    const boundary = policy.success ? policy.data.trustBoundary : undefined;
-    const ready = Boolean(deniedProjectId && boundary?.companyId === issue.companyId
-      && boundary.projectIds?.includes(deniedProjectId));
-    return { ...base, responsibility: ready ? "system" : "user", state: ready ? "failed" : "waiting_for_user",
-      userAction: ready ? null : "project_access", canRetry: ready,
-      projectAccess: { agentId: run.agentId!, projectId: deniedProjectId === issue.projectId ? deniedProjectId : null, ready } };
+  const deniedProject = deniedProjectId(issue, run);
+  let projectAccess: TaskInterruptionPresentation["projectAccess"];
+  if (deniedProject !== undefined) {
+    const ready = input.projectAccessAllowed === true;
+    projectAccess = { agentId: run.agentId!, projectId: deniedProject === issue.projectId ? deniedProject : null, ready };
+    if (!ready) return { ...base, responsibility: "user", state: "waiting_for_user",
+      userAction: "project_access", projectAccess };
   }
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
@@ -65,7 +66,7 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
       activeObservation > now - 45_000) return { ...base, state: "working" };
   if (wait && wait.requestedAt.getTime() > now - 10_000 && system?.state !== "exhausted")
     return { ...base, state: "working" };
-  return { ...base, state: "failed", canRetry: true };
+  return { ...base, state: "failed", canRetry: true, ...(projectAccess ? { projectAccess } : {}) };
 }
 
 /** Batch list reads rather than doing seven queries per row. Keep run logs and
@@ -94,10 +95,7 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt)),
-    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason,
-      permissions: sql<Record<string, unknown>>`jsonb_build_object('trustPreset', ${agents.permissions}->'trustPreset',
-        'authorizationPolicy', jsonb_build_object('trustBoundary', ${agents.permissions}->'authorizationPolicy'->'trustBoundary'))`,
-    }).from(agents)
+    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason }).from(agents)
       .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
     projectIds.length ? db.select({ id: projects.id, pausedAt: projects.pausedAt, pauseReason: projects.pauseReason }).from(projects)
       .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds))) : [],
@@ -119,12 +117,32 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   )).orderBy(issueRecoveryActions.sourceIssueId, desc(issueRecoveryActions.createdAt)) : [];
   const byIssue = <T extends { issueId: string }>(rows: T[]) => new Map(rows.map(row => [row.issueId, row]));
   const runMap = byIssue(runs), waitMap = byIssue(waits);
+  // Recheck current authority, including standard trust, root-issue grants and
+  // project policy. Do not reuse the failed run's frozen policy for a new retry.
+  // Only denied tasks need these reads; deduplicate projects and batch per agent.
+  const deniedByAgent = new Map<string, Set<string>>();
+  for (const issue of selected) {
+    const projectId = deniedProjectId(issue, runMap.get(issue.id));
+    if (!projectId || !issue.assigneeAgentId || ["done", "cancelled"].includes(issue.status)) continue;
+    const ids = deniedByAgent.get(issue.assigneeAgentId) ?? new Set<string>();
+    ids.add(projectId);
+    deniedByAgent.set(issue.assigneeAgentId, ids);
+  }
+  const currentAccess = new Map<string, boolean>();
+  const authorization = authorizationService(db);
+  for (const [agentId, ids] of deniedByAgent) {
+    const projectIds = [...ids];
+    const decisions = await authorization.decideReads({ type: "agent", agentId, companyId, source: "agent_key" },
+      projectIds.map(projectId => ({ type: "project" as const, companyId, projectId })));
+    projectIds.forEach((projectId, index) => currentAccess.set(`${agentId}:${projectId}`, decisions[index]?.allowed === true));
+  }
   const actionMap = new Map(actions.map(action => [action.sourceIssueId, action]));
   const agentMap = new Map(agentRows.map(agent => [agent.id, agent]));
   const projectMap = new Map(projectRows.map(project => [project.id, project]));
   const pauses = new Set(pauseRows.map(row => row.issueId)), approvalsSet = new Set(approvalRows.map(row => row.issueId));
   for (const issue of selected) result.set(issue.id, projectTaskInterruption(issue, {
     run: runMap.get(issue.id), action: actionMap.get(issue.id), wait: waitMap.get(issue.id),
+    projectAccessAllowed: currentAccess.get(`${issue.assigneeAgentId}:${deniedProjectId(issue, runMap.get(issue.id))}`),
     agent: agentMap.get(issue.assigneeAgentId ?? ""), project: projectMap.get(issue.projectId ?? ""),
     company: companyRows[0], paused: pauses.has(issue.id), approval: approvalsSet.has(issue.id),
   }));

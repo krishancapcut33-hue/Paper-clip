@@ -21,7 +21,7 @@ export function ProjectAccessNotice({ agentName = "This agent", projectName, rea
       <div className="min-w-0 space-y-2">
         <h3 className="text-sm font-semibold">{ready ? "Project access is ready" : `${agentName} can’t access this project`}</h3>
         <p className="text-sm text-muted-foreground">{ready
-          ? "The required project is in the agent’s allowed projects. Retry to continue with your saved message."
+          ? "The agent can now access the required project. Retry to continue with your saved message."
           : `This task needs ${projectName ?? "a project"} outside the agent’s allowed projects. The agent hasn’t started. Your message is saved.`}</p>
         {!ready && !canManage && <p className="text-sm text-muted-foreground">A person with agent-management permission can add this project in the agent’s Permissions / Trust settings.</p>}
       </div>

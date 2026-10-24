@@ -5,11 +5,7 @@ const issue = { id: "task", companyId: "11111111-1111-4111-8111-111111111111", s
 const run = { id: "run", agentId: "agent", status: "failed", scheduledRetryAt: null,
   errorCode: "project_access_denied", error: null, livenessState: null,
   resultJson: { projectAccessDenied: { projectId: "22222222-2222-4222-8222-222222222222" } } };
-const agent = { status: "idle", pauseReason: null, permissions: {
-  trustPreset: "low_trust_review", authorizationPolicy: { trustBoundary: {
-    mode: "low_trust_review", companyId: "11111111-1111-4111-8111-111111111111", projectIds: ["33333333-3333-4333-8333-333333333333"],
-  } },
-} };
+const agent = { status: "idle", pauseReason: null };
 
 describe("task project-access interruption", () => {
   it("explains a project denial without offering a futile retry", () => {
@@ -26,11 +22,18 @@ describe("task project-access interruption", () => {
   });
 
   it("offers an explicit retry after the project is added, without changing the failed run", () => {
-    const permissions = structuredClone(agent.permissions);
-    permissions.authorizationPolicy.trustBoundary.projectIds.push("22222222-2222-4222-8222-222222222222");
-    expect(projectTaskInterruption(issue, { run, agent: { ...agent, permissions }, paused: false, approval: false }))
+    expect(projectTaskInterruption(issue, { run, agent, projectAccessAllowed: true, paused: false, approval: false }))
       .toMatchObject({ state: "failed", canRetry: true, projectAccess: { ready: true } });
     expect(run.status).toBe("failed");
+  });
+
+  it("shows an accepted retry as working after access is repaired", () => {
+    const input = { run, agent, paused: false, approval: false, wait: { id: "request", requestedAt: new Date() } };
+    expect(projectTaskInterruption(issue, { ...input, projectAccessAllowed: true }))
+      .toMatchObject({ state: "working", canRetry: false });
+    expect(projectTaskInterruption(issue, { ...input, projectAccessAllowed: true })).not.toHaveProperty("projectAccess");
+    expect(projectTaskInterruption(issue, { ...input, projectAccessAllowed: false }))
+      .toMatchObject({ state: "waiting_for_user", userAction: "project_access", canRetry: false });
   });
 
   it("does not reinterpret unrelated failures or an old assignee's denial", () => {
