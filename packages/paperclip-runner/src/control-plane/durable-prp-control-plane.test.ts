@@ -2906,9 +2906,16 @@ describe("DurablePrpControlPlane", () => {
       const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-burst-crash-"));
       let admit!: () => void;
       const admitted = new Promise<void>(resolveAdmit => { admit = resolveAdmit; });
-      const crashingCommit = vi.fn(async (event: { sourceSeq?: number }) => {
+      const effects = new Map<string, number>();
+      const deliveries: number[] = [];
+      const idempotentCommit = (event: { sourceSeq?: number; sourceEventId?: string }) => {
+        deliveries.push(event.sourceSeq as number);
+        if (!effects.has(event.sourceEventId as string)) effects.set(event.sourceEventId as string, 1);
+      };
+      const crashingCommit = vi.fn(async (event: { sourceSeq?: number; sourceEventId?: string }) => {
         if (event.sourceSeq === 1) await admitted;
         if (event.sourceSeq === 4) await new Promise(() => undefined);
+        idempotentCommit(event);
       });
       const first = new DurablePrpControlPlane({ stateDirectory: root, identity,
         expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: crashingCommit });
@@ -2930,10 +2937,9 @@ describe("DurablePrpControlPlane", () => {
         await first.stop();
       }
 
-      const committed: number[] = [];
       const recovered = new DurablePrpControlPlane({ stateDirectory: root, identity,
         expectedRunnerVersion, expectedRunnerDigest,
-        onCommittedEvent: async (event) => { committed.push(event.sourceSeq as number); } });
+        onCommittedEvent: async (event) => { idempotentCommit(event); } });
       try {
         await recovered.start();
         const client = (await authenticate(recovered, leaseToken!))!;
@@ -2941,7 +2947,8 @@ describe("DurablePrpControlPlane", () => {
         for (let seq = 1; seq <= 6; seq += 1) sendSecure(client, burstEvent(seq));
         const acks = await readAcks(client, recovered.store.path, 6);
         expect(acks.at(-1)).toBe(6);
-        expect(committed).toEqual([1, 2, 3, 4, 5, 6]);
+        expect(deliveries).toEqual([1, 2, 3, 1, 2, 3, 4, 5, 6]);
+        expect([...effects.values()]).toEqual([1, 1, 1, 1, 1, 1]);
         expect(recovered.store.state.committedEvents.map(event => event.deliveryCount)).toEqual([1, 1, 1, 1, 1, 1]);
         client.socket.destroy();
       } finally {
