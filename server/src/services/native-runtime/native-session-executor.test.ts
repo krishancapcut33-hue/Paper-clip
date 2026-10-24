@@ -6324,6 +6324,71 @@ describe("native terminal-turn accounting", () => {
 });
 
 describe("native resumed preparation timing", () => {
+  it.each(["comment.to_run_created", "question_response.to_run_created", "heartbeat.queue", "native_dispatch"])(
+    "records first assistant text once from %s through Core preparation and event receipt",
+    async (ingress) => {
+      const startedAtMs = Date.now() - 5_000;
+      const events: AdapterRuntimeEvent[] = [];
+      const clock = vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 4_000);
+      const event = (eventType: string, payload: Record<string, unknown>) => ({
+        eventType, payload, emittedAt: new Date(startedAtMs + 2_000).toISOString(),
+      }) as PrpEvent;
+      state.execute.mockReset().mockImplementationOnce(async () => {
+        for (const candidate of [
+          event("turn.submitted", {}),
+          event("turn.started", {}),
+          event("item.started", { kind: "agentMessage" }),
+          event("item.completed", { kind: "agentMessage", text: "complete message" }),
+          event("item.delta", { kind: "agentMessage", text: " " }),
+          event("item.delta", { kind: "agentMessage", text: 42 }),
+          event("item.delta", { kind: "reasoning", text: "thinking" }),
+          event("item.delta", { kind: "toolCall", text: "arguments" }),
+          event("item.delta", { kind: "usage", text: "tokens" }),
+          event("tool.execution.started", { executionId: "tool-1" }),
+        ]) await accountingEvents.committed!(candidate);
+        await accountingEvents.duplicate!(event("item.delta", { kind: "agentMessage", text: "replayed text" }));
+        expect(events.some((candidate) => candidate.payload?.span === "task.time_to_first_token")).toBe(false);
+        clock.mockReturnValue(startedAtMs + 4_500);
+        await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", delta: "first text" }));
+        clock.mockReturnValue(startedAtMs + 4_750);
+        await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", content: "later text" }));
+        return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
+          turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
+          driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
+      });
+      try {
+        await executePaperclipNativeSession({
+          db: leaseDb(), execution, runnerInstanceId: "runner",
+          preparationSpans: ingress === "native_dispatch" ? [] : [{ name: ingress, startedAtMs, endedAtMs: startedAtMs + 100 }],
+          onEvent: async (event) => { events.push(event); },
+        });
+      } finally { clock.mockRestore(); }
+      const ttft = events.filter((event) => event.payload?.span === "task.time_to_first_token");
+      expect(ttft).toHaveLength(1);
+      expect(ttft[0]?.payload).toMatchObject({ parentSpan: "task.provider_session", startOffsetMs: 0,
+        durationMs: ingress === "native_dispatch" ? 500 : 4_500, eventKind: "agentMessage", outcome: "ok" });
+      expect(events.find((event) => event.payload?.span === "provider.time_to_first_agent_event")?.payload)
+        .toMatchObject({ parentSpan: "agent.turn", eventKind: "agentMessage" });
+      expect(JSON.stringify(ttft)).not.toContain("first text");
+      expect(JSON.stringify(ttft)).not.toContain("later text");
+    },
+  );
+
+  it("omits first-token timing when execution fails before assistant output", async () => {
+    const events: AdapterRuntimeEvent[] = [];
+    const failure = new Error("provider failed before output");
+    const issueProjection = vi.spyOn(issueServiceModule, "issueService").mockReturnValue({
+      update: vi.fn(async () => ({ status: "blocked", statusVersion: 1 })),
+    } as unknown as ReturnType<typeof issueServiceModule.issueService>);
+    state.execute.mockReset().mockRejectedValueOnce(failure);
+    try {
+      await expect(executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner",
+        onEvent: async (event) => { events.push(event); },
+      })).rejects.toBe(failure);
+    } finally { issueProjection.mockRestore(); }
+    expect(events.some((event) => event.payload?.span === "task.time_to_first_token")).toBe(false);
+  });
+
   it("keeps answered-question ingress at the run root rather than charging it to preparation", async () => {
     const answeredAtMs = Date.now();
     const events: AdapterRuntimeEvent[] = [];

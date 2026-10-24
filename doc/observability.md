@@ -574,6 +574,7 @@ The canonical lifecycle is:
 ```text
 task.provider_session
 ├── heartbeat.queue
+├── task.time_to_first_token
 ├── task.prepare
 │   ├── environment.startup
 │   │   ├── environment.acquire
@@ -626,6 +627,23 @@ activity: a nonempty assistant/reasoning delta, a tool announcement with an
 execution identity, or an existing assistant/reasoning/tool item start or
 completion. Usage updates and empty deltas do not count. This is a first
 activity metric, not time to a finished answer.
+
+`task.time_to_first_token` measures the first observed assistant text delta for
+each native dispatch. It starts at the native run trace's historical start:
+the accepted comment or attested question response when present, otherwise run
+creation from the queue span. Callers without preparation history start at native
+dispatch. The interval includes queueing, Core preparation, workspace preparation,
+Runner startup, provider latency, transport, and durable event ingestion. It ends
+when Core receives the first newly committed nonempty `agentMessage` `item.delta`,
+using the Core clock rather than the provider event timestamp. It excludes delivery
+to the browser and rendering. This is a text-delta proxy, not a tokenizer measurement.
+Reasoning, tool events, item starts/completions, empty deltas, and duplicate PRP
+replay do not count. Only the first qualifying delta in a dispatch emits a span.
+A dispatch without assistant text emits no sample, including an early failure.
+Same-run recovery retains the original historical start and can emit a new sample
+only for newly committed output; it does not reconstruct prior first-token timing.
+No text or provider event identifiers are exported. The existing duration attribute
+is `paperclip.native.span.duration_ms`; the span is a child of `task.provider_session`.
 
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports

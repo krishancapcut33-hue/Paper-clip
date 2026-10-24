@@ -8247,6 +8247,7 @@ async function executePaperclipNativeSessionWithinScope(
   let turnSubmittedAtMs: number | null = null;
   let turnStartedAtMs: number | null = null;
   let firstAgentEventRecorded = false;
+  let firstTokenRecorded = false;
   let providerUsageLimitObserved = false;
   const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider);
   let turnCompletedAtMs: number | null = null;
@@ -8373,6 +8374,17 @@ async function executePaperclipNativeSessionWithinScope(
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
       assertControllerActive,
       onCommittedEvent: async (event) => {
+        if (!firstTokenRecorded && event.eventType === "item.delta" &&
+            firstMeaningfulAgentEventKind(event) === "agentMessage") {
+          firstTokenRecorded = true;
+          await trace.record({
+            name: "task.time_to_first_token",
+            parentName: "task.provider_session",
+            startedAtMs: trace.traceStartedAtMs,
+            endedAtMs: Date.now(),
+            attributes: { eventKind: "agentMessage" },
+          });
+        }
         await observeAccountingEvent(event);
         await toolTrace.observe(event);
         if (event.eventType === "item.completed" &&

@@ -64,6 +64,17 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 
 ## Provider-pack preparation timing
 
+`run.performance.span` also records `task.time_to_first_token` once per native
+dispatch at the first newly committed nonempty assistant `item.delta`. Its
+`durationMs` starts at the native run trace's historical start (accepted ingress,
+otherwise queued run creation, or dispatch when history is absent) and ends at Core
+receipt. `startOffsetMs` is zero, and `eventKind` is `agentMessage`. It includes
+preparation and startup, but excludes browser delivery/rendering. This is a text
+delta proxy. Empty, reasoning, tool, completed-item, and duplicate events do not
+qualify. No assistant output means no timing sample. A recovered dispatch can
+record newly committed output from the original start; it does not reproduce
+earlier output timing. The event contains no text or provider identifiers.
+
 The existing `run.performance.span` event also records `provider_pack.select`,
 `provider_pack.discover`, `provider_pack.verify`, `provider_pack.verify_preinstalled`,
 `provider_pack.link_preinstalled`, `provider_pack.clear_stale`, `provider_pack.upload`,
