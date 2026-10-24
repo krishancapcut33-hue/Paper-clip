@@ -847,6 +847,27 @@ describe("AgentConfigForm environment selector", () => {
     }) : { runner: "paperclip" });
   });
 
+  it.each([false, true])("requires saving a changed computer before upgrading (qualified: %s)", async qualified => {
+    const environments = ["saved-computer", "draft-computer"].map(id => makeEnvironment({ id, driver: "sandbox", status: "active",
+      config: { provider: "daytona", snapshot: "managed-snapshot" } }));
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", supportedRunners: qualified ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: qualified ? "paperclip" : "legacy" },
+      { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" },
+    ]);
+    const result = await renderForm(environments, { adapterType: "claude_local", defaultEnvironmentId: "saved-computer" });
+    roots.push(result.root);
+    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(false);
+    await selectEnvironment(result.container, "draft-computer");
+    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(true);
+    expect(result.container.textContent).toContain("Save your computer change before upgrading the runner.");
+    await clickByText(result.container, "Upgrade runner");
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
+    expect(result.onSave).not.toHaveBeenCalled();
+    await selectEnvironment(result.container, "saved-computer");
+    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(false);
+    expect(result.container.textContent).not.toContain("Save your computer change before upgrading the runner.");
+  });
+
   it.each(["probe", "unsupported", "settings-changed"])("does not save after Daytona %s", async failure => {
     const environment = makeEnvironment({ id: "daytona-computer", name: "Paperclip Computer", driver: "sandbox", status: "active",
       config: { provider: "daytona", snapshot: "managed-snapshot" } });

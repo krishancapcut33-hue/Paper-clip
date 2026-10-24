@@ -139,7 +139,9 @@ run separately from historical transcripts.
 
 Existing legacy Claude and Codex agents on qualified default environments, or
 probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Verify a company owner with `agents:configure` and no instance-admin role can qualify the saved computer and upgrade. A caller without configuration permission must be denied before a probe starts. Exercise that action with
-pending edits and an environment-variable draft; reopen the page and compare the
+pending edits and an environment-variable draft. An unsaved change to a different
+effective computer must disable the action and explain that the computer change
+must be saved first; restoring the saved target must re-enable it. Reopen the page and compare the
 saved harness, model, account bindings, instructions, and run policy. Check a
 saved `maxTurnsPerRun: 1000`: upgrade must warn and remove it. Test an initially
 unqualified Daytona Paperclip Computer: click must probe, record qualification,
