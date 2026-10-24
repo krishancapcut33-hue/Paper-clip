@@ -36,7 +36,7 @@ import { conflict, forbidden, unprocessable } from "../errors.js";
 import { externalObjectService } from "../services/external-objects.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { assertBoard, assertCompanyAccess, getAccessibleResource, getActorInfo } from "./authz.js";
-import { ensureProjectAccessMember, resolveDefaultProjectWorkspacePath } from "../services/projects.js";
+import { ensureProjectAccessMember } from "../services/projects.js";
 import {
   buildWorkspaceRuntimeDesiredStatePatch,
   listConfiguredRuntimeServiceEntries,
@@ -448,16 +448,13 @@ export function projectRoutes(db: Db) {
       }
       const createdWorkspace = workspace ? await service.createWorkspace(project.id, workspace) : null;
       if (workspace && !createdWorkspace) throw unprocessable("Invalid project workspace payload");
+      // Creating with neither a workspace nor repositories lets the service apply the
+      // instance "default project folder" template. Without a template it returns null,
+      // preserving the previous "no workspace row" behavior.
+      const hasRepositories = (repositories?.length ?? 0) > 0 || urlRepositories.length > 0;
       let defaultWorkspace = createdWorkspace;
-      if (!workspace && !repositories && urlRepositories.length === 0 && typeof (db as any)?.select === "function") {
-        const settings = await instanceSettingsService(db).getGeneral();
-        const rendered = resolveDefaultProjectWorkspacePath({
-          template: settings.defaultProjectWorkspacePathTemplate,
-          project: { id: project.id, name: project.name, companyId: project.companyId },
-        });
-        if (rendered) {
-          defaultWorkspace = await service.createWorkspace(project.id, { name: project.name, cwd: rendered });
-        }
+      if (!workspace && !hasRepositories) {
+        defaultWorkspace = await service.createWorkspace(project.id, { name: project.name });
       }
       const hydrated = await service.getById(project.id);
       const activity = await persistActivity(tx as unknown as Db, {

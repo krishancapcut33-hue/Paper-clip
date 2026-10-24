@@ -1,4 +1,5 @@
 import { describe, expect, it } from "vitest";
+import { patchInstanceGeneralSettingsSchema } from "@paperclipai/shared";
 import { resolveDefaultProjectWorkspacePath } from "../services/projects.js";
 
 describe("resolveDefaultProjectWorkspacePath", () => {
@@ -49,5 +50,34 @@ describe("resolveDefaultProjectWorkspacePath", () => {
       repoUrl: "https://github.com/org/my-repo.git",
     });
     expect(result).toBe("/tmp/My Project/my-repo");
+  });
+});
+
+describe("default project folder template validation", () => {
+  it("rejects relative paths and traversal segments at save time", () => {
+    expect(
+      patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: "relative/{project_name}" }).success,
+    ).toBe(false);
+    expect(
+      patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: "/tmp/{project_name}/../other" }).success,
+    ).toBe(false);
+  });
+
+  it("accepts absolute and home-relative templates, and null to clear", () => {
+    expect(
+      patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: "/tmp/{project_name}" }).success,
+    ).toBe(true);
+    expect(
+      patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: "~/work/{project_slug}" }).success,
+    ).toBe(true);
+    expect(
+      patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: null }).success,
+    ).toBe(true);
+  });
+
+  it("still requires a project placeholder", () => {
+    expect(
+      patchInstanceGeneralSettingsSchema.safeParse({ defaultProjectWorkspacePathTemplate: "/tmp/{company_id}" }).success,
+    ).toBe(false);
   });
 });

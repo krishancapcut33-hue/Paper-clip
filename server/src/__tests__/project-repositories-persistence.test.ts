@@ -1,7 +1,9 @@
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
+import { randomUUID } from "node:crypto";
 import { companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, toolApplications, toolConnections, createDb, projects as projectTable, userSecretDefinitions } from "@paperclipai/db";
 import { eq } from "drizzle-orm";
 import { toolAccessService } from "../services/tool-access.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { projectService } from "../services/projects.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
@@ -32,6 +34,28 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(fetched?.workspaces.map((workspace) => workspace.repoUrl).sort()).toEqual([repo("1").url, repo("2").url]);
     expect(fetched?.workspaces.filter((workspace) => workspace.isPrimary)).toHaveLength(1);
     expect(fetched?.workspaces.every((workspace) => workspace.companyId === companyId)).toBe(true);
+  });
+  it("applies the default project folder template to the first workspace and rejects folder collisions", async () => {
+    const settings = instanceSettingsService(db);
+    const templateRoot = `/tmp/paperclip-template-${randomUUID()}`;
+    try {
+      await settings.updateGeneral({ defaultProjectWorkspacePathTemplate: `${templateRoot}/{project_slug}` });
+      const svc = projectService(db);
+      const project = await svc.create(companyId, { name: "项目一" });
+      const created = await svc.createWorkspace(project.id, {});
+      expect(created).toMatchObject({ cwd: `${templateRoot}/project`, sourceType: "local_path", isPrimary: true });
+      // Only the first workspace comes from the template.
+      const second = await svc.createWorkspace(project.id, { repoUrl: "https://git.example/second/repo" });
+      expect(second?.cwd).toBeNull();
+      // A different project that renders the same folder must not adopt it.
+      const colliding = await svc.create(companyId, { name: "项目二" });
+      await expect(svc.createWorkspace(colliding.id, {})).rejects.toThrow(/already used by another project workspace/);
+      // Without a template, a workspace with no cwd or repo is still invalid.
+      await settings.updateGeneral({ defaultProjectWorkspacePathTemplate: null });
+      await expect(svc.createWorkspace(colliding.id, {})).resolves.toBeNull();
+    } finally {
+      await settings.updateGeneral({ defaultProjectWorkspacePathTemplate: null });
+    }
   });
   it("adds/removes repos, promotes the remaining primary, and preserves legacy and local config", async () => {
     const svc = projectService(db);

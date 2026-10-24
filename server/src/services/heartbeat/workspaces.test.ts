@@ -172,6 +172,38 @@ describe("heartbeat workspace module", () => {
     expect(await fs.stat(missingCwd).catch(() => null)).toBeNull();
   });
 
+  it("materializes a missing configured directory when it is the approved default project template", async () => {
+    const cwd = path.join(testRoot, "workspaces", "my-project");
+    const database = databaseWithResults(
+      [workspace("template-workspace", "project-one", cwd)],
+      [],
+      [{ id: "project-one", name: "My Project", companyId: "company-one" }],
+      [{ general: { defaultProjectWorkspacePathTemplate: path.join(testRoot, "workspaces", "{project_slug}") } }],
+    );
+    const result = await createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
+      agent(), { projectId: "project-one" }, null,
+    );
+    expect(result).toMatchObject({ cwd, projectId: "project-one", workspaceId: "template-workspace", source: "project_primary" });
+    expect((await fs.stat(cwd)).isDirectory()).toBe(true);
+  });
+
+  it("does not materialize a missing configured directory that differs from the default project template", async () => {
+    const cwd = path.join(testRoot, "workspaces", "another-folder");
+    const database = databaseWithResults(
+      [workspace("configured-workspace", "project-one", cwd)],
+      [],
+      [{ id: "project-one", name: "My Project", companyId: "company-one" }],
+      [{ general: { defaultProjectWorkspacePathTemplate: path.join(testRoot, "workspaces", "{project_slug}") } }],
+    );
+    await expect(createHeartbeatWorkspaceResolver(database.db).resolveWorkspaceForRun(
+      agent(), { projectId: "project-one" }, null,
+    )).rejects.toMatchObject({
+      code: "workspace_validation_failed",
+      resultJson: { workspaceValidation: { reason: "configured_workspace_unavailable" } },
+    });
+    expect(await fs.stat(cwd).catch(() => null)).toBeNull();
+  });
+
   it("retains materialization diagnostics when a configured repository cannot be cloned", async () => {
     const missingRepo = path.join(testRoot, "missing-repository.git");
     const database = databaseWithResults([{

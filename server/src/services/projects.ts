@@ -299,7 +299,7 @@ export function resolveDefaultProjectWorkspacePath(input: {
     .replace(/\{repo_name\}/g, repoName ? sanitizeProjectPathSegment(repoName) : "repo");
   const resolved = expandHomePrefix(rendered);
   if (!path.isAbsolute(resolved)) return null;
-  if (resolved.split(path.sep).includes("..")) return null;
+  if (resolved.split(/[\\/]+/).includes("..")) return null;
   return resolved;
 }
 
@@ -1163,14 +1163,37 @@ export function projectService(db: Db, options: { captureWorkspaceUpdates?: bool
         .then((rows) => rows);
 
       let cwd = normalizeWorkspaceCwd(data.cwd);
-      if (!cwd && repoUrl && existing.length === 0 && typeof (db as any)?.select === "function") {
+      let cwdFromTemplate = false;
+      if (!cwd && existing.length === 0) {
         const settings = await instanceSettingsService(db).getGeneral();
         const rendered = resolveDefaultProjectWorkspacePath({
           template: settings.defaultProjectWorkspacePathTemplate,
           project: { id: project.id, name: project.name, companyId: project.companyId },
           repoUrl,
         });
-        if (rendered) cwd = normalizeWorkspaceCwd(rendered);
+        if (rendered) {
+          cwd = normalizeWorkspaceCwd(rendered);
+          cwdFromTemplate = cwd !== null;
+        }
+      }
+      if (cwdFromTemplate && cwd) {
+        // Name-based templates can map two projects onto the same folder. Refuse the
+        // collision instead of letting one project adopt another project's checkout.
+        const [collision] = await db
+          .select({ id: projectWorkspaces.id, projectId: projectWorkspaces.projectId })
+          .from(projectWorkspaces)
+          .where(
+            and(
+              eq(projectWorkspaces.companyId, project.companyId),
+              eq(projectWorkspaces.cwd, cwd),
+            ),
+          )
+          .limit(1);
+        if (collision && collision.projectId !== projectId) {
+          throw conflict(
+            `Default project folder "${cwd}" is already used by another project workspace. Change the default project folder template or the conflicting workspace path.`,
+          );
+        }
       }
       const sourceType = readNonEmptyString(data.sourceType) ?? (repoUrl ? "git_repo" : cwd ? "local_path" : "remote_managed");
       const remoteWorkspaceRef = readNonEmptyString(data.remoteWorkspaceRef);
