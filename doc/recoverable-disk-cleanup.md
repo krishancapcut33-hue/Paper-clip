@@ -296,8 +296,9 @@ The conversion fetches the shared clone, then brings the clone's history in unde
 checkout's own prefix: the current branch becomes `paperclip/<id>/<branch>` at the same
 commit, tracking `origin/<branch>` (or the branch's configured `origin` upstream); every
 other local branch whose tip the shared clone's remote-tracking refs do not contain becomes
-`paperclip/<id>/<branch>`, and every such tag becomes `paperclip/<id>/tags/<tag>` at the
-tagged commit. `<id>` derives from the final checkout path, so later expiration and release
+`paperclip/<id>/<branch>`, every such tag becomes `paperclip/<id>/tags/<tag>` at the
+tagged commit, and every such `origin` remote-tracking ref (for example one whose branch was
+deleted or force-pushed upstream) becomes `paperclip/<id>/remotes/origin/<branch>`. `<id>` derives from the final checkout path, so later expiration and release
 treat those branches exactly like a nested worktree's own branches: they block expiration
 until pushed or saved and are never deleted while unpushed. A restore point of the clone,
 captured against commits both repositories share and preserving those branch tips, its
@@ -324,14 +325,18 @@ items back, removes the new worktree and the created branches, then converts aga
 the clone has been renamed aside it finishes the swap and deletes the old clone, so work done
 in the converted checkout after a crash is kept. A state that matches neither (for example a
 new checkout created at `<name>` while the clone was aside) is left alone with
-`nested_migration_recovery_conflict`. Expiration treats the `.clone-` names as unexplained
+`nested_migration_recovery_conflict`. The reaper also finishes a pending record after the
+workspace is archived; if the task worktree is already gone, it forgets the record, removes
+the stale registrations and deletes only created branches whose commits are on the remote.
+Expiration treats the `.clone-` names as unexplained
 files and keeps the workspace until the conversion settles. A dry run reports a pending
 record without acting on it.
 
 Each attempt logs `event: "execution_workspace.nested_clone_migration"` with the checkout
 name, outcome (`migrated`, `recovered`, `rolled_back`, `dry_run` or `skipped`), skip reason,
 new branch, candidate bytes (the clone's `.git`) and reclaimed bytes. A workspace is
-inspected again at most hourly. A retry deadline is registered only while a pending record
+inspected again at most hourly, and a retry deadline it registered survives later sweeps
+during that hour. A retry deadline is registered only while a pending record
 exists or the skip comes from a live consumer, a busy lock or a changed workspace row; other
 skips, including a change caught by verification, wait for a later sweep, and a workspace
 without standalone clones costs one directory listing. `PAPERCLIP_NESTED_CLONE_MIGRATION_DRY_RUN=true` reports candidates

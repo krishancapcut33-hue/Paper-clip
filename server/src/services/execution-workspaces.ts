@@ -1754,6 +1754,7 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
   const ISOLATED_REHOME_RETRY_MS = 60 * 60 * 1000;
   const nestedCloneMigrationDeadlines = new Map<string, number>();
   const nestedCloneMigrationNotBefore = new Map<string, number>();
+  const nestedCloneMigrationRetryAt = new Map<string, number>();
   let terminalSweepRescanRequested = false;
   // The reaper freezes an upper bound on updatedAt at the start of each
   // rotation. The scan only reads candidates at or below the bound, so a steady
@@ -3259,6 +3260,8 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
             sql`(${executionWorkspaces.metadata}->>'workspaceProviderRemoved') IS DISTINCT FROM 'true'`),
           opts.gitCacheExpirationEnabled ? and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
             sql`${executionWorkspaces.metadata}->'gitCacheExpiration'->>'completed' = 'false'`) : undefined,
+          opts.nestedCloneMigrationEnabled ? and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
+            sql`(${executionWorkspaces.metadata}->'nestedCloneMigrationPending') IS NOT NULL`) : undefined,
           opts.gitCacheExpirationEnabled && opts.isolatedSourceRehomeEnabled ? and(inArray(executionWorkspaces.status, ["archived", "cleanup_failed"]),
             sql`(${executionWorkspaces.metadata}->'isolatedRepositoryRehome') IS NOT NULL`,
             sql`(${executionWorkspaces.metadata}->'isolatedRepositoryRehome'->>'cleanedAt') IS NULL`) : undefined),
@@ -3357,10 +3360,16 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
           }
           if (isClosedExecutionWorkspaceStatus(workspace.status) && !hasPendingGitExpiration(workspace)) continue;
         }
-        if (opts.nestedCloneMigrationEnabled && isNestedCloneMigrationCandidate(workspace)
-          && (nestedCloneMigrationNotBefore.get(workspace.id) ?? 0) <= now().getTime()) {
-          const names = await listNestedCloneMigrationNames(workspace).catch(() => [] as string[]);
-          if (names.length > 0) {
+        if (opts.nestedCloneMigrationEnabled && workspace.providerType !== "plugin"
+          && (isNestedCloneMigrationCandidate(workspace) || hasPendingNestedCloneMigration(workspace))) {
+          const nestedOnly = isClosedExecutionWorkspaceStatus(workspace.status) && !hasPendingGitExpiration(workspace)
+            && !hasPendingIsolatedRepositoryRehomeCleanup(workspace);
+          const notBefore = nestedCloneMigrationNotBefore.get(workspace.id) ?? 0;
+          if (notBefore > now().getTime()) {
+            const retryAt = nestedCloneMigrationRetryAt.get(workspace.id);
+            if (retryAt !== undefined) nestedCloneMigrationDeadlines.set(workspace.id, retryAt);
+          } else {
+            const names = await listNestedCloneMigrationNames(workspace).catch(() => [] as string[]);
             const dryRun = opts.nestedCloneMigrationDryRun ?? false;
             let remaining = false, retry = false;
             for (const name of names) {
@@ -3370,20 +3379,24 @@ export function executionWorkspaceService(db: Db, opts: ExecutionWorkspaceServic
               if (migration.outcome !== "migrated" && migration.outcome !== "recovered") remaining = true;
               if (!dryRun && migration.reason && NESTED_CLONE_MIGRATION_RETRY_REASONS.has(migration.reason)) retry = true;
             }
-            const [after] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
+            const [after] = names.length > 0 ? await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id)) : [workspace];
             if (!dryRun && after && hasPendingNestedCloneMigration(after)) retry = true;
             if (remaining) {
               if (nestedCloneMigrationNotBefore.size >= 4096) nestedCloneMigrationNotBefore.delete(nestedCloneMigrationNotBefore.keys().next().value!);
               nestedCloneMigrationNotBefore.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
             } else nestedCloneMigrationNotBefore.delete(workspace.id);
-            if (retry) nestedCloneMigrationDeadlines.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
-            else nestedCloneMigrationDeadlines.delete(workspace.id);
+            if (retry) {
+              if (nestedCloneMigrationRetryAt.size >= 4096) nestedCloneMigrationRetryAt.delete(nestedCloneMigrationRetryAt.keys().next().value!);
+              nestedCloneMigrationRetryAt.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
+              nestedCloneMigrationDeadlines.set(workspace.id, now().getTime() + ISOLATED_REHOME_RETRY_MS);
+            } else {
+              nestedCloneMigrationRetryAt.delete(workspace.id);
+              nestedCloneMigrationDeadlines.delete(workspace.id);
+            }
             if (!after) continue;
             workspace = after;
-          } else {
-            nestedCloneMigrationNotBefore.delete(workspace.id);
-            nestedCloneMigrationDeadlines.delete(workspace.id);
           }
+          if (nestedOnly) continue;
         }
         const issueTree = await listWorkspaceIssueTree(workspace);
         const sourceIssue = issueTree.find((issue) => issue.id === workspace.sourceIssueId);

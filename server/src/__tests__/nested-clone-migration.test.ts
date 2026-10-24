@@ -190,6 +190,47 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     expect(await listNestedCloneMigrationNames(await f.row())).toEqual([]);
   });
 
+  it("keeps commits that only the clone's remote-tracking refs still hold", async () => {
+    const f = await fixture();
+    git(f.nested.author, "checkout", "-q", "-b", "squashed-away");
+    await fs.writeFile(path.join(f.nested.author, "feature.txt"), "feature\n");
+    git(f.nested.author, "add", "."); git(f.nested.author, "commit", "-qm", "Feature");
+    const feature = git(f.nested.author, "rev-parse", "HEAD");
+    git(f.nested.author, "push", "-q", f.nested.remote, "squashed-away");
+    git(f.checkout, "fetch", "-q", "origin");
+    git(f.nested.remote, "branch", "-D", "squashed-away");
+    git(f.nested.remote, "reflog", "expire", "--expire=now", "--all");
+    git(f.nested.remote, "gc", "-q", "--prune=now");
+    expect(() => git(f.base, "cat-file", "-e", `${feature}^{commit}`)).toThrow();
+    expect(await f.migrate()).toMatchObject({ outcome: "migrated" });
+    expect(git(f.base, "rev-parse", `refs/heads/${f.prefix}remotes/origin/squashed-away`)).toBe(feature);
+    expect(git(f.checkout, "cat-file", "-t", feature)).toBe("commit");
+  });
+
+  it("finishes an interrupted conversion after the workspace is archived and forgets one whose workspace is gone", async () => {
+    const f = await fixture();
+    const { unpushed } = await nestedWork(f.checkout);
+    const before = await currentRestorePointSnapshot(f.checkout);
+    expect(await f.migrate({ hooks: { afterMove: async () => { throw new Error("simulated crash"); } } })).toMatchObject({ outcome: "skipped" });
+    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date() }).where(eq(executionWorkspaces.id, f.workspaceId));
+    const service = executionWorkspaceService(db, { nestedCloneMigrationEnabled: true });
+    await service.sweepTerminalWorkspaces();
+    expect((await f.row()).metadata?.nestedCloneMigrationPending).toBeUndefined();
+    expect(await exists(`${f.checkout}.clone-standalone`)).toBe(false);
+    expect(git(f.checkout, "rev-parse", "HEAD")).toBe(unpushed);
+    expect(await currentRestorePointSnapshot(f.checkout)).toEqual(before);
+    expect(await service.nextTerminalWorkspaceSweepAt()).toBeNull();
+
+    const second = await f.task("two");
+    await nestedWork(second.checkout);
+    expect(await second.migrate({ hooks: { afterAside: async () => { throw new Error("simulated crash"); } } })).toMatchObject({ outcome: "skipped" });
+    await db.update(executionWorkspaces).set({ status: "archived", closedAt: new Date() }).where(eq(executionWorkspaces.id, second.workspaceId));
+    await fs.rm(second.cwd, { recursive: true, force: true });
+    expect(await second.migrate()).toMatchObject({ outcome: "rolled_back", reason: "workspace_removed" });
+    expect((await second.row()).metadata?.nestedCloneMigrationPending).toBeUndefined();
+    expect(git(f.base, "rev-parse", `refs/heads/${second.prefix}main`)).toBeTruthy();
+  });
+
   it("skips a nested clone with a stash without changing anything", async () => {
     const f = await fixture();
     await fs.writeFile(path.join(f.checkout, "nested.txt"), "stashed edit\n");
@@ -394,7 +435,10 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     const busy = executionWorkspaceService(db, { nestedCloneMigrationEnabled: true });
     await busy.sweepTerminalWorkspaces();
     await expectUntouched(f, before);
-    expect(await busy.nextTerminalWorkspaceSweepAt()).toBeGreaterThan(Date.now());
+    const retryAt = await busy.nextTerminalWorkspaceSweepAt();
+    expect(retryAt).toBeGreaterThan(Date.now());
+    await busy.sweepTerminalWorkspaces();
+    expect(await busy.nextTerminalWorkspaceSweepAt()).toBe(retryAt);
     await db.update(heartbeatRuns).set({ status: "succeeded", finishedAt: new Date() }).where(eq(heartbeatRuns.id, run!.id));
 
     const enabled = executionWorkspaceService(db, { nestedCloneMigrationEnabled: true });

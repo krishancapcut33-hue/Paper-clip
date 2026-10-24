@@ -14,7 +14,7 @@ import { readManagedCheckoutContents, selectRestoredProjectRepositories } from "
 import { applyRestorePoint, captureRestorePoint, currentRestorePointSnapshot, importRestorePoint } from "./git-restore-point.js";
 import { managedProjectCheckoutName } from "./managed-project-checkout-name.js";
 import { createGitRemoteAuthProvider, type GitRemoteAuthProvider } from "./git-credentials.js";
-import { isVerifiedNestedRepositoryBase, moveNestedRepositoryWorktree, nestedRepositoryBaseCandidates, nestedWorktreeBranchPrefix,
+import { isNestedWorktreeBranchName, isVerifiedNestedRepositoryBase, moveNestedRepositoryWorktree, nestedRepositoryBaseCandidates, nestedWorktreeBranchPrefix,
   readLinkedNestedCheckout, removeStaleNestedRegistrations, trackNestedWorktreeUpstream, withNestedRepositoryBaseLock } from "./nested-repository-worktrees.js";
 import { assertSafeBaseConfig, assertTransferredItems, historyKey, linkedCheckoutBases, moveTransferItems, presentCommits, returnTransferItems,
   sharedHistoryBoundary, snapshotKey, transferPlan, withWorkspaceMoveLocks, workspaceMoveEligible, workspaceMoveSkip } from "./isolated-repository-rehome.js";
@@ -78,6 +78,11 @@ export function isNestedCloneMigrationCandidate(workspace: Workspace) {
     && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId);
 }
 
+function canRecover(workspace: Workspace, name: string) {
+  return workspace.providerType !== "plugin" && Boolean(workspace.cwd && workspace.projectId && workspace.sourceIssueId)
+    && pendingRecords(workspace)[name] !== undefined;
+}
+
 function pendingRecords(workspace: Pick<Workspace, "metadata">) {
   const value = workspace.metadata?.[NESTED_CLONE_MIGRATION_PENDING_KEY];
   return value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : {};
@@ -111,7 +116,7 @@ async function writePending(db: Db, workspaceId: string, name: string, value: Ne
 
 export async function listNestedCloneMigrationNames(workspace: Workspace) {
   const names = new Set(Object.keys(pendingRecords(workspace)).filter(name => CHECKOUT_NAME.test(name)));
-  if (!workspace.cwd) return [...names];
+  if (!workspace.cwd || !isNestedCloneMigrationCandidate(workspace)) return [...names].sort();
   const root = path.join(workspace.cwd, PROJECT_REPOSITORIES_DIR);
   const stat = await fs.lstat(root).catch(() => null);
   if (!stat?.isDirectory() || stat.isSymbolicLink()) return [...names].sort();
@@ -201,14 +206,15 @@ async function upstreamOf(clone: string, branch: string) {
 async function planRefs(clone: { checkout: string; head: string; branch: string | null }, base: string, prefix: string, signal?: AbortSignal) {
   const planned: PlannedRef[] = [];
   if (clone.branch) planned.push({ ref: `refs/heads/${prefix}${clone.branch}`, commit: clone.head, upstream: await upstreamOf(clone.checkout, clone.branch) });
-  const refs = (await git(clone.checkout, ["for-each-ref", "--format=%(objectname) %(objecttype) %(*objectname) %(*objecttype) %(refname)", "refs/heads", "refs/tags"], { signal }))
-    .split("\n").filter(Boolean).map(line => line.split(" "));
+  const refs = (await git(clone.checkout, ["for-each-ref", "--format=%(objectname) %(objecttype) %(*objectname) %(*objecttype) %(refname)", "refs/heads", "refs/tags", "refs/remotes/origin"], { signal }))
+    .split("\n").filter(Boolean).map(line => line.split(" ")).filter(([, , , , ref]) => ref !== "refs/remotes/origin/HEAD");
   for (const [sha, type, peeled, peeledType, ref] of refs) {
     if (!ref || ref === `refs/heads/${clone.branch}`) continue;
     const commit = type === "commit" ? sha! : peeledType === "commit" ? peeled! : null;
     if (!commit || !SHA.test(commit)) throw new Error("unsupported_nested_clone_tag");
     if (await onRemote(base, commit, signal)) continue;
-    const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length) : `tags/${ref.slice("refs/tags/".length)}`;
+    const name = ref.startsWith("refs/heads/") ? ref.slice("refs/heads/".length)
+      : ref.startsWith("refs/tags/") ? `tags/${ref.slice("refs/tags/".length)}` : `remotes/${ref.slice("refs/remotes/".length)}`;
     planned.push({ ref: `refs/heads/${prefix}${name}`, commit, upstream: ref.startsWith("refs/heads/") ? await upstreamOf(clone.checkout, name) : null });
   }
   const names = new Set<string>();
@@ -277,6 +283,26 @@ async function rollBack(base: string, paths: Paths, pending: NestedCloneMigratio
   await deletePlannedRefs(base, pending.refs);
 }
 
+async function forgetRemovedWorkspace(db: Db, row: Workspace, name: string) {
+  const value = pendingRecords(row)[name] as NestedCloneMigrationPending | undefined;
+  const base = value && typeof value.base === "string" ? value.base : null;
+  if (base && Array.isArray(value!.refs) && await exists(path.join(base, ".git"))) {
+    await withNestedRepositoryBaseLock(base, async () => {
+      const root = path.join(row.cwd!, PROJECT_REPOSITORIES_DIR);
+      for (const target of [path.join(root, name), path.join(root, `${name}${STAGING_SUFFIXES.worktree}`)]) {
+        await removeStaleNestedRegistrations(base, target).catch(() => undefined);
+      }
+      const pushed: PlannedRef[] = [];
+      for (const ref of value!.refs) {
+        if (ref && typeof ref.ref === "string" && ref.ref.startsWith("refs/heads/") && isNestedWorktreeBranchName(ref.ref.slice("refs/heads/".length))
+          && SHA.test(ref.commit) && await onRemote(base, ref.commit)) pushed.push(ref);
+      }
+      await deletePlannedRefs(base, pushed);
+    });
+  }
+  await writePending(db, row.id, name, null);
+}
+
 function migratedRecipe(row: Workspace, name: string, contents: Awaited<ReturnType<typeof readManagedCheckoutContents>>): GitCacheRestoration | undefined {
   if (row.metadata?.[GIT_CACHE_RESTORATION_KEY] === undefined) return undefined;
   try {
@@ -341,12 +367,17 @@ async function settle(db: Db, row: Workspace, name: string, paths: Paths, source
 export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, name: string,
   options: NestedCloneMigrationOptions = {}): Promise<NestedCloneMigrationResult> {
   const result: NestedCloneMigrationResult = { name, outcome: "skipped", reason: null, branchName: null, candidateBytes: 0, reclaimedBytes: 0 };
-  if (!isNestedCloneMigrationCandidate(snapshot) || !CHECKOUT_NAME.test(name)) return { ...result, reason: "not_candidate" };
+  if ((!isNestedCloneMigrationCandidate(snapshot) && !canRecover(snapshot, name)) || !CHECKOUT_NAME.test(name)) return { ...result, reason: "not_candidate" };
   const { signal, hooks } = options;
   try {
     return await withWorkspaceMoveLocks(db, snapshot, async tx => {
       let [row] = await db.select().from(executionWorkspaces).where(and(eq(executionWorkspaces.id, snapshot.id), eq(executionWorkspaces.companyId, snapshot.companyId)));
-      if (!row || !isNestedCloneMigrationCandidate(row) || row.cwd !== snapshot.cwd) throw new Error("workspace_changed");
+      if (!row || (!isNestedCloneMigrationCandidate(row) && !canRecover(row, name)) || row.cwd !== snapshot.cwd) throw new Error("workspace_changed");
+      if (!isNestedCloneMigrationCandidate(row) && !await exists(row.cwd!)) {
+        if (options.dryRun) return { ...result, outcome: "dry_run" as const, reason: "interrupted_migration_pending" };
+        await forgetRemovedWorkspace(db, row, name);
+        return { ...result, outcome: "rolled_back" as const, reason: "workspace_removed" };
+      }
       const cwd = await fs.realpath(row.cwd!);
       const rootStat = await fs.lstat(path.join(cwd, PROJECT_REPOSITORIES_DIR)).catch(() => null);
       if (!rootStat?.isDirectory() || rootStat.isSymbolicLink()) throw new Error("missing_managed_checkout");
@@ -368,6 +399,7 @@ export async function migrateNestedRepositoryClone(db: Db, snapshot: Workspace, 
         result.outcome = "rolled_back";
         [row] = await db.select().from(executionWorkspaces).where(eq(executionWorkspaces.id, snapshot.id));
         if (!row) throw new Error("workspace_changed");
+        if (!isNestedCloneMigrationCandidate(row)) return result;
       }
       if (await exists(paths.trash) && !options.dryRun) await fs.rm(paths.trash, { recursive: true, force: true });
       if (await exists(paths.aside) || await exists(paths.worktree)) throw new Error("nested_migration_staging_exists");
