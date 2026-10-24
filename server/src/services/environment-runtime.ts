@@ -3719,6 +3719,7 @@ function createPluginEnvironmentDriver(
         metadata: {
           ...(resumed && previous ? { ...previous.metadata, runnerTaskReused: true, runnerTaskPreviousLeaseId: previous.id } : {}),
           runnerTaskLifecyclePolicy: lifecyclePolicy, runnerTaskFingerprint: fingerprint,
+          runnerTaskRequestedExpiresAt:requestedExpiresAtParam(input.requestedExpiresAt) ?? null,
           ...(warm ? {runnerTaskProjectIds:[...input.runnerTaskProjectIds ?? []]} : {}),remoteCwd:".",
           ...(input.agentId ? { agentId: input.agentId } : {}),
           providerMetadata: providerLease.metadata ?? {},

@@ -210,14 +210,20 @@ export async function executeEnvironmentTask(db: Db, workers: PluginWorkerManage
         }).where(and(eq(environmentLeases.id, metadata.runnerTaskPreviousLeaseId), eq(environmentLeases.companyId, input.companyId)));
         const fresh = await workers.call(plugin.id, "environmentAcquireLease", {driverKey:metadata.driverKey,
           companyId:input.companyId,environmentId:environment!.id,issueId:lease.issueId,config:driverConfig,
-          runId:run!.id,agentId:run!.agentId,adapterType:"paperclip_runner"});
+          runId:run!.id,agentId:run!.agentId,adapterType:"paperclip_runner",
+          ...(typeof metadata.runnerTaskRequestedExpiresAt === "string" ? {requestedExpiresAt:metadata.runnerTaskRequestedExpiresAt} : {})});
         if (!fresh.providerLeaseId || fresh.providerLeaseId === taskId) throw new Error("Plugin replacement task identity unavailable");
         const {runnerTaskIdentity:_identity,runnerTaskPriorIdentity:_prior,runnerTaskCredentialHandoff:_handoff,
           runnerTaskResumeFrom:_resume,runnerTaskPreviousLeaseId:_previous,...rest}=metadata;
         const replacementMetadata={...rest,providerMetadata:fresh.metadata ?? {},runnerTaskReused:false,runnerTaskDispatched:false,
           runnerTaskExecutionStopped:false,runnerTaskSessionRetained:false};
         try {
-          const replacement = await db.update(environmentLeases).set({providerLeaseId:fresh.providerLeaseId,
+          const expiresAt=fresh.expiresAt ? new Date(fresh.expiresAt) : null;
+          const deadline=typeof metadata.runnerTaskRequestedExpiresAt === "string" ? Date.parse(metadata.runnerTaskRequestedExpiresAt) : null;
+          if ((expiresAt && (!Number.isFinite(expiresAt.getTime()) || expiresAt.getTime() <= Date.now())) ||
+              (deadline !== null && (!Number.isFinite(deadline) || !expiresAt || expiresAt.getTime() > deadline)))
+            throw new Error("Plugin replacement task expiry is not bounded");
+          const replacement = await db.update(environmentLeases).set({providerLeaseId:fresh.providerLeaseId,expiresAt,
             metadata:replacementMetadata,
           }).where(and(eq(environmentLeases.id,lease.id),eq(environmentLeases.providerLeaseId,taskId),
             eq(environmentLeases.status,"active"))).returning({id:environmentLeases.id});

@@ -180,12 +180,17 @@ project authentication, prepares the new run's resources, and uses PRP
 `run.attach`. Preparation includes the exact `priorIdentity` and stable
 `accountIdentity`. The provider journals that transition idempotently before
 allowing the new authority. The original ingress address remains unchanged.
+Runner accepts `connection: { mode: "external" }` on warm attachment to preserve
+the process owner's listener and TLS settings while rotating the run identity.
 
 Idle retirement suspends and stops Runner, saves its exact checkpoint, writes
 credentials through the durable lease handoff, then completes the provider task.
 Temporary credential homes are not needed after the originating run ends.
 Termination receipts cover all run leases that owned the retired physical task.
-A stopped task gets a new provider task ID for checkpoint resumption. A missing
+A stopped task gets a new provider task ID for checkpoint resumption. Inspection
+precedes in-memory session selection so a replacement cannot inherit the stopped
+session. Core saves the fresh provider expiry and forwards and enforces any
+caller-imposed deadline. A missing
 or unreachable computer never authorizes a replacement. Controller recovery can
 adopt a verified surviving idle process through its authenticated PRP connection;
 ambiguous transitions remain fenced by the existing durable recovery checks.
