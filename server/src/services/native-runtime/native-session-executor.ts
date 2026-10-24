@@ -36,6 +36,7 @@ import { createAgentIdentityRedactor } from "../agent-identity-redaction.js";
 import { parseCodexCliVersion } from "./codex-runtime-compatibility.js";
 import { createNativeToolTrace, type NativeToolTrace } from "./native-tool-trace.js";
 import { createNativeProviderFailureObservation } from "./native-provider-failure.js";
+import { createNativeDeliverableTextObservation } from "./native-deliverable-text.js";
 import { createNativeGitHubAccess, type NativeGitHubAccess } from "./native-github-access.js";
 import { resolveGitHubOperationCredentials } from "../github-operation-credentials.js";
 import { bindManagedNativeCredentialTurn, completeManagedNativeCredentialTurn } from "./managed-native-credentials.js";
@@ -8248,6 +8249,7 @@ async function executePaperclipNativeSessionWithinScope(
   let turnStartedAtMs: number | null = null;
   let firstAgentEventRecorded = false;
   let firstTokenRecorded = false;
+  const observeDeliverableText = createNativeDeliverableTextObservation();
   let providerUsageLimitObserved = false;
   const providerFailureObservation = createNativeProviderFailureObservation(input.execution.provider);
   let turnCompletedAtMs: number | null = null;
@@ -8374,15 +8376,15 @@ async function executePaperclipNativeSessionWithinScope(
       privateKeyPem: input.runnerEnvironment?.PAPERCLIP_AGENT_PRIVATE_KEY,
       assertControllerActive,
       onCommittedEvent: async (event) => {
-        if (!firstTokenRecorded && event.eventType === "item.delta" &&
-            firstMeaningfulAgentEventKind(event) === "agentMessage") {
+        const textKind = !firstTokenRecorded ? observeDeliverableText(event) : null;
+        if (textKind) {
           firstTokenRecorded = true;
           await trace.record({
             name: "task.time_to_first_token",
             parentName: "task.provider_session",
             startedAtMs: trace.traceStartedAtMs,
             endedAtMs: Date.now(),
-            attributes: { eventKind: "agentMessage" },
+            attributes: { eventKind: textKind },
           });
         }
         await observeAccountingEvent(event);
@@ -8597,6 +8599,7 @@ async function executePaperclipNativeSessionWithinScope(
         );
       },
       onDuplicateEvent: async (event) => {
+        if (!firstTokenRecorded) observeDeliverableText(event);
         await observeAccountingEvent(event);
         // A crash can happen after the event commit but before its callback
         // finishes. Recover only idempotent durable projections here; activity,

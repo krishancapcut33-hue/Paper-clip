@@ -65,13 +65,16 @@ instance run log and add no first-party Telemetry or OpenTelemetry export.
 ## Provider-pack preparation timing
 
 `run.performance.span` also records `task.time_to_first_token` once per native
-dispatch at the first newly committed nonempty assistant `item.delta`. Its
+dispatch at the first newly committed deliverable text: assistant or reasoning
+`item.delta`/`item.completed`, a redaction tail released at completion, or an
+accepted run-result summary. Its
 `durationMs` starts at the native run trace's historical start (accepted ingress,
 otherwise queued run creation, or dispatch when history is absent) and ends at Core
-receipt. `startOffsetMs` is zero, and `eventKind` is `agentMessage`. It includes
-preparation and startup, but excludes browser delivery/rendering. This is a text
-delta proxy. Empty, reasoning, tool, completed-item, and duplicate events do not
-qualify. No assistant output means no timing sample. A recovered dispatch can
+commit callback. `startOffsetMs` is zero, and `eventKind` is `agentMessage` or
+`reasoning`. It includes preparation and startup, but excludes browser
+delivery/rendering. This measures text availability, not an exact model token.
+Empty text, item starts, tools, usage, result proposals, and duplicate replay do
+not qualify. No deliverable text means no timing sample. A recovered dispatch can
 record newly committed output from the original start; it does not reproduce
 earlier output timing. The event contains no text or provider identifiers.
 

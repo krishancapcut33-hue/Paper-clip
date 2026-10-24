@@ -6331,17 +6331,17 @@ describe("native resumed preparation timing", () => {
       const events: AdapterRuntimeEvent[] = [];
       const clock = vi.spyOn(Date, "now").mockReturnValue(startedAtMs + 4_000);
       const event = (eventType: string, payload: Record<string, unknown>) => ({
-        eventType, payload, emittedAt: new Date(startedAtMs + 2_000).toISOString(),
+        eventType, payload, itemId: "message", emittedAt: new Date(startedAtMs + 2_000).toISOString(),
       }) as PrpEvent;
       state.execute.mockReset().mockImplementationOnce(async () => {
         for (const candidate of [
           event("turn.submitted", {}),
           event("turn.started", {}),
           event("item.started", { kind: "agentMessage" }),
-          event("item.completed", { kind: "agentMessage", text: "complete message" }),
+          event("item.completed", { kind: "agentMessage", text: " " }),
           event("item.delta", { kind: "agentMessage", text: " " }),
           event("item.delta", { kind: "agentMessage", text: 42 }),
-          event("item.delta", { kind: "reasoning", text: "thinking" }),
+          event("item.delta", { kind: "reasoning", text: "" }),
           event("item.delta", { kind: "toolCall", text: "arguments" }),
           event("item.delta", { kind: "usage", text: "tokens" }),
           event("tool.execution.started", { executionId: "tool-1" }),
@@ -6349,9 +6349,9 @@ describe("native resumed preparation timing", () => {
         await accountingEvents.duplicate!(event("item.delta", { kind: "agentMessage", text: "replayed text" }));
         expect(events.some((candidate) => candidate.payload?.span === "task.time_to_first_token")).toBe(false);
         clock.mockReturnValue(startedAtMs + 4_500);
-        await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", delta: "first text" }));
+        await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "first text" }));
         clock.mockReturnValue(startedAtMs + 4_750);
-        await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", content: "later text" }));
+        await accountingEvents.committed!(event("item.delta", { kind: "agentMessage", text: "later text" }));
         return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
           turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
           driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
@@ -6373,6 +6373,33 @@ describe("native resumed preparation timing", () => {
       expect(JSON.stringify(ttft)).not.toContain("later text");
     },
   );
+
+  it.each([
+    ["item.delta", { kind: "reasoning", text: "thinking" }, "reasoning"],
+    ["item.completed", { kind: "reasoning", text: "thought" }, "reasoning"],
+    ["item.completed", { kind: "agentMessage", text: "answer" }, "agentMessage"],
+    ["run.result.accepted", { result: { schema: "paperclip.run_result.v1", summary: "done" } }, "agentMessage"],
+    ["turn.completed", { outputTails: [{ itemId: "message", payload: { kind: "agentMessage", text: "settled text" } }] }, "agentMessage"],
+  ] as const)("records first deliverable %s %j once", async (eventType, payload, eventKind) => {
+    const events: AdapterRuntimeEvent[] = [];
+    state.execute.mockReset().mockImplementationOnce(async () => {
+      const first = { eventType, payload, itemId: "message" } as unknown as PrpEvent;
+      await accountingEvents.duplicate!(first);
+      expect(events.some((event) => event.payload?.span === "task.time_to_first_token")).toBe(false);
+      await accountingEvents.committed!(first);
+      await accountingEvents.committed!({ eventType: "item.delta", itemId: "message",
+        payload: { kind: "agentMessage", text: "later text" } } as unknown as PrpEvent);
+      return { result: { summary: "cancelled" }, terminal: { runTerminalState: "cancelled" },
+        turnId: "turn", normalizedSessionId: "session", providerSessionId: null,
+        driverKind: "test", driverVersion: "1", nativeEventCount: 1, highestContiguousSourceSeq: 1 };
+    });
+    await executePaperclipNativeSession({ db: leaseDb(), execution, runnerInstanceId: "runner",
+      onEvent: async (event) => { events.push(event); } });
+    const ttft = events.filter((event) => event.payload?.span === "task.time_to_first_token");
+    expect(ttft).toHaveLength(1);
+    expect(ttft[0]?.payload).toMatchObject({ parentSpan: "task.provider_session", eventKind, outcome: "ok" });
+    expect(JSON.stringify(ttft)).not.toContain("later text");
+  });
 
   it("omits first-token timing when execution fails before assistant output", async () => {
     const events: AdapterRuntimeEvent[] = [];

@@ -574,7 +574,6 @@ The canonical lifecycle is:
 ```text
 task.provider_session
 ├── heartbeat.queue
-├── task.time_to_first_token
 ├── task.prepare
 │   ├── environment.startup
 │   │   ├── environment.acquire
@@ -628,22 +627,40 @@ execution identity, or an existing assistant/reasoning/tool item start or
 completion. Usage updates and empty deltas do not count. This is a first
 activity metric, not time to a finished answer.
 
-`task.time_to_first_token` measures the first observed assistant text delta for
-each native dispatch. It starts at the native run trace's historical start:
+`task.time_to_first_token` measures the wait until text is deliverable to the
+task transcript for each native dispatch. The first qualifying event is a
+nonempty assistant or reasoning text delta, a completed assistant or reasoning
+item with text, or an accepted run result with a nonempty summary. Text released
+by redaction at item/turn/session completion also qualifies. Item identities and
+text fields follow the task transcript projection; item starts, tools, usage,
+empty text, result proposals, and duplicate PRP replay do not end the wait.
+
+The first-text milestone occurs after `task.prepare` and Runner startup. The
+timing span is a cumulative interval, not a separate preparation step:
+
+```text
+accepted ingress → queue → task.prepare → Runner startup → provider work → first text
+└────────────────────── task.time_to_first_token ──────────────────────────────────┘
+```
+
+The span starts at the native run trace's historical start:
 the accepted comment or attested question response when present, otherwise run
 creation from the queue span. Callers without preparation history start at native
 dispatch. The interval includes queueing, Core preparation, workspace preparation,
 Runner startup, provider latency, transport, and durable event ingestion. It ends
-when Core receives the first newly committed nonempty `agentMessage` `item.delta`,
-using the Core clock rather than the provider event timestamp. It excludes delivery
-to the browser and rendering. This is a text-delta proxy, not a tokenizer measurement.
-Reasoning, tool events, item starts/completions, empty deltas, and duplicate PRP
-replay do not count. Only the first qualifying delta in a dispatch emits a span.
-A dispatch without assistant text emits no sample, including an early failure.
+in Core's commit callback, when the text is readable through the run-events API,
+using the Core clock rather than the provider event timestamp. Browser delivery
+and rendering are excluded. The name is retained for existing trace queries;
+this measures the first deliverable text, not an exact model token boundary.
+Only the first qualifying event in a dispatch emits a span. Its `eventKind` is
+`reasoning` for thinking text and `agentMessage` for assistant text or a result.
+A dispatch without deliverable text emits no sample, including an early failure.
 Same-run recovery retains the original historical start and can emit a new sample
 only for newly committed output; it does not reconstruct prior first-token timing.
+`task.time_to_first_token` is a child of `task.provider_session` that overlaps
+queueing, preparation and execution; do not add its duration to those phases.
 No text or provider event identifiers are exported. The existing duration attribute
-is `paperclip.native.span.duration_ms`; the span is a child of `task.provider_session`.
+is `paperclip.native.span.duration_ms`.
 
 `tool.request.input_stream` measures the observed request-input window: from
 an ACP tool announcement to its last input update before the provider reports
