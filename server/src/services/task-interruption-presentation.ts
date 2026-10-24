@@ -1,18 +1,21 @@
 import { and, desc, eq, inArray, sql } from "drizzle-orm";
 import { agents, agentWakeupRequests, approvals, companies, heartbeatRuns, issueApprovals, issueRecoveryActions,
   issues, issueTreeHoldMembers, issueTreeHolds, projects, type Db } from "@paperclipai/db";
-import type { TaskInterruptionPresentation } from "@paperclipai/shared";
+import { trustAuthorizationPolicySchema, type TaskInterruptionPresentation } from "@paperclipai/shared";
 import { isAiAuthenticationBlocked } from "./ai-auth-failure.js";
 import { readSystemRecovery } from "./system-recovery-state.js";
+import { PROJECT_ACCESS_DENIED } from "./project-access-denial.js";
+import { normalizeAgentPermissions } from "../lib/agent-permissions.js";
 
 type ProjectionIssue = Pick<typeof issues.$inferSelect, "id" | "companyId" | "status" | "assigneeAgentId" | "projectId">;
 type ProjectionRun = Pick<typeof heartbeatRuns.$inferSelect,
-  "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson">;
+  "id" | "status" | "scheduledRetryAt" | "errorCode" | "livenessState" | "resultJson"> &
+  Partial<Pick<typeof heartbeatRuns.$inferSelect, "agentId" | "error">>;
 type ProjectionState = {
   run?: ProjectionRun;
   action?: typeof issueRecoveryActions.$inferSelect;
   wait?: { id: string; requestedAt: Date };
-  agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason">;
+  agent?: Pick<typeof agents.$inferSelect, "status" | "pauseReason"> & Partial<Pick<typeof agents.$inferSelect, "permissions">>;
   project?: Pick<typeof projects.$inferSelect, "pausedAt" | "pauseReason">;
   company?: Pick<typeof companies.$inferSelect, "status" | "pauseReason">;
   paused: boolean;
@@ -36,6 +39,24 @@ export function projectTaskInterruption(issue: ProjectionIssue, input: Projectio
         ? "budget" : input.paused || project?.pausedAt || agent?.status === "paused" || company?.status === "paused" ? "resume" : null;
   if (userAction) return { ...base, responsibility: "user", state: "waiting_for_user", userAction };
   if (["running", "queued"].includes(run.status)) return { ...base, state: "working" };
+  // Compatibility for pre-code setup denials already visible on existing tasks.
+  // Never forward arbitrary run error text into the ordinary task surface.
+  const historicalProjectDenial = run.errorCode === "setup_failed"
+    && run.error === "Project is outside this low-trust boundary.";
+  if (run.status === "failed" && run.agentId === issue.assigneeAgentId
+      && (run.errorCode === PROJECT_ACCESS_DENIED || historicalProjectDenial)) {
+    const detail = run.resultJson?.projectAccessDenied;
+    const deniedProjectId = detail && typeof detail === "object" && "projectId" in detail
+      && typeof detail.projectId === "string" ? detail.projectId : historicalProjectDenial ? issue.projectId : null;
+    const permissions = normalizeAgentPermissions(agent?.permissions);
+    const policy = trustAuthorizationPolicySchema.safeParse(permissions.authorizationPolicy ?? {});
+    const boundary = policy.success ? policy.data.trustBoundary : undefined;
+    const ready = Boolean(deniedProjectId && boundary?.companyId === issue.companyId
+      && boundary.projectIds?.includes(deniedProjectId));
+    return { ...base, responsibility: ready ? "system" : "user", state: ready ? "failed" : "waiting_for_user",
+      userAction: ready ? null : "project_access", canRetry: ready,
+      projectAccess: { agentId: run.agentId!, projectId: deniedProjectId === issue.projectId ? deniedProjectId : null, ready } };
+  }
   const retryAt = system?.nextAttemptAt ?? run.scheduledRetryAt?.getTime();
   if (retryAt && retryAt > now) return { ...base, state: "retry_scheduled",
     nextRetryAt: new Date(retryAt).toISOString(), canRetry: true };
@@ -61,15 +82,22 @@ export async function taskInterruptionPresentations(db: Db, companyId: string, i
   const projectIds = selected.flatMap(issue => issue.projectId ? [issue.projectId] : []);
   const [runs, waits, agentRows, projectRows, pauseRows, approvalRows, companyRows] = await Promise.all([
     db.selectDistinctOn([runIssue], { issueId: runIssue, id: heartbeatRuns.id, status: heartbeatRuns.status,
+      agentId: heartbeatRuns.agentId,
+      error: sql<string | null>`case when ${heartbeatRuns.errorCode} = 'setup_failed'
+        and ${heartbeatRuns.error} = 'Project is outside this low-trust boundary.' then ${heartbeatRuns.error} else null end`,
       errorCode: heartbeatRuns.errorCode, livenessState: heartbeatRuns.livenessState, scheduledRetryAt: heartbeatRuns.scheduledRetryAt,
-      resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete')`,
+      resultJson: sql<Record<string, unknown>>`jsonb_build_object('configurationIncomplete', ${heartbeatRuns.resultJson}->'configurationIncomplete',
+        'projectAccessDenied', ${heartbeatRuns.resultJson}->'projectAccessDenied')`,
     }).from(heartbeatRuns).where(and(eq(heartbeatRuns.companyId, companyId), inArray(runIssue, ids)))
       .orderBy(runIssue, desc(heartbeatRuns.createdAt), desc(heartbeatRuns.id)),
     db.selectDistinctOn([wakeIssue], { issueId: wakeIssue, id: agentWakeupRequests.id, requestedAt: agentWakeupRequests.requestedAt })
       .from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, companyId), inArray(wakeIssue, ids),
         eq(agentWakeupRequests.status, "deferred_issue_execution"), eq(agentWakeupRequests.requestedByActorType, "user")))
       .orderBy(wakeIssue, desc(agentWakeupRequests.requestedAt)),
-    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason }).from(agents)
+    agentIds.length ? db.select({ id: agents.id, status: agents.status, pauseReason: agents.pauseReason,
+      permissions: sql<Record<string, unknown>>`jsonb_build_object('trustPreset', ${agents.permissions}->'trustPreset',
+        'authorizationPolicy', jsonb_build_object('trustBoundary', ${agents.permissions}->'authorizationPolicy'->'trustBoundary'))`,
+    }).from(agents)
       .where(and(eq(agents.companyId, companyId), inArray(agents.id, agentIds))) : [],
     projectIds.length ? db.select({ id: projects.id, pausedAt: projects.pausedAt, pauseReason: projects.pauseReason }).from(projects)
       .where(and(eq(projects.companyId, companyId), inArray(projects.id, projectIds))) : [],

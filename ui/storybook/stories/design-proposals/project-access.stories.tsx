@@ -15,7 +15,7 @@ const meta = {
       home: "design-proposals", status: "proposed",
       exception: "Requested design for a visible project denial and additive project access repair before production implementation.",
       implementation: "prototype", boundary: "fixtures",
-      notes: "Reuses DesignPageShell, DesignSidebar, AgentAvatar, IssueStatusBadge, TaskChatBubble, TaskChatLiveRunPill and shared form primitives. Notice, access editor and navigation are a local prototype. Synthetic names and repositories only. Save retains existing projects; failed saves preserve draft but grant nothing. Retry is unavailable before a saved grant and does not run on save. Read-only viewers cannot edit. No production API, persistence, permission, provider or recovery proof. Backend safe denial projection, server-authorized project candidates, conflict handling, audited additive saves and fresh retry admission remain implementation work.",
+      notes: "Reuses DesignPageShell, DesignSidebar, AgentAvatar, IssueStatusBadge, TaskChatBubble, TaskChatLiveRunPill and shared form primitives. Notice, access editor and navigation are a local prototype. Synthetic names and repositories only. Save retains existing projects; failed saves preserve draft but grant nothing. Retry is unavailable before a saved grant and does not run on save. Read-only viewers cannot edit. No production API, persistence, permission, provider or recovery proof. The implemented notice and editor are covered by the task-project-access stories; this retains the original design snapshot. Server regression tests and application verification cover authorization, persistence and explicit retry separately.",
     },
   },
 } satisfies Meta<typeof ProjectAccessProposal>;
