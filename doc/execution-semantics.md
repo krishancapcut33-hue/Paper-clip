@@ -1616,6 +1616,15 @@ comments already delivered to the failed run. A plain operator Stop still
 requires a new user action. The successor guard is scoped to the same agent so
 another agent's review participation keeps its independent recovery path.
 
+For a confirmed legacy reassignment, the stranded-queue scan can deliver the
+new assignee's saved assignment wake after cleanup. The same-company receipt
+must name that stopped run as its `interruptedRunId` and still belong to the
+current assignee, including when that agent also owns the stopped run. Recipient
+run history does not affect eligibility. Existing comment filtering still removes
+self-authored comment triggers without discarding the independent assignment
+intent. Operator Stop, incomplete cleanup, recovery holds, and newer task turns
+retain their gates.
+
 An explicit queued-message Interrupt also grants one scoped cleanup retry for
 the stopped run. Old ephemeral leases whose cleanup predates provider stop
 receipts are rechecked through the recorded provider teardown path. Retained
