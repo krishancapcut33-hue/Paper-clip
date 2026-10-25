@@ -4829,7 +4829,23 @@ export function recoveryService(
           continue;
         }
       }
+      const recoveryNow = new Date();
       if (await isInvocationBudgetBlocked(issue, agentId)) {
+        // A still-future scheduled monitor owns the issue's next step: it
+        // stays registered across restarts and company pauses (the monitor
+        // scheduler only claims due monitors on an active company), and the
+        // invocation block re-surfaces when the monitor is due and its wake
+        // cannot dispatch. Parking a live future wait as a board hold here
+        // discards real scheduled waits. An overdue monitor does not protect:
+        // the wait is already due and a blocked agent cannot serve it, so the
+        // escalation below is kept.
+        if (
+          issue.monitorNextCheckAt &&
+          issue.monitorNextCheckAt.getTime() > recoveryNow.getTime()
+        ) {
+          result.skipped += 1;
+          continue;
+        }
         const classification = classifyContinuationFailure(latestRun);
         if (
           classification.kind === "deliberate_wait_without_target" ||
@@ -4894,7 +4910,6 @@ export function recoveryService(
         result.skipped += 1;
         continue;
       }
-      const recoveryNow = new Date();
       const providerQuotaMonitorRun =
         issue.status === "in_review"
           ? participantLatestRunForRecovery
