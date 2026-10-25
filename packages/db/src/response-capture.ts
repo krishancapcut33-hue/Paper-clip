@@ -99,7 +99,7 @@ export function createDatabaseResponseCapture(
     completed += 1;
     try {
       let key = JSON.stringify(metadata);
-      if (!entries.has(key) && entries.size >= 511) {
+      if (!entries.has(key) && entries.size >= 2047) {
         overflowCalls += 1;
         metadata = { operation: "other", table: "other", callers: [] };
         key = "overflow";

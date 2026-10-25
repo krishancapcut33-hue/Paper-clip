@@ -107,12 +107,12 @@ describe("bounded database response capture", () => {
   });
   it("bounds cardinality without dropping response-byte totals", () => {
     const f = fixture();
-    for (let i = 0; i < 600; i += 1) f.capture.execute(() => [i], { ...metadata, callers: [`services/f${i}.ts:1:1`] });
+    for (let i = 0; i < 2200; i += 1) f.capture.execute(() => [i], { ...metadata, callers: [`services/f${i}.ts:1:1`] });
     f.capture.flush();
     const summary = f.events.at(-1)!;
-    expect(summary).toMatchObject({ startedQueries: 600, completedQueries: 600, groups: 512, overflowCalls: 89 });
-    expect(f.events).toHaveLength(513);
-    expect(summary.responseValueBytes).toBe(Array.from({ length: 600 }, (_, i) => Buffer.byteLength(JSON.stringify([i]))).reduce((a, b) => a + b, 0));
+    expect(summary).toMatchObject({ startedQueries: 2200, completedQueries: 2200, groups: 2048, overflowCalls: 153 });
+    expect(f.events).toHaveLength(2049);
+    expect(summary.responseValueBytes).toBe(Array.from({ length: 2200 }, (_, i) => Buffer.byteLength(JSON.stringify([i]))).reduce((a, b) => a + b, 0));
   });
   it("does not execute builders or prepared statements until requested", async () => {
     const f = fixture(), rows = [{ id: 1 }], execute = vi.fn(async () => rows);
