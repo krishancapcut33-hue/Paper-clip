@@ -17,10 +17,15 @@ import { nativeSessionScopeDigestIsBusy } from "./native-session-executor.js";
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_INTERVAL_MS = 60 * 60 * 1000;
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_STARTUP_DELAY_MS = 2 * 60 * 1000;
 export const NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS = 7;
+export const NATIVE_RUNNER_EVIDENCE_RETENTION_DEFAULT_DAYS = 7;
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const SCOPE_PATTERN = /^[0-9a-f]{64}$/;
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const CONTINUITY_ARCHIVE_PATTERN = /^(\d{1,15})-[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const QUARANTINE_PATTERN =
+  /^([0-9a-f]{64})\.(?:identity_indeterminate|identity_mismatch)\.(\d{1,15})\.\d{1,10}\.[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const QUARANTINE_CLEANUP_PATTERN = /^[0-9a-f]{64}\.identity_indeterminate\.cleanup\./;
 const EXPIRED_PREFIX = ".expired-";
 const RETIRING_PREFIX = ".retiring-";
 const LIVE_RUN_STATUSES = ["queued", "scheduled_retry", "running"];
@@ -31,6 +36,7 @@ const MAX_CONTROL_PLANE_STATE_BYTES = 4 * 1024 * 1024;
 
 export type NativeHarnessBackupExpirationOptions = {
   closedForDays?: number;
+  evidenceRetentionDays?: number;
   dryRun?: boolean;
   maxEntries?: number;
   maxRemovals?: number;
@@ -47,9 +53,21 @@ export type NativeHarnessBackupExpirationResult = {
   expired: number;
   reclaimedBytes: number;
   clearedTaskSessions: number;
+  evidenceCandidates: number;
+  evidenceCandidateBytes: number;
+  evidenceRemoved: number;
+  evidenceReclaimedBytes: number;
   failed: number;
   truncated: boolean;
   skipped: Record<string, number>;
+};
+
+type EvidenceContext = {
+  dryRun: boolean;
+  isSessionBusy: (scopeDigest: string) => boolean;
+  now: number;
+  retainedBefore: number;
+  hasBudget: () => boolean;
 };
 
 type SessionIdentity = {
@@ -66,6 +84,10 @@ function emptyResult(): NativeHarnessBackupExpirationResult {
     expired: 0,
     reclaimedBytes: 0,
     clearedTaskSessions: 0,
+    evidenceCandidates: 0,
+    evidenceCandidateBytes: 0,
+    evidenceRemoved: 0,
+    evidenceReclaimedBytes: 0,
     failed: 0,
     truncated: false,
     skipped: {},
@@ -223,6 +245,9 @@ export function nativeHarnessBackupExpirationService(
   defaults: NativeHarnessBackupExpirationOptions = {},
 ) {
   let cursor: string | null = null;
+  let resume: { scope: string; archive: string } | null = null;
+  let quarantineCursor: string | null = null;
+  let phase: "sessions" | "quarantine" = "sessions";
 
   async function settleLeftovers(backupRoot: string) {
     const current = path.join(backupRoot, "current");
@@ -310,10 +335,139 @@ export function nativeHarnessBackupExpirationService(
     result.reclaimedBytes += bytes;
   }
 
+  async function removeExpiredLeftovers(parent: string) {
+    for (const name of await fs.readdir(parent).catch(() => [] as string[])) {
+      if (name.startsWith(EXPIRED_PREFIX) && UUID_PATTERN.test(name.slice(EXPIRED_PREFIX.length))) {
+        await removeBackupTree(path.join(parent, name));
+      }
+    }
+  }
+
+  async function retireEvidence(
+    parent: string,
+    name: string,
+    scopeDigest: string,
+    stampedAt: number,
+    context: EvidenceContext,
+    result: NativeHarnessBackupExpirationResult,
+    retentionBlocker?: (target: string) => Promise<string | null>,
+  ) {
+    const skip = (reason: string) => {
+      result.skipped[reason] = (result.skipped[reason] ?? 0) + 1;
+    };
+    const target = path.join(parent, name);
+    const stat = await fs.lstat(target).catch(() => null);
+    if (path.dirname(target) !== parent || !stat?.isDirectory()) {
+      return skip("unsafe_path");
+    }
+    const createdAt = stampedAt > 0 && stampedAt <= context.now ? stampedAt : stat.mtimeMs;
+    if (createdAt >= context.retainedBefore) return skip("recent_evidence");
+    if (context.isSessionBusy(scopeDigest)) return skip("session_active");
+    const blocker = await retentionBlocker?.(target);
+    if (blocker) return skip(blocker);
+    const bytes = await allocatedBytes(target);
+    result.evidenceCandidates++;
+    result.evidenceCandidateBytes += bytes;
+    if (context.dryRun) return;
+    if (context.isSessionBusy(scopeDigest)) return skip("session_active");
+    const trash = path.join(parent, `${EXPIRED_PREFIX}${randomUUID()}`);
+    await fs.rename(target, trash);
+    await removeBackupTree(trash);
+    result.evidenceRemoved++;
+    result.evidenceReclaimedBytes += bytes;
+  }
+
+  async function retireContinuityBreaks(
+    root: string,
+    scopeDigest: string,
+    resumeAfter: string | null,
+    context: EvidenceContext,
+    result: NativeHarnessBackupExpirationResult,
+  ): Promise<string | null> {
+    const parent = path.join(root, "continuity-breaks");
+    const stat = await fs.lstat(parent).catch(() => null);
+    if (!stat) return null;
+    if (!stat.isDirectory()) {
+      result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
+      return null;
+    }
+    if (!context.dryRun) await removeExpiredLeftovers(parent);
+    let last = resumeAfter ?? "";
+    const names = (await fs.readdir(parent)).filter((name) => name > last).sort();
+    for (const name of names) {
+      const match = CONTINUITY_ARCHIVE_PATTERN.exec(name);
+      if (!match) continue;
+      if (!context.hasBudget()) return last;
+      last = name;
+      try {
+        await retireEvidence(parent, name, scopeDigest, Number(match[1]), context, result);
+      } catch (err) {
+        result.failed++;
+        logger.warn({ err, scope: scopeDigest }, "native runner evidence retention skipped a continuity archive");
+      }
+    }
+    if (!context.dryRun) await fs.rmdir(parent).catch(() => undefined);
+    return null;
+  }
+
+  async function quarantineRetentionBlocker(target: string, scopeDigest: string, closedBefore: Date) {
+    const identity = await readSessionIdentity(target);
+    if (!identity) return null;
+    const blocker = await db.transaction((tx) =>
+      sessionRetentionBlocker(tx, { scopeDigest, identity, closedBefore }),
+    );
+    return "reason" in blocker ? blocker.reason : null;
+  }
+
+  async function retireQuarantine(
+    base: string,
+    context: EvidenceContext,
+    result: NativeHarnessBackupExpirationResult,
+    maxEntries: number,
+  ): Promise<boolean> {
+    const parent = path.join(base, "quarantine");
+    const stat = await fs.lstat(parent).catch(() => null);
+    if (!stat) return true;
+    if (!stat.isDirectory()) {
+      result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
+      return true;
+    }
+    if (!context.dryRun) await removeExpiredLeftovers(parent);
+    const names = (await fs.readdir(parent)).sort();
+    const pending = quarantineCursor ? names.filter((name) => name > quarantineCursor!) : names;
+    const closedBefore = new Date(context.retainedBefore);
+    for (const name of pending) {
+      const match = QUARANTINE_PATTERN.exec(name);
+      const cleanupArchive = QUARANTINE_CLEANUP_PATTERN.test(name);
+      if (!match && !cleanupArchive) continue;
+      if (!context.hasBudget() || result.checked >= maxEntries) return false;
+      result.checked++;
+      quarantineCursor = name;
+      if (!match) {
+        result.skipped.cleanup_archive = (result.skipped.cleanup_archive ?? 0) + 1;
+        continue;
+      }
+      try {
+        await retireEvidence(parent, name, match[1]!, Number(match[2]), context, result, (target) =>
+          quarantineRetentionBlocker(target, match[1]!, closedBefore),
+        );
+      } catch (err) {
+        result.failed++;
+        logger.warn({ err, scope: match[1] }, "native runner evidence retention skipped a quarantine entry");
+      }
+    }
+    quarantineCursor = null;
+    return true;
+  }
+
   async function tick(options: NativeHarnessBackupExpirationOptions = {}) {
     const closedForDays = Math.max(
       1,
       options.closedForDays ?? defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS,
+    );
+    const evidenceRetentionDays = Math.max(
+      1,
+      options.evidenceRetentionDays ?? defaults.evidenceRetentionDays ?? NATIVE_RUNNER_EVIDENCE_RETENTION_DEFAULT_DAYS,
     );
     const dryRun = options.dryRun ?? defaults.dryRun ?? false;
     const maxEntries = Math.max(1, options.maxEntries ?? defaults.maxEntries ?? 200);
@@ -321,33 +475,69 @@ export function nativeHarnessBackupExpirationService(
     const shouldContinue = options.shouldContinue ?? defaults.shouldContinue ?? (() => true);
     const isSessionBusy = options.isSessionBusy ?? defaults.isSessionBusy ?? nativeSessionScopeDigestIsBusy;
     const base = path.resolve(options.stateBase ?? defaults.stateBase ?? nativeHarnessStateBase());
-    const closedBefore = new Date((options.now ?? defaults.now ?? new Date()).getTime() - closedForDays * DAY_MS);
+    const now = (options.now ?? defaults.now ?? new Date()).getTime();
+    const closedBefore = new Date(now - closedForDays * DAY_MS);
     const result = emptyResult();
+    const hasBudget = () => shouldContinue() && result.candidates + result.evidenceCandidates < maxRemovals;
+    const context: EvidenceContext = {
+      dryRun,
+      isSessionBusy,
+      now,
+      retainedBefore: now - evidenceRetentionDays * DAY_MS,
+      hasBudget,
+    };
 
-    const names = (await fs.readdir(base).catch(() => [] as string[]))
-      .filter((name) => SCOPE_PATTERN.test(name))
-      .sort();
-    const pending = cursor ? names.filter((name) => name > cursor!) : names;
-    for (const name of pending) {
-      if (!shouldContinue() || result.checked >= maxEntries || result.candidates >= maxRemovals) {
-        result.truncated = true;
-        break;
+    if (phase === "sessions") {
+      const names = (await fs.readdir(base).catch(() => [] as string[]))
+        .filter((name) => SCOPE_PATTERN.test(name))
+        .sort();
+      const pending = cursor ? names.filter((name) => name > cursor!) : names;
+      for (const name of pending) {
+        if (!hasBudget() || result.checked >= maxEntries) {
+          result.truncated = true;
+          break;
+        }
+        result.checked++;
+        const previous = cursor;
+        cursor = name;
+        const root = path.join(base, name);
+        if (path.dirname(root) !== base || !(await isRealDirectory(root))) {
+          result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
+          continue;
+        }
+        const resumeAfter = resume?.scope === name ? resume.archive : null;
+        if (resume && name >= resume.scope) resume = null;
+        if (resumeAfter === null) {
+          try {
+            await expireSession(root, name, { dryRun, isSessionBusy, closedBefore }, result);
+          } catch (err) {
+            result.failed++;
+            logger.warn({ err, scope: name }, "native harness backup expiration skipped a session");
+          }
+        }
+        let stoppedAt: string | null = null;
+        try {
+          stoppedAt = await retireContinuityBreaks(root, name, resumeAfter, context, result);
+        } catch (err) {
+          result.failed++;
+          logger.warn({ err, scope: name }, "native runner evidence retention skipped a session");
+        }
+        if (stoppedAt !== null) {
+          resume = { scope: name, archive: stoppedAt };
+          cursor = previous;
+          result.truncated = true;
+          break;
+        }
       }
-      result.checked++;
-      cursor = name;
-      const root = path.join(base, name);
-      if (path.dirname(root) !== base || !(await isRealDirectory(root))) {
-        result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
-        continue;
-      }
-      try {
-        await expireSession(root, name, { dryRun, isSessionBusy, closedBefore }, result);
-      } catch (err) {
-        result.failed++;
-        logger.warn({ err, scope: name }, "native harness backup expiration skipped a session");
-      }
+      if (result.truncated) return result;
+      cursor = null;
+      phase = "quarantine";
     }
-    if (!result.truncated) cursor = null;
+    if (!(await retireQuarantine(base, context, result, maxEntries))) {
+      result.truncated = true;
+      return result;
+    }
+    phase = "sessions";
     return result;
   }
 

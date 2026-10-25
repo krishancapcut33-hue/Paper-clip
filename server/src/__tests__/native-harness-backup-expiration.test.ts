@@ -301,4 +301,292 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(await exists(leftover)).toBe(false);
     expect(await exists(session.current)).toBe(true);
   });
+  async function seedArchive(root: string, input: { stampedDaysAgo?: number; mtimeDaysAgo?: number; name?: string } = {}) {
+    const stampedAt = now.getTime() - (input.stampedDaysAgo ?? 10) * DAY_MS;
+    const archive = path.join(root, "continuity-breaks", input.name ?? `${stampedAt}-${randomUUID()}`);
+    await fs.mkdir(path.join(archive, "codex-home"), { recursive: true });
+    await fs.writeFile(path.join(archive, "codex-home", "history.jsonl"), "x".repeat(64 * 1024));
+    const mtime = new Date(now.getTime() - (input.mtimeDaysAgo ?? input.stampedDaysAgo ?? 10) * DAY_MS);
+    await fs.utimes(archive, mtime, mtime);
+    return archive;
+  }
+
+  async function seedQuarantine(
+    scope: string,
+    input: { stampedDaysAgo?: number; identity?: { runId: string; normalizedSessionId: string }; name?: string } = {},
+  ) {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    const stampedAt = now.getTime() - (input.stampedDaysAgo ?? 10) * DAY_MS;
+    const entry = path.join(
+      stateBase,
+      "quarantine",
+      input.name ?? `${scope}.identity_indeterminate.${stampedAt}.4242.${randomUUID()}`,
+    );
+    await fs.mkdir(path.join(entry, "control-plane"), { recursive: true });
+    await fs.writeFile(path.join(entry, "history.jsonl"), "x".repeat(64 * 1024));
+    if (input.identity) {
+      await fs.writeFile(
+        path.join(entry, "control-plane", "control-plane-state.json"),
+        JSON.stringify({ identity: input.identity }),
+      );
+    }
+    return entry;
+  }
+
+  async function seedRunIdentity(input: { issueStatus?: string } = {}) {
+    const session = await seedSession({ ...input, backupAgeDays: 1 });
+    const state = JSON.parse(
+      await fs.readFile(path.join(session.root, "control-plane", "control-plane-state.json"), "utf8"),
+    ) as { identity: { runId: string; normalizedSessionId: string } };
+    return { ...session, identity: state.identity };
+  }
+
+  function evidenceService(overrides: Parameters<typeof nativeHarnessBackupExpirationService>[1] = {}) {
+    return nativeHarnessBackupExpirationService(db, {
+      stateBase,
+      now,
+      evidenceRetentionDays: 7,
+      isSessionBusy: () => false,
+      ...overrides,
+    });
+  }
+
+  async function emptyStateBase() {
+    if (!stateBase) stateBase = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-durable-sessions-"));
+    return createHash("sha256").update(randomUUID()).digest("hex");
+  }
+
+  it("removes continuity archives older than the retention window and keeps recent ones", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const old = await seedArchive(session.root, { stampedDaysAgo: 9 });
+    const recent = await seedArchive(session.root, { stampedDaysAgo: 2 });
+
+    const result = await evidenceService().tick();
+
+    expect(result).toMatchObject({ evidenceCandidates: 1, evidenceRemoved: 1, failed: 0 });
+    expect(result.evidenceReclaimedBytes).toBeGreaterThan(0);
+    expect(result.skipped.recent_evidence).toBe(1);
+    expect(await exists(old)).toBe(false);
+    expect(await exists(recent)).toBe(true);
+    expect(await exists(session.current)).toBe(true);
+  });
+
+  it("removes the continuity-breaks folder once its archives are gone", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    await seedArchive(session.root);
+
+    expect(await evidenceService().tick()).toMatchObject({ evidenceRemoved: 1 });
+    expect(await exists(path.join(session.root, "continuity-breaks"))).toBe(false);
+  });
+
+  it("ages a continuity archive by its name and falls back to mtime for a future stamp", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const stampedRecently = await seedArchive(session.root, { stampedDaysAgo: 1, mtimeDaysAgo: 30 });
+    const futureStamp = await seedArchive(session.root, {
+      name: `${now.getTime() + DAY_MS}-${randomUUID()}`,
+      mtimeDaysAgo: 30,
+    });
+    const futureRecent = await seedArchive(session.root, {
+      name: `${now.getTime() + 2 * DAY_MS}-${randomUUID()}`,
+      mtimeDaysAgo: 1,
+    });
+
+    expect(await evidenceService().tick()).toMatchObject({ evidenceRemoved: 1 });
+    expect(await exists(stampedRecently)).toBe(true);
+    expect(await exists(futureStamp)).toBe(false);
+    expect(await exists(futureRecent)).toBe(true);
+  });
+
+  it("ignores folders that are not continuity archives", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const other = await seedArchive(session.root, { name: "notes", stampedDaysAgo: 30 });
+
+    expect(await evidenceService().tick()).toMatchObject({ evidenceCandidates: 0 });
+    expect(await exists(other)).toBe(true);
+  });
+
+  it("keeps the evidence of a session that is executing in this process", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root);
+    const quarantine = await seedQuarantine(session.scope);
+
+    const result = await evidenceService({ isSessionBusy: (scope) => scope === session.scope }).tick();
+
+    expect(result).toMatchObject({ evidenceCandidates: 0, evidenceRemoved: 0 });
+    expect(result.skipped.session_active).toBe(3);
+    expect(await exists(archive)).toBe(true);
+    expect(await exists(quarantine)).toBe(true);
+  });
+
+  it("keeps evidence when its session starts while the removal is being prepared", async () => {
+    const scope = await emptyStateBase();
+    const root = path.join(stateBase, scope);
+    const archive = await seedArchive(root);
+    let checks = 0;
+
+    const result = await evidenceService({ isSessionBusy: () => ++checks > 1 }).tick();
+
+    expect(result).toMatchObject({ evidenceCandidates: 1, evidenceRemoved: 0 });
+    expect(result.skipped.session_active).toBe(1);
+    expect(await exists(archive)).toBe(true);
+  });
+
+  it("reports evidence without deleting it in dry run", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root);
+    const quarantine = await seedQuarantine(session.scope);
+    const leftover = path.join(session.root, "continuity-breaks", `.expired-${randomUUID()}`);
+    await fs.mkdir(leftover);
+
+    const result = await evidenceService({ dryRun: true }).tick();
+
+    expect(result).toMatchObject({ evidenceCandidates: 2, evidenceRemoved: 0, evidenceReclaimedBytes: 0 });
+    expect(result.evidenceCandidateBytes).toBeGreaterThan(0);
+    expect(await exists(archive)).toBe(true);
+    expect(await exists(quarantine)).toBe(true);
+    expect(await exists(leftover)).toBe(true);
+  });
+
+  it("skips symlinked evidence without following it", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-evidence-outside-"));
+    try {
+      await fs.writeFile(path.join(outside, "keep.txt"), "keep");
+      const stampedAt = now.getTime() - 10 * DAY_MS;
+      await fs.mkdir(path.join(session.root, "continuity-breaks"), { recursive: true });
+      const archiveLink = path.join(session.root, "continuity-breaks", `${stampedAt}-${randomUUID()}`);
+      await fs.symlink(outside, archiveLink);
+      await fs.mkdir(path.join(stateBase, "quarantine"), { recursive: true });
+      const quarantineLink = path.join(
+        stateBase,
+        "quarantine",
+        `${session.scope}.identity_indeterminate.${stampedAt}.4242.${randomUUID()}`,
+      );
+      await fs.symlink(outside, quarantineLink);
+
+      const result = await evidenceService().tick();
+
+      expect(result).toMatchObject({ evidenceCandidates: 0, evidenceRemoved: 0 });
+      expect(result.skipped.unsafe_path).toBe(2);
+      expect(await exists(archiveLink)).toBe(true);
+      expect(await exists(quarantineLink)).toBe(true);
+      expect(await exists(path.join(outside, "keep.txt"))).toBe(true);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("skips symlinked evidence folders without following them", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const outside = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-evidence-outside-"));
+    try {
+      const stampedAt = now.getTime() - 10 * DAY_MS;
+      const inside = path.join(outside, `${stampedAt}-${randomUUID()}`);
+      await fs.mkdir(inside);
+      await fs.utimes(inside, new Date(stampedAt), new Date(stampedAt));
+      await fs.symlink(outside, path.join(session.root, "continuity-breaks"));
+      await fs.symlink(outside, path.join(stateBase, "quarantine"));
+
+      const result = await evidenceService().tick();
+
+      expect(result).toMatchObject({ evidenceCandidates: 0, evidenceRemoved: 0 });
+      expect(result.skipped.unsafe_path).toBe(2);
+      expect(await exists(inside)).toBe(true);
+    } finally {
+      await fs.rm(outside, { recursive: true, force: true });
+    }
+  });
+
+  it("removes quarantine entries older than the retention window and keeps recent ones", async () => {
+    const scope = await emptyStateBase();
+    const old = await seedQuarantine(scope, { stampedDaysAgo: 9 });
+    const recent = await seedQuarantine(scope, { stampedDaysAgo: 2 });
+
+    const result = await evidenceService().tick();
+
+    expect(result).toMatchObject({ evidenceCandidates: 1, evidenceRemoved: 1, failed: 0 });
+    expect(result.skipped.recent_evidence).toBe(1);
+    expect(await exists(old)).toBe(false);
+    expect(await exists(recent)).toBe(true);
+    expect(await fs.readdir(path.join(stateBase, "quarantine"))).toEqual([path.basename(recent)]);
+  });
+
+  it("removes old quarantine entries of sessions whose issue closed before the window", async () => {
+    const session = await seedRunIdentity();
+    const entry = await seedQuarantine(session.scope, { identity: session.identity });
+
+    expect(await evidenceService().tick()).toMatchObject({ evidenceRemoved: 1 });
+    expect(await exists(entry)).toBe(false);
+  });
+
+  it("keeps old quarantine entries of sessions that may still resume", async () => {
+    const session = await seedRunIdentity({ issueStatus: "in_progress" });
+    const entry = await seedQuarantine(session.scope, { identity: session.identity });
+
+    const result = await evidenceService().tick();
+
+    expect(result).toMatchObject({ evidenceCandidates: 0, evidenceRemoved: 0 });
+    expect(result.skipped.issue_open).toBe(1);
+    expect(await exists(entry)).toBe(true);
+  });
+
+  it("keeps cleanup source archives in quarantine", async () => {
+    const scope = await emptyStateBase();
+    const entry = await seedQuarantine(scope, { name: `${scope}.identity_indeterminate.cleanup.${randomUUID()}` });
+    const old = new Date(now.getTime() - 30 * DAY_MS);
+    await fs.utimes(entry, old, old);
+
+    const result = await evidenceService().tick();
+
+    expect(result.evidenceCandidates).toBe(0);
+    expect(result.skipped.cleanup_archive).toBe(1);
+    expect(await exists(entry)).toBe(true);
+  });
+
+  it("finishes removing evidence left over from an interrupted removal", async () => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archive = await seedArchive(session.root, { stampedDaysAgo: 1 });
+    const leftover = path.join(session.root, "continuity-breaks", `.expired-${randomUUID()}`);
+    await fs.mkdir(path.join(leftover, "codex-home"), { recursive: true });
+    const quarantineLeftover = path.join(stateBase, "quarantine", `.expired-${randomUUID()}`);
+    await fs.mkdir(quarantineLeftover, { recursive: true });
+
+    await evidenceService().tick();
+
+    expect(await exists(leftover)).toBe(false);
+    expect(await exists(quarantineLeftover)).toBe(false);
+    expect(await exists(archive)).toBe(true);
+  });
+
+  it.each([false, true])("pages evidence removals across ticks (dry run %s)", async (dryRun) => {
+    const session = await seedSession({ issueStatus: "in_progress" });
+    const archives = [await seedArchive(session.root), await seedArchive(session.root), await seedArchive(session.root)];
+    const quarantine = await seedQuarantine(session.scope);
+    const retention = evidenceService({ dryRun, maxRemovals: 2 });
+
+    const results = [];
+    for (let i = 0; i < 4; i++) {
+      const result = await retention.tick();
+      results.push(result);
+      if (!result.truncated) break;
+    }
+
+    expect(results.map((result) => result.evidenceCandidates)).toEqual([2, 2]);
+    expect(results.map((result) => result.truncated)).toEqual([true, false]);
+    for (const archive of archives) expect(await exists(archive)).toBe(dryRun);
+    expect(await exists(quarantine)).toBe(dryRun);
+  });
+
+  it("does not recount a session's backup when its archives resume on the next tick", async () => {
+    const session = await seedSession();
+    await seedArchive(session.root);
+    await seedArchive(session.root);
+    const retention = evidenceService({ dryRun: true, maxRemovals: 2 });
+
+    const first = await retention.tick();
+    const second = await retention.tick();
+
+    expect(first).toMatchObject({ candidates: 1, evidenceCandidates: 1, truncated: true });
+    expect(second).toMatchObject({ candidates: 0, evidenceCandidates: 1, truncated: false });
+  });
 });
