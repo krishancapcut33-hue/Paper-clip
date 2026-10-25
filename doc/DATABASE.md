@@ -135,6 +135,13 @@ authority once. Different task bindings must both pass. The batch is discarded
 after that delivery; later events still recheck grants, membership, task
 existence, and company boundaries.
 
+Connection-assignment checks select profile bindings for the current company or
+agent and read rules that can match the selected connection's catalog rows.
+All five selector kinds, null application matching, exclusions, and profile
+precedence retain their existing evaluator. Rule filtering uses the catalog
+values already read by that check, so a later catalog change cannot drop an
+exclusion from the decision being evaluated. There is no cross-call cache.
+
 Filesystem preparation uses current task/run and selected-configuration checks.
 Historical root-reader authorization has been retired; no retained-reader batch is
 loaded at admission or publication. Workspace-record disclosure still uses task
