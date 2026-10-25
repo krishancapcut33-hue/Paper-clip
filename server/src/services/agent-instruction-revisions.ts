@@ -237,6 +237,18 @@ export function agentInstructionRevisionService(db: Db) {
       await adoptAgentFiles(tx, state.agent);
     });
   }
+  async function persistHireApprovalBundleConfiguration(
+    agentId: string,
+    adapterConfig: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const persisted = await updateAgentConfigurationInTransaction(
+      db,
+      agentId,
+      { adapterConfig },
+      { allowPendingApprovalConfigUpdate: true },
+    );
+    return persisted?.adapterConfig ?? adapterConfig;
+  }
   async function commitInternal(
     input:
       | InstructionCommitInput
@@ -443,6 +455,7 @@ export function agentInstructionRevisionService(db: Db) {
     history,
     diff,
     materializeCurrent,
+    persistHireApprovalBundleConfiguration,
     commit: (input: InstructionCommitInput, actor: RevisionActor) =>
       commitInternal(input, actor),
     restore: (

@@ -15,7 +15,6 @@ import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
-import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   const { runner, ...data } = input;
@@ -106,9 +105,11 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
           ...existing,
           adapterConfig: patch.adapterConfig ?? existing.adapterConfig,
         }, { mode: "managed", entryFile });
-        const persisted = await updateAgentConfigurationInTransaction(txDb, existing.id, { adapterConfig: configured.adapterConfig }, { allowPendingApprovalConfigUpdate: true });
-        patch.adapterConfig = persisted?.adapterConfig ?? configured.adapterConfig;
         const revisionService = agentInstructionRevisionService(txDb);
+        patch.adapterConfig = await revisionService.persistHireApprovalBundleConfiguration(
+          existing.id,
+          configured.adapterConfig,
+        );
         const current = await revisionService.readCommittedForRuntime({ companyId: existing.companyId, agentId: existing.id });
         await revisionService.commit({ companyId: existing.companyId, agentId: existing.id, entryFile,
           content: files[entryFile] ?? current?.content ?? "", baseRevisionId: current?.revision.id ?? null, source: "board" },
