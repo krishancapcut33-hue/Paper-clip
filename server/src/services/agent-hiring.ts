@@ -1,7 +1,7 @@
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { unprocessable } from "../errors.js";
 import { agentRecordQueries, isPlainRecord, configPatchFromApprovalPayload, normalizeRuntimeConfigForNewAgent,
   deduplicateAgentName, type CreateAgentData, type CreateAgentOptions, type AgentConfigurationPatch, type AgentHireRecord } from "../lib/agent-records.js";
@@ -13,6 +13,7 @@ import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { agentInstructionsService } from "./agent-instructions.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   const { runner, ...data } = input;
@@ -90,6 +91,24 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
 export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null): Promise<AgentConfigurationPatch> {
   const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
+  if (approvedPayload && isPlainRecord(approvedPayload.instructionsBundle)) {
+    const bundle = approvedPayload.instructionsBundle;
+    if (isPlainRecord(bundle.files)) {
+      const files = Object.fromEntries(
+        Object.entries(bundle.files).filter(([, content]) => typeof content === "string"),
+      ) as Record<string, string>;
+      if (Object.keys(files).length > 0) {
+        const materialized = await agentInstructionsService(txDb).materializeManagedBundle({
+          ...existing,
+          adapterConfig: patch.adapterConfig ?? existing.adapterConfig,
+        }, files, {
+          entryFile: typeof bundle.entryFile === "string" ? bundle.entryFile : "AGENTS.md",
+          replaceExisting: true,
+        });
+        patch.adapterConfig = materialized.adapterConfig;
+      }
+    }
+  }
   const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
   if (
     Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
@@ -129,8 +148,22 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
 
 export async function completeAgentHireApproval(txDb: Db, updated: AgentHireRecord, existing: AgentHireRecord) {
   const tx = txDb;
+  const permissions = isPlainRecord(updated.permissions) ? updated.permissions : {};
+  const explicitlyRestricted = permissions.canCreateAgents === false
+    || permissions.canCreateSkills === false
+    || permissions.canAssignTasks === false;
+  if (explicitlyRestricted) {
+    await tx.delete(principalPermissionGrants).where(
+      and(
+        eq(principalPermissionGrants.companyId, updated.companyId),
+        eq(principalPermissionGrants.principalType, "agent"),
+        eq(principalPermissionGrants.principalId, updated.id),
+        inArray(principalPermissionGrants.permissionKey, NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS),
+      ),
+    );
+  }
   await agentCredentialService(txDb).syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
-  if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+  if (!explicitlyRestricted && !permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
         companyId: updated.companyId,

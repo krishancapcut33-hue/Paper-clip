@@ -156,6 +156,7 @@ export type AuthorizationDecision = {
     | "deny_missing_membership"
     | "deny_missing_grant"
     | "deny_missing_consent"
+    | "deny_explicit_agent_permission"
     | "deny_no_grant"
     | "deny_policy_restricted"
     | "deny_low_trust_boundary"
@@ -2213,6 +2214,16 @@ function createAuthorizationService(db: Db | DbTransaction, readSnapshot?: ReadA
         action: input.action,
         reason: "deny_company_boundary",
         explanation: "Actor agent was not found in the target company.",
+      });
+    }
+
+    if (input.action === "tasks:assign" &&
+        actorAgent.permissions && typeof actorAgent.permissions === "object" &&
+        (actorAgent.permissions as Record<string, unknown>).canAssignTasks === false) {
+      return deny({
+        action: input.action,
+        reason: "deny_explicit_agent_permission",
+        explanation: "Explicit agent permission canAssignTasks=false blocks task assignment.",
       });
     }
 

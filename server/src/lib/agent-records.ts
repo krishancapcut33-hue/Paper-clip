@@ -10,6 +10,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { builtInAgentMarkersEqual, readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
+import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 
 export function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -85,7 +86,7 @@ export type CreateAgentData = Omit<typeof agents.$inferInsert, "companyId" | "li
 export type AgentConfigurationRecord = typeof agents.$inferSelect;
 export const AGENT_CONFIGURATION_FIELDS = [...CONFIG_REVISION_FIELDS, "permissions"] as const;
 export type AgentConfigurationPatch = Partial<Pick<typeof agents.$inferInsert, typeof AGENT_CONFIGURATION_FIELDS[number]>>;
-export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
+export type AgentHireRecord = Pick<typeof agents.$inferSelect, "id" | "companyId" | "name" | "adapterType" | "adapterConfig" | "permissions" | "metadata" | "status">;
 
 export interface CreateAgentOptions {
   setupOnly?: boolean;
@@ -189,6 +190,17 @@ export function configPatchFromApprovalPayload(payload: Record<string, unknown>)
   }
   if (typeof payload.adapterType === "string") patch.adapterType = payload.adapterType;
   if (isPlainRecord(payload.adapterConfig)) patch.adapterConfig = payload.adapterConfig;
+  if (Array.isArray(payload.desiredSkills)) {
+    const desiredSkills: Array<string | { key: string; versionId: string | null }> = payload.desiredSkills.flatMap((entry): Array<string | { key: string; versionId: string | null }> => {
+      if (typeof entry === "string") return [entry];
+      if (isPlainRecord(entry) && typeof entry.key === "string") return [{
+        key: entry.key,
+        versionId: typeof entry.versionId === "string" ? entry.versionId : null,
+      }];
+      return [];
+    });
+    patch.adapterConfig = writePaperclipSkillSyncPreference(patch.adapterConfig ?? {}, desiredSkills);
+  }
   if (isPlainRecord(payload.runtimeConfig)) patch.runtimeConfig = payload.runtimeConfig;
   if (Object.prototype.hasOwnProperty.call(payload, "defaultEnvironmentId")) {
     patch.defaultEnvironmentId =

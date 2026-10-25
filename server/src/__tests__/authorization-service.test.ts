@@ -2256,6 +2256,44 @@ describeEmbeddedPostgres("authorization service", () => {
     });
   });
 
+  it("honors an explicit canAssignTasks=false deny even with active membership and grants", async () => {
+    const company = await createCompany(db, "ExplicitAssignmentDeny");
+    const actorAgent = await createAgent(db, company.id, {
+      permissions: { canAssignTasks: false },
+    });
+    const targetAgent = await createAgent(db, company.id);
+    await grantAgentPermission(db, company.id, actorAgent.id, "tasks:assign");
+
+    const decision = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    });
+
+    expect(decision).toMatchObject({
+      allowed: false,
+      reason: "deny_explicit_agent_permission",
+    });
+
+    const decisionAfterServiceRecreation = await authorizationService(db).decide({
+      actor: { type: "agent", agentId: actorAgent.id, companyId: company.id, source: "agent_key" },
+      action: "tasks:assign",
+      resource: {
+        type: "issue",
+        companyId: company.id,
+        assigneeAgentId: targetAgent.id,
+      },
+    });
+    expect(decisionAfterServiceRecreation).toMatchObject({
+      allowed: false,
+      reason: "deny_explicit_agent_permission",
+    });
+  });
+
   it("scopes task bridge JWTs away from company-wide reads and unrelated issue writes", async () => {
     const company = await createCompany(db, "TaskBridge");
     const bridgeAgent = await createAgent(db, company.id);

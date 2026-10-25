@@ -18,6 +18,7 @@ import {
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
 import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS } from "../lib/agent-permissions.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -186,5 +187,89 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       budgetMonthlyCents: 1234,
       metadata: { source: "hire-form" },
     });
+  });
+
+  it("replays approved skills and instructions and removes standard grants for restricted hires", async () => {
+    const companyId = await seedCompany();
+    const agentSvc = agentService(db);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Restricted Reliability Analyst",
+      role: "engineer",
+      title: "Reliability Analyst",
+      icon: "shield",
+      capabilities: "Diagnostics",
+      adapterType: "codex_local",
+      adapterConfig: { search: false },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      budgetMonthlyCents: 0,
+      metadata: null,
+      status: "pending_approval",
+      spentMonthlyCents: 0,
+      permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+      lastHeartbeatAt: null,
+    });
+    expect(pending).toMatchObject({
+      status: "pending_approval",
+      lifecycleState: "pending_approval",
+      permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+    });
+    await db.insert(principalPermissionGrants).values(
+      NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+        companyId,
+        principalType: "agent" as const,
+        principalId: pending.id,
+        permissionKey,
+        scope: permissionKey === "tasks:assign_scope" ? { subtreeRootAgentId: pending.id } : null,
+      })),
+    );
+    const instructions = "Approved reliability instructions.";
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: "board-user",
+      status: "pending",
+      payload: {
+        agentId: pending.id,
+        name: pending.name,
+        role: pending.role,
+        title: pending.title,
+        icon: pending.icon,
+        adapterType: pending.adapterType,
+        adapterConfig: pending.adapterConfig,
+        runtimeConfig: pending.runtimeConfig,
+        permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+        desiredSkills: ["paperclipai/paperclip/browser-use"],
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } },
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved restricted hire");
+
+    const updated = await agentSvc.getById(pending.id);
+    expect(updated).toMatchObject({
+      status: "paused",
+      adapterConfig: {
+        paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/browser-use"] },
+      },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+    });
+
+    const [grantRows, file] = await Promise.all([
+      db.select({ permissionKey: principalPermissionGrants.permissionKey })
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.principalId, pending.id)),
+      (await import("../services/agent-instructions.js")).agentInstructionsService(db)
+        .readFile(updated!, "AGENTS.md"),
+    ]);
+    expect(grantRows).toEqual([]);
+    expect(file.content).toBe(instructions);
   });
 });
