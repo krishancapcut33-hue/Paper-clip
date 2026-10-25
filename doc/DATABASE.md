@@ -471,6 +471,13 @@ bindings, selectors, exclusions, and installed connections on every call. The
 public effective-profile response continues to include complete tool schemas
 and annotations.
 
+Connection readiness checks use a scoped assignment reader. It applies the same
+current profile precedence, selectors, and exclusions to the candidate connection
+IDs. The reader selects rule match fields and catalog identities. It does not
+load rule conditions, catalog schemas, profile summaries, or the company-agent
+list. Installed connections and later identity and gateway checks remain fresh.
+Full effective-profile and effective-tool responses keep their complete shape.
+
 ## Execution identity row locks
 
 Identity initialization, credential acquisition, and steering reconciliation lock
