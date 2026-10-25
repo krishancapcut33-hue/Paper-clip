@@ -118,7 +118,9 @@ export async function terminalizeLegacyExecution(input: {
           )
           .for("update")
       : [];
-    const [current] = await tx.select().from(heartbeatRuns).where(and(
+    const [current] = await tx.select({ runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status,
+      resultJson: heartbeatRuns.resultJson, executionStatusDeliveryId: heartbeatRuns.executionStatusDeliveryId,
+    }).from(heartbeatRuns).where(and(
       eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId),
     )).for("update");
     if (!current || (current.runtimeMode !== "legacy" && !(input.recordRestoreFailureOnly && current.runtimeMode === "native")) ||

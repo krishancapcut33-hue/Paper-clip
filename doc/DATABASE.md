@@ -96,6 +96,11 @@ payloads. It retains current coordinator checks, provider evidence, local-host
 identity checks, and every lease's termination receipt. The stop receipt and
 process-field update remain in the same transaction.
 
+Legacy terminalization locks runtime mode, status, full result evidence, and the
+status-delivery token without loading unused input, profile, or log bodies.
+It keeps the existing lock, writes, full returned run, workspace-retention
+receipts, and source-bound recovery holds. Stored payloads remain unchanged.
+
 Conversation ownership checks select process identity and full recovery result
 evidence without execution prompts or profiles. Committed native reply repair
 selects its persisted result and identity bindings plus typed presentation flags.
