@@ -1,4 +1,4 @@
-import { and, asc, desc, eq, inArray, isNotNull, isNull, notInArray, sql, type SQL } from "drizzle-orm";
+import { and, asc, desc, eq, gt, inArray, isNotNull, isNull, notInArray, sql, type SQL } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import {
   agents,
@@ -1105,9 +1105,31 @@ const FAILED_RUN_PROBE_BATCH_SIZE = 1000;
 
 async function listFailedRunsWithNewerRun(db: Db, companyId: string, failedRuns: FailedRunProbe[]) {
   const withNewerRun = new Set<string>();
-  for (let start = 0; start < failedRuns.length; start += FAILED_RUN_PROBE_BATCH_SIZE) {
-    const batch = failedRuns.slice(start, start + FAILED_RUN_PROBE_BATCH_SIZE);
+  const keyed = failedRuns.filter(run => run.issueId !== null);
+  for (let start = 0; start < keyed.length; start += FAILED_RUN_PROBE_BATCH_SIZE) {
+    const batch = keyed.slice(start, start + FAILED_RUN_PROBE_BATCH_SIZE);
     for (const id of await listFailedRunBatchWithNewerRun(db, companyId, batch)) withNewerRun.add(id);
+  }
+  const unkeyed = failedRuns.filter(run => run.issueId === null);
+  if (unkeyed.length === 0) return withNewerRun;
+  const agentIds = [...new Set(unkeyed.map(run => run.agentId))];
+  const oldestCreatedAt = unkeyed.reduce((oldest, run) => run.createdAt < oldest ? run.createdAt : oldest,
+    unkeyed[0]!.createdAt);
+  const latestByAgent = new Map<string, Date>();
+  for (let start = 0; start < agentIds.length; start += FAILED_RUN_PROBE_BATCH_SIZE) {
+    const rows = await db.select({
+      agentId: heartbeatRuns.agentId,
+      createdAt: sql<Date>`max(${heartbeatRuns.createdAt})`.mapWith(heartbeatRuns.createdAt),
+    }).from(heartbeatRuns).where(and(
+      eq(heartbeatRuns.companyId, companyId),
+      inArray(heartbeatRuns.agentId, agentIds.slice(start, start + FAILED_RUN_PROBE_BATCH_SIZE)),
+      gt(heartbeatRuns.createdAt, oldestCreatedAt),
+      sql`coalesce(${heartbeatRuns.contextSnapshot} ->> 'issueId', ${heartbeatRuns.contextSnapshot} ->> 'taskId', '') = ''`,
+    )).groupBy(heartbeatRuns.agentId);
+    for (const row of rows) latestByAgent.set(row.agentId, row.createdAt);
+  }
+  for (const run of unkeyed) {
+    if ((latestByAgent.get(run.agentId)?.getTime() ?? 0) > run.createdAt.getTime()) withNewerRun.add(run.id);
   }
   return withNewerRun;
 }
@@ -1132,7 +1154,6 @@ async function listFailedRunBatchWithNewerRun(db: Db, companyId: string, failedR
     from (values ${failed}) as failed (id, agent_id, issue_id, newer_from)
     where ${newerRunExists(sql`${runIssueId} = failed.issue_id`)}
       or ${newerRunExists(sql`${runTaskId} = failed.issue_id and ${runIssueId} is null`)}
-      or (failed.issue_id is null and ${newerRunExists(sql`coalesce(${runIssueId}, ${runTaskId}, '') = ''`)})
   `) as unknown as Array<{ id: string }>;
   return rows.map((row) => row.id);
 }

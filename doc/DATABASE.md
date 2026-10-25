@@ -54,6 +54,9 @@ The probes match the failed run's agent and issue or task context. They preserve
 the existing millisecond comparison and empty-context rules. Each batch holds
 at most 1,000 failed runs. Retained run history stays in the database; this check
 returns only the identifiers of failures that have a newer matching run.
+For failures without a task key, it reads the latest keyless timestamp once per
+agent. Unique agents are batched separately, so repeated failures do not repeat
+the same history scan. Both paths retain the current millisecond comparison.
 
 The issue-lock adapter's release read omits `result_json.stdout` and
 `result_json.stderr` before transferring a run to the controller. Native context

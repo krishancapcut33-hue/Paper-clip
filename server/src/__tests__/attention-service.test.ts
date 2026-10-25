@@ -1119,16 +1119,18 @@ describeEmbeddedPostgres("attention service", () => {
       expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id)).toEqual([failedId]);
     } finally { capture.flush(); }
     const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
-      && event.table === "heartbeat_runs" && event.operation === "select");
+      && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
     expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
     expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(64);
     expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+    expect(reads.filter(event => event.operation === "execute")
+      .reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
     const [remaining] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
       .where(eq(heartbeatRuns.companyId, companyId));
     expect(remaining?.count).toBe(2001);
   });
 
-  it("checks more failed runs for a newer run than one statement can bind", async () => {
+  it("reads keyless history once per agent despite thousands of failures", async () => {
     const { companyId, workerId, reviewerId } = await seedCompany("ATB");
     const failedAt = new Date("2026-07-09T12:00:00.000Z");
     const laterAt = new Date("2026-07-09T12:01:00.000Z");
@@ -1154,11 +1156,53 @@ describeEmbeddedPostgres("attention service", () => {
       contextSnapshot: { wakeReason: "timer" }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
     });
 
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    try {
+      const feed = await attentionService(db).list(companyId, {
+        includeDismissed: true, all: true, allowUnscopedAll: true,
+      });
+      expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
+        .toEqual([...keptIds].sort());
+    } finally { capture.flush(); }
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "heartbeat_runs" && (event.operation === "select" || event.operation === "execute"));
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeLessThan(4);
+  }, 180_000);
+
+  it("checks more failed runs for a newer run than one statement can bind", async () => {
+    const { companyId, workerId, reviewerId } = await seedCompany("ATQ");
+    const issueId = await insertIssue({ companyId, identifier: "ATQ-1", title: "Keyed retained failures", status: "in_progress" });
+    const failedAt = new Date("2026-07-09T12:00:00.000Z");
+    const laterAt = new Date("2026-07-09T12:01:00.000Z");
+    const hiddenIds = Array.from({ length: 16_390 }, () => randomUUID());
+    const keptIds = Array.from({ length: 10 }, () => randomUUID());
+    const failure = (id: string, agentId: string) => ({
+      id, companyId, agentId, invocationSource: "automation", status: "failed", error: "adapter failed",
+      contextSnapshot: { issueId }, createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    const failures = hiddenIds.map((id) => failure(id, workerId));
+    keptIds.forEach((id, index) => failures.splice(index * 1_700, 0, failure(id, reviewerId)));
+    for (let start = 0; start < failures.length; start += 1_000) {
+      const chunk = failures.slice(start, start + 1_000);
+      await db.insert(heartbeatRuns).values(chunk);
+      await db.insert(heartbeatRunEvents).values(chunk.map((run) => ({
+        companyId, runId: run.id, agentId: run.agentId, seq: 1, eventType: "lifecycle",
+        message: "Bounded retry exhausted after 4 scheduled attempts; no further automatic retry will be queued",
+        createdAt: new Date("2026-07-09T12:00:01.000Z"),
+      })));
+    }
+    await db.insert(heartbeatRuns).values({
+      id: randomUUID(), companyId, agentId: workerId, invocationSource: "automation", status: "succeeded",
+      contextSnapshot: { issueId }, createdAt: laterAt, updatedAt: laterAt, finishedAt: laterAt,
+    });
+
     const feed = await attentionService(db).list(companyId, {
       includeDismissed: true, all: true, allowUnscopedAll: true,
     });
-
-    expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
+    expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id).sort())
       .toEqual([...keptIds].sort());
   }, 180_000);
 
