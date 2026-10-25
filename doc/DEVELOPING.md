@@ -1814,6 +1814,8 @@ writes, explicit resumes, session compaction, and usage/billing helpers.
 during construction. The encoding-check cache belongs to each factory instance.
 Queued-comment polling reads current issue control fields, the typed issue binding,
 and the selected adapter type. Mutation and execution paths retain their full run reads.
+Workspace-operation polling reads the current run access scope and typed workspace
+binding, then applies the existing run and operation permission checks.
 `heartbeat.ts` keeps run execution and re-exports the
 existing public helpers. Keep session policy changes separate from run
 orchestration changes.

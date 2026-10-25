@@ -159,6 +159,34 @@ describePostgres("heartbeat run state database wiring", () => {
     return { companyId, agent, issue, state: extracted.createHeartbeatRunState(db) };
   }
 
+  it("reads current workspace access without execution snapshots and retains JSON types", async () => {
+    const { companyId, agent, issue } = await fixture();
+    const payload = randomBytes(128 * 1024).toString("base64"), workspaceId = randomUUID();
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId: agent.id, scopeKind: "issue", issueId: issue.id,
+      contextSnapshot: { executionWorkspaceId: workspaceId, prompt: payload }, runnerProfileJson: { instructions: payload },
+      resultJson: { stdout: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
+    }).returning();
+    const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+    try {
+      const state = extracted.createHeartbeatRunState(observed);
+      expect(await state.getRunWorkspaceAccess(run.id)).toEqual({
+        id: run.id, companyId, scopeKind: "issue", issueId: issue.id, executionWorkspaceId: workspaceId,
+      });
+      capture.flush();
+      const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+      expect(summary.completedQueries).toBe(1);
+      expect(summary.responseValueBytes).toBeLessThan(1024);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
+      for (const value of [null, true, 42, " workspace-two ", [workspaceId], { id: workspaceId }]) {
+        await db.update(heartbeatRuns).set({ contextSnapshot: { executionWorkspaceId: value, prompt: payload } }).where(eq(heartbeatRuns.id, run.id));
+        expect((await state.getRunWorkspaceAccess(run.id))?.executionWorkspaceId).toEqual(value);
+      }
+      expect(await state.getRunWorkspaceAccess(randomUUID())).toBeNull();
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
+
   it("reads fresh issue control facts without transferring execution snapshots", async () => {
     const { companyId, agent, issue } = await fixture();
     const payload = randomBytes(128 * 1024).toString("base64");

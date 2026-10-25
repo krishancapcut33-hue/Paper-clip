@@ -825,6 +825,7 @@ export function heartbeatService(
     hasResolvablePriorSessionWorkspaceForWake,
     getRunReadAccess,
     getRunLogAccess,
+    getRunWorkspaceAccess,
     listRuns,
     getRuntimeStateWithSessions,
     listTaskSessions,
@@ -3993,6 +3994,7 @@ export function heartbeatService(
 
     getRunReadAccess,
     getRunLogAccess,
+    getRunWorkspaceAccess,
 
     getRuntimeState: getRuntimeStateWithSessions,
 

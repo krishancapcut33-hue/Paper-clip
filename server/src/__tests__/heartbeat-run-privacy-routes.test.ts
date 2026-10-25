@@ -1,6 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/postgres-js";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import express from "express";
 import request from "supertest";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -256,6 +257,29 @@ describeEmbeddedPostgres("heartbeat run privacy routes", { concurrent: false }, 
     app.use(errorHandler);
     return app;
   }
+
+  it("lists workspace operations with small run reads and checks a revoked issue grant again", async () => {
+    const f = await seedFixture(), payload = "workspace-operation-saved-input🙂".repeat(25_000);
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, prompt: payload },
+      runnerProfileJson: { instructions: payload }, stdoutExcerpt: payload, stderrExcerpt: payload,
+    }).where(eq(heartbeatRuns.id, f.privateRunId));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId));
+    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { heartbeatRuns }, capture);
+    try {
+      const app = createApp(f.companyId, f.grantedAgentId, observed);
+      const response = await request(app).get(`/api/heartbeat-runs/${f.privateRunId}/workspace-operations`).expect(200);
+      expect(response.body).toEqual([expect.objectContaining({ id: f.operationId })]);
+      capture.flush();
+      const reads = events.filter(event => event.table === "heartbeat_runs" && event.operation === "select");
+      expect(reads.length).toBeGreaterThan(0);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(2048);
+      await db.delete(issueAccessGrants).where(eq(issueAccessGrants.subjectId, f.grantedAgentId));
+      await request(app).get(`/api/heartbeat-runs/${f.privateRunId}/workspace-operations`).expect(404);
+      expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, f.privateRunId)))[0]).toEqual(before);
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
 
   it("returns 404 for direct private-run content and metadata-only list stubs to a non-member", async () => {
     const fixture = await seedFixture();

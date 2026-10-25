@@ -1182,6 +1182,13 @@ export function createHeartbeatRunState(db: Db) {
       .then((rows) => rows[0] ?? null);
   }
 
+  async function getRunWorkspaceAccess(runId: string) {
+    return db.select({
+      ...heartbeatRunReadAccessColumns,
+      executionWorkspaceId: sql<unknown>`${heartbeatRuns.contextSnapshot}->'executionWorkspaceId'`,
+    }).from(heartbeatRuns).where(eq(heartbeatRuns.id, runId)).then(rows => rows[0] ?? null);
+  }
+
   async function getRuntimeState(agentId: string) {
     return db
       .select()
@@ -1736,6 +1743,7 @@ export function createHeartbeatRunState(db: Db) {
     getRunStatus,
     getRunReadAccess,
     getRunLogAccess,
+    getRunWorkspaceAccess,
 
     listRuns: async (
       companyId: string,
