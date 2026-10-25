@@ -465,3 +465,9 @@ For a cancelled native run, the file-recovery form also offers an optional
 confirmation that no external actions were performed. Leave it unchecked unless
 the run history verifies that fact. The default records files without certifying
 action outcomes. Changing the selected source clears the evidence and confirmations.
+
+Committed chat response authorization reads current run identity, completion
+binding, and chat source fields under the existing nonblocking share lock.
+It excludes saved execution input, runner profiles, and log excerpts. Actual
+retry admission still reads the complete run and its recovery evidence. These
+reads preserve stored run data, source revocation checks, and JSON value types.
