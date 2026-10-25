@@ -18,7 +18,7 @@ import { ensureGitRestorePointCommit, validateGitRestorePointRef, type GitRestor
 import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
 import { PROJECT_REPOSITORIES_DIR } from "@paperclipai/adapter-utils/git-workspace-sync";
-import { forgetExpiredNestedRepositoryWorktree, nestedRepositoryBaseCandidates, readLinkedNestedCheckout, recordedNestedRepositoryBase, type LinkedNestedCheckout } from "./nested-repository-worktrees.js";
+import { OWNED_NESTED_REF_LIMIT, forgetExpiredNestedRepositoryWorktree, nestedRepositoryBaseCandidates, readLinkedNestedCheckout, recordedNestedRepositoryBase, type LinkedNestedCheckout } from "./nested-repository-worktrees.js";
 
 const execFile = promisify(execFileCallback);
 const shaPattern = /^[a-f0-9]{40}$/;
@@ -249,7 +249,6 @@ async function assertCommitMessageSaved(cwd: string, gitDir: string, signal?: Ab
   if (!saved.includes(message.trim())) throw new Error("uncommitted_git_message");
 }
 
-const OWNED_NESTED_REF_LIMIT = 64;
 
 async function ownedNestedRefs(linked: LinkedNestedCheckout, signal?: AbortSignal) {
   const refs = (await gitCacheCommand(linked.checkout, ["for-each-ref", `--count=${OWNED_NESTED_REF_LIMIT + 1}`,

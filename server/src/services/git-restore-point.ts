@@ -596,10 +596,13 @@ export async function restorePointHistoryDigest(input: string, signal?: AbortSig
   const reflog = await gitText(cwd, ["reflog", "show", "--format=%H", "HEAD"], { signal }).catch(() => "");
   const original = await gitText(cwd, ["rev-parse", "--verify", "-q", "ORIG_HEAD^{commit}"], { signal }).catch(() => "");
   const linked = (await fs.lstat(path.join(cwd, ".git")).catch(() => null))?.isFile() ?? false;
-  const scope = linked ? `refs/heads/${await (await import("./nested-repository-worktrees.js")).nestedWorktreeBranchPrefix(cwd)}` : "refs/remotes";
-  const remotes = await gitText(cwd, ["for-each-ref", "--format=%(objectname) %(refname)", scope], { signal }).catch(() => "");
+  const nested = linked ? await import("./nested-repository-worktrees.js") : null;
+  const scope = nested ? `refs/heads/${await nested.nestedWorktreeBranchPrefix(cwd)}` : "refs/remotes";
+  const remotes = await gitText(cwd, ["for-each-ref", ...nested ? [`--count=${nested.OWNED_NESTED_REF_LIMIT + 1}`] : [],
+    "--format=%(objectname) %(refname)", scope], { signal }).catch(() => "");
   const remoteReflogs: string[] = [];
-  if (linked) {
+  if (nested) {
+    if (remotes.split("\n").filter(Boolean).length > nested.OWNED_NESTED_REF_LIMIT) throw new Error("managed_checkout_local_tip_budget");
     for (const ref of remotes.split("\n").map((line) => line.split(" ")[1]).filter(Boolean)) {
       remoteReflogs.push(...(await gitText(cwd, ["reflog", "show", "--format=%H", ref!], { signal }).catch(() => "")).split("\n").filter((line) => SHA.test(line)).map((sha) => `${sha} ${ref}`));
     }

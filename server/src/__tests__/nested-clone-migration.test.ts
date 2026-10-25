@@ -256,6 +256,8 @@ describeEmbeddedPostgres("nested repository clone migration", () => {
     expect(await restorePointHistoryDigest(f.checkout)).toBe(before);
     git(f.base, "update-ref", `refs/heads/${f.prefix}remotes/origin/extra`, head);
     expect(await restorePointHistoryDigest(f.checkout)).not.toBe(before);
+    for (let index = 0; index < 64; index++) git(f.base, "update-ref", `refs/heads/${f.prefix}remotes/origin/bulk-${index}`, head);
+    await expect(restorePointHistoryDigest(f.checkout)).rejects.toThrow("managed_checkout_local_tip_budget");
   });
 
   it("finishes an interrupted conversion after the workspace is archived and forgets one whose workspace is gone", async () => {
