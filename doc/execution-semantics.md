@@ -1683,15 +1683,17 @@ controller must recover it through the authenticated ownership checks. This
 preserves active work and queued messages without treating a server restart as
 user cancellation.
 
-During controller shutdown, an already registered provider startup has a bounded
-30-second window to finish read-only run admission and publish its exact session
-for detachment. Its company, run, session, runner and completion-contract binding
+During controller shutdown, already registered provider startups share one
+30-second sweep deadline to finish read-only run admission and publish their exact
+sessions for detachment. Its company, run, session, runner and completion-contract binding
 must still match persisted authority. The draining controller cannot checkpoint,
 publish events, submit a turn or settle the run. A new startup after the shutdown
 fence, or admission after the window expires, remains rejected. A Stop pending
-during startup keeps cancellation and cleanup with the current owner. Shutdown
-waits at most 30 seconds for that owner to settle; it does not detach the session
-or submit a prompt while Stop is pending.
+before or after session publication keeps cancellation and cleanup with the
+current owner. Shutdown waits for that owner only until the same sweep deadline;
+it does not detach the session or submit a prompt while Stop is pending. An
+unsettled owner remains explicitly pending for reconciliation. Its timeout does
+not abort detachment of healthy sessions or trigger a global graceful drain.
 
 Recovery restores a structured result proposal from the durable run events when
 its append survived but the active turn's session checkpoint did not. Advancing

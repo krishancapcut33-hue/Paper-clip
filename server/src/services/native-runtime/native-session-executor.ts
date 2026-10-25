@@ -225,6 +225,7 @@ import {
 type ActiveNativeSession = {
   session: NativeSession;
   cancelRequested: boolean;
+  cancellationSettled?: Promise<void>;
   restartDetach?: Promise<void>;
 };
 
@@ -271,13 +272,14 @@ type NativeSessionStartup = {
 const nativeSessionStartups = new Map<string, NativeSessionStartup>();
 
 function detachActiveNativeSessionForRestart(active: ActiveNativeSession) {
-  active.restartDetach ??= Promise.resolve().then(() => active.session.detachControllerForRestart!());
+  active.restartDetach ??= active.session.detachControllerForRestart!();
   return active.restartDetach;
 }
 
 async function waitForNativeSessionStartup(
   runId: string,
   timeoutError: () => Error = () => new Error("native_restart_startup_not_ready"),
+  timeoutMs = 30_000,
 ) {
   const startup = nativeSessionStartups.get(runId);
   if (!startup) return null;
@@ -286,7 +288,7 @@ async function waitForNativeSessionStartup(
     return await Promise.race([
       startup.promise,
       new Promise<never>((_resolve, reject) => {
-        timer = setTimeout(() => reject(timeoutError()), 30_000);
+        timer = setTimeout(() => reject(timeoutError()), timeoutMs);
       }),
     ]);
   } finally {
@@ -300,10 +302,13 @@ export async function detachNativeSessionsForRestart(
   detachedRunIds: string[];
   inactiveRunIds: string[];
   unsupportedRunIds: string[];
+  pendingRunIds: string[];
 }> {
   const detachedRunIds: string[] = [];
   const inactiveRunIds: string[] = [];
   const unsupportedRunIds: string[] = [];
+  const pendingRunIds: string[] = [];
+  const restartDeadline = Date.now() + 30_000;
   const settlementDeadline = Date.now() + 20_000;
   for (const runId of new Set(runIds)) {
     // A governed stop already revoked new work and is collecting terminal
@@ -325,9 +330,17 @@ export async function detachNativeSessionsForRestart(
       // admission. It must publish its exact session for detachment; writes and
       // new turns remain revoked, including after the bounded wait expires.
       const startup = nativeSessionStartups.get(runId);
+      if (startup && Date.now() >= restartDeadline) {
+        pendingRunIds.push(runId);
+        continue;
+      }
       if (startup) startup.restartAdmissionPending = true;
       try {
-        active = await waitForNativeSessionStartup(runId) ?? undefined;
+        active = await waitForNativeSessionStartup(runId, undefined, Math.max(0, restartDeadline - Date.now())) ?? undefined;
+      } catch (error) {
+        if (!(error instanceof Error) || error.message !== "native_restart_startup_not_ready") throw error;
+        pendingRunIds.push(runId);
+        continue;
       } finally {
         if (startup) startup.restartAdmissionPending = false;
       }
@@ -337,16 +350,20 @@ export async function detachNativeSessionsForRestart(
       continue;
     }
     const stopping = nativeSessionStartups.get(runId);
-    if (stopping?.stopRequested) {
-      // Stop owns cancellation and final cleanup. Relinquishing the transport
-      // before that owner settles can lose its stop acknowledgement.
+    if (stopping?.stopRequested || active.cancelRequested) {
+      // Stop owns cancellation and final cleanup, including after publication.
+      // A deadline leaves this run pending; it must not abort healthy adoption
+      // or claim that the transport/cleanup owner has settled.
       let timer: ReturnType<typeof setTimeout> | undefined;
       try {
-        await Promise.race([stopping.settled, new Promise<never>((_resolve, reject) => {
-          timer = setTimeout(() => reject(new NativeCancellationPendingRecoveryError()), 30_000);
-        })]);
+        const settled = stopping && await Promise.race([
+          stopping.settled.then(() => true),
+          new Promise<false>(resolve => {
+            timer = setTimeout(() => resolve(false), Math.max(0, restartDeadline - Date.now()));
+          }),
+        ]);
+        (settled ? inactiveRunIds : pendingRunIds).push(runId);
       } finally { clearTimeout(timer); }
-      inactiveRunIds.push(runId);
       continue;
     }
     if (active.session.detachControllerForRestart === undefined) {
@@ -356,7 +373,7 @@ export async function detachNativeSessionsForRestart(
     await detachActiveNativeSessionForRestart(active);
     detachedRunIds.push(runId);
   }
-  return { detachedRunIds, inactiveRunIds, unsupportedRunIds };
+  return { detachedRunIds, inactiveRunIds, unsupportedRunIds, pendingRunIds };
 }
 const MAX_REMOTE_CHECKPOINT_ARCHIVE_BYTES = 64 * 1024 * 1024;
 const MAX_REMOTE_CHECKPOINT_EXPANDED_BYTES = 64 * 1024 * 1024;
@@ -7254,6 +7271,7 @@ export async function cancelNativeSession(
   // Do not acknowledge a no-op Stop and let that owner submit a turn afterwards.
   const startup = runStop && !activeNativeSessions.has(runId) ? nativeSessionStartups.get(runId) : undefined;
   let settleStartupCancellation: (() => void) | undefined;
+  let settleActiveCancellation: (() => void) | undefined;
   if (startup) {
     startup.stopRequested = true;
     startup.cancellationSettled = new Promise<void>(resolve => { settleStartupCancellation = resolve; });
@@ -7266,6 +7284,7 @@ export async function cancelNativeSession(
       dispatched = true;
       if (!active.cancelRequested) {
         active.cancelRequested = true;
+        active.cancellationSettled = new Promise<void>(resolve => { settleActiveCancellation = resolve; });
         try {
           if (active.session.cancel) {
             const cancellationAbort = new AbortController();
@@ -7475,6 +7494,7 @@ export async function cancelNativeSession(
     return { dispatched, decision, decisionId, auditId };
   } finally {
     settleStartupCancellation?.();
+    settleActiveCancellation?.();
   }
 }
 
@@ -9254,6 +9274,13 @@ async function executePaperclipNativeSessionWithinScope(
                   eq(heartbeatRuns.agentId, input.execution.binding.agentId),
                 )).limit(1);
                 const cancellation = record(currentRun?.resultJson?.nativeCancellation);
+                if (active.cancelRequested) {
+                  // A Stop can acquire the published handle while the authority
+                  // read above is in flight. Keep its ACK/cleanup owner before
+                  // unwinding admission; neither detach nor generic close wins.
+                  await active.cancellationSettled;
+                  throw new NativeCancellationPendingRecoveryError();
+                }
                 if (!currentRun || currentRun.status !== "running" ||
                     currentRun.resultJson?.startupCancellation ||
                     (cancellation.scope === "run" &&
@@ -9268,7 +9295,10 @@ async function executePaperclipNativeSessionWithinScope(
                   throw new NativeControllerDetachedForRestartError();
                 }
                 if (session.resolveRuntimeRequest) await liveQuestions.attach();
-                if (active.cancelRequested) throw new NativeCancellationPendingRecoveryError();
+                if (active.cancelRequested) {
+                  await active.cancellationSettled;
+                  throw new NativeCancellationPendingRecoveryError();
+                }
               } else {
                 liveQuestions.close();
                 activeNativeSessions.delete(input.execution.binding.runId);
