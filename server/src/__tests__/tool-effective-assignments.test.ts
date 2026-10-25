@@ -216,15 +216,38 @@ describeDatabase("effective tool assignments", () => {
 
   it("preserves null application matches and exact special-character tool names", async () => {
     const f = await fixture(), toolName = "quoted' path\\tool_🙂";
+    await db.update(toolCatalogEntries).set({ status: "removed" }).where(eq(toolCatalogEntries.id, f.write.id));
     await db.update(toolCatalogEntries).set({ applicationId: null, toolName }).where(eq(toolCatalogEntries.id, f.read.id));
     await db.update(toolProfiles).set({ defaultAction: "allow" }).where(eq(toolProfiles.id, f.profile.id));
     const [rule] = await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: f.profile.id,
       selectorType: "application", applicationId: null, effect: "exclude" }).returning();
-    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.write.id]);
+    const service = toolAccessService(db);
+    expect((await compare(f)).assignments.allowedTools).toEqual([]);
+    expect((await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id])).allowedConnectionIds).toEqual([]);
     await db.update(toolProfileEntries).set({ selectorType: "tool_name", toolName }).where(eq(toolProfileEntries.id, rule.id));
-    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.write.id]);
+    expect((await compare(f)).assignments.allowedTools).toEqual([]);
+    expect((await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id])).allowedConnectionIds).toEqual([]);
     await db.update(toolProfileEntries).set({ toolName: `${toolName}different` }).where(eq(toolProfileEntries.id, rule.id));
-    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.read.id, f.write.id]);
+    expect((await compare(f)).assignments.allowedTools.map(tool => tool.id)).toEqual([f.read.id]);
+    expect((await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id])).allowedConnectionIds).toEqual([f.connection.id]);
+  });
+
+  it.each(["application", "connection", "catalog_entry", "tool_name", "risk_level"] as const)("denies the connection when a %s exclusion blocks its only active tool", async selectorType => {
+    const f = await fixture();
+    await db.update(toolCatalogEntries).set({ status: "removed" }).where(eq(toolCatalogEntries.id, f.write.id));
+    await db.update(toolProfiles).set({ defaultAction: "allow" }).where(eq(toolProfiles.id, f.profile.id));
+    const [rule] = await db.insert(toolProfileEntries).values({ companyId: f.company.id, profileId: f.profile.id, selectorType, effect: "exclude",
+      ...(selectorType === "application" ? { applicationId: f.application.id } : {}),
+      ...(selectorType === "connection" ? { connectionId: f.connection.id } : {}),
+      ...(selectorType === "catalog_entry" ? { catalogEntryId: f.read.id } : {}),
+      ...(selectorType === "tool_name" ? { toolName: f.read.toolName } : {}),
+      ...(selectorType === "risk_level" ? { riskLevel: "read" as const } : {}),
+    }).returning();
+    const service = toolAccessService(db);
+    expect((await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id])).allowedConnectionIds).toEqual([]);
+    expect((await compare(f)).assignments.allowedTools).toEqual([]);
+    await db.delete(toolProfileEntries).where(eq(toolProfileEntries.id, rule.id));
+    expect((await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id])).allowedConnectionIds).toEqual([f.connection.id]);
   });
 
   it("filters rules against the catalog rows being evaluated when the catalog changes during the read", async () => {
