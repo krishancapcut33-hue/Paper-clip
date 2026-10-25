@@ -145,6 +145,9 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
       existing.adapterConfig,
     );
   }
+  if (isPlainRecord(patch.adapterConfig) && isPlainRecord(existing.adapterConfig)) {
+    patch.adapterConfig = { ...existing.adapterConfig, ...patch.adapterConfig };
+  }
   if (patch.permissions !== undefined) {
     // The pending-approval activation replays the original hire
     // request, so the new-agent creation default applies.
