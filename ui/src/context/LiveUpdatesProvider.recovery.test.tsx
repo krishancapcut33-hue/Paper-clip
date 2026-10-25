@@ -5,13 +5,13 @@ import { QueryClient, QueryClientProvider, useQuery } from "@tanstack/react-quer
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
 
-const { pushToast, companySelection } = vi.hoisted(() => ({ pushToast: vi.fn(), companySelection: { id: "company-1" } }));
+const { pushToast, companySelection, routeSelection } = vi.hoisted(() => ({ pushToast: vi.fn(), companySelection: { id: "company-1" }, routeSelection: { pathname: "/tasks" } }));
 const { sessionRead, healthRead } = vi.hoisted(() => ({ sessionRead: vi.fn(), healthRead: vi.fn() }));
 vi.mock("./CompanyContext", () => ({
   useCompany: () => ({ selectedCompanyId: companySelection.id, selectedCompany: { id: companySelection.id } }),
 }));
 vi.mock("./ToastContext", () => ({ useToastActions: () => ({ pushToast }) }));
-vi.mock("../lib/router", () => ({ useLocation: () => ({ pathname: "/tasks" }) }));
+vi.mock("../lib/router", () => ({ useLocation: () => routeSelection }));
 vi.mock("../api/auth", () => ({
   authApi: { getSession: sessionRead },
 }));
@@ -42,6 +42,7 @@ describe("LiveUpdatesProvider connection recovery", () => {
   beforeEach(() => {
     vi.useFakeTimers();
     companySelection.id = "company-1";
+    routeSelection.pathname = "/tasks";
     pollRead.mockReset().mockResolvedValue([]);
     vi.spyOn(document, "visibilityState", "get").mockReturnValue("visible");
     read.mockReset();
@@ -248,7 +249,7 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(runRead).toHaveBeenCalledTimes(1);
     expect(activeRead).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("new-run");
-    await deliver("company-1", { agentId: "agent-1", runId: "agent-bound-run" });
+    await deliver("company-1", { agentId: "reviewer-agent", runId: "reviewer-run-without-task-id" });
     expect(runRead).toHaveBeenCalledTimes(2);
     expect(activeRead).toHaveBeenCalledTimes(2);
   });
@@ -329,6 +330,39 @@ describe("LiveUpdatesProvider connection recovery", () => {
     await act(async () => vi.advanceTimersByTimeAsync(1));
     expect(runRead).toHaveBeenCalledTimes(readsAfterChange);
     expect(invalidate).not.toHaveBeenCalled();
+  });
+
+  it.each(["focused", "unfocused"])("refreshes once for a start event with two run observers on a %s task view", async focus => {
+    vi.stubGlobal("WebSocket", Socket);
+    vi.spyOn(document, "hasFocus").mockReturnValue(focus === "focused");
+    routeSelection.pathname = "/DEMO/issues/DEMO-1";
+    const queryRef = "DEMO-1";
+    client.setQueryData(queryKeys.issues.detail(queryRef), { id: "issue-1", companyId: "company-1", assigneeAgentId: "agent-1" });
+    const runRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]);
+    const activeRead = vi.fn<() => Promise<unknown>>().mockResolvedValue(null);
+    function Reads({ connected, interval }: { connected: boolean; interval: number }) {
+      useQuery({ queryKey: queryKeys.issues.liveRuns(queryRef), queryFn: runRead,
+        refetchInterval: query => liveRunRefetchInterval(connected, query.state, interval) });
+      useQuery({ queryKey: queryKeys.issues.activeRun(queryRef), queryFn: activeRead,
+        refetchInterval: query => liveRunRefetchInterval(connected, query.state, interval) });
+      return null;
+    }
+    function TaskRuns() {
+      const connected = useTaskRunLiveUpdates({ companyId: "company-1", issueId: "issue-1", issueQueryRef: queryRef, assigneeAgentId: "agent-1" });
+      return <><Reads connected={connected} interval={1000} /><Reads connected={connected} interval={3000} /></>;
+    }
+    await act(async () => root.render(<QueryClientProvider client={client}><LiveUpdatesProvider><TaskRuns /></LiveUpdatesProvider></QueryClientProvider>));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    const socket = Socket.instances[0];
+    await act(async () => socket.onopen?.());
+    await act(async () => vi.advanceTimersByTimeAsync(301));
+    runRead.mockClear(); activeRead.mockClear();
+    await act(async () => socket.onmessage?.({ data: JSON.stringify({ id: 1, companyId: "company-1",
+      type: "heartbeat.run.queued", createdAt: "2020-01-01T00:00:00Z",
+      payload: { agentId: "agent-1", runId: "new-run" } }) }));
+    await act(async () => vi.advanceTimersByTimeAsync(301));
+    expect(runRead).toHaveBeenCalledTimes(1);
+    expect(activeRead).toHaveBeenCalledTimes(1);
   });
 
   it("keeps polling unassigned tasks even with a healthy shared connection", async () => {

@@ -151,8 +151,11 @@ reads, active work, errors, connection setup, and disconnections retain their
 existing polling cadence. Company or session changes require a new connection.
 Views without an assigned agent retain polling. Matching run lifecycle events
 refresh the displayed task's run queries independently of route and window
-focus. A matching event that overlaps an older request queues a fresh read after
-that request settles. Connection readiness also reconciles the displayed run
+focus. Events that omit task identity conservatively refresh these queries,
+including reviewer runs from another agent. One parent view owns both query
+observers and reuses refreshes already covered by the focused-route handler. A
+matching event that overlaps an older request queues a fresh read after that
+request settles. Connection readiness also reconciles the displayed run
 queries after any older request. Follow-up reads belong to the current mounted
 scope and stop when it changes or unmounts. The first open and reconnect still
 reconcile missed events.

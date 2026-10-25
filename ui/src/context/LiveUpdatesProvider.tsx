@@ -142,17 +142,21 @@ export function useTaskRunLiveUpdates(scope: {
 }): boolean {
   const connected = useHasCompanyLiveConnection(scope.companyId);
   const queryClient = useQueryClient();
+  const location = useLocation();
   const refreshOwner = useRef<{ active: boolean } | null>(null);
-  const refreshRuns = useCallback(() => {
+  const refreshRuns = useCallback((coveredByVisibleRoute = false) => {
     const owner = refreshOwner.current;
     if (!owner?.active) return;
     for (const queryKey of [queryKeys.issues.liveRuns(scope.issueQueryRef), queryKeys.issues.activeRun(scope.issueQueryRef)]) {
-      const wasFetching = queryClient.getQueryState(queryKey)?.fetchStatus === "fetching";
-      void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(() => {
-        if (wasFetching && owner.active) {
-          return queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
-        }
-      });
+      const query = queryClient.getQueryCache().find({ queryKey });
+      if (query?.state.fetchStatus === "fetching") {
+        void (query.promise ?? queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }))
+          .catch(() => undefined).then(() => {
+            if (owner.active) return queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+          });
+      } else if (!coveredByVisibleRoute) {
+        void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+      }
     }
   }, [queryClient, scope.issueQueryRef]);
   useEffect(() => {
@@ -167,8 +171,10 @@ export function useTaskRunLiveUpdates(scope: {
     const issueId = readString(event.payload.issueId);
     const matches = issueId
       ? issueId === scope.issueId || issueId === scope.issueQueryRef
-      : Boolean(scope.assigneeAgentId && event.payload.agentId === scope.assigneeAgentId);
-    if (matches) refreshRuns();
+      : true;
+    if (!matches) return;
+    const visible = resolveVisibleIssueRouteContext(queryClient, location.pathname);
+    refreshRuns(Boolean(visible?.issueRefs.has(scope.issueQueryRef) && runEventMatchesVisibleIssue(visible, event.payload)));
   });
   return connected && Boolean(scope.issueId && scope.assigneeAgentId);
 }
@@ -523,6 +529,13 @@ function shouldSuppressRunStatusToastForVisibleIssue(
   );
 }
 
+function runEventMatchesVisibleIssue(context: VisibleIssueRouteContext, payload: Record<string, unknown>): boolean {
+  const runId = readString(payload.runId);
+  const agentId = readString(payload.agentId);
+  return (runId !== null && context.runIds.has(runId)) ||
+    Boolean(agentId && context.assigneeAgentId && agentId === context.assigneeAgentId);
+}
+
 function invalidateVisibleIssueRunQueries(
   queryClient: QueryClient,
   pathname: string,
@@ -537,13 +550,7 @@ function invalidateVisibleIssueRunQueries(
   if (!context) return false;
 
   const runId = readString(payload.runId);
-  const agentId = readString(payload.agentId);
-  const matchesVisibleIssue =
-    (runId !== null && context.runIds.has(runId)) ||
-    (!!agentId &&
-      !!context.assigneeAgentId &&
-      agentId === context.assigneeAgentId);
-  if (!matchesVisibleIssue) return false;
+  if (!runEventMatchesVisibleIssue(context, payload)) return false;
 
   const status = readString(payload.status);
   if (runId && status && TERMINAL_RUN_STATUSES.has(status)) {

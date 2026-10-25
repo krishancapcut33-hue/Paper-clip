@@ -1206,6 +1206,7 @@ type IssueDetailChatTabProps = {
   interruption?: Issue["interruption"];
   retryPreparing?: boolean;
   queryIssueId?: string;
+  hasLiveConnection: boolean;
   browsers?: import("@paperclipai/shared").TaskBrowser[];
   onOpenBrowser?: (browserId: string) => void;
   onOpenSkill?: (skillId: string, name: string) => void;
@@ -1367,6 +1368,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   interruption,
   retryPreparing,
   queryIssueId,
+  hasLiveConnection,
   browsers,
   onOpenBrowser,
   onOpenSkill,
@@ -1477,7 +1479,6 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const designSandbox = useDesignSandbox();
   const queryClient = useQueryClient();
   const issueQueryRef = queryIssueId ?? issueId;
-  const hasLiveConnection = useTaskRunLiveUpdates({ companyId, issueId, issueQueryRef, assigneeAgentId: issueAssigneeAgentId });
   const scrollLocation = useLocation();
   const scrollNavigationType = useNavigationType();
   const { pushToast } = useToastActions();
@@ -3278,7 +3279,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     !hasLegacyIssueDetailQuery(location.search)
   ));
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
-  const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
+  const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId: issue?.id ?? issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
   const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);
   // A closed isolated workspace no longer blocks the composer. The server reopens
   // the workspace when the next comment or resume arrives, so the composer stays
@@ -8154,6 +8155,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   interruption={issue.interruption}
                   retryPreparing={taskRetry.optimistic}
                   queryIssueId={issueId ?? issue.id}
+                  hasLiveConnection={hasLiveConnection}
                   onOpenSkill={handleOpenSkill}
                   browsers={browserQuery.data}
                   onOpenBrowser={(id) => { setOpenBrowserId(id); if (isMobile) setMobilePropsOpen(true); else openTaskSidePanel(); }}
