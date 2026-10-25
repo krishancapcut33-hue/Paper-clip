@@ -24,7 +24,7 @@ function renderOnboardingConnect(result: RunnerE2EResult): string {
       const response = receipt[key];
       return `<h4>${label}</h4><dl>${[
         ["Response state", response.state], ["HTTP status", response.httpStatus],
-        ["Requested adapter", response.requestedAdapter], ["Returned adapter", response.adapter],
+        ["Test endpoint adapter", response.requestedAdapter], ["Returned adapter", response.adapter],
         ["Validation outcome", response.outcome], ["Server code", response.serverCode],
       ].map(([name, value]) => `<div><dt>${name}</dt><dd>${html(value ?? "Unavailable")}</dd></div>`).join("")}</dl>
       ${response.checks.length ? `<p>Validation checks:</p><ul>${response.checks.map(check => `<li><code>${html(check.code)}</code> · ${html(check.level)}</li>`).join("")}</ul>` : ""}

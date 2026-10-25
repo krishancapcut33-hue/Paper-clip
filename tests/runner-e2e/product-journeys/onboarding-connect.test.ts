@@ -172,10 +172,10 @@ describe("one onboarding Connect diagnostic boundary", () => {
 
   it("observes both successful responses and requires the visible review step", async () => {
     const f = fixture({ ready: true, click: () => {
-      f.respond({ adapterType: "codex_local", status: "pass", checks: [{ code: "codex_hello_probe_passed", level: "info", message: secret }] }, 200, validation.replace("paperclip_runner", "codex_local"));
+      f.respond({ adapterType: "paperclip_runner", status: "pass", checks: [{ code: "codex_hello_probe_passed", level: "info", message: secret }] }, 200, validation.replace("paperclip_runner", "codex_local"));
       f.respond({ agent: { id: secret }, approval: null }, 201, hire);
     } });
-    expect(await f.run()).toMatchObject({ checkpoint: "review", validation: { requestedAdapter: "codex_local", adapter: "codex_local", outcome: "pass", checks: [{ code: "codex_hello_probe_passed", level: "info" }] }, hire: { state: "json", httpStatus: 201 } });
+    expect(await f.run()).toMatchObject({ checkpoint: "review", validation: { requestedAdapter: "codex_local", adapter: "paperclip_runner", outcome: "pass", checks: [{ code: "codex_hello_probe_passed", level: "info" }] }, hire: { state: "json", httpStatus: 201 } });
     expect(JSON.stringify(f.receipt())).not.toContain(secret);
     expect(f.events.eventNames()).toEqual([]);
   });

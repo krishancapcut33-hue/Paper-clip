@@ -75,7 +75,7 @@ describe("deployment journey contracts", () => {
     const retained = result();
     retained.productJourney!.onboardingConnect = connectReceipt();
     const output = renderCaseOutcome(retained, true, []);
-    for (const text of ["Onboarding Connect diagnostics", "Last checkpoint", "Native validation", "Agent hire", "HTTP status", "200", "422", "paperclip_runner", "adapter_auth_missing", "agent_runner_unavailable", "error", "Unavailable"]) expect(output).toContain(text);
+    for (const text of ["Onboarding Connect diagnostics", "Last checkpoint", "Native validation", "Agent hire", "HTTP status", "Test endpoint adapter", "Returned adapter", "200", "422", "paperclip_runner", "adapter_auth_missing", "agent_runner_unavailable", "error", "Unavailable"]) expect(output).toContain(text);
     retained.productJourney!.onboardingConnect.validation.truncatedChecks = true;
     expect(renderCaseOutcome(retained, true, [])).toContain("Only the first 32 validation checks were retained");
     Object.assign(retained.productJourney!.onboardingConnect.validation, { body: "<script>must-not-render</script>" });

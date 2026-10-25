@@ -72,10 +72,10 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   // Connect performs the production probe and agent creation. Never press Retry.
   const connect = await onboardingConnect({ page, origin: api.origin, companyId: company.id, deadlineAt: input.deadlineAt,
     retain: value => { evidence.onboardingConnect = value; } });
-  connect.checkpoint = "agent-verification";
   const agents = await api.get<Row[]>(`/api/companies/${company.id}/agents`);
   const agent = agents.find(a => a.name === name);
   if (!agent || agents.length !== 1 || agent.adapterType !== "paperclip_runner" || agent.adapterConfig?.provider !== "codex" || agent.adapterConfig?.model !== input.gateway.model) throw new JourneyError("failed", "onboarding_agent_configuration_mismatch");
+  connect.checkpoint = "agent-verification";
   await input.own({ kind: "agent", name, id: agent.id });
   evidence.checks.push({ id: "ui-connection-and-native-agent", passed: true });
   await input.own({ kind: "issue", name: "Paperclip onboarding" });
