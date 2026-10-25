@@ -70,11 +70,11 @@ describe("GitHub registration handoff", () => {
 });
 
 describe("reused target ownership", () => {
-  it("stops a failed native retry and verifies its audited run-only acknowledgement", async () => {
+  it.each([true, false])("stops a failed native retry and verifies its audited acknowledgement (dispatched=%s)", async dispatched => {
     const scope = { companyId: 'company', agentId: 'agent', issueId: 'issue' };
     const failed = { ...scope, id: 'run', status: 'failed', runtimeMode: 'native', nativePhase: 'retryable_failure' };
     const get = vi.fn().mockResolvedValueOnce(failed).mockResolvedValue({ ...failed, status: 'cancelled', costAccountingPending: true,
-      resultJson: { nativeCancellation: { schema: 'paperclip.native-cancellation.v1', runId: 'run', companyId: 'company', issueId: 'issue', scope: 'run', reasonCode: 'cancellation_run_only', dispatched: true, dispatchState: 'acknowledged', intentAuditId: 'intent', acknowledgementAuditId: 'ack' } } });
+      resultJson: { nativeCancellation: { schema: 'paperclip.native-cancellation.v1', runId: 'run', companyId: 'company', issueId: 'issue', scope: 'run', reasonCode: 'cancellation_run_only', dispatched, dispatchState: 'acknowledged', intentAuditId: 'intent', acknowledgementAuditId: 'ack' } } });
     const post = vi.fn().mockResolvedValue({});
     await stopOwnedGitHubReviewRun({ get, post } as unknown as ConnectionApi, 'run', scope, new AbortController().signal);
     expect(post).toHaveBeenCalledExactlyOnceWith('/api/heartbeat-runs/run/cancel', { cancellationRequestId: expect.any(String) });
