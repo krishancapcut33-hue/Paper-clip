@@ -35,6 +35,12 @@ const mockTelemetryClient = vi.hoisted(() => ({
 }));
 vi.mock("../../telemetry.ts", () => ({ getTelemetryClient: () => mockTelemetryClient }));
 
+const reconcileMuseAssignments = vi.hoisted(() => vi.fn(async () => undefined));
+vi.mock("../muse-runner-broker.js", async importOriginal => ({
+  ...await importOriginal<typeof import("../muse-runner-broker.js")>(),
+  museRunnerBroker: () => ({ reconcileTerminalAssignments: reconcileMuseAssignments }),
+}));
+
 const mockCaptureRunFailure = vi.hoisted(() => vi.fn());
 vi.mock("../../sentry.ts", async () => {
   const actual = await vi.importActual<typeof import("../../sentry.ts")>("../../sentry.ts");
@@ -265,10 +271,14 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     const bulk = "saved-native-input-sentinel🙂".repeat(40_000);
     await db.update(heartbeatRuns).set({
       contextSnapshot: { issueId: fixture.issueId, savedInput: bulk },
-      runnerProfileJson: { savedInput: bulk }, stdoutExcerpt: bulk, stderrExcerpt: bulk,
+      runnerProfileJson: { savedInput: bulk, nativeExecutionInput: {
+        schema: "paperclip.native-execution-input.v8", savedInput: bulk,
+        provider: { kind: "muse", binding: { companyId, agentId, bindingId: fixture.runId } },
+      } }, stdoutExcerpt: bulk, stderrExcerpt: bulk,
     }).where(eq(heartbeatRuns.id, fixture.runId));
     const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    reconcileMuseAssignments.mockClear();
     const events: Array<Record<string, unknown>> = [];
     const now = Date.now();
     const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
@@ -288,6 +298,7 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
     const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
     expect(summary.completedQueries).toBeGreaterThan(0);
     expect(summary.responseValueBytes).toBeLessThan(100_000);
+    expect(reconcileMuseAssignments).toHaveBeenCalledExactlyOnceWith(companyId, agentId, fixture.runId);
     const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     expect(after).toEqual(before);
     expect(JSON.stringify(events)).not.toContain("saved-native-input-sentinel");
