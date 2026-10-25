@@ -1807,6 +1807,12 @@ dispatch with cancellation and execution, and re-exports the existing
 public helpers and configuration-incomplete error class. Keep preparation policy
 changes in this module and its tests.
 
+Queued-comment display reads select only wake identity, queue state, typed comment
+and interaction bindings, the displayed wait reason, and fresh-session flags.
+They read only the queued run's runtime mode. Mutation locks retain complete
+wake and run rows, so edits, ordering, interruption, and saved execution inputs
+keep their existing write contract.
+
 Run retrieval and session state are in `server/src/services/heartbeat/run-state.ts`.
 It owns bounded run projections, database encoding checks, task session reads and
 writes, explicit resumes, session compaction, and usage/billing helpers.

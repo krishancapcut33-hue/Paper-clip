@@ -220,6 +220,38 @@ describeEmbeddedPostgres("issue queued-comment routes", () => {
     } finally { capture.flush(); await observed.$client.end(); }
   });
 
+  it.each(["deferred", "queued"])("reads only queue display inputs from large %s wake payloads", async state => {
+    const f = await seedQueue();
+    if (state === "queued") await promoteQueue(f);
+    const client = app(f.companyId);
+    const path = `/api/issues/${f.issueId}/queued-comments`;
+    const expected = await request(client).get(path).expect(200);
+    const [wake] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    const payload = "saved-wake-input🙂".repeat(30_000);
+    const context = wake.payload?._paperclipWakeContext as Record<string, unknown>;
+    await db.update(agentWakeupRequests).set({ payload: {
+      ...wake.payload, prompt: payload,
+      _paperclipWakeContext: { ...context, prompt: payload, nativeExecutionInput: { instructions: payload } },
+    } }).where(eq(agentWakeupRequests.id, f.wakeId));
+    await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId, prompt: payload },
+      runnerProfileJson: { instructions: payload }, resultJson: { output: payload },
+    }).where(eq(heartbeatRuns.companyId, f.companyId));
+    const [before] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId));
+    const observed = createDb(tempDb!.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(observed, { agentWakeupRequests, heartbeatRuns }, capture);
+    try {
+      const response = await request(app(f.companyId, "queue-owner", undefined, observed)).get(path).expect(200);
+      expect(response.body).toEqual(expected.body);
+      capture.flush();
+      const reads = events.filter(event => ["agent_wakeup_requests", "heartbeat_runs"].includes(String(event.table)) && event.operation === "select");
+      expect(reads.some(event => event.table === "agent_wakeup_requests")).toBe(true);
+      expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+      expect((await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, f.wakeId)))[0]).toEqual(before);
+      await request(app(randomUUID(), "queue-owner", undefined, observed)).get(path).expect(404);
+    } finally { capture.flush(); await observed.$client.end(); }
+  });
+
   it.each(["cancelled", "running"])("rejects a late Done from an interrupted %s task run at the write boundary", async status => {
     const seeded = await seedQueue();
     await db.update(heartbeatRuns).set({ status, resultJson: { executionCancellation: { state: "requested" } } })
