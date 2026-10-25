@@ -79,6 +79,12 @@ completed state alone is also insufficient: the actual run must succeed and the
 associated task must reach Done. A native failure after publication fails the
 journey and retains the publication evidence already observed.
 
+The rendered check must match its exact GitHub run URL, score, and reviewed
+commit. Its failure status comes from that check's header. Hidden re-run menu
+items, a failure on another check, and words in the model's narrative do not
+prove the conclusion. `github-review-check.spec.ts` covers this boundary in the
+credential-free `test:e2e:runner:browser-support` suite.
+
 Each attempt records endpoint, App, PR/branch, task, and run ownership. Cleanup
 removes the owned endpoint, closes the owned PR/deletes its branch, and asks for
 the owned App's removal. App identity must match the created endpoint, company,
