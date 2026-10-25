@@ -246,6 +246,17 @@ The benchmark loads the baseline authorization module with current dependencies,
 compares complete workspace rows, and prints five warm samples and query plans.
 It measures SQL execution, not the full repository admission or agent startup.
 
+Native finalization retries preserve a run's terminal completion time when its
+status is unchanged. A retry mints another status delivery only when the current
+run's status, finalization metadata, phase, error fields, or missing completion
+time changes. An unchanged projection retains its existing pending delivery ID,
+including after a publish failure. Status delivery stays at least once; retry
+deadlines, recovery, accepted results, and workspace cleanup still run normally.
+Legacy recovery also retains the pending delivery when status is unchanged and
+no patch was supplied. Explicit patches, new terminal statuses, and newly
+retained workspace evidence still create a delivery. File retention, ownership
+checks, failed write conditions, lock cleanup, and recovery holds still apply.
+
 Agent lists read the complete company roster once and use that same snapshot for
 termination filtering and organization-chain normalization. Detail and plugin runtime reads
 load only identity, company, name, status, and manager from other company agents
