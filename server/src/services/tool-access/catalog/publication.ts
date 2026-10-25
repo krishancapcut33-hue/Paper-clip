@@ -182,7 +182,8 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
         ? googleProfileValue
         : null;
     const connectorPolicy = connectorToolPolicy(sourceTemplateKey, connection);
-    const preserveReviewedCatalog = connectorPolicy.quarantineNewEntries && existingRows.length > 0;
+    const preserveQuarantine = connectorPolicy.quarantineNewEntries || isGitHubAppConnection(connection);
+    const preserveReviewedCatalog = preserveQuarantine && existingRows.length > 0;
     const quarantineOnRefresh =
       (!refreshOptions.enableAllByDefault || preserveReviewedCatalog) &&
       (shouldQuarantineNewEntries(connection) || isGitHubAppConnection(connection)) &&
@@ -259,7 +260,6 @@ export function createToolCatalogPublication(db: Db, { now, audit, getConnection
     const catalogByName = new Map(catalogRows.map(row => [row.toolName, row]));
     const updatedEntries = descriptors.map(descriptor => toCatalogEntry(catalogByName.get(descriptor.name)!));
 
-    const preserveQuarantine = connectorPolicy.quarantineNewEntries;
     const normalizedConfig = preserveQuarantine
       ? { ...connection.config, quarantineNewEntries: true }
       : refreshOptions.enableAllByDefault

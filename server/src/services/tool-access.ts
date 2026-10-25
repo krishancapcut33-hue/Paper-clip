@@ -3028,6 +3028,11 @@ export function toolAccessService(
                   .where(eq(connectionGrants.id, current.id));
               }
             }
+            if (connectionMutationIsStillCurrent) {
+              // Restore declarations from the restored grant before deleting
+              // the failed attempt's secrets and personal definitions.
+              await syncConnectionCredentialBindings(tx, revivedConnectionPrevious);
+            }
           });
         } catch (rollbackError) {
           identityRollbackError = rollbackError;
@@ -3448,7 +3453,8 @@ export function toolAccessService(
       const profileBindings: ToolProfileBinding[] = [];
       // These connectors expose one agent-access choice. Commit installation
       // reach and permission bindings together, including an empty selection.
-      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)) {
+      if (isRemoteMcpConnectorMethod(connection.config.sourceTemplateKey, connection.config.connectionMethodKey)
+        || isGitHubAppConnection(connection)) {
         const desired = new Map(bindingInputs.flatMap((binding) => binding.targetType === "company" || binding.targetType === "agent"
           ? [[`${binding.targetType}:${binding.targetId}`, { targetType: binding.targetType, targetId: binding.targetId }] as const] : []));
         const removed = existingInstalls.filter((install) => !desired.has(`${install.targetType}:${install.targetId}`));

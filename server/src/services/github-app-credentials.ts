@@ -1,4 +1,4 @@
-import { and, eq } from "drizzle-orm";
+import { and, eq, sql } from "drizzle-orm";
 import { connectionGrants, toolConnections, toolConnectionInstalls, type Db } from "@paperclipai/db";
 import { resolveConnectionGrantSecret } from "./connection-credentials.js";
 import { unprocessable } from "../errors.js";
@@ -17,17 +17,21 @@ function matchesOwnership(connection: Connection, grant: Grant) {
       : grant.kind === "organization";
 }
 
-export async function getGitHubAppGrant(db: Db, connection: Connection): Promise<Grant> {
-  const grants = await db.select().from(connectionGrants).where(and(
+export async function getGitHubAppGrant(db: Db, connection: Connection): Promise<Grant & { updatedAtVersion: string }> {
+  const grants = await db.select({
+    grant: connectionGrants,
+    updatedAtVersion: sql<string>`${connectionGrants.updatedAt}::text`,
+  }).from(connectionGrants).where(and(
     eq(connectionGrants.companyId, connection.companyId),
     eq(connectionGrants.connectionId, connection.id),
     eq(connectionGrants.status, "active"),
   ));
-  const grant = grants[0];
+  const snapshot = grants[0];
+  const grant = snapshot?.grant;
   if (grants.length !== 1 || !grant || !matchesOwnership(connection, grant)) {
     throw unprocessable("Reconnect the GitHub App identity.");
   }
-  return grant;
+  return { ...grant, updatedAtVersion: snapshot!.updatedAtVersion };
 }
 
 /** Authorization and vault ownership are rechecked even on a token-cache hit. */
@@ -69,7 +73,8 @@ export async function refreshGitHubAppAccess(db: Db, connection: Connection, for
   const result = await resolveGitHubAppCredential(db, connection, grant, connection.status === "draft", force);
   await db.update(connectionGrants).set({ providerTenant: { github: result.github } }).where(and(
     eq(connectionGrants.id, grant.id), eq(connectionGrants.companyId, connection.companyId),
-    eq(connectionGrants.status, "active"), eq(connectionGrants.updatedAt, grant.updatedAt),
+    eq(connectionGrants.status, "active"),
+    sql`${connectionGrants.updatedAt} = ${grant.updatedAtVersion}::timestamptz`,
   ));
   return result;
 }

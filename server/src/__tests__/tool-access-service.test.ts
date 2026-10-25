@@ -78,7 +78,7 @@ import {
   projectConnectionMethodToolArguments,
   toolAccessService,
 } from "../services/tool-access.js";
-import { resolveGitHubAppCredential } from "../services/github-app-credentials.js";
+import { refreshGitHubAppAccess, resolveGitHubAppCredential } from "../services/github-app-credentials.js";
 import { accessService } from "../services/access.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { toolAccessPolicyService } from "../services/tool-access-policy.js";
@@ -17902,12 +17902,16 @@ describeEmbeddedPostgres("tool access service", () => {
     let revokeA = false;
     let rejectB = false;
     let rejectMcp = false;
+    const readTool = (name: string, description = "Original action") => ({
+      name, description, inputSchema: { type: "object" }, annotations: { readOnlyHint: true },
+    });
+    let discoveredTools = [readTool("get_file_contents"), readTool("list_issues")];
     const authenticatedKeys: string[] = [];
     vi.spyOn(globalThis, "fetch").mockImplementation(async (url, init) => {
       if (String(url) === "https://api.githubcopilot.com/mcp/") {
         if (rejectMcp) return Response.json({ error: "unavailable" }, { status: 503 });
         const rpc = JSON.parse(String(init?.body));
-        return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { tools: [] } });
+        return Response.json({ jsonrpc: "2.0", id: rpc.id, result: { tools: discoveredTools } });
       }
       const path = String(url).replace("https://api.github.com", "");
       if (path === "/app") {
@@ -17952,8 +17956,22 @@ describeEmbeddedPostgres("tool access service", () => {
         configValues: { ...configValues, customPermissions: '{"contents":"write"}' }, credentialValues: {},
       }, actor)).rejects.toMatchObject({ status: 400, message: expect.stringContaining("Reconnect preserves the App") });
     }
+    // A database timestamp can have precision beyond a JavaScript Date.
+    await db.update(connectionGrants).set({
+      providerTenant: null, updatedAt: sql`'2026-10-25 01:02:03.123456+00'::timestamptz`,
+    }).where(eq(connectionGrants.connectionId, connected.connectionId));
+    const [draft] = await db.select().from(toolConnections).where(eq(toolConnections.id, connected.connectionId));
+    await refreshGitHubAppAccess(db, draft!);
+    const [verifiedGrant] = await db.select({
+      providerTenant: connectionGrants.providerTenant,
+      revision: sql<string>`${connectionGrants.updatedAt}::text`,
+    }).from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(verifiedGrant).toMatchObject({
+      providerTenant: { github: { userId: "789", login: "test-app[bot]" } },
+      revision: expect.stringContaining("01:02:03.123456"),
+    });
     await service.finishGalleryAppConnection(company.id, connected.connectionId, {
-      enabledCatalogEntryIds: [], askFirstCatalogEntryIds: [], access,
+      enabledCatalogEntryIds: connected.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access,
     }, actor);
     await service.putConnectionInstalls(connected.connectionId, {
       installs: access.agentIds.map(targetId => ({ targetType: "agent" as const, targetId })),
@@ -17994,6 +18012,17 @@ describeEmbeddedPostgres("tool access service", () => {
     await expect(acquire()).resolves.toMatchObject({ token: "app-token" });
     expect(authenticatedKeys.at(-1)).toBe("A");
 
+    // Key replacement must preserve reviewed access and pending review.
+    discoveredTools.push(readTool("list_branches"));
+    const pending = await service.refreshCatalog(connected.connectionId, actor);
+    expect(pending.catalog.find(entry => entry.toolName === "list_branches")?.status).toBe("quarantined");
+    const [profile] = await db.select().from(toolProfiles).where(eq(toolProfiles.profileKey, `app:${connected.connectionId}`));
+    const readProfileEntries = async () => (await db.select().from(toolProfileEntries)
+      .where(eq(toolProfileEntries.profileId, profile!.id))).map(entry => entry.catalogEntryId).sort();
+    const reviewedEntries = await readProfileEntries();
+    discoveredTools = [readTool("get_file_contents"), readTool("list_issues", "Changed action"),
+      readTool("list_branches"), readTool("list_tags")];
+
     // A is already revoked: reconnect must verify B without depending on A.
     revokeA = true;
     rejectB = false;
@@ -18001,6 +18030,12 @@ describeEmbeddedPostgres("tool access service", () => {
     await reconnect(pem(keyB));
     expect(authenticatedKeys.length).toBeGreaterThan(0);
     expect(authenticatedKeys.every(key => key === "B")).toBe(true);
+    const refreshedCatalog = await db.select().from(toolCatalogEntries)
+      .where(eq(toolCatalogEntries.connectionId, connected.connectionId));
+    expect(Object.fromEntries(refreshedCatalog.map(entry => [entry.toolName, entry.status]))).toEqual({
+      get_file_contents: "active", list_issues: "quarantined", list_branches: "quarantined", list_tags: "quarantined",
+    });
+    expect(await readProfileEntries()).toEqual(reviewedEntries);
     const grant = await readGrant();
     expect(grant.id).toBe(originalGrant.id);
     expect(grant.kind).toBe(kind);
@@ -18127,6 +18162,10 @@ describeEmbeddedPostgres("tool access service", () => {
     await service.finishGalleryAppConnection(company.id, connected.connectionId, {
       enabledCatalogEntryIds, askFirstCatalogEntryIds: [], access: { agentIds: [agent.id] },
     }, actor);
+    expect(await db.select().from(toolConnectionInstalls)
+      .where(eq(toolConnectionInstalls.connectionId, connected.connectionId))).toEqual([
+      expect.objectContaining({ targetType: "agent", targetId: agent.id }),
+    ]);
     if (legacy) {
       const stored = await service.getConnection(connected.connectionId, company.id);
       const config = { ...stored.config, url: "https://api.github.com" };
