@@ -4821,4 +4821,10 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
   .artifact-tile:hover [data-artifact-spread="right"] {
     transform: rotate(calc(var(--artifact-base, 0deg) - 5deg));
   }
+
+}
+
+/* Keep PEM line breaks intact while concealing private key input by default. */
+.secret-textarea {
+  -webkit-text-security: disc;
 }
