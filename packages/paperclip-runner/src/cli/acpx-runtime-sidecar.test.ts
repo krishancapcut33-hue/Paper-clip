@@ -12,6 +12,7 @@ import { createHash, randomUUID } from "node:crypto";
 import { spawn, type ChildProcessWithoutNullStreams } from "node:child_process";
 import { readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
+import { createAcpxSidecarHostEnvironment, createSanitizedAcpxSpawnInput } from "../drivers/acpx/environment.js";
 
 import { afterEach, describe, expect, it, vi } from "vitest";
 
@@ -93,6 +94,22 @@ afterEach(async () => {
 });
 
 describe("qualified ACPX runtime sidecar", () => {
+  it("gives native Claude HTTP tools the Runner lease budget without changing sibling providers", () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("        environment:");
+    const end = source.indexOf("        expectedIdentity:", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const create = new Function("process", "params", "createAcpxSidecarHostEnvironment", `return ({ ${source.slice(start, end)} }).environment;`);
+    const original = { MCP_TOOL_TIMEOUT: "1000", ANTHROPIC_API_KEY: "selected-key", UNRELATED_SECRET: "private" };
+    const claude = create({ env: original }, { agent: "claude", normalizedSessionId: "session" }, createAcpxSidecarHostEnvironment);
+    expect(createSanitizedAcpxSpawnInput(claude, "claude").env).toMatchObject({ MCP_TOOL_TIMEOUT: "3600000", ANTHROPIC_API_KEY: "selected-key" });
+    expect(createSanitizedAcpxSpawnInput(claude, "claude").env).not.toHaveProperty("UNRELATED_SECRET");
+    expect(original.MCP_TOOL_TIMEOUT).toBe("1000");
+    const codex = create({ env: original }, { agent: "codex", normalizedSessionId: "session" }, createAcpxSidecarHostEnvironment);
+    expect(codex).toBe(original);
+    expect(createSanitizedAcpxSpawnInput(codex, "codex").env).not.toHaveProperty("MCP_TOOL_TIMEOUT");
+  });
+
   it("projects the actual sidecar terminal diagnostic block without authoritative accounting", () => {
     const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
     const start = source.indexOf("      try {", source.indexOf("      const usageAfter = await readSidecarHostStatusWithin(activeHost);"));

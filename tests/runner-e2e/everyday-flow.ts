@@ -1644,7 +1644,9 @@ export async function runEverydayFlow(input: Input) {
           ev.remoteRestart!.final = final;
           return final;
         }, accept: final => gradeRemoteRestart({ ...ev.remoteRestart, final }).every(check => check.passed),
-        reject: final => ["failed", "cancelled", "timed_out"].includes(final.run.status) ? "Original remote run failed after restart" : undefined });
+        reject: final => ["failed", "cancelled", "timed_out"].includes(final.run.status) ? "Original remote run failed after restart"
+          : final.run.status === "succeeded" && final.run.nativePhase === "committed"
+            && !gradeRemoteRestart({ ...ev.remoteRestart, final })[1]!.passed ? "Original remote turn completed with failed tools or conflicting/repeated execution receipts" : undefined });
       await input.evidence("remote-restart-final.json", final);
     }
     ev.checks.push(

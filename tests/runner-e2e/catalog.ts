@@ -1162,7 +1162,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
     environments: runnerEnvironments.filter(environment => environment.id === "daytona"),
     tasks: everydayTasks.filter(task => task.id === "recover-controller")
       .map(task => ({ ...task, automaticRetryPolicy: "single_attempt" as const })), expectedMatrixSize: 2,
-    definitionMetadata: { version: 1, scheduling: "explicit-only", controllerDowntimeMs: 125_000,
+    definitionMetadata: { version: 2, scheduling: "explicit-only", controllerDowntimeMs: 125_000,
       maximumAttemptsPerCell: 1, budgetMonthlyCents: 1000, instructions: "production", grading: "same-active-process-lease-native-prefix-and-workspace-receipt",
       authentication: "api-key", stagingAuthentication: "subscription", stagingQualification: false },
   },
@@ -1525,7 +1525,7 @@ export const runnerSuites: readonly RunnerSuiteFixture[] = [
         ...(["hire-reuse", "delegate-feedback"].includes(task.id) ? [] : [`everyday-workflows.runner-opencode.local.${task.id}`]),
       ]),
     ],
-    definitionMetadata: { version: 8, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
+    definitionMetadata: { version: 9, instructions: "production", grading: "outcome-and-invariants", scheduling: "explicit-only",
       remoteControllerDowntimeMs: 125_000,
       remoteCodexRestart: "same-active-process-lease-native-prefix-and-workspace-receipt",
       procedureCases: { ids: ["hire-reuse", "delegate-feedback"], maximumAttemptsPerCell: 1, companyAndLeadBudgetCents: 1_000 } },

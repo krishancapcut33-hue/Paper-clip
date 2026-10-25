@@ -58,7 +58,10 @@ it cannot pass from the final ZIP alone. The cell no longer exempts an original
 Codex remote run that fails with `process_lost` and is replaced.
 
 Completion requires one original provider turn and control-plane terminal,
-the same native receipt prefix, no duplicate completed tool execution IDs,
+the same native receipt prefix, no failed native tool receipts, and consistent
+results for every stable completed tool identity. Reattached activity can
+redeliver an identical start or tool receipt; changed content or a second
+submission fails. It also requires
 a committed run and successful `workspace_finalize` receipt, and no pending
 workspace operation or recovery. Existing independent ZIP and preserved-download
 checks still apply. These receipt checks do not prove that arbitrary external

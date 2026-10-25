@@ -1688,6 +1688,12 @@ request deadline that could make the provider retry an already queued write.
 Runner lease expiry, turn cancellation and bridge closure still end those waits.
 Ordinary bridge callers retain their request deadline. Repeating the same call
 identity returns its one retained result; it does not execute the operation again.
+The native Claude sidecar also sets its HTTP MCP client budget to one hour,
+matching the Runner connection lease budget. This prevents Claude's default
+60-second HTTP deadline from aborting an otherwise pending durable request.
+The setting applies to that native Claude session's MCP client; other provider
+sessions and ordinary bridge deadlines remain unchanged. Explicit cancellation
+and Runner shutdown still take precedence over that client budget.
 If shutdown begins while a provider session is opening, its eventual publication
 honors the pending detachment before dispatching a turn. Once detached, an old
 execution finalizer cannot suspend or signal the durable runner: the next
