@@ -56,3 +56,13 @@ it("uses English for a message missing in a selected locale", async () => {
   const runtime = await load(["fr"]);
   expect(runtime.t("auth.signInHeading")).toBe("Sign in to Paperclip");
 });
+
+it.each([
+  ["zh-Hans", "zh-CN"],
+  ["zh-Hant", "zh-TW"],
+  ["zh-Hant-HK", "zh-TW"],
+  ["zh-HK", "zh-TW"],
+  ["zh", "zh-CN"],
+])("matches Chinese preference %s to %s", async (preference, expected) => {
+  expect((await load([preference])).i18n.language).toBe(expected);
+});

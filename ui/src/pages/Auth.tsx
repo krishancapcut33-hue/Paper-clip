@@ -17,6 +17,9 @@ import { useTranslation } from "@/i18n";
 import { LocaleSwitcher } from "@/components/LocaleSwitcher";
 
 type AuthMode = "sign_in" | "sign_up";
+type AuthError =
+  | { kind: "local"; key: "auth.errors.authenticationFailed" | "auth.errors.requiredFields" }
+  | { kind: "server"; message: string };
 
 export function AuthPage() {
   const { t } = useTranslation();
@@ -27,7 +30,7 @@ export function AuthPage() {
   const [name, setName] = useState("");
   const [email, setEmail] = useState("");
   const [password, setPassword] = useState("");
-  const [error, setError] = useState<string | null>(null);
+  const [error, setError] = useState<AuthError | null>(null);
   const errorId = "auth-error";
 
   const nextPath = useMemo(
@@ -76,7 +79,9 @@ export function AuthPage() {
       navigate(nextPath, { replace: true });
     },
     onError: (err) => {
-      setError(err instanceof Error ? err.message : t("auth.errors.authenticationFailed", { defaultValue: "Authentication failed" }));
+      setError(err instanceof Error
+        ? { kind: "server", message: err.message }
+        : { kind: "local", key: "auth.errors.authenticationFailed" });
     },
   });
 
@@ -132,7 +137,7 @@ export function AuthPage() {
               event.preventDefault();
               if (mutation.isPending) return;
               if (!canSubmit) {
-                setError(t("auth.errors.requiredFields", { defaultValue: "Please fill in all required fields." }));
+                setError({ kind: "local", key: "auth.errors.requiredFields" });
                 return;
               }
               mutation.mutate();
@@ -191,7 +196,9 @@ export function AuthPage() {
             </div>
             {error && (
               <p id={errorId} role="alert" className="text-xs text-destructive">
-                {error}
+                {error.kind === "local"
+                  ? t(error.key, { defaultValue: error.key === "auth.errors.requiredFields" ? "Please fill in all required fields." : "Authentication failed" })
+                  : error.message}
               </p>
             )}
             <Button

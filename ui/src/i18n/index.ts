@@ -7,8 +7,18 @@ export const LOCALE_STORAGE_KEY = "paperclip.locale";
 
 function supportedLocale(language: string): string | undefined {
   const normalized = language.toLowerCase().replace(/_/g, "-");
-  return supportedLocales.find((locale) => locale.toLowerCase() === normalized)
-    ?? supportedLocales.find((locale) => locale.toLowerCase() === normalized.split("-")[0]);
+  const exact = supportedLocales.find((locale) => locale.toLowerCase() === normalized);
+  if (exact) return exact;
+  const languageCode = normalized.split("-")[0];
+  if (languageCode === "zh") {
+    try {
+      const script = new Intl.Locale(normalized).maximize().script;
+      return script === "Hant" ? "zh-TW" : "zh-CN";
+    } catch {
+      return undefined;
+    }
+  }
+  return supportedLocales.find((locale) => locale.toLowerCase() === languageCode);
 }
 
 function initialLocale(): string {

@@ -7,6 +7,7 @@ import { QueryClient, QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { queryKeys } from "../lib/queryKeys";
+import { setLocale } from "@/i18n";
 import { AuthPage } from "./Auth";
 import { CliAuthPage } from "./CliAuth";
 import { ApiError } from "../api/client";
@@ -272,6 +273,35 @@ describe("AuthPage", () => {
     await act(async () => {
       root.unmount();
     });
+  });
+
+  it("updates local validation errors when the language changes", async () => {
+    await setLocale("en");
+    const { root } = await mount();
+    try {
+      const form = container.querySelector("form") as HTMLFormElement;
+      await act(async () => {
+        form.dispatchEvent(new Event("submit", { bubbles: true, cancelable: true }));
+      });
+
+      const alert = container.querySelector('[role="alert"]') as HTMLElement;
+      const emailInput = container.querySelector('input[name="email"]') as HTMLInputElement;
+      const passwordInput = container.querySelector('input[name="password"]') as HTMLInputElement;
+      expect(alert.textContent).toBe("Please fill in all required fields.");
+      expect(emailInput.getAttribute("aria-invalid")).toBe("true");
+      expect(passwordInput.getAttribute("aria-invalid")).toBe("true");
+      expect(emailInput.getAttribute("aria-describedby")).toBe(alert.id);
+      expect(passwordInput.getAttribute("aria-describedby")).toBe(alert.id);
+
+      await act(async () => { await setLocale("ru"); });
+      await flushReact();
+      expect(alert.textContent).toBe("Заполните все обязательные поля.");
+      expect(emailInput.getAttribute("aria-describedby")).toBe(alert.id);
+      expect(passwordInput.getAttribute("aria-describedby")).toBe(alert.id);
+    } finally {
+      await act(() => root.unmount());
+      await setLocale("en");
+    }
   });
 
   it("invalidates anonymous health metadata after sign-in", async () => {
