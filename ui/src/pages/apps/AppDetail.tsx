@@ -55,7 +55,7 @@ import {
 import { appTabHref, appTabLabel, isAppTabKey, type AppTabKey } from "./app-tabs";
 import { ConnectionProvenanceChip } from "./ConnectionProvenanceChip";
 import { IdentitiesSection } from "./app-detail/IdentitiesSection";
-import { GitHubAppSettings } from "./app-detail/GitHubAppSettings";
+import { GitHubAppConfiguration } from "./app-detail/GitHubAppSettings";
 import { PermissionsPanel } from "./app-detail/PermissionsPanel";
 import { AgentConnectionAccess } from "./app-detail/AgentConnectionAccess";
 import { ConnectedAggregatorApps } from "./app-detail/ConnectedAggregatorApps";
@@ -65,7 +65,6 @@ import { RailwayAccessPanel } from "./app-detail/RailwayAccessPanel";
 import { ReviewPanel } from "./app-detail/ReviewPanel";
 import {
   ReconnectCard,
-  KeySection,
   DangerZone,
   connectionAddress,
   connectionTransportLabel,
@@ -649,22 +648,9 @@ function StandardAppDetail({ renderActions, renderAgentSettings, renderConnectio
               {connection.config?.sourceTemplateKey === "honcho" && <HonchoWorkspaceSettings key={connection.id} connection={connection} canConfigure={grantsQuery.data?.capabilities?.canConfigure ?? false} />}
               {renderConnectionSettings?.(connection)}
               {connection.config?.sourceTemplateKey === "github" && connection.config?.connectionMethodKey === "app-installation" && (
-                <section className="space-y-3" aria-label="GitHub App configuration">
-                  <h2 className="text-sm font-semibold">GitHub App configuration</h2>
-                  <GitHubAppSettings config={connection.config} />
-                  <p className="text-sm text-muted-foreground">
-                    Replace the private key below. Create a new connection to change
-                    the App, installation, repositories, GitHub permissions or ownership. Manage agent access and Paperclip action permissions below.
-                  </p>
-                  <KeySection
-                    key={connection.id}
-                    connection={connection}
-                    galleryEntry={logoEntry}
-                    canReplace={canReconnect}
-                    unavailableMessage={reconnectUnavailableMessage}
-                    onReplaced={() => { void queryClient.invalidateQueries({ queryKey: ["tools"] }); }}
-                  />
-                </section>
+                <GitHubAppConfiguration key={connection.id} connection={connection} galleryEntry={logoEntry}
+                  canReplace={canReconnect} unavailableMessage={reconnectUnavailableMessage}
+                  onReplaced={() => { void queryClient.invalidateQueries({ queryKey: ["tools"] }); }} />
               )}
               {connection.config?.sourceTemplateKey === "browser-use-cloud" && <BrowserUseSettingsPanel connection={connection} grants={grantsQuery.data} />}
               {connection.config?.sourceTemplateKey === "railway" && <RailwayAccessPanel connection={connection} grants={grantsQuery.data} />}

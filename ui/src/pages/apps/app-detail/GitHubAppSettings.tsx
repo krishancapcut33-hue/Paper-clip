@@ -1,4 +1,26 @@
-import { getAppStoreDefinition } from "@paperclipai/shared";
+import { getAppStoreDefinition, type ToolConnection, type AppDefinition } from "@paperclipai/shared";
+import { KeySection } from "./AdvancedPanel";
+
+export function GitHubAppConfiguration({ connection, galleryEntry, canReplace, unavailableMessage, onReplaced }: {
+  connection: ToolConnection;
+  galleryEntry: AppDefinition | null;
+  canReplace: boolean;
+  unavailableMessage: string;
+  onReplaced: () => void;
+}) {
+  return (
+    <section className="space-y-3" aria-label="GitHub App configuration">
+      <h2 className="text-sm font-semibold">GitHub App configuration</h2>
+      <GitHubAppSettings config={connection.config ?? {}} />
+      <p className="text-sm text-muted-foreground">
+        Replace the private key below. Create a new connection to change
+        the App, installation, repositories, GitHub permissions or ownership. Manage agent access and Paperclip action permissions below.
+      </p>
+      <KeySection connection={connection} galleryEntry={galleryEntry} canReplace={canReplace}
+        unavailableMessage={unavailableMessage} onReplaced={onReplaced} />
+    </section>
+  );
+}
 
 /** Display only public tenant fields; never enumerate connection or credential config. */
 export function GitHubAppSettings({ config }: { config: Record<string, unknown> }) {
