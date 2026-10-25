@@ -70,6 +70,18 @@ describe("GitHub registration handoff", () => {
 });
 
 describe("reused target ownership", () => {
+  it.each(['legacy', undefined])("stops a queued %s run without a native-only cancellation request", async runtimeMode => {
+    const scope = { companyId: 'company', agentId: 'agent', issueId: 'issue' };
+    const queued = { ...scope, id: 'run', status: 'queued', runtimeMode };
+    const get = vi.fn().mockResolvedValueOnce(queued).mockResolvedValue({ ...queued, status: 'cancelled' });
+    const post = vi.fn(async (_route: string, body: Record<string, unknown>) => {
+      if (body.cancellationRequestId) throw new Error('Correlated Stop requires a native run');
+      return {};
+    });
+    await stopOwnedGitHubReviewRun({ get, post } as unknown as ConnectionApi, 'run', scope, new AbortController().signal);
+    expect(post).toHaveBeenCalledExactlyOnceWith('/api/heartbeat-runs/run/cancel', {});
+    expect(get).toHaveBeenCalledTimes(2);
+  });
   it.each([true, false])("stops a failed native retry and verifies its audited acknowledgement (dispatched=%s)", async dispatched => {
     const scope = { companyId: 'company', agentId: 'agent', issueId: 'issue' };
     const failed = { ...scope, id: 'run', status: 'failed', runtimeMode: 'native', nativePhase: 'retryable_failure' };

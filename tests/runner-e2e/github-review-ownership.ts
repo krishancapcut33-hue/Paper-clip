@@ -29,7 +29,7 @@ export async function stopOwnedGitHubReviewRun(api: Pick<ConnectionApi, "get" | 
   const run = await read();
   const retry = run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure";
   if (!["queued", "running"].includes(run.status) && !retry) return;
-  await api.post(`/api/heartbeat-runs/${runId}/cancel`, { cancellationRequestId: randomUUID() });
+  await api.post(`/api/heartbeat-runs/${runId}/cancel`, run.runtimeMode === "native" ? { cancellationRequestId: randomUUID() } : {});
   await awaitJourneyCondition(async () => {
     const stopped = await read();
     if (run.runtimeMode !== "native") return !["queued", "running"].includes(stopped.status);
