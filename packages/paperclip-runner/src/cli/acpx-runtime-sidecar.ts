@@ -311,6 +311,10 @@ async function dispatch(
         semanticTools: {
           tools: params.tools,
           handler: waitForTool,
+          // These calls are durable PRP requests. A controller outage must not
+          // turn a queued write into a provider-visible failure and retry.
+          // Runner lease expiry, turn cancellation and bridge close own them.
+          timeoutMs: null,
           ...(params.agent === "copilot" ? { captureSemanticReceipt: () => activeCopilotEvidence?.captureSemanticReceipt() } : {}),
         },
         onGoalUpdate: (goal) => {

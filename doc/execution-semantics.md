@@ -1682,6 +1682,12 @@ limits its own attempt; it must not terminate the remote owner while another
 controller is starting or classifying runs. Lease expiry still shuts down the
 provider, and exact identity, authentication, Stop and revocation checks remain
 required before any recovery or new execution.
+Native ACPX semantic tool calls wait on their durable PRP invocation across a
+controller outage. Their provider-side MCP bridge does not impose a separate
+request deadline that could make the provider retry an already queued write.
+Runner lease expiry, turn cancellation and bridge closure still end those waits.
+Ordinary bridge callers retain their request deadline. Repeating the same call
+identity returns its one retained result; it does not execute the operation again.
 If shutdown begins while a provider session is opening, its eventual publication
 honors the pending detachment before dispatching a turn. Once detached, an old
 execution finalizer cannot suspend or signal the durable runner: the next

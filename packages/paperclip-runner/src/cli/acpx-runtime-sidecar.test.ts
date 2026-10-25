@@ -279,6 +279,42 @@ describe("qualified ACPX runtime sidecar", () => {
     for (const agent of ["cursor", "codex", "pi"]) expect(create({ agent, tools: [] }, evidence, () => undefined).captureSemanticReceipt).toBeUndefined();
   });
 
+  it("keeps a native tool pending through controller downtime without a duplicate side effect", async () => {
+    const source = readFileSync(new URL("./acpx-runtime-sidecar.ts", import.meta.url), "utf8");
+    const start = source.indexOf("        semanticTools: {");
+    const end = source.indexOf("        onGoalUpdate:", start);
+    expect(start).toBeGreaterThan(0); expect(end).toBeGreaterThan(start);
+    const create = new Function("params", "activeCopilotEvidence", "waitForTool", `return ({ ${source.slice(start, end)} }).semanticTools;`);
+    let admitted!: () => void, complete!: (value: unknown) => void;
+    const started = new Promise<void>(resolve => { admitted = resolve; });
+    const result = new Promise(resolve => { complete = resolve; });
+    let signal: AbortSignal | undefined;
+    const handler = vi.fn((call: RunnerToolCall) => { signal = call.signal; admitted(); return result; });
+    const bridge = await startRunnerToolBridge(create({ agent: "claude", tools: [{ name: "register_deliverable", inputSchema: { type: "object" } }] }, undefined, handler));
+    const call = () => fetch(bridge.url, { method: "POST", headers: { Authorization: `Bearer ${bridge.secret}`, "Content-Type": "application/json" },
+      body: JSON.stringify({ jsonrpc: "2.0", id: "saved-call", method: "tools/call", params: { name: "register_deliverable", arguments: {} } }) }).then(response => response.json());
+    let first: Promise<any> | undefined;
+    try {
+      vi.useFakeTimers({ toFake: ["setTimeout", "clearTimeout"] });
+      first = call();
+      await started;
+      await vi.advanceTimersByTimeAsync(125_000);
+      expect(signal?.aborted).toBe(false);
+      // The same pending invocation can be read again after reconnect. It must
+      // share the original result rather than create another external write.
+      const duplicate = call();
+      complete({ artifactId: "saved-artifact" });
+      expect(await first).toMatchObject({ result: { content: [{ text: '{"artifactId":"saved-artifact"}' }] } });
+      expect(await duplicate).toEqual(await first);
+      expect(handler).toHaveBeenCalledOnce();
+    } finally {
+      complete({ artifactId: "saved-artifact" });
+      await first?.catch(() => undefined);
+      await bridge.close();
+      vi.useRealTimers();
+    }
+  });
+
   it.each(["forwarded", "emit-failed"])("binds native v2 receipts to actual sidecar-normalized input: %s", async mode => {
     const raw = { reportedWorkDisposition: "done", summary: "Complete", evidence: [], verification: [],
       completionClaim: { contractRevision: "1", objectiveSatisfied: true, criteria: [], remainingWork: [] } };
