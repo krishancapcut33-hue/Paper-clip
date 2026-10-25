@@ -195,7 +195,7 @@ export function agentInstructionRevisionService(db: Db) {
       actorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
       actorUserId: actor?.type === "board" ? actor.userId ?? null : null,
       responsibleUserId: actor?.type === "board" ? actor.userId ?? null : actor?.type === "agent" ? actor.onBehalfOfUserId ?? null : null,
-      sourceRunId: actor && actor.type !== "plugin" ? actor.runId ?? null : null, createdAt: new Date(0) };
+      sourceRunId: actor?.type === "agent" ? actor.runId ?? null : null, createdAt: new Date(0) };
   }
   async function getRevision(
     tx: Tx,
@@ -443,7 +443,7 @@ export function agentInstructionRevisionService(db: Db) {
     history,
     diff,
     materializeCurrent,
-    commit: (input: InstructionCommitInput, actor: AuthorizationActor) =>
+    commit: (input: InstructionCommitInput, actor: RevisionActor) =>
       commitInternal(input, actor),
     restore: (
       input: InstructionTarget & {
