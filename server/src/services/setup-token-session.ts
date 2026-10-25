@@ -34,7 +34,7 @@ import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 //     testable.
 
 import { randomBytes } from "node:crypto";
-import { and, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
+import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
@@ -322,6 +322,14 @@ export interface SetupTokenReapResult {
   failed: number;
 }
 
+// A provider teardown can refuse a well-formed lease id permanently. Retry a few
+// times, warn once at the cap, then stop logging — but never abandon the live
+// lease. Process-local on purpose: a restart may clear whatever made the
+// provider reject it, so the counter resets and the sweep tries fresh again.
+const SETUP_TOKEN_RELEASE_ATTEMPT_CAP = 5;
+
+const setupTokenReleaseAttempts = new Map<string, number>();
+
 /**
  * The shared setup-token reap logic. It reads the durable store and releases any
  * lease whose session is terminal, past its deadline, or already consumed. It
@@ -363,15 +371,36 @@ export async function reapSetupTokenLeases(
         ownerUserId: record.ownerUserId,
         adapterType: record.adapterType,
       });
+      // A successful sweep resets the backoff counter for this row so a
+      // transient provider rejection does not leave it permanently quiet.
+      setupTokenReleaseAttempts.delete(record.leaseId);
       // `released` counts only a lease that was actually torn down. A record
       // with no bound lease is cleared without a release and is not a lease
       // release, so it stays out of this count.
       if (record.leaseId) {
         released += 1;
       }
-    } catch {
+    } catch (error) {
       failed += 1;
-      log("[paperclip] Setup-token reaper: a lease release failed; it stays retryable.");
+      const attempts = (setupTokenReleaseAttempts.get(record.leaseId) ?? 0) + 1;
+      setupTokenReleaseAttempts.set(record.leaseId, attempts);
+      // Only the truncated message is safe to log: a provider teardown
+      // rejection can carry a credential, a signed URL, or a full response body.
+      const cause = error instanceof Error ? error.message : String(error);
+      const truncated = cause.slice(0, 200);
+      if (attempts <= SETUP_TOKEN_RELEASE_ATTEMPT_CAP) {
+        log(
+          `[paperclip] Setup-token reaper: lease release failed ` +
+            `(attempt ${attempts}/${SETUP_TOKEN_RELEASE_ATTEMPT_CAP}) ` +
+            `for session ${record.sessionId}, lease ${record.leaseId}, environment ${record.environmentId}, adapter ${record.adapterType}, state ${record.state}: ${truncated}`,
+        );
+        if (attempts === SETUP_TOKEN_RELEASE_ATTEMPT_CAP) {
+          log(
+            `[paperclip] Setup-token reaper: lease ${record.leaseId} has failed ${SETUP_TOKEN_RELEASE_ATTEMPT_CAP} release attempts; ` +
+              `the row stays retryable but logging is suppressed until a release succeeds.`,
+          );
+        }
+      }
     }
   }
   return { released, failed };
@@ -1669,9 +1698,13 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
     },
 
     async findActiveDurable(key, now): Promise<SetupTokenCleanupRecord | null> {
-      // The active slot cap is one row per company, owner, and adapter, so at
-      // most one row can match. The scan filters by the setup-token adapter, so
-      // it never reads a Codex device-login row on the shared table.
+      // The active slot cap only covers the active states, so a terminal-adjacent
+      // row (e.g. `stored` or `cleanup_pending`) can coexist with another
+      // non-terminal row for the same company, owner, and adapter. Order
+      // newest-first so the durable fallback returns the most recent claim
+      // deterministically, not whichever row the planner happened to scan first.
+      // The scan filters by the setup-token adapter, so it never reads a Codex
+      // device-login row on the shared table.
       const rows = await db
         .select()
         .from(adapterAuthSessions)
@@ -1689,6 +1722,7 @@ export function createDbSetupTokenCleanupStore(db: Db): SetupTokenCleanupStore {
             gt(adapterAuthSessions.expiresAt, new Date(now)),
           ),
         )
+        .orderBy(desc(adapterAuthSessions.createdAt), desc(adapterAuthSessions.publicSessionId))
         .limit(1);
       const row = rows[0];
       return row ? toCleanupRecord(row) : null;

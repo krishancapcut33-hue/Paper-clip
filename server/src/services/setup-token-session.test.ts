@@ -758,6 +758,122 @@ describe("SetupTokenSessionService durable reaper", () => {
   });
 });
 
+describe("SetupTokenSessionService durable reaper release backoff", () => {
+  it("names the failing row and truncates the release-failure cause", async () => {
+    const store = new FakeStore();
+    await store.record({
+      sessionId: "cap-named-1",
+      companyId: "company-1",
+      ownerUserId: "user-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
+      leaseId: "lease-named-1",
+      deadline: 1_000,
+      state: "failed",
+      boundAt: null,
+    });
+    const leases = new FakeLeaseManager();
+    leases.releaseById = async () => {
+      throw new Error("provider down: " + "x".repeat(300));
+    };
+    const logs: string[] = [];
+    const summary = await reapSetupTokenLeases(
+      { store, leases, log: (line) => logs.push(line) },
+      5_000,
+    );
+    expect(summary.failed).toBe(1);
+    const failure = logs.find((l) => l.includes("lease release failed"));
+    expect(failure).toBeDefined();
+    expect(failure).toContain("session cap-named-1");
+    expect(failure).toContain("lease lease-named-1");
+    expect(failure).toContain("environment env-1");
+    expect(failure).toContain("adapter claude_local");
+    expect(failure).toContain("state failed");
+    // The cause is truncated to 200 characters, not logged verbatim.
+    const truncatedCause = ("provider down: " + "x".repeat(300)).slice(0, 200);
+    expect(failure).toContain(truncatedCause);
+    expect(failure).not.toContain("x".repeat(300));
+  });
+
+  it("warns once at the attempt cap, then stops logging while the row stays retryable", async () => {
+    const store = new FakeStore();
+    await store.record({
+      sessionId: "cap-1",
+      companyId: "company-1",
+      ownerUserId: "user-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
+      leaseId: "lease-cap-1",
+      deadline: 1_000,
+      state: "failed",
+      boundAt: null,
+    });
+    const leases = new FakeLeaseManager();
+    leases.releaseById = async () => {
+      throw new Error("provider down");
+    };
+    const logs: string[] = [];
+    for (let i = 0; i < 7; i++) {
+      const summary = await reapSetupTokenLeases(
+        { store, leases, log: (line) => logs.push(line) },
+        5_000,
+      );
+      // The row never clears: the release keeps failing, so it stays retryable.
+      expect(summary.failed).toBe(1);
+      expect(store.rows.has("cap-1")).toBe(true);
+    }
+    const failureLines = logs.filter((l) => l.includes("lease release failed"));
+    expect(failureLines).toHaveLength(5);
+    expect(failureLines[0]).toContain("attempt 1/5");
+    expect(failureLines[4]).toContain("attempt 5/5");
+    // One escalation line is emitted at the cap, then logging backs off.
+    const escalations = logs.filter((l) => l.includes("has failed 5 release attempts"));
+    expect(escalations).toHaveLength(1);
+    expect(escalations[0]).toContain("lease lease-cap-1");
+  });
+
+  it("resets the backoff counter once a release succeeds", async () => {
+    const store = new FakeStore();
+    const record: SetupTokenCleanupRecord = {
+      sessionId: "cap-reset-1",
+      companyId: "company-1",
+      ownerUserId: "user-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
+      leaseId: "lease-reset-1",
+      deadline: 1_000,
+      state: "failed",
+      boundAt: null,
+    };
+    await store.record(record);
+    const leases = new FakeLeaseManager();
+    let shouldThrow = true;
+    leases.releaseById = async () => {
+      if (shouldThrow) throw new Error("provider down");
+    };
+    const logs: string[] = [];
+    const deps = { store, leases, log: (line: string) => logs.push(line) };
+
+    // First sweep fails: attempt 1 for this lease.
+    await reapSetupTokenLeases(deps, 5_000);
+    expect(logs.some((l) => l.includes("attempt 1/5"))).toBe(true);
+
+    // The next sweep releases the lease, which clears the row and the counter.
+    shouldThrow = false;
+    const success = await reapSetupTokenLeases(deps, 5_000);
+    expect(success.released).toBe(1);
+    expect(store.rows.has("cap-reset-1")).toBe(false);
+
+    // Re-seed the same lease and fail again: the counter restarted, so it logs
+    // attempt 1/5 again instead of continuing from 2.
+    shouldThrow = true;
+    await store.record(record);
+    await reapSetupTokenLeases(deps, 5_000);
+    expect(logs.filter((l) => l.includes("attempt 1/5"))).toHaveLength(2);
+    expect(logs.some((l) => l.includes("attempt 2/5"))).toBe(false);
+  });
+});
+
 describe("SetupTokenSessionService.cancelByScope", () => {
   it("cancels the live in-memory session the normal way when one exists", async () => {
     const { service, store } = buildService();
@@ -1687,6 +1803,49 @@ describeEmbeddedPostgres("durable setup-token cleanup store (embedded postgres)"
         now,
       ),
     ).not.toBeNull();
+  });
+
+  it("findActiveDurable returns the newest row when two non-terminal rows coexist", async () => {
+    const store = createDbSetupTokenCleanupStore(db);
+    const scope = await seedScope();
+    const now = Date.now();
+    const key = {
+      companyId: scope.companyId,
+      ownerUserId: scope.ownerUserId,
+      adapterType: scope.adapterType,
+    };
+
+    // Two non-active, non-terminal rows for the same slot can coexist: the
+    // active-slot unique index covers only the active states, so a `stored`
+    // claim does not block another non-terminal row. Give them explicit
+    // created_at values so the newest-first ordering is deterministic.
+    await db.insert(adapterAuthSessions).values({
+      id: randomUUID(),
+      publicSessionId: "older-claim",
+      companyId: scope.companyId,
+      environmentId: scope.environmentId,
+      adapterType: scope.adapterType,
+      startedByUserId: scope.ownerUserId,
+      connectionMethod: null,
+      status: "stored",
+      expiresAt: new Date(now + 60_000),
+      createdAt: new Date(now - 60_000),
+    });
+    await db.insert(adapterAuthSessions).values({
+      id: randomUUID(),
+      publicSessionId: "newer-claim",
+      companyId: scope.companyId,
+      environmentId: scope.environmentId,
+      adapterType: scope.adapterType,
+      startedByUserId: scope.ownerUserId,
+      connectionMethod: null,
+      status: "stored",
+      expiresAt: new Date(now + 60_000),
+      createdAt: new Date(now),
+    });
+
+    const found = await store.findActiveDurable(key, now);
+    expect(found?.sessionId).toBe("newer-claim");
   });
 
   it("returns no row when the claim row lock holds until after the deadline", async () => {
