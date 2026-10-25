@@ -14,7 +14,7 @@ export async function readNativeStopExecutionEvidence(db: Db, companyId: string,
         select coalesce(jsonb_object_agg(key, value), '{}'::jsonb)
         from jsonb_each(${heartbeatRuns.resultJson})
         where key = any(array['nativeCancellation', 'cancelledByActorType', 'cancelledByUserId'])
-      ) else ${heartbeatRuns.resultJson} end`,
+      ) else null end`,
   }).from(heartbeatRuns).where(and(eq(heartbeatRuns.id, runId), eq(heartbeatRuns.companyId, companyId))).limit(1);
   return run ?? null;
 }

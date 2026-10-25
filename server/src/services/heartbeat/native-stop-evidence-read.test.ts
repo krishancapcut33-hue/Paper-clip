@@ -60,6 +60,26 @@ describe.skipIf(!runControlPostgresSupport.supported)("native Stop evidence read
     },
   );
 
+  it.each(["string", "array"])("does not transfer a large malformed %s result", async kind => {
+    const { company, agent } = await fixture();
+    const bulk = randomBytes(128 * 1024).toString("base64");
+    const saved = kind === "array" ? [bulk] : bulk;
+    const [run] = await db.insert(heartbeatRuns).values({ companyId: company.id, agentId: agent.id,
+      runtimeMode: "native", status: "cancelled" }).returning();
+    await db.execute(sql`update ${heartbeatRuns} set result_json = ${JSON.stringify(saved)}::jsonb where id = ${run.id}`);
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    try {
+      const evidence = await readNativeStopExecutionEvidence(db, company.id, run.id);
+      expect(evidence?.resultJson).toBeNull();
+      expect(isAcknowledgedNativeStop(evidence!)).toBe(false);
+    } finally { capture.flush(); }
+    expect(events.at(-1)).toMatchObject({ completedQueries: 1, groups: 1 });
+    expect(Number(events.at(-1)?.responseValueBytes)).toBeLessThan(1024);
+    expect((await db.select({ result: heartbeatRuns.resultJson }).from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0].result).toEqual(saved);
+  });
+
   it("uses the scoped receipt reader for the native continuation recheck", async () => {
     const { company, agent } = await fixture();
     const [issue] = await db.insert(issues).values({ companyId: company.id, title: "Native continuation fixture" }).returning();
