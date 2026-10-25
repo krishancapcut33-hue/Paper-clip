@@ -199,7 +199,16 @@ describe("PluginSettings", () => {
         },
       },
     }));
-    mockPluginsApi.getConfig.mockResolvedValue(null);
+    const savedConfig = {
+      id: "config-1",
+      pluginId: "plugin-1",
+      companyId: "company-1",
+      configJson: { region: "us-east-1" },
+      lastError: null,
+      createdAt: new Date(),
+      updatedAt: new Date(),
+    };
+    mockPluginsApi.getConfig.mockResolvedValueOnce(null).mockResolvedValue(savedConfig);
     mockPluginsApi.saveConfig.mockResolvedValue({ configJson: { region: "us-east-1" } });
 
     const root = await renderSettings(container);
@@ -216,6 +225,8 @@ describe("PluginSettings", () => {
     await flushReact();
 
     expect(mockPluginsApi.saveConfig).toHaveBeenCalledWith("plugin-1", "company-1", { region: "us-east-1" });
+    expect(mockPluginsApi.getConfig).toHaveBeenCalledTimes(2);
+    expect(saveButton?.disabled).toBe(true);
 
     await act(async () => {
       root.unmount();
