@@ -1,5 +1,6 @@
 import { expect } from "@playwright/test";
 import { createConnectionProof } from "../connection-evidence.js";
+import { onboardingConnect } from "./onboarding-connect.js";
 import { onboardingFirstTask } from "./onboarding-first-task.js";
 import { JourneyError, type JourneyContext, type JourneyEvidence, type TargetSession } from "./types.js";
 
@@ -69,8 +70,9 @@ export async function cloudOnboarding(input: CloudOnboardingInput): Promise<Jour
   await page.getByRole("option", { name: /^Paperclip Runner/ }).click();
   await input.qualify(context, connection.id);
   // Connect performs the production probe and agent creation. Never press Retry.
-  await page.getByRole("button", { name: "Connect", exact: true }).click();
-  await page.getByRole("button", { name: "Get started", exact: true }).waitFor({ timeout: 180_000 });
+  const connect = await onboardingConnect({ page, origin: api.origin, companyId: company.id, deadlineAt: input.deadlineAt,
+    retain: value => { evidence.onboardingConnect = value; } });
+  connect.checkpoint = "agent-verification";
   const agents = await api.get<Row[]>(`/api/companies/${company.id}/agents`);
   const agent = agents.find(a => a.name === name);
   if (!agent || agents.length !== 1 || agent.adapterType !== "paperclip_runner" || agent.adapterConfig?.provider !== "codex" || agent.adapterConfig?.model !== input.gateway.model) throw new JourneyError("failed", "onboarding_agent_configuration_mismatch");
