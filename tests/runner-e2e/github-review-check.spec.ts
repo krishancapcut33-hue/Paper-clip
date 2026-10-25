@@ -48,6 +48,23 @@ test("rejects a check reference outside the configured repository", async ({ pag
   await expect(assertGitHubJourneyCheck(page, { ...expected, url }, 150)).rejects.toThrow();
 });
 
+for (const [name, override] of [
+  ["foreign origin", { url: "https://example.com/fixture/repo/runs/123" }],
+  ["embedded credentials", { url: "https://fixture-user:fixture-password@github.com/fixture/repo/runs/123" }],
+  ["query suffix", { url: `${expected.url}?x=1` }],
+  ["hash suffix", { url: `${expected.url}#fragment` }],
+  ["non-numeric run ID", { url: "https://github.com/fixture/repo/runs/abc" }],
+  ["short commit", { headSha: "a".repeat(7) }],
+  ["score below range", { score: 0 }],
+  ["score above range", { score: 6 }],
+] as const) {
+  test(`rejects a malformed check reference: ${name}`, async ({ page }) => {
+    // These must reject before navigation or DOM inspection.
+    await expect(assertGitHubJourneyCheck(page, { ...expected, ...override }, 150))
+      .rejects.toThrow("github_check_reference_mismatch");
+  });
+}
+
 function taskStatus(status: string, hidden = false) {
   return `<div data-property-row="true"${hidden ? ' style="display:none"' : ""}>
     <span data-property-label="Status">Status</span><div data-property-value="true">
