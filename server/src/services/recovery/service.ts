@@ -4699,6 +4699,10 @@ export function recoveryService(
         continue;
       }
       if (issue.status !== "in_review" && !agentInvokable) {
+        if (issue.monitorNextCheckAt && issue.monitorNextCheckAt.getTime() > Date.now()) {
+          result.skipped += 1;
+          continue;
+        }
         const classification = classifyContinuationFailure(latestRun);
         if (
           classification.kind === "deliberate_wait_without_target" ||

@@ -199,7 +199,8 @@ describeEmbeddedPostgres(
       await run.insert;
       const runId = run.runId;
 
-      const { result } = await freshScan();
+      const { result, enqueueWakeup } = await freshScan();
+      expect(enqueueWakeup).not.toHaveBeenCalled();
 
       const after = await issueRow(issueId);
       expect(after?.status).toBe("in_review");
@@ -234,10 +235,12 @@ describeEmbeddedPostgres(
       await insert;
       await (seedRun({ companyId: s.companyId, agentId: s.workerId, issueId, status: "succeeded" })).insert;
 
-      await freshScan();
+      const firstScan = await freshScan();
+      expect(firstScan.enqueueWakeup).not.toHaveBeenCalled();
       const first = await issueRow(issueId);
       expect(first?.status).toBe("in_review");
-      const { result } = await freshScan();
+      const { result, enqueueWakeup } = await freshScan();
+      expect(enqueueWakeup).not.toHaveBeenCalled();
       const after = await issueRow(issueId);
       expect(after?.status).toBe("in_review");
       expect(after?.monitorNextCheckAt?.toISOString()).toBe(monitorAt.toISOString());
@@ -470,7 +473,8 @@ describeEmbeddedPostgres(
         })
         .where(eq(issues.id, issueId));
 
-      const { result } = await freshScan();
+      const { result, enqueueWakeup } = await freshScan();
+      expect(enqueueWakeup).not.toHaveBeenCalled();
 
       const after = await issueRow(issueId);
       expect(after?.status).toBe("in_progress");
@@ -482,6 +486,90 @@ describeEmbeddedPostgres(
         .from(heartbeatRuns)
         .where(eq(heartbeatRuns.companyId, s.companyId));
       expect(runs.map((r) => r.id)).toEqual([runId]);
+    });
+
+    it("T9: active company, budget-paused assignee, in_progress, failed run, FUTURE monitor keeps the wait (no hold, no wake)", async () => {
+      const s = seedCompany("active");
+      await s.company();
+      await s.agent(s.workerId, "Worker", { status: "paused", pauseReason: "budget" });
+      const monitorAt = new Date(Date.now() + 24 * 60 * 60 * 1000);
+      const { issueId, insert } = seedIssue(s.companyId, s.workerId, s.prefix, 9, {
+        status: "in_progress",
+        monitorNextCheckAt: monitorAt,
+        monitorAttemptCount: 0,
+        executionState: null,
+      });
+      await insert;
+      await seedRun({
+        companyId: s.companyId,
+        agentId: s.workerId,
+        issueId,
+        status: "failed",
+        errorCode: null,
+      }).insert;
+
+      const { result, enqueueWakeup } = await freshScan();
+      expect(enqueueWakeup).not.toHaveBeenCalled();
+
+      const after = await issueRow(issueId);
+      expect(after?.status).toBe("in_progress");
+      expect(await recoveryActionsFor(issueId)).toHaveLength(0);
+      expect(after?.monitorNextCheckAt?.toISOString()).toBe(monitorAt.toISOString());
+      expect(after?.monitorAttemptCount).toBe(0);
+      expect(result.escalated).toBe(0);
+    });
+
+    it("T10: same shape as T9 but OVERDUE monitor still escalates", async () => {
+      const s = seedCompany("active");
+      await s.company();
+      await s.agent(s.workerId, "Worker", { status: "paused", pauseReason: "budget" });
+      const { issueId, insert } = seedIssue(s.companyId, s.workerId, s.prefix, 10, {
+        status: "in_progress",
+        monitorNextCheckAt: new Date(Date.now() - 60 * 60 * 1000),
+        monitorAttemptCount: 1,
+        executionState: null,
+      });
+      await insert;
+      await seedRun({
+        companyId: s.companyId,
+        agentId: s.workerId,
+        issueId,
+        status: "failed",
+        errorCode: null,
+      }).insert;
+
+      const { result } = await freshScan();
+
+      const after = await issueRow(issueId);
+      expect(after?.status).toBe("blocked");
+      expect(await recoveryActionsFor(issueId)).toHaveLength(1);
+      expect(result.escalated).toBe(1);
+    });
+
+    it("T11: same shape as T9 with NO monitor still escalates", async () => {
+      const s = seedCompany("active");
+      await s.company();
+      await s.agent(s.workerId, "Worker", { status: "paused", pauseReason: "budget" });
+      const { issueId, insert } = seedIssue(s.companyId, s.workerId, s.prefix, 11, {
+        status: "in_progress",
+        monitorNextCheckAt: null,
+        executionState: null,
+      });
+      await insert;
+      await seedRun({
+        companyId: s.companyId,
+        agentId: s.workerId,
+        issueId,
+        status: "failed",
+        errorCode: null,
+      }).insert;
+
+      const { result } = await freshScan();
+
+      const after = await issueRow(issueId);
+      expect(after?.status).toBe("blocked");
+      expect(await recoveryActionsFor(issueId)).toHaveLength(1);
+      expect(result.escalated).toBe(1);
     });
   },
 );
