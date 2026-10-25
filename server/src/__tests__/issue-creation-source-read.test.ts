@@ -43,11 +43,17 @@ describe.skipIf(!support.supported)("creation source run projections", () => {
     return { run, child };
   }
 
-  it("omits saved run payloads at the driver boundary while preserving provenance and storage", async () => {
+  it.each(["scoped", "legacy task key", "legacy nested identifier"])("omits saved run payloads for %s bindings while preserving provenance and storage", async (binding) => {
     const bulk = "retained-source-context🙂".repeat(32_768);
-    const { run, child } = await fixture({ contextSnapshot: { issueId: sourceId,
-      paperclipIssue: { id: sourceId, retainedDescription: bulk }, retainedLaunchInput: bulk },
+    const contextSnapshot = binding === "scoped"
+      ? { issueId: sourceId, paperclipIssue: { id: sourceId, retainedDescription: bulk }, retainedLaunchInput: bulk }
+      : binding === "legacy task key"
+        ? { taskKey: "CSR-1", paperclipIssue: { retainedDescription: bulk }, retainedLaunchInput: bulk }
+        : { paperclipIssue: { id: "CSR-1", retainedDescription: bulk }, retainedLaunchInput: bulk };
+    const { run, child } = await fixture({ contextSnapshot,
       runnerProfileJson: { retainedInput: bulk }, stdoutExcerpt: bulk, stderrExcerpt: bulk, resultJson: { retainedReceipt: bulk } });
+    expect(run.issueId).toBe(binding === "scoped" ? sourceId : null);
+    expect(run.nativeIssueId).toBeNull();
     const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
     const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
     installDatabaseResponseCapture(observed, { heartbeatRuns, issues }, capture);
@@ -58,7 +64,7 @@ describe.skipIf(!support.supported)("creation source run projections", () => {
       expect(reads.reduce((count, event) => count + Number(event.calls), 0)).toBe(1);
       expect(reads.reduce((bytes, event) => bytes + Number(event.responseValueBytes), 0)).toBeLessThan(8192);
       expect(result).toMatchObject({ run: { id: run.id, companyId, agentId }, sourceIssue: { id: sourceId } });
-      expect(runBoundIssueReference(result!.run)).toBe(sourceId);
+      expect(runBoundIssueReference(result!.run)).toBe(binding === "scoped" ? sourceId : "CSR-1");
       for (const key of ["runnerProfileJson", "stdoutExcerpt", "stderrExcerpt", "resultJson"]) expect(result!.run).not.toHaveProperty(key);
       expect((await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.id)))[0]).toEqual(run);
       expect(JSON.stringify(events)).not.toContain("retained-source-context");
