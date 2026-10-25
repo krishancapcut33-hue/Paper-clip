@@ -93,6 +93,21 @@ describe("runtime connection tool delivery", () => {
   });
 });
 
+describe("run scratch lifetime guidance", () => {
+  it("keeps durable job output outside disposable run scratch and requires admission before waiting", () => {
+    for (const prompt of [
+      DEFAULT_PAPERCLIP_AGENT_PROMPT_TEMPLATE,
+      DEFAULT_PAPERCLIP_CONVERSATION_PROMPT_TEMPLATE,
+    ]) {
+      expect(prompt).toContain("for temporary scratch files");
+      expect(prompt).toContain("must outlive the run");
+      expect(prompt).toContain("documented durable output location, outside run scratch");
+      expect(prompt).toContain("Confirm job admission before waiting");
+      expect(prompt).toContain("instead of waiting on the refused launch");
+    }
+  });
+});
+
 describe("legacy adapter skill selection", () => {
   const operationalEntry = {
     key: PAPERCLIP_OPERATIONAL_SKILL_KEY,
