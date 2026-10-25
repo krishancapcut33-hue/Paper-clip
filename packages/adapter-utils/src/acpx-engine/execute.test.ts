@@ -802,7 +802,7 @@ describe("shared ACPX engine runtime behavior", () => {
     const root = await makeTempRoot();
     const context = createPromptContextFixture();
     const config = { agent, agentCommand: "node ./fixture-acp.js", cwd: root, stateDir: path.join(root, "state"), mode: "persistent" };
-    const fresh = await runExecutor(config, { context });
+    const fresh = await runExecutor(config, { context, authToken: "runtime-secret-token" });
     expect(fresh.turnInputs).toHaveLength(1);
     const prompt = String(fresh.turnInputs[0]?.text ?? "");
     expect(prompt).toContain("You are agent agent-1");
@@ -819,7 +819,8 @@ describe("shared ACPX engine runtime behavior", () => {
     expect(prompt).toContain("Untrusted continuation evidence");
     expect(prompt).toContain("receipt-1");
     expect(prompt).toContain("Paperclip runtime note:");
-    const resumed = await runExecutor(config, { context, runtime: { sessionParams: fresh.result.sessionParams } });
+    expect(prompt).toContain("Paperclip API access note:");
+    const resumed = await runExecutor(config, { context, authToken: "runtime-secret-token", runtime: { sessionParams: fresh.result.sessionParams } });
     expect(resumed.sessionInputs[0]?.resumeSessionId).toBe(fresh.result.sessionId);
     const resumedPrompt = String(resumed.turnInputs[0]?.text ?? "");
     expect(resumedPrompt).not.toContain("Paperclip runtime note:");
