@@ -32,14 +32,36 @@ if p4 info >/dev/null 2>&1; then
   VCS="perforce"
 else
   # Fall back to git remote detection
-  REMOTE_URL=$(git remote get-url origin)
+  REMOTE_URL=$(git remote get-url origin 2>/dev/null || true)
   if echo "$REMOTE_URL" | grep -qi "gitlab"; then
     VCS="gitlab"
   else
     VCS="github"
+    # Fork-awareness: on a fork, 'origin' is the fork and PRs live on the upstream
+    # repo. Prefer the 'upstream' remote if it exists and point gh at it so that
+    # all subsequent 'gh pr' calls resolve against the correct repo without a
+    # manual --repo flag.
+    if git remote get-url upstream >/dev/null 2>&1; then
+      UPSTREAM_URL=$(git remote get-url upstream)
+      # Normalize SSH (git@github.com:owner/repo.git) and HTTPS URLs to owner/repo
+      UPSTREAM_REPO=$(echo "$UPSTREAM_URL" \
+        | sed -E 's|.*github\.com[:/]([^/]+/[^/]+?)(\.git)?$|\1|')
+      gh repo set-default "$UPSTREAM_REPO"
+    fi
   fi
 fi
 ```
+
+> **Fork warning — "PR not found" does not mean the PR does not exist.**
+> When working in a fork, `gh pr` commands default to the fork (`origin`) rather
+> than the upstream repo where PRs are actually filed. A "could not resolve to a
+> PullRequest" or "PR not found" error from `gh pr view` against a fork is **not**
+> evidence that the PR was fabricated or does not exist. Always re-check the
+> upstream repo (via `--repo OWNER/REPO` or by running `gh repo set-default
+> UPSTREAM_OWNER/UPSTREAM_REPO`) before concluding a PR is absent or invalid.
+> The `gh repo set-default` call above handles this automatically when an
+> `upstream` remote is present; for fresh clones without an `upstream` remote,
+> pass `--repo OWNER/REPO` explicitly to every `gh pr` call.
 
 For self-hosted GitLab instances whose hostname doesn't contain "gitlab", the user can override by passing `--vcs gitlab` as an input. For Perforce, the user can override by passing `--vcs perforce`.
 
