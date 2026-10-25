@@ -99,7 +99,7 @@ process-field update remain in the same transaction.
 
 Legacy terminalization locks runtime mode, status, full result evidence, and the
 status-delivery token without loading unused input, profile, or log bodies.
-It keeps the existing lock, writes, full returned run, workspace-retention
+It keeps the existing lock, full returned run, workspace-retention
 receipts, and source-bound recovery holds. Stored payloads remain unchanged.
 
 Conversation ownership checks select process identity and full recovery result
@@ -281,6 +281,9 @@ Legacy recovery also retains the pending delivery when status is unchanged and
 no patch was supplied. Explicit patches, new terminal statuses, and newly
 retained workspace evidence still create a delivery. File retention, ownership
 checks, failed write conditions, lock cleanup, and recovery holds still apply.
+The retention-evidence write returns another full run only when that evidence
+changes. An unchanged retry keeps the full run returned by the first write and
+still processes retained leases and recovery holds.
 
 Agent lists read the complete company roster once and use that same snapshot for
 termination filtering and organization-chain normalization. Detail and plugin runtime reads
