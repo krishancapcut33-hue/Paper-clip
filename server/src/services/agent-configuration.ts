@@ -71,6 +71,9 @@ export async function prepareAgentConfiguration(db: Db, existing: AgentConfigura
       (normalizedPatch.adapterType ?? existing.adapterType) as string,
       normalizedAdapterConfig,
     );
+    if (options?.allowPendingApprovalConfigUpdate && isPlainRecord(existing.adapterConfig)) {
+      normalizedPatch.adapterConfig = { ...existing.adapterConfig, ...normalizedPatch.adapterConfig };
+    }
   } else if (
     Object.prototype.hasOwnProperty.call(normalizedPatch, "adapterType")
     && isPlainRecord(existing.adapterConfig)
