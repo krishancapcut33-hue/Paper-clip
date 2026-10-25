@@ -13,7 +13,7 @@ export async function readLegacyDispositionSource(
   }).from(heartbeatRuns).where(and(where, eq(heartbeatRuns.runtimeMode, "native"))).limit(1);
   if (native) {
     const bound = [native.issueId, native.taskId]
-      .map(value => typeof value === "string" ? value.trim() : null).find(Boolean) ?? null;
+      .map(value => typeof value === "string" && value.trim().length > 0 ? value : null).find(Boolean) ?? null;
     return { kind: "skip" as const, decision: {
       kind: "skip" as const, reason: bound === scope.issueId ? "native_finalization" : "invalid_issue_binding",
     } };

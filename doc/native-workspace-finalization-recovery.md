@@ -490,5 +490,6 @@ reads preserve stored run data, source revocation checks, and JSON value types.
 Legacy continuation recovery rejects native runs before it loads their saved
 execution input. The persisted disposition check reads only the task binding
 for a native run. It keeps the same task-binding and native-finalization skip
-reasons. Native input and history stay stored. Real legacy recovery still reads
+reasons, including the original nonblank binding values. Native input and history
+stay stored. Real legacy recovery still reads
 its complete context, profile, excerpts, and required failure evidence.

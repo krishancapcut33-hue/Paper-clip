@@ -57,7 +57,9 @@ describe.skipIf(!support.supported)("legacy disposition source reads", () => {
   });
 
   it.each([
-    { context: { issueId: "  target  " }, issueId: "target", reason: "native_finalization" },
+    { context: { issueId: "  target  " }, issueId: "target", reason: "invalid_issue_binding" },
+    { context: { issueId: "   ", taskId: "target" }, issueId: "target", reason: "native_finalization" },
+    { context: { taskId: " target " }, issueId: "target", reason: "invalid_issue_binding" },
     { context: { issueId: 42, taskId: "target" }, issueId: "target", reason: "native_finalization" },
     { context: { issueId: "other", taskId: "target" }, issueId: "target", reason: "invalid_issue_binding" },
     { context: { issueId: null, taskId: false }, issueId: "target", reason: "invalid_issue_binding" },
