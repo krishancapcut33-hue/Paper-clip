@@ -48,8 +48,6 @@ sys.exit(os.waitstatus_to_exitcode(status))
 
 /** Run the same browser-code login used by sandbox connections on the local host. */
 export function startLocalBrowserLogin(provider: "anthropic" | "openai", home: string): LocalBrowserLoginState {
-  // Python's pty module requires Unix. Installing Python on native Windows
-  // cannot make this transport work, even when the provider CLI is installed.
   if (process.platform === "win32") {
     return {
       outcome: "failure",
