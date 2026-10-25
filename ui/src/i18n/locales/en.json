@@ -110,6 +110,7 @@
     "createFirstAgent": "Create your first agent to get started.",
     "noMatch": "No agents match the selected status.",
     "noHierarchy": "No organizational hierarchy defined.",
-    "selectCompany": "Select a company to view agents."
+    "selectCompany": "Select a company to view agents.",
+    "search": "Search agents"
   }
 }
