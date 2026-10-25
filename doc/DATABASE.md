@@ -332,12 +332,21 @@ The diagnostic measures awaited Postgres.js `unsafe` responses before Drizzle
 column decoding. It retains the Drizzle builder caller for normal, prepared,
 transaction, and dedicated-pool execution. It issues no queries.
 It logs the public server caller locations, static schema table, operation,
-query/row counts, and response value sizes. It emits at most 128 aggregate
+query/row counts, and response value sizes. It emits at most 512 aggregate
 groups and a summary at the deadline. It never logs SQL, parameters, result
 values, connection strings, or query errors. In-flight queries continue normally.
 
+For a bundled server, keep the linked source maps and enable Node's
+`--enable-source-maps` option so the diagnostic can resolve public caller
+locations. Restore the prior Node options after capture. Sizes still count when
+caller locations are unavailable.
+
 Look for `paperclip.db_response_capture.entry.v1` and
-`paperclip.db_response_capture.summary.v1` in the process logs. Tagged raw-driver calls, streams, unawaited raw-driver
+`paperclip.db_response_capture.summary.v1` in the process logs. A log provider
+can store `event` as a structured field instead of message text. Filter by that
+field or read the bounded window from the exact deployment. Check the summary
+and group totals, including the unattributed overflow group.
+Tagged raw-driver calls, streams, unawaited raw-driver
 dispatch, and protocol overhead are not measured. Relational queries use a driver-level caller fallback.
 Queries still in flight at the deadline are reported separately. Sizes describe
 driver values before column decoding, not billed network bytes. Complex parsed
