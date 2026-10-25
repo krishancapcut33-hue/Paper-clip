@@ -140,6 +140,10 @@ Reconnect** to replace the private key. The same control remains available under
 **Danger zone**. The connection, ownership, agent
 access, installation, repositories, and permissions stay fixed. Use Permissions
 to change agent access. Changing ownership or App scope requires a new connection.
+An inactive or revoked App grant can reconnect only after you submit a private
+key for verification. Blank-key reuse remains available for active grants.
+Successful recovery reactivates the same grant and clears its revocation fields;
+failed verification preserves the inactive grant and its saved credentials.
 Removing a connection in Paperclip does not uninstall
 the App from GitHub or delete its registration. Manage those in GitHub settings.
 
@@ -211,3 +215,18 @@ the original connection and preserve its authority boundaries.
 Fresh setup also leaves unfinished App drafts separate. Use an explicit resume
 link to continue a saved draft; creating another connection does not inherit
 that draft's policy or credentials merely because its name matches.
+
+## Integration boundaries
+
+The App client owns JWT signing, installation-token exchange, provider response
+validation, and the scoped token cache. The credential service binds those
+operations to the existing company, grant, vault, and installation checks.
+Catalog discovery and the gateway use the resulting bearer token at the fixed
+GitHub MCP endpoint; they never interpret or forward the private key.
+
+Existing OAuth and PAT methods retain their credential exchange paths. Managed
+run discovery filters all GitHub methods to the selected identity, matching
+invocation. Shared setup clears submitted credential values after success and
+validates dedicated ownership against exactly one agent. Setup rollback restores
+credential bindings through the existing vault declaration path. These shared
+changes support App setup without introducing another authorization system.
