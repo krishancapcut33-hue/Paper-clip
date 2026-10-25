@@ -123,6 +123,12 @@ launch context does not travel with each policy or parent-report check. JSON
 types, task-key precedence, and company and agent identity checks are preserved.
 Each decision still reads current data; this is not an authorization cache.
 
+WebSocket delivery uses one fresh authorization batch for an event's task and
+run bindings. When both bindings name the same task, the batch reads its current
+authority once. Different task bindings must both pass. The batch is discarded
+after that delivery; later events still recheck grants, membership, task
+existence, and company boundaries.
+
 Filesystem preparation uses current task/run and selected-configuration checks.
 Historical root-reader authorization has been retired; no retained-reader batch is
 loaded at admission or publication. Workspace-record disclosure still uses task
