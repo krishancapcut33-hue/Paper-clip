@@ -62,7 +62,11 @@ export function sanitizeHttpFailure(error: unknown): {
     if (code === "grant_credential_invalid" || code === "oauth_insufficient_scope") {
       return { status: code === "grant_credential_invalid" ? "missing_secret" : "degraded", message: error.message, code };
     }
-    if (code === "slack_mcp_access_disabled" || code === "google_workspace_services_unavailable") {
+    if (
+      code === "slack_mcp_access_disabled" ||
+      code === "google_workspace_services_unavailable" ||
+      code === "github_app_mcp_unavailable"
+    ) {
       return { status: "error", message: error.message, code };
     }
     if (code === "user_authorization_required") {
