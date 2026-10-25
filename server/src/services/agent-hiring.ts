@@ -108,7 +108,10 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
         const revisionService = agentInstructionRevisionService(txDb);
         patch.adapterConfig = await revisionService.persistHireApprovalBundleConfiguration(
           existing.id,
-          configured.adapterConfig,
+          {
+            ...(isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {}),
+            ...configured.adapterConfig,
+          },
         );
         const current = await revisionService.readCommittedForRuntime({ companyId: existing.companyId, agentId: existing.id });
         await revisionService.commit({ companyId: existing.companyId, agentId: existing.id, entryFile,
