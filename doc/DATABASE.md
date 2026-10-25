@@ -66,6 +66,12 @@ the PostgreSQL row version. Native blocked-wait repair compares that version
 against a fresh full source read before applying changes. Any intervening row
 update, including an edit outside the projection, defers repair to a fresh sweep.
 
+The two preliminary reconciliation reads omit named launch renderings and
+preparation payloads. Native profiles omit unused native execution input.
+They retain all other context, full results, legacy profiles, task identity,
+retry accounting, and unknown controls. Native runs still reach their native
+recovery guard. Terminalization keeps its full locked source and stored input.
+
 Execution-blocker reads select process, lifecycle, and task-binding fields rather
 than full execution rows. Context retains typed task and pre-dispatch evidence;
 Runner profiles retain the adapter type, native input schema, binding, provider,
