@@ -30,6 +30,15 @@ export async function assertGitHubJourneyCheck(page: Page, expected: { repositor
   await expect(check.getByText(expected.headSha, { exact: true })).toBeVisible({ timeout });
 }
 
+export async function assertGitHubJourneyTaskDone(page: Page, timeout = 30_000) {
+  const status = page.locator('[data-property-row="true"]:visible')
+    .filter({ has: page.locator('[data-property-label="Status"]') })
+    .locator('[data-property-value="true"]');
+  // Status glyphs contain SVG titles, and responsive layouts can retain hidden
+  // controls. Read the visible status picker rather than the first Done text.
+  await expect(status.getByRole("button", { name: "Change status (current: Done)", exact: true })).toBeVisible({ timeout });
+}
+
 export interface GitHubRegistrationBoundary {
   origin: string; pathname: string; passwordRequired: boolean; oneTimeCodeRequired: boolean;
   reauthenticationRequired: boolean; createControlVisible: boolean;

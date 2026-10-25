@@ -1,5 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
-import { assertGitHubJourneyCheck } from "./github-review-browser.js";
+import { assertGitHubJourneyCheck, assertGitHubJourneyTaskDone } from "./github-review-browser.js";
 
 const expected = { repository: "fixture/repo", url: "https://github.com/fixture/repo/runs/123", headSha: "a".repeat(40), score: 2 };
 
@@ -46,4 +46,32 @@ test("rejects a check reference outside the configured repository", async ({ pag
   const url = "https://github.com/foreign/repo/runs/123";
   await openCheck(page, { url });
   await expect(assertGitHubJourneyCheck(page, { ...expected, url }, 150)).rejects.toThrow();
+});
+
+function taskStatus(status: string, hidden = false) {
+  return `<div data-property-row="true"${hidden ? ' style="display:none"' : ""}>
+    <span data-property-label="Status">Status</span><div data-property-value="true">
+      <button aria-label="Change status (current: ${status})"><svg><title>${status}</title></svg><span>${status}</span></button>
+    </div></div>`;
+}
+
+test("accepts visible Done status despite hidden controls and SVG title text", async ({ page }) => {
+  await page.setContent(`<button style="display:none">Done</button>${taskStatus("Done", true)}${taskStatus("Done")}`);
+  await expect(page.getByText("Done", { exact: true }).first()).toBeHidden();
+  await assertGitHubJourneyTaskDone(page, 150);
+});
+
+test("rejects Done in the narrative when the task is still in progress", async ({ page }) => {
+  await page.setContent(`<p>Done</p>${taskStatus("In Progress")}`);
+  await expect(assertGitHubJourneyTaskDone(page, 150)).rejects.toThrow();
+});
+
+test("rejects hidden Done status when the visible status is in progress", async ({ page }) => {
+  await page.setContent(`${taskStatus("Done", true)}${taskStatus("In Progress")}`);
+  await expect(assertGitHubJourneyTaskDone(page, 150)).rejects.toThrow();
+});
+
+test("rejects a Done picker in an unrelated property", async ({ page }) => {
+  await page.setContent(taskStatus("Done").replace('data-property-label="Status">Status', 'data-property-label="Assignee">Assignee'));
+  await expect(assertGitHubJourneyTaskDone(page, 150)).rejects.toThrow();
 });

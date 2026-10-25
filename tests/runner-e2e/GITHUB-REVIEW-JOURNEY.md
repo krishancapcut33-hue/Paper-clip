@@ -83,7 +83,9 @@ The rendered check must match its exact GitHub run URL, score, and reviewed
 commit. Its failure status comes from that check's header. Hidden re-run menu
 items, a failure on another check, and words in the model's narrative do not
 prove the conclusion. `github-review-check.spec.ts` covers this boundary in the
-credential-free `test:e2e:runner:browser-support` suite.
+credential-free `test:e2e:runner:browser-support` suite. Task completion reads
+the visible Status property's picker, before and after reload. Hidden controls,
+SVG titles, and narrative text saying Done cannot satisfy that UI checkpoint.
 
 Each attempt records endpoint, App, PR/branch, task, and run ownership. Cleanup
 removes the owned endpoint, closes the owned PR/deletes its branch, and asks for
