@@ -113,9 +113,13 @@ export interface HeartbeatRetryDependencies {
   applyRunDispatchPostCommitEffects: (effects: PostCommitEffect[]) => void;
 }
 
-export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS = [
+const PROVIDER_QUOTA_RESET_POLL_MS = 15 * 60_000;
+const PROVIDER_QUOTA_RESET_POLL_ATTEMPTS = 26;
+
+export const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS: readonly number[] = [
   30_000, 60_000,
-] as const;
+  ...Array<number>(PROVIDER_QUOTA_RESET_POLL_ATTEMPTS).fill(PROVIDER_QUOTA_RESET_POLL_MS),
+];
 
 const BOUNDED_TRANSIENT_HEARTBEAT_RETRY_REASON = "transient_failure";
 
@@ -353,7 +357,7 @@ export function computeBoundedTransientHeartbeatRetrySchedule(
   if (!Number.isInteger(attempt) || attempt <= 0) return null;
   const baseDelayMs = BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS[attempt - 1];
   if (typeof baseDelayMs !== "number") return null;
-  const delayMs = infrastructureRetryDelayMs(attempt, random());
+  const delayMs = Math.min(infrastructureRetryDelayMs(attempt, random()), PROVIDER_QUOTA_RESET_POLL_MS);
   return {
     attempt,
     baseDelayMs,

@@ -279,7 +279,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     } else {
       expect(result.outcome).toBe("scheduled");
       if (result.outcome !== "scheduled" || !result.run) throw new Error("Expected a bounded retry");
-      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "workspace_restore_failed", scheduledRetryAttempt: 2,
+      await db.update(heartbeatRuns).set({ status: "failed", errorCode: "workspace_restore_failed", scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
         resultJson: { workspaceRestoreFailure: classification, conversationContinuation: "continue_conversation_v1", errorFamily: "transient_upstream" },
       }).where(eq(heartbeatRuns.id, result.run.id));
       expect(await heartbeat.scheduleBoundedRetry(result.run.id, { now, random: () => 0 })).toMatchObject({ outcome: "retry_exhausted" });
@@ -314,7 +314,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     const scheduled = await heartbeat.scheduleBoundedRetry(runId, { now, random: () => 0 });
     expect(scheduled).toMatchObject({ outcome: "scheduled", run: { scheduledRetryAttempt: 2, scheduledRetryReason: "transient_failure" } });
     if (scheduled.outcome !== "scheduled") throw new Error("Expected a bounded retry");
-    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "overloaded",
+    await db.update(heartbeatRuns).set({ status: "failed", errorCode: "overloaded", scheduledRetryAttempt: BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length,
       resultJson: { executionRecovery: { kind: "bootstrap", providerWorkStarted: false } } }).where(eq(heartbeatRuns.id, scheduled.run!.id));
     expect(await heartbeat.scheduleBoundedRetry(scheduled.run!.id, { now, random: () => 0 })).toMatchObject({ outcome: "retry_exhausted" });
   });
@@ -500,7 +500,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     await db.update(heartbeatRuns).set({ status: "interrupted", errorCode: "server_shutdown_interrupted", resultJson })
       .where(eq(heartbeatRuns.id, runId));
     let predecessor = runId;
-    for (const attempt of [1, 2]) {
+    for (let attempt = 1; attempt <= BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length; attempt++) {
       const restarted = heartbeatService(db);
       const outcomes = await Promise.all([
         restarted.scheduleBoundedRetry(predecessor, { now, random: () => 0 }),
@@ -517,7 +517,7 @@ describeEmbeddedPostgres("heartbeat bounded retry scheduling", () => {
     expect(await heartbeatService(db).scheduleBoundedRetry(predecessor, { now }))
       .toMatchObject({ outcome: "retry_exhausted" });
     await heartbeatService(db).reconcileStrandedAssignedIssues();
-    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(3);
+    expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.length + 1);
     // Exhaustion leaves the task available to a new explicit request.
     const { getExecutionBlocker } = await import("../services/execution-blocker.js");
     expect(await getExecutionBlocker(db, companyId, issueId)).toBeNull();

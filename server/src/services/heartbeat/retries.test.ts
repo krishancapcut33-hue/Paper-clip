@@ -303,3 +303,16 @@ describePostgres("heartbeat retry module database wiring", () => {
     expect(await retries.retryScheduledRetryNow({ issueId: selected.issue.id, now })).toMatchObject({ outcome: "already_promoted" });
   });
 });
+
+describe("bounded transient retry schedule", () => {
+  it("keeps the fast first retries and then polls every 15 minutes for six hours", () => {
+    const now = new Date("2026-04-20T12:00:00.000Z");
+    const delays = extracted.BOUNDED_TRANSIENT_HEARTBEAT_RETRY_DELAYS_MS.map((_, index) =>
+      extracted.computeBoundedTransientHeartbeatRetrySchedule(index + 1, now, () => 0.5)!.delayMs);
+
+    expect(delays.slice(0, 2)).toEqual([30_000, 60_000]);
+    expect(Math.max(...delays)).toBe(15 * 60_000);
+    expect(delays.reduce((total, delay) => total + delay, 0)).toBeGreaterThanOrEqual(6 * 60 * 60_000);
+    expect(extracted.computeBoundedTransientHeartbeatRetrySchedule(delays.length + 1, now)).toBeNull();
+  });
+});
