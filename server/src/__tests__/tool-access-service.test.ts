@@ -18225,7 +18225,12 @@ describeEmbeddedPostgres("tool access service", () => {
       enabledCatalogEntryIds, askFirstCatalogEntryIds: [write.catalogEntryId!], access: { agentIds: [agent.id] },
     }, actor);
     const callsBeforeApproval = calls.length;
-    await expect(gateway.executeTool({ sessionToken: session.token, tool: write.name, parameters }))
+    // Exercise a new write under the changed policy instead of replaying the
+    // completed write with the gateway's default idempotency key.
+    await expect(gateway.executeTool({
+      sessionToken: session.token, tool: write.name, parameters,
+      idempotencyKey: `github-app-approval:${connected.connectionId}`,
+    }))
       .rejects.toMatchObject({ reasonCode: "approval_required" });
     expect(calls).toHaveLength(callsBeforeApproval);
 
