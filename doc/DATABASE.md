@@ -342,7 +342,10 @@ column decoding. It retains the Drizzle builder caller for normal, prepared,
 transaction, and dedicated-pool execution. It issues no queries.
 It logs the public server caller locations, static schema table, operation,
 query/row counts, and response value sizes. It emits at most 2,048 aggregate
-groups and a summary at the deadline. It never logs SQL, parameters, result
+groups and a summary. Measurement stops at the deadline. Environment-enabled
+captures emit at most 64 records per second and can take another 33 seconds to
+finish writing the bounded output. Wait for the summary before collecting it.
+It never logs SQL, parameters, result
 values, connection strings, or query errors. In-flight queries continue normally.
 
 For a bundled server, keep the linked source maps and enable Node's
