@@ -626,7 +626,7 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     for (let i = 0; i < 6 && results.at(-1)!.truncated; i++) results.push(await retention.tick());
     expect(results.at(-1)!.truncated).toBe(false);
     expect(results.every((result) => result.checked <= 2)).toBe(true);
-    expect(results.every((result) => (result.skipped.recent_evidence ?? 0) <= 1)).toBe(true);
+    expect(results.every((result) => (result.skipped.recent_evidence ?? 0) <= 2)).toBe(true);
     expect(results.reduce((sum, result) => sum + (result.skipped.recent_evidence ?? 0), 0)).toBe(3);
     for (const leftover of leftovers) expect(await exists(leftover)).toBe(false);
     for (const archive of archives) expect(await exists(archive)).toBe(true);
@@ -645,5 +645,34 @@ describeEmbeddedPostgres("native harness backup expiration", () => {
     expect(await exists(leftover)).toBe(true);
     await retention.tick();
     expect(await exists(leftover)).toBe(false);
+  });
+
+  it("keeps a due evidence pass pending when drain stops it before any session", async () => {
+    const session = await seedSession({ issueStatus: "in_progress", backupAgeDays: 1 });
+    const archive = await seedArchive(session.root);
+    let draining = true;
+    const retention = evidenceService({ shouldContinue: () => !draining });
+
+    expect(await retention.tick()).toMatchObject({ checked: 0, truncated: true });
+    draining = false;
+    expect(await retention.tick()).toMatchObject({ evidenceRemoved: 1 });
+    expect(await exists(archive)).toBe(false);
+  });
+
+  it("finishes one-entry batches without recounting a resumed session", async () => {
+    const session = await seedSession({ issueStatus: "in_progress", backupAgeDays: 1 });
+    const archives = [await seedArchive(session.root), await seedArchive(session.root)];
+    const quarantine = await seedQuarantine(session.scope);
+    const retention = evidenceService({ maxEntries: 1 });
+
+    const results = [];
+    for (let i = 0; i < 8; i++) {
+      results.push(await retention.tick());
+      if (!results.at(-1)!.truncated) break;
+    }
+
+    expect(results.at(-1)!.truncated).toBe(false);
+    for (const archive of archives) expect(await exists(archive)).toBe(false);
+    expect(await exists(quarantine)).toBe(false);
   });
 });

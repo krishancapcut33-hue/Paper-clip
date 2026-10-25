@@ -250,6 +250,7 @@ export function nativeHarnessBackupExpirationService(
   let resume: { scope: string; archive: string } | null = null;
   let quarantineCursor: string | null = null;
   let phase: "sessions" | "quarantine" = "sessions";
+  let passActive = false;
   let evidencePass = false;
   let evidenceDueAt = 0;
   let passDueAt = Number.POSITIVE_INFINITY;
@@ -492,7 +493,8 @@ export function nativeHarnessBackupExpirationService(
     const closedBefore = new Date(now - closedForDays * DAY_MS);
     const result = emptyResult();
     const hasBudget = () => shouldContinue() && result.candidates + result.evidenceCandidates < maxRemovals;
-    if (phase === "sessions" && cursor === null && resume === null) {
+    if (!passActive) {
+      passActive = true;
       evidencePass = evidenceDueAt <= now;
       if (evidencePass) {
         evidenceDueAt = Number.POSITIVE_INFINITY;
@@ -521,7 +523,9 @@ export function nativeHarnessBackupExpirationService(
           result.truncated = true;
           break;
         }
-        result.checked++;
+        const resumeAfter = resume?.scope === name ? resume.archive : null;
+        if (resume && name >= resume.scope) resume = null;
+        if (resumeAfter === null) result.checked++;
         const previous = cursor;
         cursor = name;
         const root = path.join(base, name);
@@ -529,8 +533,6 @@ export function nativeHarnessBackupExpirationService(
           result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
           continue;
         }
-        const resumeAfter = resume?.scope === name ? resume.archive : null;
-        if (resume && name >= resume.scope) resume = null;
         if (resumeAfter === null) {
           try {
             await expireSession(root, name, { dryRun, isSessionBusy, closedBefore }, result);
@@ -557,7 +559,10 @@ export function nativeHarnessBackupExpirationService(
       }
       if (result.truncated) return result;
       cursor = null;
-      if (!evidencePass) return result;
+      if (!evidencePass) {
+        passActive = false;
+        return result;
+      }
       phase = "quarantine";
     }
     try {
@@ -572,6 +577,7 @@ export function nativeHarnessBackupExpirationService(
       logger.warn({ err }, "native runner evidence retention skipped quarantine");
     }
     phase = "sessions";
+    passActive = false;
     evidencePass = false;
     evidenceDueAt = Math.min(evidenceDueAt, passDueAt);
     return result;
