@@ -104,12 +104,8 @@ describe("live-event run read boundaries", () => {
       expect(await deliver(run.id)).toMatchObject([{ payload: { runId: run.id, status: "running" } }]);
       const batchStart = queries.length;
       expect(await deliver(run.id, issueId)).toMatchObject([{ payload: { runId: run.id, issueId, status: "running" } }]);
-      // A single event's task and run share one current task-read decision.
-      // Include the following barrier event: the old per-resource path needs
-      // eleven queries here, while this delivery needs at most six.
       expect(queries.length - batchStart).toBeLessThanOrEqual(6);
       expect(queries.slice(batchStart).filter(query => query.startsWith("select ") && query.includes('from "issues"')).length).toBeLessThanOrEqual(2);
-      // Both bindings must qualify when an event names different tasks.
       expect(await deliver(hiddenRun.id, issueId)).toEqual([]);
       expect(await deliver(run.id, hiddenIssueId)).toEqual([]);
       expect(await deliver(run.id, randomUUID())).toEqual([]);

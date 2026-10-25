@@ -316,9 +316,6 @@ export function setupLiveEventsWebSocketServer(
         if (!run) return null;
         readBindings.push(run);
       }
-      // One fresh authorization batch per delivery. A task and its run often
-      // name the same issue; the batch reads that authority once, while still
-      // checking both resources when the payload names different issues.
       if ((await getHeartbeatRunReadDecisions(db, access, context!.actor, readBindings)).some(allowed => !allowed)) return null;
       if (["company_skill", "company_skill_source"].includes(String(payload.entityType)) && typeof payload.entityId === "string") {
         try {
