@@ -18216,7 +18216,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(calls).toEqual(["get_file_contents", "create_pull_request"]);
 
     const beforeHealth = tokenRevision;
-    await service.checkConnectionHealth(connected.connectionId, actor);
+    await service.checkHealth(connected.connectionId, actor);
     expect(tokenRevision).toBeGreaterThan(beforeHealth);
     await gateway.executeTool({ sessionToken: session.token, tool: read.name, parameters });
     expect(calls.at(-1)).toBe("get_file_contents");
@@ -18234,7 +18234,7 @@ describeEmbeddedPostgres("tool access service", () => {
       .rejects.toMatchObject({ status: 502, details: { code: "github_app_mcp_unavailable" } });
     expect((await service.getConnection(connected.connectionId, company.id)).authKind).toBe("api_key");
     rejectMcp = false;
-    await service.checkConnectionHealth(connected.connectionId, actor);
+    await service.checkHealth(connected.connectionId, actor);
 
     await db.update(connectionGrants).set({ status: "revoked" })
       .where(eq(connectionGrants.connectionId, connected.connectionId));
