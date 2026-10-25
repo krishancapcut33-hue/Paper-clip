@@ -123,6 +123,12 @@ launch context does not travel with each policy or parent-report check. JSON
 types, task-key precedence, and company and agent identity checks are preserved.
 Each decision still reads current data; this is not an authorization cache.
 
+Native tool authority lookups select current run identity, status, invocation,
+responsible user, context, and receipt data. Saved profiles and output excerpts
+stay in storage and are omitted from that read. Task and agent binding, current
+status, budget, and task privacy checks retain their existing predicates.
+Mutation transactions still lock and read complete run records.
+
 WebSocket delivery uses one fresh authorization batch for an event's task and
 run bindings. When both bindings name the same task, the batch reads its current
 authority once. Different task bindings must both pass. The batch is discarded

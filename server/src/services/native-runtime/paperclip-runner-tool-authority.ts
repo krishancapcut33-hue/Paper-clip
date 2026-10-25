@@ -1227,7 +1227,17 @@ export class PaperclipRunnerToolAuthority {
 
   async #boundContext() {
     if (this.binding.museRuntime && !this.binding.externalAuthorizingUserId) throw forbidden("Muse authorizer is unavailable");
-    const [row] = await this.db.select({ issue: issues, actor: agents, run: heartbeatRuns })
+    const [row] = await this.db.select({ issue: issues, actor: agents, run: {
+      id: heartbeatRuns.id,
+      companyId: heartbeatRuns.companyId,
+      agentId: heartbeatRuns.agentId,
+      runtimeMode: heartbeatRuns.runtimeMode,
+      status: heartbeatRuns.status,
+      invocationSource: heartbeatRuns.invocationSource,
+      responsibleUserId: heartbeatRuns.responsibleUserId,
+      contextSnapshot: heartbeatRuns.contextSnapshot,
+      resultJson: heartbeatRuns.resultJson,
+    } })
       .from(heartbeatRuns)
       .innerJoin(issues, eq(issues.id, this.binding.issueId))
       .innerJoin(agents, eq(agents.id, this.binding.agentId))
@@ -2168,7 +2178,7 @@ export class PaperclipRunnerToolAuthority {
     });
   }
 
-  async #sourcePlanApproval(context: { issue: typeof issues.$inferSelect; run: typeof heartbeatRuns.$inferSelect }) {
+  async #sourcePlanApproval(context: { issue: typeof issues.$inferSelect; run: Pick<typeof heartbeatRuns.$inferSelect, "responsibleUserId"> }) {
     const plan = await handoffPlanContext(this.db, context.issue, this.#privacyActor(context.run));
     if (!plan || !this.binding.museRuntime) return plan;
     const document = await documentService(this.db).getIssueDocumentByKey(plan.sourceIssueId, "plan");
