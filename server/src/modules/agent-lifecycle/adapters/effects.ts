@@ -19,6 +19,6 @@ export interface LifecycleEffects {
   clearPrimary(db: Db, companyId: string, agentId: string): Promise<unknown>;
   prepareHire(db: Db, companyId: string, data: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData>;
   initializeHire(db: Db, agent: AgentHireRecord, options?: CreateAgentOptions): Promise<void>;
-  prepareHireApproval(db: Db, agent: AgentHireRecord, payload?: Record<string, unknown> | null, approvedByUserId?: string): Promise<AgentConfigurationPatch>;
+  prepareHireApproval(db: Db, agent: AgentHireRecord, payload?: Record<string, unknown> | null, approvedByUserId?: string, approvalId?: string): Promise<AgentConfigurationPatch>;
   completeHireApproval(db: Db, agent: AgentHireRecord, previous: AgentHireRecord): Promise<void>;
 }

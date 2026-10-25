@@ -15,6 +15,7 @@ import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
 import { agentInstructionsService } from "./agent-instructions.js";
 import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
+import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   const { runner, ...data } = input;
@@ -89,7 +90,7 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   }
 }
 
-export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null, approvedByUserId?: string): Promise<AgentConfigurationPatch> {
+export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null, approvedByUserId?: string, approvalId?: string): Promise<AgentConfigurationPatch> {
   const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload, isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {}) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
   if (approvedPayload && isPlainRecord(approvedPayload.instructionsBundle)) {
@@ -100,25 +101,21 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
       ) as Record<string, string>;
       if (Object.keys(files).length > 0) {
         const entryFile = typeof bundle.entryFile === "string" ? bundle.entryFile : "AGENTS.md";
+        if (!approvedByUserId || !approvalId) throw unprocessable("Approved hire instructions require authenticated approval authority");
+        const configured = await agentInstructionsService(txDb).updateBundle({
+          ...existing,
+          adapterConfig: patch.adapterConfig ?? existing.adapterConfig,
+        }, { mode: "managed", entryFile });
+        const persisted = await updateAgentConfigurationInTransaction(txDb, existing.id, { adapterConfig: configured.adapterConfig }, { allowPendingApprovalConfigUpdate: true });
+        patch.adapterConfig = persisted?.adapterConfig ?? configured.adapterConfig;
         const revisionService = agentInstructionRevisionService(txDb);
-        const board = { type: "board" as const, userId: approvedByUserId ?? "approval" };
-        const current = await revisionService.readCurrent({ companyId: existing.companyId, agentId: existing.id }, board);
-        if (current) {
-          const configured = await agentInstructionsService(txDb).updateBundle({
-            ...existing,
-            adapterConfig: patch.adapterConfig ?? existing.adapterConfig,
-          }, { mode: "managed", entryFile });
-          patch.adapterConfig = configured.adapterConfig;
-          await revisionService.commit({ companyId: existing.companyId, agentId: existing.id, entryFile,
-            content: files[entryFile] ?? current.content, baseRevisionId: current.revision.id, source: "board" }, board);
-          for (const [relativePath, content] of Object.entries(files)) {
-            if (relativePath === entryFile) continue;
-            await agentInstructionsService(txDb).writeFile({ ...existing, adapterConfig: patch.adapterConfig }, relativePath, content);
-          }
-        } else {
-          const materialized = await agentInstructionsService(txDb).materializeManagedBundle({ ...existing,
-            adapterConfig: patch.adapterConfig ?? existing.adapterConfig }, files, { entryFile, replaceExisting: true });
-          patch.adapterConfig = materialized.adapterConfig;
+        const current = await revisionService.readCommittedForRuntime({ companyId: existing.companyId, agentId: existing.id });
+        await revisionService.commit({ companyId: existing.companyId, agentId: existing.id, entryFile,
+          content: files[entryFile] ?? current?.content ?? "", baseRevisionId: current?.revision.id ?? null, source: "board" },
+          { type: "hire_approval", approvalId, userId: approvedByUserId });
+        for (const [relativePath, content] of Object.entries(files)) {
+          if (relativePath === entryFile) continue;
+          await agentInstructionsService(txDb).writeFile({ ...existing, adapterConfig: patch.adapterConfig }, relativePath, content);
         }
       }
     }

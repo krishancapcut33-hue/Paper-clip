@@ -8,6 +8,8 @@ import {
   activityLog,
   budgetPolicies,
   companies,
+  authUsers,
+  companyMemberships,
   createDb,
   principalPermissionGrants,
 } from "@paperclipai/db";
@@ -49,6 +51,8 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
+    await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -66,6 +70,11 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       requireBoardApprovalForNewAgents: true,
     });
     return companyId;
+  }
+
+  async function seedApprover(companyId: string) {
+    await db.insert(authUsers).values({ id: "board-user", name: "Board member", email: "board-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "member" });
   }
 
   it("resolves internal Codex creation once and preserves legacy agents through ordinary edits", async () => {
@@ -193,6 +202,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
 
   it("replays approved skills and instructions and removes standard grants for restricted hires", async () => {
     const companyId = await seedCompany();
+    await seedApprover(companyId);
     const agentSvc = agentService(db);
     const lifecycle = createAgentLifecycle(db);
     const approvalSvc = approvalService(db);
@@ -277,6 +287,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
 
   it("approves revised entry instructions through the canonical revision service", async () => {
     const companyId = await seedCompany();
+    await seedApprover(companyId);
     const lifecycle = createAgentLifecycle(db);
     const approvalSvc = approvalService(db);
     const pending = await lifecycle.requestHire(companyId, {
@@ -288,12 +299,15 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await db.update(agents).set({ adapterConfig: bundle.adapterConfig }).where(eq(agents.id, pending.id));
     const approval = await approvalSvc.create(companyId, {
       type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "revision_requested",
-      payload: { agentId: pending.id, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Revised" } } },
+      payload: { agentId: pending.id, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Original" } } },
       decisionNote: "Please revise", decidedByUserId: "board-user", decidedAt: new Date(), updatedAt: new Date(),
     });
-    await approvalSvc.resubmit(approval.id, approval.payload);
+    await approvalSvc.resubmit(approval.id, { agentId: pending.id, instructionsBundle: { entryFile: "ROLE.md", files: { "ROLE.md": "Revised" } } });
     await approvalSvc.approve(approval.id, "board-user", "Approved revised instructions");
+    const activated = await agentService(db).getById(pending.id);
+    expect(activated).toMatchObject({ status: "paused", adapterConfig: { instructionsEntryFile: "ROLE.md" } });
     const current = await agentInstructionRevisionService(db).readCurrent({ companyId, agentId: pending.id }, { type: "board", userId: "board-user" });
+    expect(current?.revision.entryFile).toBe("ROLE.md");
     expect(current?.content).toBe("Revised");
   });
 });
