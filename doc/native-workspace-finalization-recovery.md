@@ -499,3 +499,9 @@ for a native run. It keeps the same task-binding and native-finalization skip
 reasons, including the original nonblank binding values. Native input and history
 stay stored. Real legacy recovery still reads
 its complete context, profile, excerpts, and required failure evidence.
+
+The native Stop continuation recheck reads current run identity, the full Stop
+acknowledgement receipt, and process identity. It does not load saved execution
+input, runner profiles, excerpts, or unrelated result fields. Lease cleanup,
+remote termination receipts, local process checks, task ownership, and admission
+checks keep their existing behavior. Stored runs retain all of their data.

@@ -1,4 +1,5 @@
 import { notifyEnvironmentCleanup } from "../environment-cleanup-notifications.js";
+import { readNativeStopExecutionEvidence } from "./native-stop-evidence-read.js";
 import { readTaskRetryIntent, reconcileTaskChatRetryReceipts } from "../task-retry.js";
 import { PROCESS_IDENTITY_RECORDED, PROCESS_START_REQUESTED, readNativeLocalProcessStop, recordedLocalExecutionStopped } from "../native-local-process-stop.js";
 import { isHeartbeatRunTerminalStatus } from "./run-lifecycle.js";
@@ -522,7 +523,7 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
         !(await recordedLocalExecutionStopped(db, run))) return;
     const issueId = run.nativeIssueId ?? (typeof run.contextSnapshot?.issueId === "string" ? run.contextSnapshot.issueId : null);
     if (!issueId) return;
-    const currentRun = run.runtimeMode === "native" ? await getRun(run.id, { includeExecutionEvidence: true }) : null;
+    const currentRun = run.runtimeMode === "native" ? await readNativeStopExecutionEvidence(db, run.companyId, run.id) : null;
     const [coordinator] = currentRun ? await db.select({ phase: nativeRunFinalizations.phase,
       leaseOwner: nativeRunFinalizations.leaseOwner }).from(nativeRunFinalizations).where(and(
       eq(nativeRunFinalizations.companyId, run.companyId), eq(nativeRunFinalizations.runId, run.id),
