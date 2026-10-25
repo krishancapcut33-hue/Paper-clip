@@ -267,7 +267,6 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     expect(updated).toMatchObject({
       status: "paused",
       adapterConfig: {
-        search: false,
         paperclipSkillSync: { desiredSkills: [{ key: "paperclipai/paperclip/browser-use", versionId: "version-7" }] },
       },
       runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },

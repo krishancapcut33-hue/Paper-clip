@@ -46,17 +46,14 @@ export async function prepareAgentHire(db: Db, companyId: string, input: CreateA
     ? await secretService(db).normalizeAdapterConfigForPersistence(companyId, data.adapterConfig, { adapterType })
     : {};
   const adapterConfig = normalizePaperclipRunnerAdapterConfig(adapterType, rawAdapterConfig);
-  const persistedAdapterConfig = data.status === "pending_approval"
-    ? { ...adapterConfig, ...rawAdapterConfig }
-    : adapterConfig;
   await agentCredentialService(db).enforceClaudeOAuthBindingClaim(db, {
     companyId, consume: true, environmentId: data.defaultEnvironmentId ?? null,
-    childAdapterConfig: persistedAdapterConfig, claudeLogin: options?.claudeLogin,
-    decision: assertClaudeOAuthBindingInvariant({ adapterType, nextConfig: persistedAdapterConfig }),
+    childAdapterConfig: adapterConfig, claudeLogin: options?.claudeLogin,
+    decision: assertClaudeOAuthBindingInvariant({ adapterType, nextConfig: adapterConfig }),
   });
   return { ...data, name: uniqueName,
     appearance: data.appearance == null ? randomAgentAppearance() : agentAppearanceSchema.parse(data.appearance),
-    role, adapterType, adapterConfig: persistedAdapterConfig, permissions: normalizedPermissions, runtimeConfig };
+    role, adapterType, adapterConfig, permissions: normalizedPermissions, runtimeConfig };
 }
 
 export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, options?: CreateAgentOptions) {
