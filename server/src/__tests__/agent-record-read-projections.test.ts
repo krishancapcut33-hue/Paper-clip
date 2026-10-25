@@ -2,7 +2,7 @@ import { randomUUID } from "node:crypto";
 import { agents, companies, costEvents, createDb } from "@paperclipai/db";
 import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { eq } from "drizzle-orm";
-import { afterAll, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { agentRecordQueries } from "../lib/agent-records.js";
 import { agentService } from "../services/agents.js";
@@ -17,6 +17,13 @@ describe.skipIf(!support.supported)("agent roster read projections", () => {
     database = await startEmbeddedPostgresTestDatabase("agent-roster-read-");
     db = createDb(database.connectionString);
   }, 60_000);
+
+  beforeEach(() => {
+    vi.useFakeTimers({ toFake: ["Date"] });
+    vi.setSystemTime(new Date("2020-06-15T12:00:00Z"));
+  });
+
+  afterEach(() => { vi.useRealTimers(); });
 
   afterAll(async () => {
     await db?.$client.end();
