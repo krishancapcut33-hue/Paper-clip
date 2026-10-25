@@ -163,6 +163,11 @@ launch context does not travel with each policy or parent-report check. JSON
 types, task-key precedence, and company and agent identity checks are preserved.
 Each decision still reads current data; this is not an authorization cache.
 
+Restoring a saved monitor's receipt or completion proof creates a new native
+assessment identity even when its scheduled deadline is unchanged. The saved
+proof is part of the assessment input. Prior decisions and accepted results stay
+intact, and an unchanged replay reuses the same assessment and decision.
+
 Native tool authority lookups select current run identity, status, invocation,
 responsible user, context, and receipt data. Saved profiles and output excerpts
 stay in storage and are omitted from that read. Task and agent binding, current
