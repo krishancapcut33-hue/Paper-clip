@@ -3499,6 +3499,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       },
     ],
   });
+  #handlerInstalled = false;
+  readonly #handlerReady: Promise<void>;
+  #resolveHandlerReady!: () => void;
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
@@ -3626,6 +3629,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#failureSignal = new Promise<never>((_resolve, reject) => {
       this.#rejectFailureSignal = reject;
+    });
+    this.#handlerReady = new Promise<void>(resolve => {
+      this.#resolveHandlerReady = resolve;
     });
     this.#closedSignal = new Promise<void>(resolve => {
       this.#resolveClosedSignal = resolve;
@@ -4002,6 +4008,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   setServerRequestHandler(handler: CodexServerRequestHandler): void {
     this.#handler = handler;
+    this.#handlerInstalled = true;
+    this.#resolveHandlerReady();
   }
 
   async #awaitWarmRunAttachmentReady(): Promise<void> {
@@ -5920,6 +5928,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : await Promise.race([admission.settled, this.#failureSignal]).catch(() => {
             throw new SemanticToolNotDispatchedError();
           });
+    // An adopted Runner can authenticate and deliver queued tools before the
+    // driver has finished reconstructing its session. Handler publication is
+    // the dispatch barrier; the default RPC diagnostic is not a tool outcome.
+    // The owning startup/transport lifetime bounds this wait, and the original
+    // authority/epoch checks below still apply after it becomes ready.
+    if (!this.#handlerInstalled) {
+      await Promise.race([
+        this.#handlerReady,
+        this.#failureSignal,
+        this.#closedSignal.then(() => { throw new SemanticToolNotDispatchedError(); }),
+      ]).catch(() => { throw new SemanticToolNotDispatchedError(); });
+    }
     try {
       this.#throwIfFailed();
     } catch {

@@ -1694,6 +1694,12 @@ matching the Runner connection lease budget. This prevents Claude's default
 The setting applies to that native Claude session's MCP client; other provider
 sessions and ordinary bridge deadlines remain unchanged. Explicit cancellation
 and Runner shutdown still take precedence over that client budget.
+An adopted transport can receive authenticated queued semantic calls before
+the driver publishes its recovered session and tool handler. It holds those
+calls until the handler is installed, then rechecks the original authority and
+turn epoch before dispatch. Transport failure, close or controller detachment
+ends that wait without invoking a late handler. Missing startup wiring is not
+reported to the provider as the result of an external operation.
 If shutdown begins while a provider session is opening, its eventual publication
 honors the pending detachment before dispatching a turn. Once detached, an old
 execution finalizer cannot suspend or signal the durable runner: the next
