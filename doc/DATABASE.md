@@ -231,6 +231,13 @@ The benchmark loads the baseline authorization module with current dependencies,
 compares complete workspace rows, and prints five warm samples and query plans.
 It measures SQL execution, not the full repository admission or agent startup.
 
+Agent lists read the complete company roster once and use that same snapshot for
+termination filtering and organization-chain normalization. Detail and plugin runtime reads
+load only identity, company, name, status, and manager from other company agents
+for chain checks. The selected agent's full configuration, current monthly spend,
+and existing response redaction remain available. Every call reads current data;
+these lookups do not cache authorization or agent configuration.
+
 ## 1. Embedded PostgreSQL — zero config
 
 If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
