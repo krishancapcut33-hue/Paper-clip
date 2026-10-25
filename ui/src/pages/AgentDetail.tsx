@@ -146,11 +146,13 @@ import { Badge } from "@/components/ui/badge";
 import {
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
-  agentLegacyAuditSection,
+  AGENT_AUDIT_SECTIONS,
+  parseAgentAuditSection,
   agentScopedAuditHref,
   parseAgentDetailView,
   type AgentDetailView,
 } from "./agent-detail-navigation";
+import { AuditHub } from "./audit/AuditHub";
 
 const runStatusIcons: Record<string, { icon: typeof CheckCircle2; color: string }> = {
   succeeded: { icon: CheckCircle2, color: "text-green-600 dark:text-green-400" },
@@ -784,21 +786,22 @@ export function AgentDetail() {
   const [dismissedLeftAgentIds, setDismissedLeftAgentIds] = useState<Set<string>>(() => new Set());
   const activeView: AgentDetailView = urlRunId ? "run-detail"
     : parseAgentDetailView(urlTab ?? null);
-  const legacyAuditSection = !urlRunId ? agentLegacyAuditSection(urlTab ?? null) : null;
+  const auditSection = !urlRunId ? parseAgentAuditSection(urlTab ?? null) : null;
+  const auditSectionLabel = AGENT_AUDIT_SECTIONS.find((section) => section.value === auditSection)?.label ?? null;
   const legacyView = urlRunId
     ? "runs"
-    : legacyAuditSection === "runs"
+    : auditSection === "runs"
       ? "runs"
-      : legacyAuditSection === "activity"
+      : auditSection === "activity"
         ? "audit"
-        : legacyAuditSection === "costs" || legacyAuditSection === "budgets"
+        : auditSection === "costs" || auditSection === "budgets"
           ? "budget"
           : activeView === "overview"
             ? "dashboard"
             : activeView === "runtime"
               ? "configuration"
               : activeView;
-  const needsOverviewData = activeView === "overview";
+  const needsOverviewData = activeView === "overview" && !auditSection;
   const needsRunData = activeView === "run-detail";
   const shouldLoadHeartbeats = needsOverviewData || needsRunData;
   const [configDirty, setConfigDirty] = useState(false);
@@ -980,13 +983,19 @@ export function AgentDetail() {
       }
       return;
     }
-    if (legacyAuditSection) return;
+    if (auditSection) {
+      if (routeAgentRef !== canonicalAgentRef || urlTab !== auditSection) {
+        // Keep Audit filters (`?action=…`) while canonicalizing the ref and legacy aliases.
+        navigate(`${agentScopedAuditHref(canonicalAgentRef, auditSection)}${window.location.search}`, { replace: true });
+      }
+      return;
+    }
     const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
     if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
       navigate(agentDetailHref(canonicalAgentRef, canonicalTab), { replace: true });
       return;
     }
-  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, legacyAuditSection, navigate]);
+  }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, auditSection, navigate]);
 
   useEffect(() => {
     if (!agent?.companyId || agent.companyId === selectedCompanyId) return;
@@ -1057,12 +1066,14 @@ export function AgentDetail() {
       { label: "Agents", href: "/agents" },
     ];
     const agentName = agent?.name ?? routeAgentRef ?? "Agent";
-    if (activeView === "overview" && !urlRunId) {
+    if (activeView === "overview" && !urlRunId && !auditSection) {
       crumbs.push({ label: agentName });
     } else {
       crumbs.push({ label: agentName, href: agentDetailHref(canonicalAgentRef) });
-      if (urlRunId) {
-        crumbs.push({ label: "Runs", href: agent?.id ? agentScopedAuditHref(agent.id, "runs") : undefined });
+      if (auditSectionLabel) {
+        crumbs.push({ label: auditSectionLabel });
+      } else if (urlRunId) {
+        crumbs.push({ label: "Runs", href: agentScopedAuditHref(canonicalAgentRef, "runs") });
         crumbs.push({ label: `Run ${urlRunId.slice(0, 8)}` });
       } else {
         const item = AGENT_DETAIL_NAVIGATION
@@ -1072,7 +1083,7 @@ export function AgentDetail() {
       }
     }
     setBreadcrumbs(crumbs);
-  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId]);
+  }, [setBreadcrumbs, agent, routeAgentRef, canonicalAgentRef, activeView, urlRunId, auditSection, auditSectionLabel]);
 
   useEffect(() => {
     closePanel();
@@ -1168,9 +1179,6 @@ export function AgentDetail() {
   if (isLoading) return <PageSkeleton variant="detail" />;
   if (error) return <p className="text-sm text-destructive">{error.message}</p>;
   if (!agent) return null;
-  if (!urlRunId && legacyAuditSection) {
-    return <Navigate to={agentScopedAuditHref(agent.id, legacyAuditSection)} replace />;
-  }
   if (!urlRunId && !urlTab) {
     return <Navigate to={agentDetailHref(canonicalAgentRef)} replace />;
   }
@@ -1192,7 +1200,7 @@ export function AgentDetail() {
   const agentJoinLeavePending = agentMembershipPending && membershipMutation.variables?.starred === undefined;
 
   return (
-    <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${activeView}`)}>
+    <div className={cn("agent-settings-content mx-auto max-w-5xl space-y-8", `agent-settings-${auditSection ?? activeView}`)}>
       {showLeftAgentNotice ? (
         <div className="flex items-center gap-3 border border-yellow-300/35 bg-yellow-300/10 px-3 py-2 text-sm text-yellow-900 dark:text-yellow-100">
           <p className="min-w-0 flex-1">
@@ -1398,10 +1406,14 @@ export function AgentDetail() {
         </div>
       )}
 
-      {activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
+      {auditSectionLabel ? (
+        <h2 className="text-xl font-semibold">{auditSectionLabel}</h2>
+      ) : activeView !== "run-detail" && activeView !== "channels" && <h2 className="text-xl font-semibold">{activeView === "secrets" ? "Secrets & variables" : AGENT_DETAIL_NAVIGATION.flatMap(section => section.items).find(item => item.value === activeView)?.label}</h2>}
 
       {/* View content */}
-      {activeView === "overview" && (
+      {auditSection && <AuditHub section={auditSection} agentId={agent.id} />}
+
+      {activeView === "overview" && !auditSection && (
         <AgentOverview
           agent={agent}
           runs={heartbeats ?? []}
@@ -1883,7 +1895,7 @@ export function AgentOverview({
           {(["activity", "runs", "costs", "budgets"] as const).map((section) => (
             <Link
               key={section}
-              to={agentScopedAuditHref(agent.id, section)}
+              to={agentScopedAuditHref(agentRouteId, section)}
               className="rounded-lg border border-border px-3 py-2 text-sm font-medium capitalize hover:bg-accent"
             >
               {section}

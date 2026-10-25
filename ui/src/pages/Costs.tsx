@@ -57,6 +57,10 @@ export interface CostsProps {
   lockTab?: boolean;
   /** Budgets is a peer Audit section, so omit it from the Costs sub-navigation. */
   hideBudgetsTab?: boolean;
+  /** Hide the section title (the agent page supplies its own chrome). */
+  hideHeader?: boolean;
+  /** Agent-page embed: scope to this agent instead of the `agentId` query param. */
+  agentId?: string;
 }
 
 function currentWeekRange(): { from: string; to: string } {
@@ -175,13 +179,19 @@ export function Costs({
   initialTab = "overview",
   lockTab = false,
   hideBudgetsTab = false,
+  hideHeader = false,
+  agentId,
 }: CostsProps = {}) {
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const queryClient = useQueryClient();
 
   const [searchParams, setSearchParams] = useSearchParams();
-  const scopedAgentId = searchParams.get("agentId");
+  const scopedAgentId = agentId ?? searchParams.get("agentId");
+  // Embedded on an agent page: show only what the reports can attribute to that agent. Spend, subscriptions,
+  // finance, projects, providers and budgets other than this agent's are organization-wide and stay out.
+  const agentScoped = Boolean(agentId);
+  const tabsLocked = lockTab || agentScoped;
   const { data: scopedAgent, error: scopedAgentError } = useQuery({
     queryKey: [...queryKeys.agents.detail(scopedAgentId ?? NO_COMPANY), selectedCompanyId],
     queryFn: () => agentsApi.get(scopedAgentId!, selectedCompanyId!),
@@ -211,8 +221,8 @@ export function Costs({
 
   useEffect(() => {
     const tab = searchParams.get("tab");
-    setMainTab(!lockTab && tab && ["overview", "providers", "billers", "finance", "budgets", "decisions", "fast-responses"].includes(tab) ? tab as CostsMainTab : initialTab);
-  }, [initialTab, lockTab, searchParams]);
+    setMainTab(!tabsLocked && tab && ["overview", "providers", "billers", "finance", "budgets", "decisions", "fast-responses"].includes(tab) ? tab as CostsMainTab : initialTab);
+  }, [initialTab, tabsLocked, searchParams]);
 
   const [today, setToday] = useState(() => new Date().toDateString());
   const todayTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
@@ -245,7 +255,7 @@ export function Costs({
   const { data: subscriptions, error: subscriptionError } = useQuery({
     queryKey: subscriptionKey,
     queryFn: () => subscriptionsApi.report(companyId, from || undefined, to || undefined),
-    enabled: !!selectedCompanyId && customReady && showSummaryChrome,
+    enabled: !!selectedCompanyId && customReady && showSummaryChrome && !agentScoped,
     refetchInterval: 30_000,
   });
   const invalidateSubscriptions = () => { void queryClient.invalidateQueries({ queryKey: ["cost-subscriptions", companyId] }); };
@@ -253,10 +263,10 @@ export function Costs({
   const discoverSubscriptions = useMutation({ mutationFn: (id: string) => subscriptionsApi.refresh(id),
     onSuccess: (_data, id) => { void queryClient.invalidateQueries({ queryKey: ["cost-subscriptions", id] }); } });
   useEffect(() => {
-    if (!selectedCompanyId || !showSummaryChrome || !subscriptions?.canRefresh || discoveryCompany.current === selectedCompanyId) return;
+    if (!selectedCompanyId || !showSummaryChrome || agentScoped || !subscriptions?.canRefresh || discoveryCompany.current === selectedCompanyId) return;
     discoveryCompany.current = selectedCompanyId;
     discoverSubscriptions.mutate(selectedCompanyId);
-  }, [selectedCompanyId, showSummaryChrome, subscriptions?.canRefresh, discoverSubscriptions.mutate]);
+  }, [selectedCompanyId, showSummaryChrome, agentScoped, subscriptions?.canRefresh, discoverSubscriptions.mutate]);
 
   const { data: budgetData, isLoading: budgetLoading, error: budgetError } = useQuery({
     queryKey: queryKeys.budgets.overview(companyId),
@@ -312,7 +322,7 @@ export function Costs({
   const { data: userSpendData, error: userSpendError } = useQuery({
     queryKey: [...queryKeys.costs(companyId, reportQueryFrom, reportQueryTo), "by-user"],
     queryFn: () => costsApi.byUser(companyId, from || undefined, to || undefined),
-    enabled: !!selectedCompanyId && customReady && showSummaryChrome && mainTab === "overview",
+    enabled: !!selectedCompanyId && customReady && showSummaryChrome && !agentScoped && mainTab === "overview",
     refetchInterval: 30_000,
   });
 
@@ -332,7 +342,7 @@ export function Costs({
       ]);
       return { summary, byBiller, byKind, events };
     },
-    enabled: !!selectedCompanyId && customReady && showSummaryChrome,
+    enabled: !!selectedCompanyId && customReady && showSummaryChrome && !agentScoped,
     refetchInterval: 30_000,
   });
 
@@ -589,8 +599,14 @@ export function Costs({
   }, [byBiller]);
 
   const topFinanceEvents = (financeData?.events ?? []) as FinanceEvent[];
-  const budgetPolicies = budgetData?.policies ?? [];
-  const activeBudgetIncidents = budgetData?.activeIncidents ?? [];
+  // The overview carries every policy and incident in the organization; an agent page keeps only its own.
+  const budgetPolicies = useMemo(
+    () => (budgetData?.policies ?? []).filter((policy) => !agentScoped || (policy.scopeType === "agent" && policy.scopeId === agentId)),
+    [budgetData?.policies, agentScoped, agentId],
+  );
+  const activeBudgetIncidents = (budgetData?.activeIncidents ?? []).filter((incident) => !agentScoped || (incident.scopeType === "agent" && incident.scopeId === agentId));
+  const scopedAgentSpend = agentScoped ? spendData?.byAgent.find((row) => row.agentId === agentId) : undefined;
+  const visibleAgentSpend = agentScoped ? (scopedAgentSpend ? [scopedAgentSpend] : []) : spendData?.byAgent ?? [];
   const budgetPoliciesByScope = useMemo(() => ({
     company: budgetPolicies.filter((policy) => policy.scopeType === "company"),
     agent: budgetPolicies.filter((policy) => policy.scopeType === "agent"),
@@ -607,23 +623,25 @@ export function Costs({
   return (
     <div className="space-y-6">
       {scopedAgentError && (
-        <p role="alert" className="text-sm text-destructive">Could not load agent details. Totals below show recorded organization costs.</p>
+        <p role="alert" className="text-sm text-destructive">Could not load agent details.{agentScoped ? "" : " Totals below show recorded organization costs."}</p>
       )}
       {museUsageUnavailable && (
         <p role="status" className="text-sm text-muted-foreground">
-          {scopedAgent.name}'s Muse activity has no reported usage or cost. Totals below show recorded organization charges only. Paperclip cannot enforce a Muse spend ceiling.
+          {scopedAgent.name}'s Muse activity has no reported usage or cost.{agentScoped ? "" : " Totals below show recorded organization charges only."} Paperclip cannot enforce a Muse spend ceiling.
         </p>
       )}
       {showSummaryChrome ? (
         <div className="space-y-5">
-          <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-            <div>
-              {embedded ? (
-                <h2 className="text-lg font-semibold text-foreground">Costs</h2>
-              ) : (
-                <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
-              )}
-            </div>
+          <div className={cn("flex flex-col gap-4 lg:flex-row lg:items-start", hideHeader ? "lg:justify-end" : "lg:justify-between")}>
+            {hideHeader ? null : (
+              <div>
+                {embedded ? (
+                  <h2 className="text-lg font-semibold text-foreground">Costs</h2>
+                ) : (
+                  <h1 className="text-3xl font-semibold tracking-tight">Costs</h1>
+                )}
+              </div>
+            )}
 
             <div className="flex flex-wrap items-center gap-2">
               {PRESET_KEYS.map((key) => (
@@ -658,6 +676,30 @@ export function Costs({
             </div>
           ) : null}
 
+          {agentScoped ? (
+            <div className="grid gap-3 sm:grid-cols-3">
+              <MetricTile
+                label="Spend"
+                value={scopedAgentSpend ? formatCents(scopedAgentSpend.costCents) : "—"}
+                subtitle={scopedAgentSpend
+                  ? <CostEstimateLabel eventCount={scopedAgentSpend.eventCount} estimatedEventCount={scopedAgentSpend.estimatedEventCount} />
+                  : spendData ? "No cost events in this period" : "Spend is loading"}
+                icon={DollarSign}
+              />
+              <MetricTile
+                label="Tokens"
+                value={scopedAgentSpend ? formatTokens(scopedAgentSpend.inputTokens + scopedAgentSpend.cachedInputTokens + scopedAgentSpend.outputTokens) : "—"}
+                subtitle={scopedAgentSpend ? `${formatTokens(scopedAgentSpend.cachedInputTokens)} cached input` : undefined}
+                icon={ArrowUpRight}
+              />
+              <MetricTile
+                label="Budget"
+                value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : budgetPolicies.length > 0 ? "Set" : "Open"}
+                subtitle={activeBudgetIncidents.length > 0 ? "Active budget incidents for this agent" : budgetPolicies.length > 0 ? "Monthly policy configured" : "No budget configured for this agent"}
+                icon={Coins}
+              />
+            </div>
+          ) : (<>
           {financeData?.summary.currencies?.some((row) => row.currency !== "USD") && (
             <p role="status" className="text-sm text-muted-foreground">
               Finance headline totals are USD only. Other currencies are listed separately; no exchange-rate conversion is applied.
@@ -722,6 +764,7 @@ export function Costs({
               unpricedCount={spendData.summary.unpricedEventCount} pendingCount={spendData.summary.pendingRunCount}
               unknownBillingCount={spendData.summary.unknownBillingEventCount ?? 0} />
           )}
+          </>)}
         </div>
       ) : null}
 
@@ -738,7 +781,7 @@ export function Costs({
 
       {incidentMutation.error && <p role="alert" className="text-sm text-destructive">Could not update the budget. Check any pending runs or unpriced usage shown on this page, then try again.</p>}
       <Tabs value={mainTab} onValueChange={(value) => { setMainTab(value as typeof mainTab); setSearchParams(current => { const next = new URLSearchParams(current); next.set("tab", value); return next; }, { replace: true }); }}>
-        {!lockTab ? (
+        {!tabsLocked ? (
           <div className="max-w-full overflow-x-auto pb-2">
             <TabsList variant="line" className="justify-start">
               <TabsTrigger value="overview">Overview</TabsTrigger>
@@ -770,10 +813,10 @@ export function Costs({
                       <CardTitle className="text-base">By agent</CardTitle>
                     </CardHeader>
                     <CardContent className="space-y-2 px-5">
-                      {(spendData?.byAgent.length ?? 0) === 0 ? (
+                      {visibleAgentSpend.length === 0 ? (
                         <p className="text-sm text-muted-foreground">No cost events yet.</p>
                       ) : (
-                        spendData?.byAgent.map((row) => {
+                        visibleAgentSpend.map((row) => {
                           const modelRows = agentModelRows.get(row.agentId) ?? [];
                           const isExpanded = expandedAgents.has(row.agentId);
                           const hasBreakdown = modelRows.length > 0;
@@ -853,15 +896,15 @@ export function Costs({
                       )}
                     </CardContent>
                   </Card>
-                  {userSpendError && (
+                  {!agentScoped && userSpendError && (
                     <p role="status" className="text-sm text-muted-foreground">
                       {userSpendData ? "User costs could not be refreshed. Showing the last loaded data." : "User costs could not be loaded. Please try again shortly."}
                     </p>
                   )}
-                  {userSpendData && <CostByUserTable report={userSpendData} />}
+                  {!agentScoped && userSpendData && <CostByUserTable report={userSpendData} />}
                 </div>
 
-                <div className="space-y-4">
+                {agentScoped ? null : <div className="space-y-4">
                   <Card className="gap-3 py-4">
                     <CardHeader className="gap-0 px-5">
                       <CardTitle className="text-base">By project</CardTitle>
@@ -883,7 +926,7 @@ export function Costs({
                     </CardContent>
                   </Card>
 
-                </div>
+                </div>}
               </div>
 
               {activeBudgetIncidents.length > 0 ? (
@@ -905,7 +948,7 @@ export function Costs({
                 </div>
               ) : null}
 
-              {financeData ? (
+              {agentScoped ? null : financeData ? (
                 <FinanceSummaryCard
                   debitCents={financeData.summary.debitCents}
                   creditCents={financeData.summary.creditCents}
@@ -932,16 +975,19 @@ export function Costs({
                 <CardHeader className="px-5 pt-5 pb-3">
                   <CardTitle className="text-base">Budget control plane</CardTitle>
                   <CardDescription>
-                    Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers.
+                    {agentScoped
+                      ? "Hard-stop spend limit for this agent."
+                      : "Hard-stop spend limits for agents and projects. Provider subscription quota stays separate and appears under Providers."}
                   </CardDescription>
                 </CardHeader>
-                <CardContent className="grid gap-3 px-5 pb-5 pt-0 md:grid-cols-4">
+                <CardContent className={cn("grid gap-3 px-5 pb-5 pt-0", agentScoped ? "md:grid-cols-1" : "md:grid-cols-4")}>
                   <MetricTile
                     label="Active incidents"
                     value={String(activeBudgetIncidents.length)}
                     subtitle="Open soft or hard threshold crossings"
                     icon={ReceiptText}
                   />
+                  {agentScoped ? null : (<>
                   <MetricTile
                     label="Pending approvals"
                     value={String(budgetData?.pendingApprovalCount ?? 0)}
@@ -960,6 +1006,7 @@ export function Costs({
                     subtitle="Project execution blocked by budget"
                     icon={DollarSign}
                   />
+                  </>)}
                 </CardContent>
               </Card>
 
@@ -1026,7 +1073,9 @@ export function Costs({
                 {budgetPolicies.length === 0 ? (
                   <Card>
                     <CardContent className="px-5 py-8 text-sm text-muted-foreground">
-                      No budget policies yet. Set agent and project budgets from their detail pages, or use the existing organization monthly budget control.
+                      {agentScoped
+                        ? "This agent has no budget policy yet."
+                        : "No budget policies yet. Set agent and project budgets from their detail pages, or use the existing organization monthly budget control."}
                     </CardContent>
                   </Card>
                 ) : null}

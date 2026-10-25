@@ -1,4 +1,4 @@
-import { auditSectionHref, type AuditSection } from "./audit/audit-navigation";
+import type { AuditSection } from "./audit/audit-navigation";
 
 export type AgentDetailView =
   | "overview"
@@ -63,7 +63,18 @@ export function agentDetailHref(agentRef: string, view: AgentLocalDetailView = "
   return `/agents/${agentRef}/${view}`;
 }
 
-export function agentLegacyAuditSection(value: string | null): AuditSection | null {
+/** Audit sections an agent page hosts at `/agents/:ref/<section>`, scoped to that agent. */
+export type AgentAuditSection = Extract<AuditSection, "activity" | "runs" | "costs" | "budgets">;
+
+export const AGENT_AUDIT_SECTIONS: ReadonlyArray<{ value: AgentAuditSection; label: string }> = [
+  { value: "activity", label: "Activity" },
+  { value: "runs", label: "Runs" },
+  { value: "costs", label: "Costs" },
+  { value: "budgets", label: "Budgets" },
+];
+
+/** Maps an agent tab segment (including legacy aliases) onto its Audit section. */
+export function parseAgentAuditSection(value: string | null): AgentAuditSection | null {
   if (value === "runs") return "runs";
   if (value === "audit" || value === "activity") return "activity";
   if (value === "cost" || value === "costs") return "costs";
@@ -71,9 +82,6 @@ export function agentLegacyAuditSection(value: string | null): AuditSection | nu
   return null;
 }
 
-export function agentScopedAuditHref(agentId: string, section: AuditSection) {
-  return auditSectionHref(section, {
-    mode: section === "activity" ? "agents" : undefined,
-    agentId,
-  });
+export function agentScopedAuditHref(agentRef: string, section: AgentAuditSection) {
+  return `/agents/${agentRef}/${section}`;
 }

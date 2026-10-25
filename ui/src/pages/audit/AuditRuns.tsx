@@ -126,10 +126,23 @@ function RoutineScopedRuns({
   );
 }
 
-export function AuditRuns({ companyId, routineId }: { companyId: string; routineId?: string }) {
+export function AuditRuns({
+  companyId,
+  routineId,
+  lockedAgentId,
+  hideHeader = false,
+}: {
+  companyId: string;
+  routineId?: string;
+  /** Agent-page embed: the agent comes from the route, so the agent filter is hidden. */
+  lockedAgentId?: string;
+  /** Hide the section header/description (the agent page supplies its own chrome). */
+  hideHeader?: boolean;
+}) {
   const [searchParams, setSearchParams] = useSearchParams();
-  const agentId = searchParams.get("agentId") ?? ALL;
+  const agentId = lockedAgentId ?? searchParams.get("agentId") ?? ALL;
   const status = searchParams.get("runStatus") ?? ALL;
+  const hasFilters = (!lockedAgentId && agentId !== ALL) || status !== ALL;
   const agents = useQuery({
     queryKey: queryKeys.agents.list(companyId),
     queryFn: () => agentsApi.list(companyId),
@@ -200,31 +213,35 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
 
   return (
     <div className="space-y-4">
-      <div>
-        <h2 className="text-lg font-semibold text-foreground">Runs</h2>
-        <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
-          Recent agent executions across the organization. Open a run to inspect its transcript,
-          output, and task context.
-        </p>
-      </div>
+      {hideHeader ? null : (
+        <div>
+          <h2 className="text-lg font-semibold text-foreground">Runs</h2>
+          <p className="mt-1 max-w-2xl text-sm text-muted-foreground">
+            Recent agent executions across the organization. Open a run to inspect its transcript,
+            output, and task context.
+          </p>
+        </div>
+      )}
 
       <div className="flex flex-wrap items-end gap-3 border-y border-border py-3">
-        <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
-          <span>Agent</span>
-          <Select value={agentId} onValueChange={(value) => updateFilter("agentId", value)}>
-            <SelectTrigger className="w-48">
-              <SelectValue placeholder="All agents" />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value={ALL}>All agents</SelectItem>
-              {(agents.data ?? []).map((agent) => (
-                <SelectItem key={agent.id} value={agent.id}>
-                  {agent.name}
-                </SelectItem>
-              ))}
-            </SelectContent>
-          </Select>
-        </label>
+        {lockedAgentId ? null : (
+          <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
+            <span>Agent</span>
+            <Select value={agentId} onValueChange={(value) => updateFilter("agentId", value)}>
+              <SelectTrigger className="w-48">
+                <SelectValue placeholder="All agents" />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value={ALL}>All agents</SelectItem>
+                {(agents.data ?? []).map((agent) => (
+                  <SelectItem key={agent.id} value={agent.id}>
+                    {agent.name}
+                  </SelectItem>
+                ))}
+              </SelectContent>
+            </Select>
+          </label>
+        )}
         <label className="grid gap-1 text-(length:--text-micro) font-medium text-muted-foreground">
           <span>Status</span>
           <Select value={status} onValueChange={(value) => updateFilter("runStatus", value)}>
@@ -241,7 +258,7 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
             </SelectContent>
           </Select>
         </label>
-        {agentId !== ALL || status !== ALL ? (
+        {hasFilters ? (
           <Button variant="ghost" size="sm" onClick={clearFilters}>
             Clear filters
           </Button>
@@ -263,8 +280,8 @@ export function AuditRuns({ companyId, routineId }: { companyId: string; routine
         </div>
       ) : visibleRuns.length === 0 ? (
         <EmptyState
-          icon={agentId !== ALL || status !== ALL ? CircleDotDashed : Activity}
-          message={agentId !== ALL || status !== ALL ? "No runs match these filters." : "No runs yet."}
+          icon={hasFilters ? CircleDotDashed : Activity}
+          message={hasFilters ? "No runs match these filters." : "No runs yet."}
         />
       ) : (
         <ul className="divide-y divide-border border-y border-border" aria-label="Recent runs">

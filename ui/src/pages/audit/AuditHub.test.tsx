@@ -48,8 +48,8 @@ vi.mock("./AgentCommentary", () => ({
 }));
 
 vi.mock("./AuditRuns", () => ({
-  AuditRuns: ({ companyId, routineId }: { companyId: string; routineId?: string }) => (
-    <div data-testid="audit-runs" data-company={companyId} data-routine={routineId} />
+  AuditRuns: ({ companyId, routineId, lockedAgentId, hideHeader }: { companyId: string; routineId?: string; lockedAgentId?: string; hideHeader?: boolean }) => (
+    <div data-testid="audit-runs" data-company={companyId} data-routine={routineId} data-locked-agent={lockedAgentId} data-hide-header={String(hideHeader ?? false)} />
   ),
 }));
 
@@ -66,6 +66,8 @@ vi.mock("@/pages/Costs", () => ({
       data-initial-tab={props.initialTab}
       data-lock-tab={String(props.lockTab ?? false)}
       data-hide-budgets={String(props.hideBudgetsTab ?? false)}
+      data-hide-header={String(props.hideHeader ?? false)}
+      data-agent={props.agentId as string | undefined}
     />
   ),
 }));
@@ -95,9 +97,9 @@ describe("AuditHub", () => {
     vi.clearAllMocks();
   });
 
-  function render(section: "activity" | "runs" | "costs" | "budgets" | "timeline" | "commentary") {
+  function render(section: "activity" | "runs" | "costs" | "budgets" | "timeline" | "commentary", agentId?: string) {
     root = createRoot(container);
-    flushSync(() => root.render(<AuditHub section={section} />));
+    flushSync(() => root.render(<AuditHub section={section} agentId={agentId} />));
   }
 
   it("uses one clear section model and passes deep-link scopes to Activity", () => {
@@ -205,6 +207,76 @@ describe("AuditHub", () => {
     costs = container.querySelector<HTMLElement>('[data-testid="audit-costs"]');
     expect(costs?.dataset.initialTab).toBe("overview");
     expect(costs?.dataset.hideBudgets).toBe("true");
+  });
+
+  describe("embedded on an agent page", () => {
+    it.each(["activity", "runs", "costs", "budgets"] as const)(
+      "leaves the %s title, tabs and breadcrumbs to the agent page",
+      (section) => {
+        render(section, "agent-1");
+        expect(container.querySelector("h1")).toBeNull();
+        expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0);
+        expect(setBreadcrumbsMock).not.toHaveBeenCalled();
+      },
+    );
+
+    it("scopes Activity to the agent even when the URL names another scope", () => {
+      currentSearch = "mode=all&agentId=someone-else&action=tool_";
+      render("activity", "agent-1");
+      const feed = container.querySelector<HTMLElement>('[data-testid="audit-feed"]');
+      expect(feed?.dataset.mode).toBe("agents");
+      expect(feed?.dataset.agent).toBe("agent-1");
+      expect(feed?.dataset.action).toBe("tool_");
+    });
+
+    it("locks Runs to the agent without a second page header", () => {
+      render("runs", "agent-1");
+      const runs = container.querySelector<HTMLElement>('[data-testid="audit-runs"]');
+      expect(runs?.dataset.lockedAgent).toBe("agent-1");
+      expect(runs?.dataset.hideHeader).toBe("true");
+    });
+
+    it("ignores a routine filter in the URL so Activity cannot list routine-wide records", () => {
+      currentSearch = "entityType=routine&entityId=routine-1";
+      render("activity", "agent-1");
+      expect(container.querySelector('[data-testid="routine-audit-activity"]')).toBeNull();
+      const feed = container.querySelector<HTMLElement>('[data-testid="audit-feed"]');
+      // The feed applies the agent lock and the routine entity together, so it only intersects them.
+      expect(feed?.dataset.agent).toBe("agent-1");
+      expect(feed?.dataset.entity).toBe(JSON.stringify({ type: "routine", id: "routine-1" }));
+    });
+
+    it("ignores a routine filter in the URL so Runs cannot list routine-wide runs", () => {
+      currentSearch = "entityType=routine&entityId=routine-1";
+      render("runs", "agent-1");
+      const runs = container.querySelector<HTMLElement>('[data-testid="audit-runs"]');
+      expect(runs?.dataset.routine).toBeUndefined();
+      expect(runs?.dataset.lockedAgent).toBe("agent-1");
+    });
+
+    it("scopes Costs to the agent and drops the duplicate Costs title", () => {
+      render("costs", "agent-1");
+      const costs = container.querySelector<HTMLElement>('[data-testid="audit-costs"]');
+      expect(costs?.dataset.agent).toBe("agent-1");
+      expect(costs?.dataset.hideHeader).toBe("true");
+      expect(costs?.dataset.hideBudgets).toBe("true");
+    });
+
+    it("scopes Budgets to the agent", () => {
+      render("budgets", "agent-1");
+      const costs = container.querySelector<HTMLElement>('[data-testid="audit-costs"]');
+      expect(costs?.dataset.initialTab).toBe("budgets");
+      expect(costs?.dataset.agent).toBe("agent-1");
+    });
+
+    it("keeps the standalone chrome and unscoped sections without an agent", () => {
+      render("costs");
+      expect(container.querySelector("h1")?.textContent).toBe("Audit");
+      expect(container.querySelectorAll('[role="tab"]')).toHaveLength(6);
+      const costs = container.querySelector<HTMLElement>('[data-testid="audit-costs"]');
+      expect(costs?.dataset.agent).toBeUndefined();
+      expect(costs?.dataset.hideHeader).toBe("false");
+    });
   });
 
   it("keeps the current entity scope when moving between Audit sections", () => {

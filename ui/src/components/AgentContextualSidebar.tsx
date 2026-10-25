@@ -22,9 +22,11 @@ import { ContextualSidebarFrame } from "./ContextualSidebarFrame";
 import { SidebarNavItem } from "./SidebarNavItem";
 import { contextualSidebarStyles } from "./contextual-sidebar-styles";
 import {
+  AGENT_AUDIT_SECTIONS,
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
   agentScopedAuditHref,
+  type AgentAuditSection,
   type AgentLocalDetailView,
 } from "@/pages/agent-detail-navigation";
 
@@ -41,12 +43,12 @@ const localIcons = {
   revisions: History,
 } satisfies Record<AgentLocalDetailView, typeof Sparkles>;
 
-const auditItems = [
-  { section: "activity", label: "Activity", icon: Activity },
-  { section: "runs", label: "Runs", icon: PlayCircle },
-  { section: "costs", label: "Costs", icon: ReceiptText },
-  { section: "budgets", label: "Budgets", icon: BadgeDollarSign },
-] as const;
+const auditIcons = {
+  activity: Activity,
+  runs: PlayCircle,
+  costs: ReceiptText,
+  budgets: BadgeDollarSign,
+} satisfies Record<AgentAuditSection, typeof Sparkles>;
 
 export function AgentContextualSidebar({
   agentRef,
@@ -126,16 +128,14 @@ export function AgentContextualSidebar({
             Audit
           </p>
           <div data-slot="contextual-sidebar-group" className={contextualSidebarStyles.group}>
-            {resolvedId ? auditItems.map((item) => (
+            {AGENT_AUDIT_SECTIONS.map((item) => (
               <SidebarNavItem
-                key={item.section}
-                to={agentScopedAuditHref(resolvedId, item.section)}
+                key={item.value}
+                to={agentScopedAuditHref(agentRef, item.value)}
                 label={item.label}
-                icon={item.icon}
+                icon={auditIcons[item.value]}
               />
-            )) : (
-              <p className="px-2 py-1.5 text-xs text-muted-foreground">Loading audit links…</p>
-            )}
+            ))}
           </div>
         </div>
       </nav>
