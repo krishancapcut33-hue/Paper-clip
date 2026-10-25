@@ -19,6 +19,8 @@ import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
 import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
 import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS } from "../lib/agent-permissions.js";
+import { agentInstructionsService } from "../services/agent-instructions.js";
+import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -201,7 +203,7 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       icon: "shield",
       capabilities: "Diagnostics",
       adapterType: "codex_local",
-      adapterConfig: { search: false },
+      adapterConfig: { search: false, paperclipSkillSync: { desiredSkills: [{ key: "paperclipai/paperclip/browser-use", versionId: "version-7" }] } },
       runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
       budgetMonthlyCents: 0,
       metadata: null,
@@ -238,7 +240,6 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
         title: pending.title,
         icon: pending.icon,
         adapterType: pending.adapterType,
-        adapterConfig: pending.adapterConfig,
         runtimeConfig: pending.runtimeConfig,
         permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
         desiredSkills: ["paperclipai/paperclip/browser-use"],
@@ -256,7 +257,8 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     expect(updated).toMatchObject({
       status: "paused",
       adapterConfig: {
-        paperclipSkillSync: { desiredSkills: ["paperclipai/paperclip/browser-use"] },
+        search: false,
+        paperclipSkillSync: { desiredSkills: [{ key: "paperclipai/paperclip/browser-use", versionId: "version-7" }] },
       },
       runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
       permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
@@ -271,5 +273,27 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     ]);
     expect(grantRows).toEqual([]);
     expect(file.content).toBe(instructions);
+  });
+
+  it("approves revised entry instructions through the canonical revision service", async () => {
+    const companyId = await seedCompany();
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Revision Analyst", role: "engineer", adapterType: "process", adapterConfig: {},
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const bundle = await agentInstructionsService(db).materializeManagedBundle(pending, { "AGENTS.md": "Original" }, { replaceExisting: true });
+    await db.update(agents).set({ adapterConfig: bundle.adapterConfig }).where(eq(agents.id, pending.id));
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "revision_requested",
+      payload: { agentId: pending.id, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Revised" } } },
+      decisionNote: "Please revise", decidedByUserId: "board-user", decidedAt: new Date(), updatedAt: new Date(),
+    });
+    await approvalSvc.resubmit(approval.id, approval.payload);
+    await approvalSvc.approve(approval.id, "board-user", "Approved revised instructions");
+    const current = await agentInstructionRevisionService(db).readCurrent({ companyId, agentId: pending.id }, { type: "board", userId: "board-user" });
+    expect(current?.content).toBe("Revised");
   });
 });

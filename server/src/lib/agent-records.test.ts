@@ -23,4 +23,15 @@ describe("configPatchFromApprovalPayload", () => {
       heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 },
     });
   });
+
+  it("preserves pinned skills and unrelated adapter settings for partial approvals", () => {
+    const patch = configPatchFromApprovalPayload({ desiredSkills: ["paperclipai/paperclip/pinned"] }, {
+      model: "reviewed-model",
+      paperclipSkillSync: { desiredSkills: [{ key: "paperclipai/paperclip/pinned", versionId: "version-7" }] },
+    });
+    expect(patch.adapterConfig).toEqual({
+      model: "reviewed-model",
+      paperclipSkillSync: { desiredSkills: [{ key: "paperclipai/paperclip/pinned", versionId: "version-7" }] },
+    });
+  });
 });

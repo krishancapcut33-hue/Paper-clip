@@ -1401,11 +1401,11 @@ export function agentRoutes(
     grantedByUserId: string | null,
   ) {
     const agent = await svc.getById(agentId);
+    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
     if (agent?.permissions && typeof agent.permissions === "object" &&
         (agent.permissions as Record<string, unknown>).canAssignTasks === false) {
       return;
     }
-    await access.ensureMembership(companyId, "agent", agentId, "member", "active");
     await access.setPrincipalPermission(
       companyId,
       "agent",

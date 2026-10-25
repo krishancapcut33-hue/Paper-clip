@@ -10,7 +10,7 @@ import { conflict, notFound, unprocessable } from "../errors.js";
 import { REDACTED_EVENT_VALUE, sanitizeRecord } from "../redaction.js";
 import { normalizeAgentPermissions } from "./agent-permissions.js";
 import { builtInAgentMarkersEqual, readBuiltInAgentMarker } from "./built-in-agent-metadata.js";
-import { writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 
 export function hashToken(token: string) {
   return createHash("sha256").update(token).digest("hex");
@@ -171,7 +171,7 @@ export function changedPendingApprovalConfigFields(
   );
 }
 
-export function configPatchFromApprovalPayload(payload: Record<string, unknown>) {
+export function configPatchFromApprovalPayload(payload: Record<string, unknown>, existingAdapterConfig: Record<string, unknown> = {}) {
   const patch: Partial<typeof agents.$inferInsert> = {};
   if (typeof payload.name === "string") patch.name = payload.name;
   if (typeof payload.role === "string") patch.role = payload.role;
@@ -191,15 +191,17 @@ export function configPatchFromApprovalPayload(payload: Record<string, unknown>)
   if (typeof payload.adapterType === "string") patch.adapterType = payload.adapterType;
   if (isPlainRecord(payload.adapterConfig)) patch.adapterConfig = payload.adapterConfig;
   if (Array.isArray(payload.desiredSkills)) {
+    const currentSkills = readPaperclipSkillSyncPreference(isPlainRecord(patch.adapterConfig) ? patch.adapterConfig : existingAdapterConfig);
+    const currentVersions = new Map(currentSkills.desiredSkillEntries.map((entry) => [entry.key, entry.versionId]));
     const desiredSkills: Array<string | { key: string; versionId: string | null }> = payload.desiredSkills.flatMap((entry): Array<string | { key: string; versionId: string | null }> => {
-      if (typeof entry === "string") return [entry];
+      if (typeof entry === "string") return [{ key: entry, versionId: currentVersions.get(entry) ?? null }];
       if (isPlainRecord(entry) && typeof entry.key === "string") return [{
         key: entry.key,
         versionId: typeof entry.versionId === "string" ? entry.versionId : null,
       }];
       return [];
     });
-    patch.adapterConfig = writePaperclipSkillSyncPreference(patch.adapterConfig ?? {}, desiredSkills);
+    patch.adapterConfig = writePaperclipSkillSyncPreference(patch.adapterConfig ?? existingAdapterConfig, desiredSkills);
   }
   if (isPlainRecord(payload.runtimeConfig)) patch.runtimeConfig = payload.runtimeConfig;
   if (Object.prototype.hasOwnProperty.call(payload, "defaultEnvironmentId")) {
