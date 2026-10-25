@@ -24,6 +24,12 @@ the native status wake identifier from each saved run. It keeps their JSON types
 and reads full evidence later where finalization or recovery needs it. Saved
 execution input, runner profiles, and logs stay in the stored run.
 
+Wake-queue release reads keep complete context and result receipts. Native runs
+omit runner profiles and log excerpts from this read; cleanup and execution
+read their own current evidence. Legacy runs retain the full release row so
+workspace-restore and pre-dispatch proofs keep their existing inputs. The
+selection is one scoped database query for either runtime.
+
 The recovery card names the original run and requires evidence that its exact
 allocation stopped and its files were recovered. Recording that evidence does
 not retry the old turn, certify unknown external actions, change the current task
