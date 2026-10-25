@@ -162,6 +162,11 @@ startup and cancellation receipts, task binding, and the recorded adapter kind.
 Saved profiles, output excerpts, and unrelated launch context stay in storage.
 Continuation admission and its locked mutation reads retain their existing gates.
 
+Task creation provenance reads current run identity, scope, and task binding.
+Legacy task references retain their typed values and existing precedence. Saved
+profiles, output, and unrelated context stay in storage. Viewer access to the
+source task and run is still checked before provenance is returned.
+
 The initial agent JWT run lookup reads only the cancellation state and
 conversation flag from saved run JSON. It does not transfer the full context or
 result. Run status, responsible-user identity, company and agent boundaries,
