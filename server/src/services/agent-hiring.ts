@@ -90,8 +90,14 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
 }
 
 export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null, approvedByUserId?: string, approvalId?: string): Promise<AgentConfigurationPatch> {
+  const hasExplicitApprovedAdapterConfig = Boolean(
+    approvedPayload && Object.prototype.hasOwnProperty.call(approvedPayload, "adapterConfig"),
+  );
   const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload, isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {}) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
+  if (hasExplicitApprovedAdapterConfig && !isPlainRecord(patch.adapterConfig)) {
+    patch.adapterConfig = {};
+  }
   if (approvedPayload && isPlainRecord(approvedPayload.instructionsBundle)) {
     const bundle = approvedPayload.instructionsBundle;
     if (isPlainRecord(bundle.files)) {
@@ -103,16 +109,19 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
         if (!approvedByUserId || !approvalId) throw unprocessable("Approved hire instructions require authenticated approval authority");
         const configured = await agentInstructionsService(txDb).updateBundle({
           ...existing,
-          adapterConfig: patch.adapterConfig ?? existing.adapterConfig,
+          adapterConfig: hasExplicitApprovedAdapterConfig ? patch.adapterConfig : existing.adapterConfig,
         }, { mode: "managed", entryFile });
         const revisionService = agentInstructionRevisionService(txDb);
-        patch.adapterConfig = await revisionService.persistHireApprovalBundleConfiguration(
+        const persistedAdapterConfig = await revisionService.persistHireApprovalBundleConfiguration(
           existing.id,
-          {
-            ...(isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {}),
-            ...configured.adapterConfig,
-          },
+          configured.adapterConfig,
         );
+        patch.adapterConfig = hasExplicitApprovedAdapterConfig
+          ? persistedAdapterConfig
+          : {
+              ...(isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {}),
+              ...persistedAdapterConfig,
+            };
         const current = await revisionService.readCommittedForRuntime({ companyId: existing.companyId, agentId: existing.id });
         await revisionService.commit({ companyId: existing.companyId, agentId: existing.id, entryFile,
           content: files[entryFile] ?? current?.content ?? "", baseRevisionId: current?.revision.id ?? null, source: "board" },
@@ -145,7 +154,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
       existing.adapterConfig,
     );
   }
-  if (isPlainRecord(patch.adapterConfig) && isPlainRecord(existing.adapterConfig)) {
+  if (!hasExplicitApprovedAdapterConfig && isPlainRecord(patch.adapterConfig) && isPlainRecord(existing.adapterConfig)) {
     patch.adapterConfig = { ...existing.adapterConfig, ...patch.adapterConfig };
   }
   if (patch.permissions !== undefined) {

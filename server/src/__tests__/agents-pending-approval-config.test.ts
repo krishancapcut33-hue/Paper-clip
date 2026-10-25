@@ -284,6 +284,59 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     expect(file.content).toBe(instructions);
   });
 
+  it("preserves the existing adapter configuration when approval omits adapterConfig", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Preserved Adapter Configuration",
+      adapterType: "process",
+      adapterConfig: { search: true, command: "echo safe" },
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "pending",
+      payload: { agentId: pending.id, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Keep settings" } } },
+      decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved");
+
+    const updated = await agentService(db).getById(pending.id);
+    expect(updated?.adapterConfig).toMatchObject({ search: true, command: "echo safe" });
+  });
+
+  it("does not restore removed adapter settings when approval explicitly replaces adapterConfig", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Replaced Adapter Configuration",
+      adapterType: "process",
+      adapterConfig: { search: true, command: "echo safe" },
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "pending",
+      payload: {
+        agentId: pending.id,
+        adapterConfig: {},
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Replace settings" } },
+      },
+      decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved replacement");
+
+    const updated = await agentService(db).getById(pending.id);
+    expect(updated?.adapterConfig).not.toHaveProperty("search");
+    expect(updated?.adapterConfig).not.toHaveProperty("command");
+  });
+
   it("approves revised entry instructions through the canonical revision service", async () => {
     const companyId = await seedCompany();
     await seedApprover(companyId);
