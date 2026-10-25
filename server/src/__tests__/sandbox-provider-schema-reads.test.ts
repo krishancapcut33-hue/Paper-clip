@@ -6,9 +6,11 @@ import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@
 import type { PaperclipPluginManifestV1, PluginEnvironmentDriverDeclaration } from "@paperclipai/shared";
 import { resolvePluginSandboxProviderConfigSchema, resolvePluginSandboxProviderDriverByKey } from "../services/plugin-environment-driver.js";
 import { resolveEnvironmentDriverConfigForRuntime, resolveSandboxProviderSecretRefPaths } from "../services/environment-config.js";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
-describe("sandbox provider schema reads", () => {
+const support = await getEmbeddedPostgresTestSupport();
+
+describe.skipIf(!support.supported)("sandbox provider schema reads", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: Db;
   const clients: Db[] = [];
