@@ -129,8 +129,10 @@ stay in storage and are omitted from that read. Task and agent binding, current
 status, budget, and task privacy checks retain their existing predicates.
 Mutation transactions still lock and read complete run records. The unlocked
 authority read also omits named launch renderings and preparation data that its
-tools do not consume. Full wake payloads, other context, and result receipts
-remain available; the complete saved context stays in storage for execution.
+tools do not consume. Ordinary tool checks also omit the wake payload. Mail
+checks load the current full wake to enforce external-chat restrictions. Other
+context and result receipts remain available. The complete saved context stays
+in storage for execution.
 
 WebSocket delivery uses one fresh authorization batch for an event's task and
 run bindings. When both bindings name the same task, the batch reads its current
