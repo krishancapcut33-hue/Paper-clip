@@ -238,6 +238,11 @@ for chain checks. The selected agent's full configuration, current monthly spend
 and existing response redaction remain available. Every call reads current data;
 these lookups do not cache authorization or agent configuration.
 
+Queued-comment display filters wake requests by the current company, assigned
+agent, status, and exact JSON string task identity in SQL. Other tasks' comment
+identifiers stay in the database. The display projection, ordering, current run
+ownership checks, and persisted wake payloads retain their existing contract.
+
 ## 1. Embedded PostgreSQL — zero config
 
 If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.
