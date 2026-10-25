@@ -185,7 +185,6 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await service.listProjectRepositories(company.id, null, true)).repositories).toHaveLength(1);
     expect(appAcquire).toHaveBeenCalledTimes(2);
 
-    // Company membership does not turn a dedicated App into personal read access.
     expect((await service.listGitHubRepositories(company.id, "app-member")).repositories).toEqual([]);
     expect(await service.githubReadConnectionIds(company.id, "app-member")).toEqual([]);
     await expect(service.githubReadHeaders(company.id, connection.id, "app-member")).rejects.toThrow(/authorization/);

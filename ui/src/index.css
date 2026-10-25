@@ -4824,7 +4824,6 @@ html:has(.design-proposal-theme) [data-canonical-toolbar] .collection-toolbar-ta
 
 }
 
-/* Keep PEM line breaks intact while concealing private key input by default. */
 .secret-textarea {
   -webkit-text-security: disc;
 }

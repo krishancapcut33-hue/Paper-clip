@@ -22,7 +22,6 @@ export function GitHubAppConfiguration({ connection, galleryEntry, canReplace, u
   );
 }
 
-/** Display only public tenant fields; never enumerate connection or credential config. */
 export function GitHubAppSettings({ config }: { config: Record<string, unknown> }) {
   const value = config.methodConfig;
   const settings = value && typeof value === "object" && !Array.isArray(value)
@@ -45,7 +44,7 @@ export function GitHubAppSettings({ config }: { config: Record<string, unknown> 
           permissions = entries.sort(([a], [b]) => a.localeCompare(b)) as [string, string][];
         }
       }
-    } catch { /* Older or malformed settings still leave the rest of the configuration inspectable. */ }
+    } catch {}
   }
 
   return (

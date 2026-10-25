@@ -105,7 +105,6 @@ export function normalizeConnectionMethodConfig(
   const values: Record<string, string | boolean> = {};
   for (const field of fields) {
     let raw = configValues?.[field.key] ?? field.defaultValue;
-    // API callers may use a numeric schema version; persist the catalog form representation.
     if (method.credentialExchange === "github_app_installation" && field.key === "version" && raw === 1) raw = "1";
     if (field.type === "checkbox") {
       if (raw !== undefined && typeof raw !== "boolean")
@@ -236,7 +235,6 @@ export function projectedConnectionHeaders(
     // GitHub excludes Actions from its default catalog. Project this on every
     // discovery and invocation so existing connections gain the toolset too.
     headers["X-MCP-Toolsets"] = "default,actions";
-    // Installation tokens represent a bot, not a user; GET /user is unsupported.
     if (isGitHubAppConnection(connection)) headers["X-MCP-Exclude-Tools"] = "get_me";
   }
   return headers;

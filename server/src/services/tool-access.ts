@@ -2078,8 +2078,6 @@ export function toolAccessService(
         : normalizeConnectionMethodConfig(method, input.configValues ?? asRecord(asRecord(retainedConnection?.config).methodConfig));
     if (galleryEntry?.slug === "github" && method?.key === "app-installation") {
       const parsed = parseGitHubAppConfig(normalizedMethodConfig?.values);
-      // Name-based recovery may retain an archived OAuth/PAT connection, whose
-      // settings are not an App policy. Only existing App connections pin it.
       if (retainedConnection && isGitHubAppConnection(retainedConnection)
         && JSON.stringify(parsed) !== JSON.stringify(parseGitHubAppConfig(asRecord(retainedConnection.config).methodConfig))) {
         throw badRequest("Reconnect preserves the App, installation and access policy. Create a new connection to change them.");
@@ -3047,8 +3045,6 @@ export function toolAccessService(
               }
             }
             if (connectionMutationIsStillCurrent) {
-              // Restore declarations from the restored grant before deleting
-              // the failed attempt's secrets and personal definitions.
               await syncConnectionCredentialBindings(tx, revivedConnectionPrevious);
             }
           });
@@ -3679,9 +3675,6 @@ export function toolAccessService(
     if (providedFields.length === 0)
       throw badRequest("Enter a replacement credential to reconnect this app");
 
-    // App keys belong to the saved identity grant. Verify the submitted key
-    // directly before rotating any vault version; checking health here would
-    // otherwise authenticate with the old key and could hide a bad replacement.
     let appGrant: typeof connectionGrants.$inferSelect | undefined;
     let appProviderTenant: (typeof connectionGrants.$inferSelect)["providerTenant"] = null;
     if (isGitHubAppConnection(connection)) {
@@ -4331,8 +4324,6 @@ export function toolAccessService(
       return toApplication(row);
     },
 
-    // Project configuration also exposes company-owned App repository metadata.
-    // Personal credentials still require the caller's own grant audience.
     listProjectRepositories: async (companyId: string, userId: string | null, localTrusted = false) =>
       toolAccessService(db).listGitHubRepositories(companyId, userId, localTrusted, { includeGitHubApps: true }),
 
@@ -4426,8 +4417,6 @@ export function toolAccessService(
         )
           continue;
         if (isGitHubAppConnection(connection)) {
-          // Dedicated metadata remains company-visible. Personal/shared
-          // metadata uses the same human audience as other GitHub methods.
           if (!options.includeGitHubApps || !(localTrusted || memberships.length > 0)) continue;
           if (connection.credentialPolicy !== "per_agent" && !grants.some(grant =>
             grant.connectionId === connection.id && canBrowseProjectRepositoryGrant({

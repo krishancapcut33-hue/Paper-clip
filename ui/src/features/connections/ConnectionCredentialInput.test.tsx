@@ -31,7 +31,6 @@ describe("shared setup and reconnect credential input", () => {
     const container = render("credentials.privateKey");
     const input = container.querySelector("textarea")!;
     expect(input).not.toBeNull();
-    // A textarea normalizes line endings as the browser applies pasted text.
     const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, "value")!.set!;
     act(() => {
       setter.call(input, pem.replace(/\n/g, ending));
@@ -40,7 +39,6 @@ describe("shared setup and reconnect credential input", () => {
     expect(container.querySelector("output")!.textContent).toBe(pem);
     expect(createPrivateKey(container.querySelector("output")!.textContent!).asymmetricKeyType).toBe("rsa");
 
-    // Exercise an ordinary edit after paste, using the browser's native value setter.
     act(() => { setter.call(input, pem + "\n"); input.dispatchEvent(new Event("input", { bubbles: true })); });
     expect(container.querySelector("output")!.textContent).toBe(pem + "\n");
     expect(createPrivateKey(container.querySelector("output")!.textContent!).asymmetricKeyType).toBe("rsa");

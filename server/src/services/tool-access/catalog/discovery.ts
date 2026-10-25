@@ -202,8 +202,6 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
     }
     if (response.status === 401 && isGitHubAppConnection(connection)) {
       await response.body?.cancel().catch(() => undefined);
-      // Discovery is read-only. Retry once with a freshly scoped installation
-      // token; never fall back to a user, another App or an OAuth sign-in.
       headers = {
         ...projectedConnectionHeaders(connection),
         ...(await resolveCredentialHeaders(connection, actor, { forceRefresh: true })),
@@ -263,7 +261,6 @@ export function createToolCatalogDiscovery(db: Db, { now, audit, secrets, creden
       }
     }
     if (!response.ok) {
-      // An App token failure must never convert this bot connection to OAuth.
       if (isGitHubAppConnection(connection)) throw new HttpError(502,
         "GitHub MCP access is unavailable. Check the installation permissions and network access to api.githubcopilot.com.",
         { code: "github_app_mcp_unavailable", status: response.status });

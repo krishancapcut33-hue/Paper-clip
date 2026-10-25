@@ -36,7 +36,6 @@ export async function getGitHubAppGrant(db: Db, connection: Connection, options:
   return { ...grant, updatedAtVersion: snapshot!.updatedAtVersion };
 }
 
-/** Authorization and vault ownership are rechecked even on a token-cache hit. */
 export async function resolveGitHubAppCredential(db: Db, connection: Connection, grant: Grant, allowDraft = false, force = false, agentId?: string | null) {
   const valid = async () => {
     const [c] = await db.select().from(toolConnections).where(and(eq(toolConnections.companyId, connection.companyId), eq(toolConnections.id, connection.id)));
@@ -46,8 +45,6 @@ export async function resolveGitHubAppCredential(db: Db, connection: Connection,
       || JSON.stringify(c.config) !== JSON.stringify(connection.config) || JSON.stringify(g.credentialSecretRefs) !== JSON.stringify(grant.credentialSecretRefs)) githubAppFailure();
     if (!allowDraft) {
       const installs = await db.select().from(toolConnectionInstalls).where(and(eq(toolConnectionInstalls.companyId, c.companyId), eq(toolConnectionInstalls.connectionId, c.id)));
-      // Health checks have no run agent. Runtime acquisition checks the exact
-      // agent again after the provider request, including on cache hits.
       const targetAgentId = agentId ?? (g.kind === "agent" ? g.subjectAgentId : null);
       if (!installs.some(install =>
         (install.targetType === "company" && install.targetId === c.companyId)
@@ -69,7 +66,6 @@ export async function resolveGitHubAppCredential(db: Db, connection: Connection,
   }
 }
 
-/** Refresh access evidence without changing the credential revision used by setup rollback. */
 export async function refreshGitHubAppAccess(db: Db, connection: Connection, force = false) {
   const grant = await getGitHubAppGrant(db, connection);
   const result = await resolveGitHubAppCredential(db, connection, grant, connection.status === "draft", force);

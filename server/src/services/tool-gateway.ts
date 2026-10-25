@@ -3109,7 +3109,6 @@ export function createToolGatewayService(
     }
   }
 
-  /** A run must discover tools for the same GitHub identity used at dispatch. */
   async function githubToolsForContext(
     session: ToolGatewaySession,
     tools: ToolGatewayDescriptor[],
@@ -3470,8 +3469,6 @@ export function createToolGatewayService(
     connection: typeof toolConnections.$inferSelect,
     grant: typeof connectionGrants.$inferSelect,
   ): Promise<string> {
-    // Legacy App rows retain their REST URL. MCP credentials go only to the
-    // reviewed GitHub endpoint, independent of saved endpoint/header settings.
     if (isGitHubAppConnection(connection)) return GITHUB_APP_MCP_URL;
     const publicEndpoint = remoteEndpoint(connection.config ?? {});
     const ref = (connection.credentialRefs ?? []).find(
@@ -4165,8 +4162,6 @@ export function createToolGatewayService(
   ): Promise<Record<string, string>> {
     if (isGitHubAppConnection(connection)) {
       const credential = await resolveGitHubAppCredential(db, connection, grant, false, resolveOptions.forceRefresh, session.agentId);
-      // Acquisition rechecks installs, ownership and revocation. Recheck the
-      // human audience/selected identity too, including after provider I/O.
       const current = await resolveConnectionGrant(session, connection, false);
       if (current.id !== grant.id) throw new ToolGatewayHttpError(409,
         "GitHub identity changed; retry through the managed tool", "github_identity_unavailable");

@@ -8,7 +8,6 @@ type Props = Pick<ComponentProps<typeof Input>, "type" | "aria-label" | "autoCom
   onChange: (value: string) => void;
 };
 
-/** PEMs must remain multiline through both paste and subsequent edits. */
 export function ConnectionCredentialInput({ configPath, onChange, type = "password", ...props }: Props) {
   const [visible, setVisible] = useState(false);
   if (configPath === "credentials.privateKey") {

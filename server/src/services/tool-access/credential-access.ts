@@ -263,8 +263,6 @@ export function createConnectionCredentialAccess(db: Db, { secrets, audit, verce
     connection: typeof toolConnections.$inferSelect,
     actor?: ActorInfo,
   ): Promise<string> {
-    // Saved App connections may still carry the original REST endpoint. Never
-    // send an installation token or PEM to an operator-selected MCP server.
     if (isGitHubAppConnection(connection)) return GITHUB_APP_MCP_URL;
     const publicEndpoint = remoteEndpoint(connection.config);
     const ref = connection.credentialRefs.find(

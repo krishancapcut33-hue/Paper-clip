@@ -33,7 +33,6 @@ function parseCustomPermissions(value: unknown): GitHubAppConfig["permissions"] 
   try { decoded = JSON.parse(value); } catch { githubAppFailure("custom_permissions"); }
   const parsed = customPermissionsSchema.safeParse(decoded);
   if (!parsed.success) githubAppFailure("custom_permissions");
-  // Stable ordering keeps cache keys and reconnect comparisons independent of JSON formatting.
   return Object.fromEntries(Object.entries(parsed.data).sort(([a], [b]) => a.localeCompare(b)));
 }
 const failureReasons = {
@@ -63,13 +62,11 @@ export function githubAppFailure(reason?: FailureReason): never {
   const { message, ...details } = githubAppDiagnostic(reason);
   throw unprocessable(message, details);
 }
-/** Reconstruct safe guidance, never forward provider bodies or crypto messages. */
 export function sanitizeGitHubAppFailure(error: unknown) {
   if (!(error instanceof HttpError)) return null;
   const details = error.details as { code?: unknown; reason?: unknown } | undefined;
   return details?.code === "github_app_access_unavailable" ? githubAppDiagnostic(details.reason) : null;
 }
-/** Preserve only our closed diagnostic vocabulary, never a provider/crypto message. */
 export function rethrowGitHubAppFailure(error: unknown): never {
   githubAppFailure(sanitizeGitHubAppFailure(error)?.reason);
 }
@@ -97,7 +94,6 @@ export function githubAppJwt(appId: string, privateKey: string, now = Date.now()
 }
 export type AppCredential = { token: string; expiresAt: number; github: NonNullable<Metadata> };
 
-// Validate provider responses before using them as identity or access evidence.
 const providerId = z.number().int().positive().safe();
 const appSchema = z.object({ id: providerId, client_id: z.string().optional(), slug: z.string().regex(/^[a-z0-9-]+$/) });
 const installationSchema = z.object({
@@ -113,7 +109,6 @@ const repositoriesSchema = z.object({ repositories: z.array(z.object({
   id: providerId, full_name: z.string(), private: z.boolean().optional(),
 })) });
 
-/** Fixed provider origin; never follow a redirect carrying an App JWT or token. */
 export function createGitHubAppClient(fetcher: typeof fetch = fetch, clock = Date.now) {
   const cache = new Map<string, { until: number; settled: boolean; promise: Promise<AppCredential> }>();
   async function request<T>(path: string, token: string, reason: FailureReason, schema: z.ZodType<T>, body?: unknown): Promise<T> {
@@ -128,7 +123,7 @@ export function createGitHubAppClient(fetcher: typeof fetch = fetch, clock = Dat
     try {
       const parsed = schema.safeParse(await response.json());
       if (parsed.success) return parsed.data;
-    } catch { /* Provider bodies and validation details must not escape. */ }
+    } catch {}
     githubAppFailure(reason);
   }
   async function acquire(config: GitHubAppConfig, key: string): Promise<AppCredential> {
@@ -152,7 +147,6 @@ export function createGitHubAppClient(fetcher: typeof fetch = fetch, clock = Dat
     });
     const expiresAt = Date.parse(minted.expires_at);
     if (!minted.token.trim() || !Number.isFinite(expiresAt) || expiresAt <= clock() + 60_000) githubAppFailure("token");
-    // Identity is the provider's bot account, never the installation owner.
     const bot = await request(`/users/${encodeURIComponent(`${app.slug}[bot]`)}`, minted.token, "bot_identity", botSchema);
     if (bot.login !== `${app.slug}[bot]`) githubAppFailure("bot_identity");
     const repositories: NonNullable<NonNullable<Metadata>["repositories"]> = [];
@@ -196,7 +190,7 @@ export function createGitHubAppClient(fetcher: typeof fetch = fetch, clock = Dat
         return result;
       } catch (error) {
         if (cache.get(cacheKey) === entry) cache.delete(cacheKey);
-        throw error; // The shared promise already sanitized the failure for every caller.
+        throw error;
       }
     },
   };
