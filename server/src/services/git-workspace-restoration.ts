@@ -380,9 +380,13 @@ async function provenNestedWorktreeHistory(linked: LinkedNestedCheckout, repoUrl
   const covered = new Set([head,
     ...shas(await gitCacheCommand(checkout, ["reflog", "show", "--format=%H", "HEAD"], signal).catch(() => "")),
     ...shas(await gitCacheCommand(checkout, ["rev-parse", "--verify", "-q", "ORIG_HEAD^{commit}"], signal).catch(() => ""))]);
-  const owned = await ownedNestedRefs(linked, signal);
+  const allOwned = await ownedNestedRefs(linked, signal);
+  const remotePrefix = `refs/heads/${linked.branchPrefix}remotes/`;
+  const owned = allOwned.filter(([, ref]) => !ref.startsWith(remotePrefix));
+  const remoteTracked = [...new Set([...allOwned.filter(([, ref]) => ref.startsWith(remotePrefix)).map(([sha]) => sha),
+    ...await ownedNestedReflogs(linked, allOwned.filter(([, ref]) => ref.startsWith(remotePrefix)), signal)])];
   const recorded = new Set([...owned.map(([sha]) => sha), ...await ownedNestedReflogs(linked, owned, signal)]);
-  if (recorded.size + covered.size > MANAGED_CHECKOUT_LOCAL_TIP_LIMIT) throw new Error("managed_checkout_local_tip_budget");
+  if (recorded.size + covered.size + remoteTracked.length > MANAGED_CHECKOUT_LOCAL_TIP_LIMIT) throw new Error("managed_checkout_local_tip_budget");
   const current = (await gitCacheCommand(checkout, ["symbolic-ref", "--quiet", "HEAD"], signal).catch(() => "")).trim();
   const otherTips = owned.filter(([, ref]) => ref !== current).map(([sha]) => sha);
   if (otherTips.length && await hasCommitsMissingUpstream(checkout, otherTips, repoUrl, resolveGitAuth, signal, [head])) {
@@ -393,7 +397,9 @@ async function provenNestedWorktreeHistory(linked: LinkedNestedCheckout, repoUrl
     throw new Error("unpushed_managed_checkout_branches");
   }
   const headOnRemote = !await hasCommitsMissingUpstream(checkout, [head], repoUrl, resolveGitAuth, signal);
-  return { headOnRemote, preserve: [] };
+  const preserve = remoteTracked.length
+    ? await tipsMissingUpstream(checkout, remoteTracked, repoUrl, resolveGitAuth, signal, [...covered, ...recorded]) : [];
+  return { headOnRemote, preserve };
 }
 
 async function tipsMissingUpstream(checkout: string, tips: string[], repoUrl: string,
