@@ -5,6 +5,8 @@ import type { ConnectionApi } from "./connection-target.js";
 import { randomUUID } from "node:crypto";
 import { awaitJourneyCondition } from "./github-review-browser.js";
 
+const liveRunStatuses = new Set(["queued", "running", "scheduled_retry"]);
+
 /** The issue run source includes history beyond company list windows. Related
  * activity can name a run for another task, so hydrate and check direct ownership. */
 export async function readOwnedGitHubReviewRuns(api: Pick<ConnectionApi, "get">, scope: { companyId: string; agentId: string; issueId: string }) {
@@ -28,11 +30,11 @@ export async function stopOwnedGitHubReviewRun(api: Pick<ConnectionApi, "get" | 
   };
   const run = await read();
   const retry = run.runtimeMode === "native" && run.status === "failed" && run.nativePhase === "retryable_failure";
-  if (!["queued", "running"].includes(run.status) && !retry) return;
+  if (!liveRunStatuses.has(run.status) && !retry) return;
   await api.post(`/api/heartbeat-runs/${runId}/cancel`, run.runtimeMode === "native" ? { cancellationRequestId: randomUUID() } : {});
   await awaitJourneyCondition(async () => {
     const stopped = await read();
-    if (run.runtimeMode !== "native") return !["queued", "running"].includes(stopped.status);
+    if (run.runtimeMode !== "native") return !liveRunStatuses.has(stopped.status);
     const intent = stopped.resultJson?.nativeCancellation;
     return stopped.status === "cancelled" && intent?.schema === "paperclip.native-cancellation.v1"
       && intent.runId === runId && intent.companyId === scope.companyId && intent.issueId === scope.issueId

@@ -70,6 +70,16 @@ describe("GitHub registration handoff", () => {
 });
 
 describe("reused target ownership", () => {
+  it("stops a scheduled legacy retry and waits until its cancellation finishes", async () => {
+    const scope = { companyId: 'company', agentId: 'agent', issueId: 'issue' };
+    const scheduled = { ...scope, id: 'run', status: 'scheduled_retry', runtimeMode: 'legacy' };
+    const get = vi.fn().mockResolvedValueOnce(scheduled).mockResolvedValueOnce(scheduled)
+      .mockResolvedValue({ ...scheduled, status: 'cancelled' });
+    const post = vi.fn().mockResolvedValue({});
+    await stopOwnedGitHubReviewRun({ get, post } as unknown as ConnectionApi, 'run', scope, new AbortController().signal);
+    expect(post).toHaveBeenCalledExactlyOnceWith('/api/heartbeat-runs/run/cancel', {});
+    expect(get).toHaveBeenCalledTimes(3);
+  });
   it.each(['legacy', undefined])("stops a queued %s run without a native-only cancellation request", async runtimeMode => {
     const scope = { companyId: 'company', agentId: 'agent', issueId: 'issue' };
     const queued = { ...scope, id: 'run', status: 'queued', runtimeMode };
