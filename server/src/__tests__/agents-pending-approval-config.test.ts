@@ -308,6 +308,57 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     expect(updated?.adapterConfig).toMatchObject({ search: true, command: "echo safe" });
   });
 
+  it("applies approved skill additions and removals while retaining approved versionIds", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Skill Reconciliation Hire",
+      adapterType: "process",
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [
+            { key: "paperclipai/paperclip/keep", versionId: "version-keep" },
+            { key: "paperclipai/paperclip/remove", versionId: "version-remove" },
+          ],
+        },
+      },
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "pending",
+      payload: {
+        agentId: pending.id,
+        desiredSkills: [
+          "paperclipai/paperclip/keep",
+          { key: "paperclipai/paperclip/add", versionId: "version-add" },
+        ],
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Reconcile skills" } },
+      },
+      decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved skill reconciliation");
+
+    const updated = await agentService(db).getById(pending.id);
+    expect(updated?.adapterConfig).toMatchObject({
+      paperclipSkillSync: {
+        desiredSkills: [
+          { key: "paperclipai/paperclip/keep", versionId: "version-keep" },
+          { key: "paperclipai/paperclip/add", versionId: "version-add" },
+        ],
+      },
+    });
+    const desiredSkills = (updated?.adapterConfig as {
+      paperclipSkillSync?: { desiredSkills?: unknown[] };
+    } | undefined)?.paperclipSkillSync?.desiredSkills;
+    expect(desiredSkills).not.toEqual(expect.arrayContaining([
+      { key: "paperclipai/paperclip/remove", versionId: "version-remove" },
+    ]));
+  });
+
   it("does not restore removed adapter settings when approval explicitly replaces adapterConfig", async () => {
     const companyId = await seedCompany();
     await seedApprover(companyId);

@@ -109,7 +109,7 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
         if (!approvedByUserId || !approvalId) throw unprocessable("Approved hire instructions require authenticated approval authority");
         const configured = await agentInstructionsService(txDb).updateBundle({
           ...existing,
-          adapterConfig: hasExplicitApprovedAdapterConfig ? patch.adapterConfig : existing.adapterConfig,
+          adapterConfig: isPlainRecord(patch.adapterConfig) ? patch.adapterConfig : existing.adapterConfig,
         }, { mode: "managed", entryFile });
         const revisionService = agentInstructionRevisionService(txDb);
         const persistedAdapterConfig = await revisionService.persistHireApprovalBundleConfiguration(
