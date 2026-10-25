@@ -6,6 +6,7 @@ import { createRuntimeToolsToken } from "../runtime-tools-token.js";
 import { errorHandler } from "../middleware/index.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   agents,
@@ -192,6 +193,42 @@ const support = await getEmbeddedPostgresTestSupport();
       });
       return { id, connectionId, secretId, definitionId };
     }
+    it.each(["config", "transportConfig"] as const)("reads only current GitHub identity connections via %s", async location => {
+      const input = await seed(), selected = await grant(input, "A");
+      const [connection] = await db.select().from(toolConnections).where(eq(toolConnections.id, selected.connectionId));
+      await db.update(toolConnections).set({ config: {}, transportConfig: {}, [location]: { sourceTemplateKey: "github" } })
+        .where(eq(toolConnections.id, selected.connectionId));
+      const payload = "unrelated-connection-config🙂".repeat(10_000);
+      const irrelevant = [null, true, 42, ["github"], { name: "github" }, "GitHub", " github ", "other"].map(sourceTemplateKey => {
+        const id = randomUUID();
+        return { id, companyId: input.companyId, applicationId: connection.applicationId, name: id, uid: id,
+          transport: "mcp_remote" as const, config: { sourceTemplateKey, payload }, transportConfig: { sourceTemplateKey } };
+      });
+      await db.insert(toolConnections).values(irrelevant);
+      const observed = createDb(database.connectionString), events: Array<Record<string, unknown>> = [], now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(observed, { toolConnections }, capture);
+      try {
+        expect(await resolveManagedGitHubIdentitySelection(observed, input.companyId, { agentId: input.agentId, responsibleUserId: "A" }))
+          .toMatchObject({ configured: true, grant: { id: selected.id } });
+        capture.flush();
+        const reads = events.filter(event => event.table === "tool_connections" && event.operation === "select");
+        expect(reads).toHaveLength(1);
+        expect(reads[0].rows).toBe(1);
+        expect(reads[0].responseValueBytes).toBeLessThan(8192);
+        await db.update(toolConnections).set({ enabled: false }).where(eq(toolConnections.id, selected.connectionId));
+        expect((await resolveManagedGitHubIdentitySelection(observed, input.companyId, { agentId: input.agentId, responsibleUserId: "A" })).grant)
+          .toBeUndefined();
+        await db.update(toolConnections).set({ [location]: { sourceTemplateKey: "other" } }).where(eq(toolConnections.id, selected.connectionId));
+        expect(await resolveManagedGitHubIdentitySelection(observed, input.companyId, { agentId: input.agentId, responsibleUserId: "A" }))
+          .toEqual({ configured: false });
+        expect(await resolveManagedGitHubIdentitySelection(observed, randomUUID(), { agentId: input.agentId, responsibleUserId: "A" }))
+          .toEqual({ configured: false });
+        const saved = await db.select().from(toolConnections).where(eq(toolConnections.companyId, input.companyId));
+        for (const row of irrelevant) expect(saved.find(candidate => candidate.id === row.id)?.config).toEqual(row.config);
+      } finally { capture.flush(); await observed.$client.end(); }
+    });
+
     async function switchTo(
       input: Awaited<ReturnType<typeof seed>>,
       user: string,
