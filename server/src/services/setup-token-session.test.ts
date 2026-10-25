@@ -872,6 +872,88 @@ describe("SetupTokenSessionService durable reaper release backoff", () => {
     expect(logs.filter((l) => l.includes("attempt 1/5"))).toHaveLength(2);
     expect(logs.some((l) => l.includes("attempt 2/5"))).toBe(false);
   });
+
+  it("gives each lease-free row its own logging budget", async () => {
+    const rows: SetupTokenCleanupRecord[] = [
+      {
+        sessionId: "free-1",
+        companyId: "company-1",
+        ownerUserId: "user-1",
+        adapterType: "claude_local",
+        environmentId: "env-1",
+        leaseId: "",
+        deadline: 1_000,
+        state: "failed",
+        boundAt: null,
+      },
+      {
+        sessionId: "free-2",
+        companyId: "company-1",
+        ownerUserId: "user-1",
+        adapterType: "claude_local",
+        environmentId: "env-1",
+        leaseId: "",
+        deadline: 1_000,
+        state: "failed",
+        boundAt: null,
+      },
+    ];
+    // Both rows fail at the store remove, not the (skipped) lease release.
+    const store: Pick<SetupTokenCleanupStore, "listReapable" | "remove"> = {
+      async listReapable() {
+        return rows;
+      },
+      async remove() {
+        throw new Error("remove failed");
+      },
+    };
+    const leases = new FakeLeaseManager();
+    const logs: string[] = [];
+    const summary = await reapSetupTokenLeases(
+      { store, leases, log: (line) => logs.push(line) },
+      5_000,
+    );
+    expect(summary.failed).toBe(2);
+    // Each row logs its own attempt 1/5, not a shared 1/5 then 2/5.
+    const attemptOne = logs.filter((l) => l.includes("attempt 1/5"));
+    expect(attemptOne).toHaveLength(2);
+    expect(attemptOne.some((l) => l.includes("session free-1"))).toBe(true);
+    expect(attemptOne.some((l) => l.includes("session free-2"))).toBe(true);
+    expect(logs.some((l) => l.includes("attempt 2/5"))).toBe(false);
+  });
+
+  it("redacts credentials and control characters in the release-failure cause", async () => {
+    const store = new FakeStore();
+    await store.record({
+      sessionId: "cap-redact-1",
+      companyId: "company-1",
+      ownerUserId: "user-1",
+      adapterType: "claude_local",
+      environmentId: "env-1",
+      leaseId: "lease-redact-1",
+      deadline: 1_000,
+      state: "failed",
+      boundAt: null,
+    });
+    const leases = new FakeLeaseManager();
+    leases.releaseById = async () => {
+      throw new Error(
+        "teardown failed\nAuthorization: Bearer sk-live-secret-token-123\nurl=https://signed.example.com/x",
+      );
+    };
+    const logs: string[] = [];
+    await reapSetupTokenLeases(
+      { store, leases, log: (line) => logs.push(line) },
+      5_000,
+    );
+    const failure = logs.find((l) => l.includes("lease release failed"));
+    expect(failure).toBeDefined();
+    // The bearer credential is redacted, and the newline is stripped so the
+    // cause cannot forge an extra log line.
+    expect(failure).not.toContain("sk-live-secret-token-123");
+    expect(failure).not.toContain("\n");
+    expect(failure).toContain("***REDACTED***");
+  });
 });
 
 describe("SetupTokenSessionService.cancelByScope", () => {

@@ -38,6 +38,7 @@ import { and, desc, eq, gt, inArray, isNotNull, isNull, lte, notInArray, or, sql
 import type { Db } from "@paperclipai/db";
 import { adapterAuthSessions } from "@paperclipai/db";
 import type { AgentAdapterType } from "@paperclipai/shared";
+import { redactSensitiveText } from "../redaction.js";
 
 // The setup-token login flow supports only the `claude_local` adapter. The
 // unified `adapter_auth_sessions` table also holds the Codex device-login rows,
@@ -328,6 +329,9 @@ export interface SetupTokenReapResult {
 // provider reject it, so the counter resets and the sweep tries fresh again.
 const SETUP_TOKEN_RELEASE_ATTEMPT_CAP = 5;
 
+// Keyed by the row's public session id (unique per row), not the lease id, so a
+// lease-free row (`leaseId === ""`) does not share its logging budget with every
+// other lease-free row in the same sweep.
 const setupTokenReleaseAttempts = new Map<string, number>();
 
 /**
@@ -373,7 +377,7 @@ export async function reapSetupTokenLeases(
       });
       // A successful sweep resets the backoff counter for this row so a
       // transient provider rejection does not leave it permanently quiet.
-      setupTokenReleaseAttempts.delete(record.leaseId);
+      setupTokenReleaseAttempts.delete(record.sessionId);
       // `released` counts only a lease that was actually torn down. A record
       // with no bound lease is cleared without a release and is not a lease
       // release, so it stays out of this count.
@@ -382,17 +386,21 @@ export async function reapSetupTokenLeases(
       }
     } catch (error) {
       failed += 1;
-      const attempts = (setupTokenReleaseAttempts.get(record.leaseId) ?? 0) + 1;
-      setupTokenReleaseAttempts.set(record.leaseId, attempts);
-      // Only the truncated message is safe to log: a provider teardown
-      // rejection can carry a credential, a signed URL, or a full response body.
+      const attempts = (setupTokenReleaseAttempts.get(record.sessionId) ?? 0) + 1;
+      setupTokenReleaseAttempts.set(record.sessionId, attempts);
+      // The cause is a provider/DB teardown rejection that can carry a
+      // credential, a signed URL, or a full response body. Redact secrets and
+      // strip control characters before it reaches the log, then truncate so a
+      // stack never reaches the log.
       const cause = error instanceof Error ? error.message : String(error);
-      const truncated = cause.slice(0, 200);
+      const safeCause = redactSensitiveText(cause)
+        .replace(/[\u0000-\u001f\u007f]+/g, " ")
+        .slice(0, 200);
       if (attempts <= SETUP_TOKEN_RELEASE_ATTEMPT_CAP) {
         log(
           `[paperclip] Setup-token reaper: lease release failed ` +
             `(attempt ${attempts}/${SETUP_TOKEN_RELEASE_ATTEMPT_CAP}) ` +
-            `for session ${record.sessionId}, lease ${record.leaseId}, environment ${record.environmentId}, adapter ${record.adapterType}, state ${record.state}: ${truncated}`,
+            `for session ${record.sessionId}, lease ${record.leaseId}, environment ${record.environmentId}, adapter ${record.adapterType}, state ${record.state}: ${safeCause}`,
         );
         if (attempts === SETUP_TOKEN_RELEASE_ATTEMPT_CAP) {
           log(
