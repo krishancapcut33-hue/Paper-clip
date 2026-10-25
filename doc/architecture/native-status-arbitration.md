@@ -390,6 +390,8 @@ It records the completed result without dispatching another provider turn.
 The existing monitor scheduler receives a transaction-aware notification when
 this finalization blocker clears. Replaying the committed decision sends no
 second notification.
+Live response selection and committed response repair retain the accepted
+monitor explanation under the existing reply and publication authorization rules.
 
 Missing receipts, changed ownership, cancellation intents, cleared or quota
 monitors, and unfinished workspace finalization retain their recovery paths.

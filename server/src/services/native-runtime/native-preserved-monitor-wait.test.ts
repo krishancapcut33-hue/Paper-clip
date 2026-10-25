@@ -2,11 +2,12 @@ import { randomUUID } from "node:crypto";
 import { and, eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { agents, agentWakeupRequests, companies, completionContracts, createDb, heartbeatRuns,
-  issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, subscribeDatabaseWork } from "@paperclipai/db";
+  issueComments, issueRecoveryActions, issues, nativeRunFinalizations, nativeRunResults, statusDecisions, subscribeDatabaseWork } from "@paperclipai/db";
 import { PROVIDER_QUOTA_MONITOR_SERVICE_NAME } from "@paperclipai/shared";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
 import { PaperclipRunnerToolAuthority } from "./paperclip-runner-tool-authority.js";
-import { finalizeNativeRun } from "./native-run-finalizer.js";
+import { finalizeNativeRun, repairCommittedNativeChatResponse } from "./native-run-finalizer.js";
+import { nativeSha256 } from "./canonical.js";
 import * as monitorDelivery from "./native-monitor-delivery.js";
 import { DELIVERY_QUEUES } from "../delivery-work-notifications.js";
 import { hasPendingRunCleanup } from "../execution-blocker.js";
@@ -154,6 +155,34 @@ describe.skipIf(!support.supported)("released native monitor results", () => {
       await f.finalize();
       expect(events).toEqual(["intent", "settled"]);
     } finally { unsubscribe(); }
+  });
+
+  it.each(["live", "recovered"])("publishes the accepted monitor explanation once (%s)", async mode => {
+    const f = await fixture(), before = await f.readIssue();
+    const completionContractSha256 = `sha256:${nativeSha256({ revision: "test", criteria: [] })}`;
+    const canonicalSha256 = `sha256:${nativeSha256({ ...f.result, turnId: null })}`;
+    const serverFingerprint = `sha256:${nativeSha256({ runId: f.runId, completionContractSha256, canonicalSha256 })}`;
+    await db.update(nativeRunResults).set({ canonicalSha256, serverFingerprint }).where(eq(nativeRunResults.id, f.resultId));
+    await db.update(heartbeatRuns).set({ completionContractSha256,
+      contextSnapshot: { issueId: f.issueId, ...(mode === "recovered" ? { skipIssueComment: true } : {}) },
+    }).where(eq(heartbeatRuns.id, f.runId));
+    const comments = () => db.select({ id: issueComments.id, body: issueComments.body }).from(issueComments)
+      .where(and(eq(issueComments.companyId, f.companyId), eq(issueComments.createdByRunId, f.runId)));
+    const repair = () => repairCommittedNativeChatResponse(db, { companyId: f.companyId, issueId: f.issueId, runId: f.runId });
+    await f.finalize();
+    if (mode === "recovered") {
+      expect(await comments()).toEqual([]);
+      await db.update(heartbeatRuns).set({ contextSnapshot: { issueId: f.issueId } }).where(eq(heartbeatRuns.id, f.runId));
+      expect(await repair()).toBe(true);
+    }
+    const published = await comments();
+    expect(published).toEqual([{ id: expect.any(String), body: f.result.result.summary }]);
+    expect(await repair()).toBe(false);
+    await f.finalize();
+    expect(await comments()).toEqual(published);
+    expect((await f.readIssue()).monitorNextCheckAt).toEqual(before.monitorNextCheckAt);
+    expect((await db.select().from(nativeRunResults).where(eq(nativeRunResults.id, f.resultId)))[0].resultJson).toEqual(f.result);
+    expect(await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.companyId, f.companyId))).toEqual([]);
   });
 
   it.each(["cleared", "owner", "receipt", "rescheduled"])("rechecks monitor proof under the task lock (%s)", async state => {
