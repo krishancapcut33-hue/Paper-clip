@@ -9,6 +9,11 @@ cleanup run. This includes descriptor reads that fail inside runtime selection. 
 preparation failure; another owner or a stale claim prevents cleanup. Settling
 that claim and recording file retention share a transaction.
 
+The reconciliation candidate scan selects the complete workspace-sync record and
+the native status wake identifier from each saved run. It keeps their JSON types
+and reads full evidence later where finalization or recovery needs it. Saved
+execution input, runner profiles, and logs stay in the stored run.
+
 The recovery card names the original run and requires evidence that its exact
 allocation stopped and its files were recovered. Recording that evidence does
 not retry the old turn, certify unknown external actions, change the current task

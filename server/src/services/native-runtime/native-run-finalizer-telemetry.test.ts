@@ -279,6 +279,11 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       });
       expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
       expect(reconcileMuseAssignments).toHaveBeenCalledExactlyOnceWith(companyId, agentId, fixture.runId);
+      await db.insert(workspaceOperations).values({ companyId, issueId: fixture.issueId,
+        heartbeatRunId: fixture.runId, phase: "workspace_finalize", status: "succeeded" });
+      const reconciled = await reconcileNativeFinalizations(db, [fixture.runId]);
+      expect(reconciled).toContainEqual(expect.objectContaining({ runId: fixture.runId, phase: "committed" }));
+      expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
     });
   });
 
