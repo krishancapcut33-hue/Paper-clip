@@ -3,6 +3,7 @@ import { randomUUID } from "node:crypto";
 import express from "express";
 import request from "supertest";
 import { eq, sql } from "drizzle-orm";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
   activityLog,
@@ -1087,6 +1088,44 @@ describeEmbeddedPostgres("attention service", () => {
 
     expect(feed.items.filter((item) => item.sourceKind === "failed_run").map((item) => item.subject.id).sort())
       .toEqual([issueKeyedFailureId, unkeyedKeptFailureId].sort());
+  });
+
+  it("keeps newer-run response size bounded despite unrelated retained history", async () => {
+    const { companyId, workerId } = await seedCompany("ATW");
+    const issueId = await insertIssue({ companyId, identifier: "ATW-1", title: "Exhausted task", status: "in_progress" });
+    const otherIssueId = await insertIssue({ companyId, identifier: "ATW-2", title: "Other task", status: "done" });
+    const failedId = randomUUID(), failedAt = new Date("2026-07-09T12:00:00.000Z");
+    await db.insert(heartbeatRuns).values({
+      id: failedId, companyId, agentId: workerId, status: "failed", contextSnapshot: { issueId },
+      createdAt: failedAt, updatedAt: failedAt, finishedAt: failedAt,
+    });
+    await db.insert(heartbeatRunEvents).values({
+      companyId, agentId: workerId, runId: failedId, seq: 1, eventType: "lifecycle",
+      message: "Bounded retry exhausted after scheduled attempts",
+    });
+    for (let batch = 0; batch < 4; batch += 1) {
+      await db.insert(heartbeatRuns).values(Array.from({ length: 500 }, (_, index) => ({
+        id: randomUUID(), companyId, agentId: workerId, status: "succeeded",
+        contextSnapshot: { issueId: otherIssueId, prompt: "x".repeat(8_000) },
+        createdAt: new Date(failedAt.getTime() + batch * 500 + index + 1),
+        updatedAt: failedAt, finishedAt: failedAt,
+      })));
+    }
+    const events: Array<Record<string, unknown>> = [], now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
+    try {
+      const feed = await attentionService(db).list(companyId, { userId: "board-user" });
+      expect(feed.items.filter(item => item.sourceKind === "failed_run").map(item => item.subject.id)).toEqual([failedId]);
+    } finally { capture.flush(); }
+    const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "heartbeat_runs" && event.operation === "select");
+    expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+    expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(64);
+    expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(4096);
+    const [remaining] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRuns)
+      .where(eq(heartbeatRuns.companyId, companyId));
+    expect(remaining?.count).toBe(2001);
   });
 
   it("checks more failed runs for a newer run than one statement can bind", async () => {

@@ -12,6 +12,7 @@ const mockActivityService = vi.hoisted(() => ({
 
 const mockHeartbeatService = vi.hoisted(() => ({
   getRun: vi.fn(),
+  getRunReadAccess: vi.fn(),
 }));
 
 const mockIssueService = vi.hoisted(() => ({
@@ -26,6 +27,11 @@ const mockAccessService = vi.hoisted(() => ({
 
 const mockAgentActionAuditService = vi.hoisted(() => ({
   list: vi.fn(),
+}));
+
+const caseReadCondition = vi.hoisted(() => ({ policy: "authorized-cases" }));
+vi.mock("../services/case-activity-access.js", () => ({
+  caseActivityReadSqlCondition: vi.fn(async () => caseReadCondition),
 }));
 
 vi.mock("../services/activity.js", () => ({
@@ -62,6 +68,7 @@ async function createApp(
     source: "session",
     isInstanceAdmin: false,
   },
+  database: unknown = {},
 ) {
   vi.resetModules();
   const [{ errorHandler }, { activityRoutes }] = await Promise.all([
@@ -77,7 +84,7 @@ async function createApp(
     };
     next();
   });
-  app.use("/api", activityRoutes({} as any));
+  app.use("/api", activityRoutes(database as any));
   app.use(errorHandler);
   return app;
 }
@@ -113,6 +120,9 @@ describe("activity routes", () => {
   beforeEach(() => {
     for (const mock of Object.values(mockActivityService)) mock.mockReset();
     for (const mock of Object.values(mockHeartbeatService)) mock.mockReset();
+    mockHeartbeatService.getRun.mockImplementation(() => {
+      throw new Error("Run issue links must use the narrow authorization read");
+    });
     for (const mock of Object.values(mockIssueService)) mock.mockReset();
     mockAccessService.decide.mockReset();
     mockAccessService.canUser.mockReset();
@@ -182,6 +192,7 @@ describe("activity routes", () => {
       companyId: "company-1",
       actorScope: "all",
       limit: 50,
+      caseReadCondition,
     });
     expect(res.body.items[0]).toMatchObject({
       actorType: "plugin",
@@ -231,6 +242,7 @@ describe("activity routes", () => {
       actorScope: "all",
       actorType: "system",
       limit: 50,
+      caseReadCondition,
     });
     expect(res.body.items[0]).toMatchObject({
       agentId: "agent-1",
@@ -255,6 +267,7 @@ describe("activity routes", () => {
       entityId: undefined,
       limit: 100,
       readCondition: expect.anything(),
+      caseReadCondition,
     });
   });
 
@@ -274,6 +287,7 @@ describe("activity routes", () => {
       entityId: undefined,
       limit: 500,
       readCondition: expect.anything(),
+      caseReadCondition,
     });
   });
 
@@ -335,13 +349,15 @@ describe("activity routes", () => {
   });
 
   it("passes task read filtering when listing links for a readable company run", async () => {
-    mockHeartbeatService.getRun.mockResolvedValue({
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
       id: "run-1", companyId: "company-1", scopeKind: "company", issueId: null,
     });
     mockActivityService.issuesForRun.mockResolvedValue([{ issueId: "public-issue", title: "Visible task" }]);
     const app = await createApp({ type: "agent", companyId: "company-1", agentId: "agent-1" });
     const res = await requestApp(app, baseUrl => request(baseUrl).get("/api/heartbeat-runs/run-1/issues"));
     expect(res.status).toBe(200);
+    expect(mockHeartbeatService.getRunReadAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
     const { issueReadSqlCondition } = await import("../services/authorization.js");
     expect(issueReadSqlCondition).toHaveBeenCalledWith({}, expect.objectContaining({
       type: "agent", companyId: "company-1", agentId: "agent-1",
@@ -351,7 +367,7 @@ describe("activity routes", () => {
   });
 
   it("returns 200 [] (not 404) when listing issues for another company's run, preserving API contract and the cross-tenant oracle", async () => {
-    mockHeartbeatService.getRun.mockResolvedValue({
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
       id: "run-2",
       companyId: "company-2",
     });
@@ -365,7 +381,7 @@ describe("activity routes", () => {
   });
 
   it("returns 200 [] (not 404) for a non-existent heartbeat run, matching the cross-tenant response", async () => {
-    mockHeartbeatService.getRun.mockResolvedValue(null);
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue(null);
 
     const app = await createApp();
     const res = await requestApp(app, (baseUrl) => request(baseUrl).get("/api/heartbeat-runs/missing-run/issues"));
@@ -381,6 +397,42 @@ describe("activity routes", () => {
 
     expect(res.status).toBe(401);
     expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getRunReadAccess).not.toHaveBeenCalled();
     expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
+  });
+
+  it.each([true, false])("preserves issue-scoped run authorization when read permission is %s", async (allowed) => {
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
+      id: "run-1", companyId: "company-1", scopeKind: "issue", issueId: "issue-private",
+    });
+    mockAccessService.decide.mockImplementation(async ({ action }) => ({
+      allowed: action === "issue:read" ? allowed : true,
+    }));
+    mockActivityService.issuesForRun.mockResolvedValue([{ issueId: "visible-issue" }]);
+    const db = {
+      select: () => ({ from: () => ({ where: async () => [{ id: "issue-private" }] }) }),
+    };
+    const app = await createApp({ type: "agent", companyId: "company-1", agentId: "agent-1" }, db);
+    const res = await requestApp(app, baseUrl => request(baseUrl).get("/api/heartbeat-runs/run-1/issues"));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual(allowed ? [{ issueId: "visible-issue" }] : []);
+    expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+      action: "issue:read", resource: expect.objectContaining({ companyId: "company-1", issueId: "issue-private" }),
+    }));
+    expect(mockHeartbeatService.getRunReadAccess).toHaveBeenCalledWith("run-1");
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
+    expect(mockActivityService.issuesForRun).toHaveBeenCalledTimes(allowed ? 1 : 0);
+  });
+
+  it("does not read issue links for a run without a trusted issue binding", async () => {
+    mockHeartbeatService.getRunReadAccess.mockResolvedValue({
+      id: "run-1", companyId: "company-1", scopeKind: "issue", issueId: null,
+    });
+    const app = await createApp();
+    const res = await requestApp(app, baseUrl => request(baseUrl).get("/api/heartbeat-runs/run-1/issues"));
+    expect(res.status).toBe(200);
+    expect(res.body).toEqual([]);
+    expect(mockActivityService.issuesForRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.getRun).not.toHaveBeenCalled();
   });
 });
