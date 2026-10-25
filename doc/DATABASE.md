@@ -70,7 +70,8 @@ The two preliminary reconciliation reads omit named launch renderings and
 preparation payloads. Native profiles omit unused native execution input.
 They retain all other context, full results, legacy profiles, task identity,
 retry accounting, and unknown controls. Native runs still reach their native
-recovery guard. Terminalization keeps its full locked source and stored input.
+recovery guard. Terminalization locks its current control state and returns
+full rows from its writes. Stored input remains intact.
 
 Execution-blocker reads select process, lifecycle, and task-binding fields rather
 than full execution rows. Context retains typed task and pre-dispatch evidence;
