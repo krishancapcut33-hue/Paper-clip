@@ -36,3 +36,16 @@ export function createSingleFlight(now: () => number = Date.now) {
     },
   };
 }
+
+export function createTrackedSingleFlight(options: {
+  trackWork: (work: Promise<void>) => void;
+  onSkipped: (inFlightForMs: number) => void;
+  now?: () => number;
+}) {
+  const gate = createSingleFlight(options.now);
+  return (work: () => Promise<unknown>) => {
+    const tick = gate.run(work);
+    if (tick.started) options.trackWork(tick.settled);
+    else options.onSkipped(tick.inFlightForMs);
+  };
+}

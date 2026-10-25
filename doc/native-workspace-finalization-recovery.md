@@ -4,7 +4,11 @@ Periodic heartbeat recovery runs one pass at a time in each server process.
 A tick that arrives during a slow pass reports its age and starts no duplicate.
 A later tick can start a fresh pass after the current work settles. Shutdown
 and idle sleep still track the actual recovery promise through cleanup. Direct
-run operations and scheduled work delivery keep their existing paths.
+run operations and scheduled work delivery keep their existing paths. A pass
+that remains active for three scheduler intervals produces an error log with its
+age. A waiting timeout does not admit another pass: the actual work must settle
+before ownership is released. A stuck operation requires investigation and
+recovery at the operation or provider boundary.
 
 A native provider can fail before it submits a result while its workspace still
 contains unpublished edits. A prepared workspace reference is not an export

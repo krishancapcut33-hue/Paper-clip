@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
-import { createSingleFlight } from "./single-flight.js";
+import { createSingleFlight, createTrackedSingleFlight } from "./single-flight.js";
+import { beginIdleTrackedWork, idleWorkSnapshot } from "../services/task-admission.js";
 
 function deferred() {
   let resolve!: () => void;
@@ -117,5 +118,46 @@ describe("createSingleFlight", () => {
     expect(next.started).toBe(true);
     if (next.started) await next.settled;
     expect(duplicate).toHaveBeenCalledTimes(1);
+  });
+
+  it("tracks one periodic pass through scheduler shutdown and idle sleep", async () => {
+    vi.useFakeTimers();
+    const before = idleWorkSnapshot().active;
+    const operation = deferred(), cleanup = deferred();
+    const tracked: Promise<void>[] = [];
+    const trackWork = vi.fn((work: Promise<void>) => {
+      const finish = beginIdleTrackedWork();
+      tracked.push(work.finally(finish));
+    });
+    const onSkipped = vi.fn();
+    const tick = createTrackedSingleFlight({ trackWork, onSkipped });
+    const heartbeat = vi.fn(() => operation.promise.finally(() => cleanup.promise));
+    const timer = setInterval(() => tick(heartbeat), 30_000);
+    try {
+      await vi.advanceTimersByTimeAsync(60_000);
+      expect(heartbeat).toHaveBeenCalledOnce();
+      expect(trackWork).toHaveBeenCalledOnce();
+      expect(onSkipped).toHaveBeenCalledExactlyOnceWith(30_000);
+      clearInterval(timer);
+      let shutdownComplete = false;
+      const shutdown = Promise.all(tracked).then(() => { shutdownComplete = true; });
+      await Promise.resolve();
+      expect(shutdownComplete).toBe(false);
+      expect(idleWorkSnapshot().active).toBe(before + 1);
+      operation.resolve();
+      await Promise.resolve();
+      expect(shutdownComplete).toBe(false);
+      expect(idleWorkSnapshot().active).toBe(before + 1);
+      cleanup.resolve();
+      await shutdown;
+      expect(shutdownComplete).toBe(true);
+      expect(idleWorkSnapshot().active).toBe(before);
+    } finally {
+      clearInterval(timer);
+      operation.resolve();
+      cleanup.resolve();
+      await Promise.all(tracked);
+      vi.useRealTimers();
+    }
   });
 });
