@@ -7,6 +7,7 @@ type Entry = Metadata & { calls: number; rows: number; bytes: number; maxBytes: 
 type Event = Record<string, unknown>;
 type Method = (this: unknown, ...args: unknown[]) => unknown;
 export type ResponseCaptureWindow = { start: number; end: number };
+const GROUP_PAGE_SIZE = 128;
 
 export function responseCaptureWindow(value: string | undefined, now = Date.now()): ResponseCaptureWindow | undefined {
   if (!value) return;
@@ -76,7 +77,8 @@ export function createDatabaseResponseCapture(
     clearTimeout(timer);
     scope.disable();
     const ordered = [...entries.values()].sort((a, b) => b.bytes - a.bytes);
-    for (const entry of ordered) send({ event: "paperclip.db_response_capture.entry.v1", captureId: id,
+    for (const [groupIndex, entry] of ordered.entries()) send({ event: "paperclip.db_response_capture.entry.v1", captureId: id,
+      groupIndex, groupPage: Math.floor(groupIndex / GROUP_PAGE_SIZE),
       operation: entry.operation, table: entry.table, callers: entry.callers, calls: entry.calls, rows: entry.rows,
       responseValueBytes: entry.bytes, maxResponseValueBytes: entry.maxBytes, estimatedValues: entry.estimatedValues,
       queryErrors: entry.queryErrors, serializationErrors: entry.serializationErrors });
@@ -84,6 +86,7 @@ export function createDatabaseResponseCapture(
       windowStart: new Date(window.start).toISOString(), windowEnd: new Date(window.end).toISOString(),
       closedAt: new Date(now()).toISOString(),
       startedQueries: started, completedQueries: completed, inFlightAtEnd: inFlight, groups: entries.size,
+      groupPageSize: GROUP_PAGE_SIZE, groupPages: Math.ceil(ordered.length / GROUP_PAGE_SIZE),
       overflowCalls, responseValueBytes: ordered.reduce((sum, entry) => sum + entry.bytes, 0),
       rowValuesLogged: false, sqlOrParametersLogged: false, wireBytesMeasured: false,
       measurementBoundary: "postgres-js results before Drizzle column decoding",

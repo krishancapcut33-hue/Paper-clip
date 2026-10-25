@@ -110,9 +110,28 @@ describe("bounded database response capture", () => {
     for (let i = 0; i < 2200; i += 1) f.capture.execute(() => [i], { ...metadata, callers: [`services/f${i}.ts:1:1`] });
     f.capture.flush();
     const summary = f.events.at(-1)!;
-    expect(summary).toMatchObject({ startedQueries: 2200, completedQueries: 2200, groups: 2048, overflowCalls: 153 });
+    expect(summary).toMatchObject({ startedQueries: 2200, completedQueries: 2200, groups: 2048, overflowCalls: 153,
+      groupPageSize: 128, groupPages: 16 });
     expect(f.events).toHaveLength(2049);
+    const entries = f.events.slice(0, -1);
+    expect(entries.map(entry => entry.groupIndex)).toEqual(Array.from({ length: 2048 }, (_, index) => index));
+    for (let page = 0; page < 16; page += 1) {
+      expect(entries.filter(entry => entry.groupPage === page)).toHaveLength(128);
+    }
+    expect(entries.reduce((sum, entry) => sum + Number(entry.calls), 0)).toBe(2200);
     expect(summary.responseValueBytes).toBe(Array.from({ length: 2200 }, (_, i) => Buffer.byteLength(JSON.stringify([i]))).reduce((a, b) => a + b, 0));
+  });
+  it.each([0, 129])("numbers every page including an empty or partial final page (%s)", count => {
+    const f = fixture();
+    for (let index = 0; index < count; index += 1) {
+      f.capture.execute(() => [index], { ...metadata, callers: [`services/page${index}.ts:1:1`] });
+    }
+    f.capture.flush();
+    const entries = f.events.slice(0, -1), summary = f.events.at(-1)!;
+    expect(summary).toMatchObject({ groups: count, groupPageSize: 128, groupPages: Math.ceil(count / 128) });
+    expect(entries.map(entry => entry.groupIndex)).toEqual(Array.from({ length: count }, (_, index) => index));
+    expect(entries.filter(entry => entry.groupPage === 0)).toHaveLength(Math.min(count, 128));
+    expect(entries.filter(entry => entry.groupPage === 1)).toHaveLength(Math.max(0, count - 128));
   });
   it("does not execute builders or prepared statements until requested", async () => {
     const f = fixture(), rows = [{ id: 1 }], execute = vi.fn(async () => rows);

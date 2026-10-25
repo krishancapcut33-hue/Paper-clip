@@ -354,9 +354,26 @@ Look for `paperclip.db_response_capture.entry.v1` and
 `paperclip.db_response_capture.summary.v1` in the process logs. A log provider
 can store `event` as a structured field instead of message text. Filter by that
 field or read the bounded window from the exact deployment. Check the summary
-and group totals, including the unattributed overflow group. If the log provider
-limits records per request, fetch summaries first and then fetch each capture ID
-separately. Require complete group, call, and byte totals before using the result.
+and group totals, including the unattributed overflow group.
+
+Fetch a complete capture as follows:
+
+1. Read the summary events from the exact deployment and window. Keep each
+   distinct `captureId` separately.
+2. Each entry has a unique `groupIndex` within that capture and a `groupPage`.
+   The summary gives `groupPageSize` (128) and `groupPages`. Fetch every page
+   from zero through `groupPages - 1`, filtering on the entry event, `captureId`,
+   and `groupPage`. Request at least `groupPageSize` matching records per page.
+   A structured query can use
+   `@event:paperclip.db_response_capture.entry.v1 AND @captureId:<id> AND @groupPage:0`.
+3. If the provider's record limit is smaller than a page, fetch each
+   `groupIndex` separately with the same capture ID. Each index matches one
+   entry. Do not split by timestamp: entries can share a timestamp.
+4. Deduplicate by `(captureId, groupIndex)`. Require every index from zero
+   through `groups - 1`, with no gaps. Entry count must equal `groups`, summed
+   `calls` must equal `completedQueries`, and summed `responseValueBytes` must
+   equal the summary total. A missing page is an incomplete measurement.
+
 Tagged raw-driver calls, streams, unawaited raw-driver
 dispatch, and protocol overhead are not measured. Relational queries use a driver-level caller fallback.
 Queries still in flight at the deadline are reported separately. Sizes describe
