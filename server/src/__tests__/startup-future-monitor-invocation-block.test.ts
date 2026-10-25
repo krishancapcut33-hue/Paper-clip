@@ -1,41 +1,3 @@
-/**
- * Regression: startup liveness scan must not park a valid FUTURE
- * scheduled wait as a board hold when the invoking agent/company is
- * invocation-blocked (e.g. company paused during a maintenance swap).
- *
- * Observed: a company-paused process start ran
- * `reconcileStrandedAssignedIssues` and its invocation-budget branch parked
- * several `in_review` issues that each carried a future bounded native monitor
- * (executionStages empty, no currentParticipant, latest run succeeded) as
- * `blocked` + board recovery action with cause
- * `execution_review_participant_recovery` — mislabelling a calendar wait as
- * a missing-reviewer hold.
- *
- * The harness is the existing isolated embedded-Postgres suite: it boots a
- * throwaway cluster, runs the real migrations, and drives the REAL startup
- * scan (`recoveryService(...).reconcileStrandedAssignedIssues()`) — not an
- * age-only helper.
- *
- * Expected after repair (and failing before it):
- *  - T1: company paused + in_review + no participant + succeeded latest run
- *        + FUTURE monitor  -> no board hold, no wake, no new run; the issue
- *        stays in_review and the monitor row is untouched (registration
- *        proof across process start; T1b re-runs the scan as a second
- *        startup).
- *  - T6: company paused + failed latest run + FUTURE provider-quota monitor
- *        -> same protection (the quota monitor owns the next wake).
- * Preserved (must pass both before and after the repair):
- *  - T2: paused company, no wait path at all -> still escalates.
- *  - T3: genuinely budget-paused AGENT (active company), no wait -> still
- *        escalates (original budget-branch intent).
- *  - T5: OVERDUE monitor + invocation block -> still escalates (an overdue
- *        wait is due now and a blocked agent cannot serve it).
- *  - T7: genuinely missing review participant (pending execution state,
- *        failed participant run) under an invocation block, no monitor ->
- *        still escalates with the execution_review_participant cause.
- *  - T4: missing review participant with NO invocation block -> the
- *        review-participant lane owns it (no board hold from this scan).
- */
 import { randomUUID } from "node:crypto";
 import { and, desc, eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -66,7 +28,7 @@ describeEmbeddedPostgres(
     const companyIds: string[] = [];
 
     beforeAll(async () => {
-      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-int6208-");
+      tempDb = await startEmbeddedPostgresTestDatabase("paperclip-startup-monitor-");
       db = createDb(tempDb.connectionString);
     }, 120_000);
 
@@ -242,12 +204,10 @@ describeEmbeddedPostgres(
       const after = await issueRow(issueId);
       expect(after?.status).toBe("in_review");
       expect(await recoveryActionsFor(issueId)).toHaveLength(0);
-      // registration proof: authoritative monitor row untouched
       expect(after?.monitorNextCheckAt?.toISOString()).toBe(monitorAt.toISOString());
       expect(after?.monitorAttemptCount).toBe(0);
       expect((after?.executionPolicy as { monitor?: { nextCheckAt?: string } })?.monitor?.nextCheckAt)
         .toBe(monitorAt.toISOString());
-      // no new provider job or wake minted
       const runs = await db
         .select({ id: heartbeatRuns.id })
         .from(heartbeatRuns)
@@ -274,7 +234,6 @@ describeEmbeddedPostgres(
       await insert;
       await (seedRun({ companyId: s.companyId, agentId: s.workerId, issueId, status: "succeeded" })).insert;
 
-      // two consecutive startup scans = two process starts across the swap
       await freshScan();
       const first = await issueRow(issueId);
       expect(first?.status).toBe("in_review");
@@ -285,10 +244,6 @@ describeEmbeddedPostgres(
       expect(after?.monitorAttemptCount).toBe(0);
       expect(await recoveryActionsFor(issueId)).toHaveLength(0);
       expect(result.escalated).toBe(0);
-      // the wait is still scheduler-registered for its due time: eligible
-      // fields (assigned agent, no user assignee, in_review) are intact and
-      // the timestamp is still future, so the due-monitor claim query
-      // (company active + monitorNextCheckAt <= now) cannot fire early.
       expect(after?.assigneeAgentId).toBe(s.workerId);
       expect(after?.assigneeUserId ?? null).toBeNull();
       expect(after?.monitorNextCheckAt!.getTime() > Date.now()).toBe(true);
@@ -380,7 +335,6 @@ describeEmbeddedPostgres(
       const s = seedCompany("active");
       await s.company();
       await s.agent(s.workerId, "Worker");
-      // the review participant is the budget-blocked agent
       await s.agent(s.reviewerId, "Reviewer", { status: "paused", pauseReason: "budget" });
       const { issueId, insert } = seedIssue(s.companyId, s.workerId, s.prefix, 6, {
         executionState: {
@@ -493,7 +447,6 @@ describeEmbeddedPostgres(
       });
       await run.insert;
       const runId = run.runId;
-      // the quota monitor's externalRef must point at the failed run
       await db
         .update(issues)
         .set({
