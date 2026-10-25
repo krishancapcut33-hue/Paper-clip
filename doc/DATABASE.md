@@ -81,6 +81,12 @@ Stop settlement still load complete run evidence. Workspace settlement reads the
 saved sync descriptor, export retry, and first-heartbeat flag. These projections
 leave stored prompts, logs, results, and recovery state unchanged.
 
+Settled native process release locks run identity, terminal state, process
+identity, and checkpoint presence without loading the checkpoint or execution
+payloads. It retains current coordinator checks, provider evidence, local-host
+identity checks, and every lease's termination receipt. The stop receipt and
+process-field update remain in the same transaction.
+
 Conversation ownership checks select process identity and full recovery result
 evidence without execution prompts or profiles. Committed native reply repair
 selects its persisted result and identity bindings plus typed presentation flags.
