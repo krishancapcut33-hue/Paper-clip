@@ -27,14 +27,7 @@ export function readVisualViewportGeometry(): ViewportGeometry | null {
   return { height, offsetTop };
 }
 
-/**
- * Keeps mobile picker sheets inside the live viewport when a keyboard opens.
- *
- * iOS Safari keeps the layout viewport at full height, shrinks only the
- * visual viewport, and may pan it (offsetTop) to reveal a focused field.
- * Fixed-position sheets must follow both values or they render above the
- * visible area, which reads as an empty menu.
- */
+/** Keeps mobile picker sheets inside the live viewport when a keyboard opens. */
 export function useMobileEntityPickerViewportStyle(): MobileEntityPickerViewportStyle {
   const [geometry, setGeometry] = useState<ViewportGeometry | null>(() =>
     typeof window === "undefined" ? null : readVisualViewportGeometry(),
@@ -45,7 +38,6 @@ export function useMobileEntityPickerViewportStyle(): MobileEntityPickerViewport
     if (!viewport) return;
     const update = () => {
       const next = readVisualViewportGeometry();
-      // Keep the last valid keyboard geometry during transient invalid readings.
       if (next) setGeometry(next);
     };
     update();
