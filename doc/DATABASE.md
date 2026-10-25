@@ -68,6 +68,15 @@ Runner profiles retain the adapter type and complete native execution input and
 workspace-sync receipts. Full result evidence stays available to the existing
 retry and workspace checks. Stored context, profiles, and output are unchanged.
 
+Committed native finalization reads run identity and ownership state before it
+claims the coordinator. It loads complete saved input only when finalization
+still needs to process an accepted result. Review presentation retains the full
+result. Muse settlement reads its exact provider binding. Cleanup reads fresh
+status and ownership metadata; cancelled native workspace retention and legacy
+Stop settlement still load complete run evidence. Workspace settlement reads the
+saved sync descriptor, export retry, and first-heartbeat flag. These projections
+leave stored prompts, logs, results, and recovery state unchanged.
+
 Conversation ownership checks select process identity and full recovery result
 evidence without execution prompts or profiles. Committed native reply repair
 selects its persisted result and identity bindings plus typed presentation flags.

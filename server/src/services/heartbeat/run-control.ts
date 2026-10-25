@@ -164,7 +164,7 @@ async function withBudgetStopDelivery<T>(db: Db, work: () => Promise<T>): Promis
 
 /** Cancellation shares executor ownership and delegates lifecycle and admission effects. */
 export interface HeartbeatRunControlDependencies extends Pick<ReturnType<typeof createHeartbeatRunState>,
-  "getRun" | "getAgent">,
+  "getRun" | "getAgent" | "getRunCleanupState">,
   Pick<ReturnType<typeof createHeartbeatLifecycle>,
     "mergeRunStopMetadataForAgent" | "setRunStatusFromLive" | "setRunStatus" | "setWakeupStatus" | "appendRunEvent">,
   Pick<HeartbeatRetryDependencies, "finalizeAgentStatus"> {
@@ -324,6 +324,7 @@ function runCancellationFenceSql(input: {
 export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunControlDependencies) {
   const {
     getRun,
+    getRunCleanupState,
     options,
     envOrchestrator,
     activeRunExecutions,
@@ -359,7 +360,11 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       sandboxResource: "keep_running" | "stop_and_reuse" | "destroy_after_turn";
     };
   }) {
-    const leaseOwnerRun = await getRun(input.runId);
+    let leaseOwnerRun = await getRunCleanupState(input.runId);
+    if (leaseOwnerRun && isNativeRunnerOwnershipHeld(leaseOwnerRun)) return;
+    const cancelledRun = leaseOwnerRun?.runtimeMode === "native" && leaseOwnerRun.status === "cancelled"
+      ? await getRun(input.runId) : null;
+    if (cancelledRun) leaseOwnerRun = cancelledRun;
     if (leaseOwnerRun && isNativeRunnerOwnershipHeld(leaseOwnerRun)) return;
     // Recovery can finish workspace copy-back outside the executor's finally.
     // Successful copy-back does not earn warm retention for a failed turn.
@@ -368,11 +373,11 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
       input.providerResourceDisposition,
       status,
     );
-    if (leaseOwnerRun?.runtimeMode === "native" && status === "cancelled"
-      && readNativeWorkspaceSyncReference(leaseOwnerRun.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
-      && !nativeRunHasNoWorkspaceAccess(leaseOwnerRun)) {
+    if (cancelledRun?.runtimeMode === "native" && status === "cancelled"
+      && readNativeWorkspaceSyncReference(cancelledRun.runnerProfileJson?.nativeWorkspaceSync)?.state === "prepared"
+      && !nativeRunHasNoWorkspaceAccess(cancelledRun)) {
       try {
-        const preserved = await preserveNativeFailedWorkspace(db, leaseOwnerRun, { allowPreterminal: true });
+        const preserved = await preserveNativeFailedWorkspace(db, cancelledRun, { allowPreterminal: true });
         if (!preserved || !hasRequiredWorkspaceRecovery(preserved.resultJson)) return;
       } catch {
         // Keep the active source eligible for the bounded retention sweep.
@@ -478,13 +483,14 @@ export function createHeartbeatRunControl(db: Db, dependencies: HeartbeatRunCont
   async function acknowledgeRemoteStop(runId: string, companyId: string) {
     // The provider receipt arrives after adapter settlement. A remote ACP child
     // has no host PID, so only this target-aware boundary can acknowledge Stop.
-    const stopped = await getRun(runId);
-    if (stopped?.runtimeMode === "native") {
+    const state = await getRunCleanupState(runId);
+    if (state?.runtimeMode === "native") {
       const scopes = await stoppedRemoteCleanupScopes(db, companyId, runId);
       for (const remoteCleanupScope of scopes ?? []) {
         completeTerminatedRemoteNativeSessionCleanup({ companyId, runId, remoteCleanupScope });
       }
     }
+    const stopped = state?.runtimeMode === "legacy" && state.status === "cancelled" ? await getRun(runId) : null;
     if (stopped?.runtimeMode === "legacy" && stopped.status === "cancelled" &&
         parseObject(stopped.resultJson?.executionCancellation).state === "requested" &&
         await runUsedConversationAdapter(db, stopped) &&

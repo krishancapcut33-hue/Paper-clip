@@ -811,6 +811,8 @@ export function heartbeatService(
     getAgent,
     resolveSessionBeforeForWakeup,
     getRun,
+    getRunCleanupState,
+    getRunWorkspaceSettlement,
     getRunStatus,
     ensureRuntimeState,
     getTaskSession,
@@ -1014,6 +1016,7 @@ export function heartbeatService(
     environmentRuntime,
     scheduleNativeSessionResumeDispatch,
     getRun,
+    getRunWorkspaceSettlement,
     executeRun,
     activeRunExecutionPromises,
     cancelHeartbeatNativeRun,
@@ -1386,6 +1389,7 @@ export function heartbeatService(
 
   const runControl = createHeartbeatRunControl(db, {
     getRun,
+    getRunCleanupState,
     options,
     envOrchestrator,
     activeRunExecutions,

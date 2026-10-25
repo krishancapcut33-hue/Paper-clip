@@ -1,5 +1,6 @@
 import { enableRunFailureReporting } from "../../__tests__/helpers/run-failure-reporting.js";
 import { randomUUID } from "node:crypto";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import {
@@ -261,7 +262,17 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       projectRunStatus: true,
     });
 
+    const bulk = "saved-native-input-sentinel🙂".repeat(40_000);
+    await db.update(heartbeatRuns).set({
+      contextSnapshot: { issueId: fixture.issueId, savedInput: bulk },
+      runnerProfileJson: { savedInput: bulk }, stdoutExcerpt: bulk, stderrExcerpt: bulk,
+    }).where(eq(heartbeatRuns.id, fixture.runId));
+    const [before] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
     const callsBefore = mockTelemetryClient.track.mock.calls.length;
+    const events: Array<Record<string, unknown>> = [];
+    const now = Date.now();
+    const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+    installDatabaseResponseCapture(db, { heartbeatRuns }, capture);
     // The coordinator is already "committed", so this second call takes the
     // projectCommittedRun short-circuit. A succeeded row is eligible so stale
     // cleanup errors can be projected separately; an unchanged terminal state
@@ -272,7 +283,14 @@ describeEmbeddedPostgres("native run finalizer / status decision committer — a
       workspaceFinalizeStatus: "succeeded",
       projectRunStatus: true,
     });
+    capture.flush();
     expect(agentTaskRunCalls(callsBefore)).toHaveLength(0);
+    const summary = events.find(event => event.event === "paperclip.db_response_capture.summary.v1")!;
+    expect(summary.completedQueries).toBeGreaterThan(0);
+    expect(summary.responseValueBytes).toBeLessThan(100_000);
+    const [after] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, fixture.runId));
+    expect(after).toEqual(before);
+    expect(JSON.stringify(events)).not.toContain("saved-native-input-sentinel");
   });
 
   it("repairs a stale succeeded-run error once without duplicate telemetry or destroying retained owner evidence", async () => {
