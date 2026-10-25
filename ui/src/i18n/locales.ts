@@ -25,7 +25,7 @@ if (!(DEFAULT_LOCALE in localeMessages)) {
 
 for (const [locale, messages] of Object.entries(localeMessages)) {
   try {
-    assertValidLocaleMessages(messages);
+    assertValidLocaleMessages(messages, localeMessages[DEFAULT_LOCALE], { allowMissing: locale !== DEFAULT_LOCALE });
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     throw new Error(`Invalid ${locale} locale messages: ${message}`);
