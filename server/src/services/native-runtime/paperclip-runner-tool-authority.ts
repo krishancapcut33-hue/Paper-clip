@@ -1235,7 +1235,11 @@ export class PaperclipRunnerToolAuthority {
       status: heartbeatRuns.status,
       invocationSource: heartbeatRuns.invocationSource,
       responsibleUserId: heartbeatRuns.responsibleUserId,
-      contextSnapshot: heartbeatRuns.contextSnapshot,
+      contextSnapshot: sql<Record<string, unknown> | null>`case when jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
+        then ${heartbeatRuns.contextSnapshot} - array['executionContinuation', 'paperclipTaskMarkdown',
+          'paperclipTaskMarkdownCompact', 'paperclipTaskMarkdownAssignment', 'paperclipTaskMarkdownAssignmentCompact',
+          'paperclipWorkspace', 'paperclipEnvironment', 'paperclipContinuationSummary', 'paperclipWakeComment']
+        else ${heartbeatRuns.contextSnapshot} end`,
       resultJson: heartbeatRuns.resultJson,
     } })
       .from(heartbeatRuns)
