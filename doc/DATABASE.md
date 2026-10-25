@@ -185,6 +185,13 @@ queries after any older request. Follow-up reads belong to the current mounted
 scope and stop when it changes or unmounts. The first open and reconnect still
 reconcile missed events.
 
+Bundled skill release checks read the current stored version ID and a SHA-256
+fingerprint of its file inventory. A per-database memo keeps at most 64 verified
+snapshots. It reuses a verification only when the current database fingerprint
+and current on-disk inventory hash both match. A changed or missing snapshot
+still follows full validation or seeding. Company access and local source
+reconciliation still run for each request; authorization is not cached.
+
 Connection-assignment checks select profile bindings for the current company or
 agent and read rules that can match the selected connection's catalog rows.
 All five selector kinds, null application matching, exclusions, and profile
