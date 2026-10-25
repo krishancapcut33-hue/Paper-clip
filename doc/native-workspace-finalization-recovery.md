@@ -486,3 +486,9 @@ binding, and chat source fields under the existing nonblocking share lock.
 It excludes saved execution input, runner profiles, and log excerpts. Actual
 retry admission still reads the complete run and its recovery evidence. These
 reads preserve stored run data, source revocation checks, and JSON value types.
+
+Legacy continuation recovery rejects native runs before it loads their saved
+execution input. The persisted disposition check reads only the task binding
+for a native run. It keeps the same task-binding and native-finalization skip
+reasons. Native input and history stay stored. Real legacy recovery still reads
+its complete context, profile, excerpts, and required failure evidence.
