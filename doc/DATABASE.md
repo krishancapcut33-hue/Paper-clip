@@ -49,6 +49,12 @@ and leaves all existing cases passive. Source identities are not grants.
 
 ### Task query performance
 
+Conversation recovery reads only the saved run fields used to settle a turn.
+Settlement locks and reads current conversation state without loading the task
+description or comment bodies. It still checks the durable reply or pending
+interaction, session generation, owning run, and newer user messages. Saved
+execution payloads, task text, and comments remain stored in full.
+
 The attention feed checks for newer runs with company-scoped existence probes.
 The probes match the failed run's agent and issue or task context. They preserve
 the existing millisecond comparison and empty-context rules. Each batch holds
