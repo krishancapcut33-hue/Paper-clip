@@ -108,16 +108,22 @@ under the same root:
 An entry's age comes from the epoch in its name, or from its modification time when
 that epoch is in the future. An entry is removed once it is older than
 `PAPERCLIP_NATIVE_RUNNER_EVIDENCE_RETENTION_DAYS` and its session is not executing,
-initializing, warm, or closing in this process. A quarantined entry whose
-control-plane state identifies its run must also pass the same checks as a failover
-backup copy, using this window: its issues closed before the window, no live run,
-no pending finalization, and no live environment lease. Quarantine entries created
-by native cleanup (`<session>.identity_indeterminate.cleanup.<UUID>`) are referenced
-from recovery history and kept. Symlinks are never followed or removed.
+initializing, warm, or closing in this process. Quarantine entries created by
+native cleanup (`<session>.identity_indeterminate.cleanup.<UUID>`) are referenced
+from recovery history and kept. Symlinks are never followed or removed. Once a
+quarantined entry is removed, recovery and failed-run retry no longer see it, so a
+later run of that session may start a fresh provider session instead of refusing.
+
+The evidence check runs on the sweep only when something is due: once at startup,
+then when the oldest retained entry, or an entry the executor has written since,
+reaches the window, and on the next sweep after a busy session, a failed removal,
+or a full batch. It only reads the filesystem and never queries the
+database. A dry run reports each candidate once until newly written evidence comes due.
 
 An entry is renamed to `.expired-<UUID>` in its folder before it is deleted, and a
 later sweep finishes an interrupted deletion. An empty `continuity-breaks` folder
-is removed. Evidence removals share the batch limit of 50 with backup copies, and
+is removed. Archives, quarantine entries, and leftovers count toward the batch
+limits of 200 entries and 50 removals shared with backup copies, and
 `PAPERCLIP_NATIVE_HARNESS_BACKUP_EXPIRATION_ENABLED` and `_DRY_RUN` apply to both.
 
 ## Native workspace sync folders

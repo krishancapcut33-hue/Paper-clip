@@ -394,6 +394,7 @@ import {
   verifyNativeHarnessBackup,
   shouldRestoreNativeHarnessBackupIntoSandbox,
 } from "./native-session-executor.js";
+import { onNativeRunnerEvidence } from "./native-runner-evidence-signal.js";
 
 beforeEach(() => {
   usageRecorder.capture.mockReset().mockImplementation(async receipt => receipt);
@@ -12321,6 +12322,8 @@ describe("runnerd provider runtime wiring", () => {
     await writeRunnerAuthority(legacyRoot, identity, "ready");
     state.createBackend.mockClear();
     state.createTransport.mockClear();
+    const evidence: number[] = [];
+    const stopEvidence = onNativeRunnerEvidence((writtenAt) => evidence.push(writtenAt));
 
     await expect(
       createRunnerdBackend({
@@ -12328,11 +12331,12 @@ describe("runnerd provider runtime wiring", () => {
         execution: currentExecution,
         runnerInstanceId: "runner-after-legacy-terminal-unsuspended",
       }),
-    ).rejects.toThrow("runner_state_identity_mismatch");
+    ).rejects.toThrow("runner_state_identity_mismatch").finally(stopEvidence);
     await expect(access(legacyRoot)).rejects.toThrow();
     const quarantineEntries = await readdir(join(stateBase, "quarantine"));
     expect(quarantineEntries).toHaveLength(1);
     expect(quarantineEntries[0]).toContain(".identity_indeterminate.");
+    expect(evidence).toEqual([Number(quarantineEntries[0]!.split(".")[2])]);
     expect(state.createBackend).not.toHaveBeenCalled();
     expect(state.createTransport).not.toHaveBeenCalled();
   });

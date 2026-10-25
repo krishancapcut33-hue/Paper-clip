@@ -66,8 +66,10 @@ type EvidenceContext = {
   dryRun: boolean;
   isSessionBusy: (scopeDigest: string) => boolean;
   now: number;
+  retentionMs: number;
   retainedBefore: number;
-  hasBudget: () => boolean;
+  canInspect: () => boolean;
+  dueAt: (at: number) => void;
 };
 
 type SessionIdentity = {
@@ -248,6 +250,9 @@ export function nativeHarnessBackupExpirationService(
   let resume: { scope: string; archive: string } | null = null;
   let quarantineCursor: string | null = null;
   let phase: "sessions" | "quarantine" = "sessions";
+  let evidencePass = false;
+  let evidenceDueAt = 0;
+  let passDueAt = Number.POSITIVE_INFINITY;
 
   async function settleLeftovers(backupRoot: string) {
     const current = path.join(backupRoot, "current");
@@ -335,11 +340,15 @@ export function nativeHarnessBackupExpirationService(
     result.reclaimedBytes += bytes;
   }
 
-  async function removeExpiredLeftovers(parent: string) {
+  async function removeExpiredLeftovers(parent: string, context: EvidenceContext, result: NativeHarnessBackupExpirationResult) {
     for (const name of await fs.readdir(parent).catch(() => [] as string[])) {
-      if (name.startsWith(EXPIRED_PREFIX) && UUID_PATTERN.test(name.slice(EXPIRED_PREFIX.length))) {
-        await removeBackupTree(path.join(parent, name));
+      if (!name.startsWith(EXPIRED_PREFIX) || !UUID_PATTERN.test(name.slice(EXPIRED_PREFIX.length))) continue;
+      if (!context.canInspect()) {
+        context.dueAt(context.now);
+        return;
       }
+      result.checked++;
+      await removeBackupTree(path.join(parent, name));
     }
   }
 
@@ -350,7 +359,6 @@ export function nativeHarnessBackupExpirationService(
     stampedAt: number,
     context: EvidenceContext,
     result: NativeHarnessBackupExpirationResult,
-    retentionBlocker?: (target: string) => Promise<string | null>,
   ) {
     const skip = (reason: string) => {
       result.skipped[reason] = (result.skipped[reason] ?? 0) + 1;
@@ -361,15 +369,22 @@ export function nativeHarnessBackupExpirationService(
       return skip("unsafe_path");
     }
     const createdAt = stampedAt > 0 && stampedAt <= context.now ? stampedAt : stat.mtimeMs;
-    if (createdAt >= context.retainedBefore) return skip("recent_evidence");
-    if (context.isSessionBusy(scopeDigest)) return skip("session_active");
-    const blocker = await retentionBlocker?.(target);
-    if (blocker) return skip(blocker);
+    if (createdAt >= context.retainedBefore) {
+      context.dueAt(createdAt + context.retentionMs);
+      return skip("recent_evidence");
+    }
+    if (context.isSessionBusy(scopeDigest)) {
+      context.dueAt(context.now);
+      return skip("session_active");
+    }
     const bytes = await allocatedBytes(target);
     result.evidenceCandidates++;
     result.evidenceCandidateBytes += bytes;
     if (context.dryRun) return;
-    if (context.isSessionBusy(scopeDigest)) return skip("session_active");
+    if (context.isSessionBusy(scopeDigest)) {
+      context.dueAt(context.now);
+      return skip("session_active");
+    }
     const trash = path.join(parent, `${EXPIRED_PREFIX}${randomUUID()}`);
     await fs.rename(target, trash);
     await removeBackupTree(trash);
@@ -391,18 +406,20 @@ export function nativeHarnessBackupExpirationService(
       result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
       return null;
     }
-    if (!context.dryRun) await removeExpiredLeftovers(parent);
+    if (!context.dryRun) await removeExpiredLeftovers(parent, context, result);
     let last = resumeAfter ?? "";
     const names = (await fs.readdir(parent)).filter((name) => name > last).sort();
     for (const name of names) {
       const match = CONTINUITY_ARCHIVE_PATTERN.exec(name);
       if (!match) continue;
-      if (!context.hasBudget()) return last;
+      if (!context.canInspect()) return last;
+      result.checked++;
       last = name;
       try {
         await retireEvidence(parent, name, scopeDigest, Number(match[1]), context, result);
       } catch (err) {
         result.failed++;
+        context.dueAt(context.now);
         logger.warn({ err, scope: scopeDigest }, "native runner evidence retention skipped a continuity archive");
       }
     }
@@ -410,20 +427,10 @@ export function nativeHarnessBackupExpirationService(
     return null;
   }
 
-  async function quarantineRetentionBlocker(target: string, scopeDigest: string, closedBefore: Date) {
-    const identity = await readSessionIdentity(target);
-    if (!identity) return null;
-    const blocker = await db.transaction((tx) =>
-      sessionRetentionBlocker(tx, { scopeDigest, identity, closedBefore }),
-    );
-    return "reason" in blocker ? blocker.reason : null;
-  }
-
   async function retireQuarantine(
     base: string,
     context: EvidenceContext,
     result: NativeHarnessBackupExpirationResult,
-    maxEntries: number,
   ): Promise<boolean> {
     const parent = path.join(base, "quarantine");
     const stat = await fs.lstat(parent).catch(() => null);
@@ -432,15 +439,14 @@ export function nativeHarnessBackupExpirationService(
       result.skipped.unsafe_path = (result.skipped.unsafe_path ?? 0) + 1;
       return true;
     }
-    if (!context.dryRun) await removeExpiredLeftovers(parent);
+    if (!context.dryRun && quarantineCursor === null) await removeExpiredLeftovers(parent, context, result);
     const names = (await fs.readdir(parent)).sort();
     const pending = quarantineCursor ? names.filter((name) => name > quarantineCursor!) : names;
-    const closedBefore = new Date(context.retainedBefore);
     for (const name of pending) {
       const match = QUARANTINE_PATTERN.exec(name);
       const cleanupArchive = QUARANTINE_CLEANUP_PATTERN.test(name);
       if (!match && !cleanupArchive) continue;
-      if (!context.hasBudget() || result.checked >= maxEntries) return false;
+      if (!context.canInspect()) return false;
       result.checked++;
       quarantineCursor = name;
       if (!match) {
@@ -448,11 +454,10 @@ export function nativeHarnessBackupExpirationService(
         continue;
       }
       try {
-        await retireEvidence(parent, name, match[1]!, Number(match[2]), context, result, (target) =>
-          quarantineRetentionBlocker(target, match[1]!, closedBefore),
-        );
+        await retireEvidence(parent, name, match[1]!, Number(match[2]), context, result);
       } catch (err) {
         result.failed++;
+        context.dueAt(context.now);
         logger.warn({ err, scope: match[1] }, "native runner evidence retention skipped a quarantine entry");
       }
     }
@@ -460,15 +465,23 @@ export function nativeHarnessBackupExpirationService(
     return true;
   }
 
+  function noteEvidence(writtenAt: number) {
+    evidenceDueAt = Math.min(evidenceDueAt, writtenAt + evidenceRetentionMs());
+  }
+
+  function evidenceRetentionMs(options: NativeHarnessBackupExpirationOptions = {}) {
+    return Math.max(
+      1,
+      options.evidenceRetentionDays ?? defaults.evidenceRetentionDays ?? NATIVE_RUNNER_EVIDENCE_RETENTION_DEFAULT_DAYS,
+    ) * DAY_MS;
+  }
+
   async function tick(options: NativeHarnessBackupExpirationOptions = {}) {
     const closedForDays = Math.max(
       1,
       options.closedForDays ?? defaults.closedForDays ?? NATIVE_HARNESS_BACKUP_EXPIRATION_DEFAULT_DAYS,
     );
-    const evidenceRetentionDays = Math.max(
-      1,
-      options.evidenceRetentionDays ?? defaults.evidenceRetentionDays ?? NATIVE_RUNNER_EVIDENCE_RETENTION_DEFAULT_DAYS,
-    );
+    const retentionMs = evidenceRetentionMs(options);
     const dryRun = options.dryRun ?? defaults.dryRun ?? false;
     const maxEntries = Math.max(1, options.maxEntries ?? defaults.maxEntries ?? 200);
     const maxRemovals = Math.max(1, options.maxRemovals ?? defaults.maxRemovals ?? 50);
@@ -479,12 +492,23 @@ export function nativeHarnessBackupExpirationService(
     const closedBefore = new Date(now - closedForDays * DAY_MS);
     const result = emptyResult();
     const hasBudget = () => shouldContinue() && result.candidates + result.evidenceCandidates < maxRemovals;
+    if (phase === "sessions" && cursor === null && resume === null) {
+      evidencePass = evidenceDueAt <= now;
+      if (evidencePass) {
+        evidenceDueAt = Number.POSITIVE_INFINITY;
+        passDueAt = Number.POSITIVE_INFINITY;
+      }
+    }
     const context: EvidenceContext = {
       dryRun,
       isSessionBusy,
       now,
-      retainedBefore: now - evidenceRetentionDays * DAY_MS,
-      hasBudget,
+      retentionMs,
+      retainedBefore: now - retentionMs,
+      canInspect: () => hasBudget() && result.checked < maxEntries,
+      dueAt: (at) => {
+        passDueAt = Math.min(passDueAt, at);
+      },
     };
 
     if (phase === "sessions") {
@@ -515,11 +539,13 @@ export function nativeHarnessBackupExpirationService(
             logger.warn({ err, scope: name }, "native harness backup expiration skipped a session");
           }
         }
+        if (!evidencePass) continue;
         let stoppedAt: string | null = null;
         try {
           stoppedAt = await retireContinuityBreaks(root, name, resumeAfter, context, result);
         } catch (err) {
           result.failed++;
+          context.dueAt(now);
           logger.warn({ err, scope: name }, "native runner evidence retention skipped a session");
         }
         if (stoppedAt !== null) {
@@ -531,15 +557,25 @@ export function nativeHarnessBackupExpirationService(
       }
       if (result.truncated) return result;
       cursor = null;
+      if (!evidencePass) return result;
       phase = "quarantine";
     }
-    if (!(await retireQuarantine(base, context, result, maxEntries))) {
-      result.truncated = true;
-      return result;
+    try {
+      if (!(await retireQuarantine(base, context, result))) {
+        result.truncated = true;
+        return result;
+      }
+    } catch (err) {
+      result.failed++;
+      context.dueAt(now);
+      quarantineCursor = null;
+      logger.warn({ err }, "native runner evidence retention skipped quarantine");
     }
     phase = "sessions";
+    evidencePass = false;
+    evidenceDueAt = Math.min(evidenceDueAt, passDueAt);
     return result;
   }
 
-  return { tick };
+  return { tick, noteEvidence };
 }
