@@ -69,5 +69,7 @@ export {
   ensureOpenCodeModelConfiguredAndAvailable,
   requireOpenCodeModelId,
   resetOpenCodeModelsCacheForTests,
+  listGatewayProviders,
+  type OpenCodeGatewayProvider,
 } from "./models.js";
 export { parseOpenCodeJsonl, isOpenCodeUnknownSessionError } from "./parse.js";

@@ -249,6 +249,8 @@ export const queryKeys = {
       ["agents", companyId, "auth-signal", adapterType, environmentId ?? null] as const,
     activeLoginSession: (companyId: string, adapterType: string) =>
       ["agents", companyId, "active-login-session", adapterType] as const,
+    opencodeGatewayProviders: (companyId: string) =>
+      ["agents", companyId, "opencode-gateway-providers"] as const,
   },
   builtInAgents: {
     list: (companyId: string) => ["built-in-agents", companyId] as const,

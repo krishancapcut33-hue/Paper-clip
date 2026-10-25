@@ -232,7 +232,7 @@ import { DEFAULT_CURSOR_LOCAL_MODEL } from "@paperclipai/adapter-cursor-local";
 import { DEFAULT_GEMINI_LOCAL_MODEL } from "@paperclipai/adapter-gemini-local";
 import { DEFAULT_KIMI_LOCAL_MODEL } from "@paperclipai/adapter-kimi-local";
 import { DEFAULT_OPENCODE_LOCAL_MODEL } from "@paperclipai/adapter-opencode-local";
-import { requireOpenCodeModelId } from "@paperclipai/adapter-opencode-local/server";
+import { requireOpenCodeModelId, listGatewayProviders } from "@paperclipai/adapter-opencode-local/server";
 import {
   loadDefaultAgentInstructionsBundle,
   resolveDefaultAgentInstructionsBundleRole,
@@ -3233,6 +3233,12 @@ export function agentRoutes(
     } catch (err) {
       next(err);
     }
+  });
+
+  router.get("/companies/:companyId/adapters/opencode_local/gateway-providers", (req, res) => {
+    const companyId = req.params.companyId as string;
+    assertCompanyAccess(req, companyId);
+    res.json(listGatewayProviders());
   });
 
   router.get("/companies/:companyId/adapters/:type/models", async (req, res) => {

@@ -51,6 +51,11 @@ export interface AdapterModel {
   label: string;
 }
 
+export interface OpenCodeGatewayProvider {
+  id: string;
+  baseUrl: string | null;
+}
+
 export interface DetectedAdapterModel {
   model: string;
   provider: string;
@@ -240,6 +245,10 @@ export const agentsApi = {
   detectModel: (companyId: string, type: string) =>
     api.get<DetectedAdapterModel | null>(
       `/companies/${encodeURIComponent(companyId)}/adapters/${encodeURIComponent(type)}/detect-model`,
+    ),
+  opencodeGatewayProviders: (companyId: string) =>
+    api.get<OpenCodeGatewayProvider[]>(
+      `/companies/${encodeURIComponent(companyId)}/adapters/opencode_local/gateway-providers`,
     ),
   testEnvironment: (
     companyId: string,

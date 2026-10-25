@@ -38,6 +38,11 @@ export function FinanceBillerCard({ row }: FinanceBillerCardProps) {
             <div className="mt-1 font-medium tabular-nums">{formatCents(row.estimatedDebitCents)}</div>
           </div>
         </div>
+        {row.biller === "openrouter" && (
+          <p className="text-xs text-muted-foreground">
+            Inference routed through local gateway providers (e.g. vllm-fleet) also bills under OpenRouter — the connection that handles auth. Use Costs → Providers to see spend by inference provider.
+          </p>
+        )}
       </CardContent>
     </Card>
   );

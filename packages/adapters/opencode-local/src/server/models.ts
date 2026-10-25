@@ -394,3 +394,36 @@ export async function listOpenCodeModels(): Promise<AdapterModel[]> {
 export function resetOpenCodeModelsCacheForTests() {
   discoveryCache.clear();
 }
+
+export interface OpenCodeGatewayProvider {
+  id: string;
+  baseUrl: string | null;
+}
+
+/**
+ * Returns declared gateway providers from PAPERCLIP_OPENCODE_PROVIDERS with
+ * only their id and baseUrl — no API keys or other secrets. Env placeholders
+ * ({env:NAME}) are intentionally left unresolved so callers see the raw
+ * declaration rather than a resolved secret value.
+ */
+export function listGatewayProviders(): OpenCodeGatewayProvider[] {
+  const providers = parseProviderConfig(
+    process.env.PAPERCLIP_OPENCODE_PROVIDERS,
+    () => undefined,
+    [],
+  );
+  if (!providers) return [];
+  return Object.entries(providers).map(([id, entry]) => {
+    const opts =
+      entry !== null && typeof entry === "object" && !Array.isArray(entry)
+        ? (entry as Record<string, unknown>).options
+        : null;
+    const baseUrl =
+      opts !== null && typeof opts === "object" && !Array.isArray(opts)
+        ? typeof (opts as Record<string, unknown>).baseURL === "string"
+          ? ((opts as Record<string, unknown>).baseURL as string)
+          : null
+        : null;
+    return { id, baseUrl };
+  });
+}
