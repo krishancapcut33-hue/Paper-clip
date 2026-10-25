@@ -1,5 +1,11 @@
 # Native workspace finalization ownership and recovery
 
+Periodic heartbeat recovery runs one pass at a time in each server process.
+A tick that arrives during a slow pass reports its age and starts no duplicate.
+A later tick can start a fresh pass after the current work settles. Shutdown
+and idle sleep still track the actual recovery promise through cleanup. Direct
+run operations and scheduled work delivery keep their existing paths.
+
 A native provider can fail before it submits a result while its workspace still
 contains unpublished edits. A prepared workspace reference is not an export
 receipt. Terminal provider failure pins the exact bound sandbox and records a

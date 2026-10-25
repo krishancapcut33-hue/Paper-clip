@@ -83,4 +83,39 @@ describe("createSingleFlight", () => {
     expect(second.started).toBe(true);
     await (second as { settled: Promise<void> }).settled;
   });
+
+  it("keeps the owned pass active after a caller stops waiting", async () => {
+    const gate = createSingleFlight(), work = deferred(), observer = deferred();
+    const first = gate.run(() => work.promise);
+    if (!first.started) throw new Error("initial pass was not admitted");
+    const stopped = Promise.race([first.settled, observer.promise]);
+    observer.reject(new Error("observer stopped"));
+    await expect(stopped).rejects.toThrow("observer stopped");
+    const duplicate = vi.fn(async () => undefined);
+    expect(gate.run(duplicate).started).toBe(false);
+    expect(duplicate).not.toHaveBeenCalled();
+    expect(gate.busy).toBe(true);
+    work.resolve();
+    await first.settled;
+    expect(gate.busy).toBe(false);
+  });
+
+  it("keeps cleanup joined after the main operation completes", async () => {
+    const gate = createSingleFlight(), operation = deferred(), cleanup = deferred();
+    const first = gate.run(() => operation.promise.finally(() => cleanup.promise));
+    if (!first.started) throw new Error("initial pass was not admitted");
+    operation.resolve();
+    await Promise.resolve();
+    expect(gate.busy).toBe(true);
+    const duplicate = vi.fn(async () => undefined);
+    expect(gate.run(duplicate).started).toBe(false);
+    expect(duplicate).not.toHaveBeenCalled();
+    cleanup.resolve();
+    await first.settled;
+    expect(gate.busy).toBe(false);
+    const next = gate.run(duplicate);
+    expect(next.started).toBe(true);
+    if (next.started) await next.settled;
+    expect(duplicate).toHaveBeenCalledTimes(1);
+  });
 });
