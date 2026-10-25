@@ -826,6 +826,19 @@ pnpm secrets:migrate-inline-env --apply
 
 Hosted AWS provider notes live in [SECRETS-AWS-PROVIDER.md](./SECRETS-AWS-PROVIDER.md).
 
+Sandbox runtime configuration resolves a provider's secret-reference fields
+through its schema-only lookup. Each lookup reads the selected plugin ID
+and a SHA-256 hash of its current schema in one database statement. A matching
+retained schema is omitted from the query result. Selection order, schema
+changes, and deletion remain visible on the next lookup, without a time-based
+cache. A database error still fails the lookup.
+
+The retained schemas are private to one `Db` object, with at most 32 entries of
+64 KiB each in serialized form. Larger schemas still work and are read in full.
+Callers receive independent schema objects. This reuse stores neither resolved
+secrets nor authorization decisions. Default driver lookups still read complete
+current plugin records and enforce their existing readiness and worker checks.
+
 ### Persistent agent conversations
 
 Migration `0274_agent_chat.sql` adds conversation identity/state and session generation/boundary columns to `issues`, plus idempotent client request IDs and processed session-boundary generations to `issue_comments`. The company/agent/user unique index resolves concurrent first writes to one issue. A check constraint preserves the assigned-agent identity and prevents terminal conversation status. Comment request IDs are unique per issue and user. There is no separate chat/message store. Provider sessions continue to use `agent_task_sessions`; `/new` removes only the matching conversation session, and session writers fence stale generations against the issue row.
