@@ -1320,9 +1320,10 @@ function StandardConnectionSetupFlow({
     queryFn: () => toolsApi.listConnectionGrants(identityConnection!.id),
     enabled: !!selectedCompanyId && retainedGitHubApp,
   });
-  const retainedAppGrant = retainedAppGrants.data?.grants.find(
+  const retainedAppCandidates = retainedAppGrants.data?.grants.filter(grant => grant.kind === reconnectGrantKind) ?? [];
+  const retainedAppGrant = retainedAppCandidates.find(
     (grant) => grant.kind === reconnectGrantKind && grant.status === "active",
-  );
+  ) ?? (retainedAppCandidates.length === 1 ? retainedAppCandidates[0] : undefined);
   const retainedInstalls = useQuery({
     queryKey: ["github-app-reconnect-installs", identityConnection?.id],
     queryFn: () => toolsApi.getConnectionInstalls(identityConnection!.id),
@@ -2723,7 +2724,7 @@ function StandardConnectionSetupFlow({
             setConfigValues(defaultMethodConfig(nextMethod));
           }}
           savedCredentialPaths={identityConnection && connectionMethodKey === connectionInstructionsConfig(identityConnection).connectionMethodKey
-            ? retainedAppGrant?.credentialSecretRefs.map((ref) => ref.configPath)
+            ? retainedAppGrant?.status === "active" ? retainedAppGrant.credentialSecretRefs.map((ref) => ref.configPath) : []
             : undefined}
           fixedGitHubApp={retainedGitHubApp}
           configValues={configValues}

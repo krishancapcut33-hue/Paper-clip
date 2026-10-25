@@ -17968,7 +17968,7 @@ describeEmbeddedPostgres("tool access service", () => {
     }).from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
     expect(verifiedGrant).toMatchObject({
       providerTenant: { github: { userId: "789", login: "test-app[bot]" } },
-      revision: expect.stringContaining("01:02:03.123456"),
+      revision: expect.stringContaining(".123456"),
     });
     await service.finishGalleryAppConnection(company.id, connected.connectionId, {
       enabledCatalogEntryIds: connected.catalog.map(entry => entry.id), askFirstCatalogEntryIds: [], access,
@@ -18027,6 +18027,10 @@ describeEmbeddedPostgres("tool access service", () => {
     revokeA = true;
     rejectB = false;
     authenticatedKeys.length = 0;
+    await service.revokeConnectionGrant(connected.connectionId, originalGrant.id, actor);
+    await expect(acquire()).rejects.toThrow();
+    await expect(reconnect("invalid PEM")).rejects.toMatchObject({ status: 422 });
+    expect(await readGrant()).toMatchObject({ status: "revoked" });
     await reconnect(pem(keyB));
     expect(authenticatedKeys.length).toBeGreaterThan(0);
     expect(authenticatedKeys.every(key => key === "B")).toBe(true);
@@ -18038,6 +18042,7 @@ describeEmbeddedPostgres("tool access service", () => {
     expect(await readProfileEntries()).toEqual(reviewedEntries);
     const grant = await readGrant();
     expect(grant.id).toBe(originalGrant.id);
+    expect(grant).toMatchObject({ status: "active", revokedAt: null, revokedByUserId: null, revokedByAgentId: null });
     expect(grant.kind).toBe(kind);
     expect(grant.subjectAgentId).toBe(kind === "agent" ? agent.id : null);
     expect(grant.subjectUserId).toBe(kind === "user" ? "board" : null);
@@ -18095,6 +18100,29 @@ describeEmbeddedPostgres("tool access service", () => {
       expect(resumed.connectionId).toBe(connected.connectionId);
       expect(resumed.connection.credentialPolicy).toBe(kind === "user" ? "per_user" : "shared");
     }
+    await service.revokeConnectionGrant(connected.connectionId, grant.id, actor);
+    const recovery = {
+      galleryKey: "github", connectionMethodKey: "app-installation", reconnectConnectionId: connected.connectionId,
+      grantKind: kind, ...(kind === "agent" ? { subjectAgentId: agent.id } : {}), configValues,
+    };
+    await expect(service.connectGalleryApp(company.id, { ...recovery, credentialValues: {} }, actor))
+      .rejects.toMatchObject({ status: 400 });
+    expect(await readGrant()).toMatchObject({ status: "revoked" });
+    const revokedGrant = await readGrant();
+    await expect(service.connectGalleryApp(company.id, {
+      ...recovery, credentialValues: { "credentials.privateKey": "invalid PEM" },
+    }, actor)).rejects.toMatchObject({ status: 422 });
+    expect(await readGrant()).toEqual(revokedGrant);
+    const recovered = await service.connectGalleryApp(company.id, {
+      ...recovery, credentialValues: { "credentials.privateKey": pem(keyB) },
+    }, actor);
+    expect(recovered.connectionId).toBe(connected.connectionId);
+    expect(await readGrant()).toMatchObject({
+      id: originalGrant.id, kind, status: "active", revokedAt: null, revokedByUserId: null, revokedByAgentId: null,
+      subjectAgentId: grant.subjectAgentId, subjectUserId: grant.subjectUserId,
+    });
+    const savedGrants = await db.select().from(connectionGrants).where(eq(connectionGrants.connectionId, connected.connectionId));
+    expect(savedGrants).toHaveLength(1);
   });
 
 

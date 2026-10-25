@@ -548,7 +548,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }));
   });
 
-  it.each([["page", "agent", "read"], ["dialog", "agent", "read"], ["page", "user", "read"], ["dialog", "user", "read"], ["page", "organization", "read"], ["dialog", "organization", "read"], ["page", "user", "custom"], ["dialog", "organization", "custom"]] as const)("restores and renames a GitHub App on %s reconnect with %s ownership and %s permissions without requiring a new key", async (host, kind, permissionProfile) => {
+  it.each([["page", "agent", "read", "active"], ["dialog", "agent", "read", "active"], ["page", "user", "read", "active"], ["dialog", "user", "read", "active"], ["page", "organization", "read", "active"], ["dialog", "organization", "read", "active"], ["page", "user", "custom", "active"], ["dialog", "organization", "custom", "active"], ["page", "agent", "read", "revoked"], ["dialog", "user", "read", "revoked"], ["page", "organization", "custom", "revoked"]] as const)("restores and renames a GitHub App on %s reconnect with %s ownership and %s permissions (%s)", async (host, kind, permissionProfile, status = "active") => {
     const connectionId = "22222222-2222-4222-8222-222222222222";
     mockSearch.value = `source=github&reconnect=${connectionId}`;
     listGalleryMock.mockResolvedValue({ apps: [GITHUB_MANAGED] });
@@ -559,8 +559,8 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
       config: { sourceTemplateKey: "github", connectionMethodKey: "app-installation", methodConfig: configValues }, transportConfig: {},
     }] });
     listConnectionGrantsMock.mockResolvedValue({ grants: [
-      { kind: "agent", status: "revoked", subjectAgentId: "former-agent", credentialSecretRefs: [] },
-      { kind, status: "active", subjectAgentId: kind === "agent" ? "agent-1" : null, subjectUserId: kind === "user" ? "board" : null, credentialSecretRefs: [{ configPath: "credentials.privateKey" }] },
+      ...(status === "active" ? [{ kind: "agent", status: "revoked", subjectAgentId: "former-agent", credentialSecretRefs: [] }] : []),
+      { kind, status, subjectAgentId: kind === "agent" ? "agent-1" : null, subjectUserId: kind === "user" ? "board" : null, credentialSecretRefs: [{ configPath: "credentials.privateKey" }] },
     ] });
     getConnectionInstallsMock.mockResolvedValue({ installs: kind === "organization"
       ? [{ targetType: "company", targetId: "company-1" }]
@@ -576,7 +576,11 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     }
     expect(container.querySelector<HTMLInputElement>('#connection-name')?.value).toBe("Old bot");
     expect(container.querySelector<HTMLInputElement>('input[placeholder="123456"]')?.matches(":disabled")).toBe(true);
-    expect(buttonByText("Connect")?.disabled).toBe(false);
+    expect(buttonByText("Connect")?.disabled).toBe(status !== "active");
+    if (status !== "active") {
+      await act(async () => setTextareaValue(container.querySelector<HTMLTextAreaElement>('textarea[data-private="true"]')!, "replacement-key"));
+      expect(buttonByText("Connect")?.disabled).toBe(false);
+    }
     if (permissionProfile === "custom") {
       const custom = container.querySelector<HTMLTextAreaElement>('[aria-label="Custom permissions (JSON)"]')!;
       expect(custom.value).toBe(configValues.customPermissions);
@@ -586,7 +590,7 @@ describe("AppsConnect — Connect with a link (M4 frame)", () => {
     await act(async () => buttonByText("Connect")!.click());
     await flushReact();
     expect(connectAppMock).toHaveBeenCalledWith("company-1", expect.objectContaining({
-      name: "Review bot", reconnectConnectionId: connectionId, ...(kind === "agent" ? { subjectAgentId: "agent-1" } : {}), configValues, credentialValues: {},
+      name: "Review bot", reconnectConnectionId: connectionId, ...(kind === "agent" ? { subjectAgentId: "agent-1" } : {}), configValues, credentialValues: status === "active" ? {} : { "credentials.privateKey": "replacement-key" },
     }));
     const submitted = connectAppMock.mock.calls[0]![1];
     expect(submitted.grantKind ?? "organization").toBe(kind);

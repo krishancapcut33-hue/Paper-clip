@@ -17,15 +17,17 @@ function matchesOwnership(connection: Connection, grant: Grant) {
       : grant.kind === "organization";
 }
 
-export async function getGitHubAppGrant(db: Db, connection: Connection): Promise<Grant & { updatedAtVersion: string }> {
-  const grants = await db.select({
+export async function getGitHubAppGrant(db: Db, connection: Connection, options: { forReconnect?: boolean } = {}): Promise<Grant & { updatedAtVersion: string }> {
+  const snapshots = await db.select({
     grant: connectionGrants,
     updatedAtVersion: sql<string>`${connectionGrants.updatedAt}::text`,
   }).from(connectionGrants).where(and(
     eq(connectionGrants.companyId, connection.companyId),
     eq(connectionGrants.connectionId, connection.id),
-    eq(connectionGrants.status, "active"),
+    options.forReconnect ? undefined : eq(connectionGrants.status, "active"),
   ));
+  const active = snapshots.filter(snapshot => snapshot.grant.status === "active");
+  const grants = active.length > 0 ? active : snapshots;
   const snapshot = grants[0];
   const grant = snapshot?.grant;
   if (grants.length !== 1 || !grant || !matchesOwnership(connection, grant)) {
