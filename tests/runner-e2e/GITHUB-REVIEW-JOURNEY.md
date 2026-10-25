@@ -130,7 +130,10 @@ cleanup. Missing usage remains unknown. Authentication screens are excluded.
 `github-review-report.ts` uses the existing evidence sanitizer and manifest,
 stages only declared screenshots, and verifies screenshot hashes and attempt
 path ownership. The standard report inputs are `evidence/result.json`,
-`evidence/evidence-manifest.json`, and `evidence/snapshots/`. Raw private operator
+`evidence/evidence-manifest.json`, and `evidence/snapshots/`. A passing result
+also stages the hash-verified persisted checkpoint as `evidence/final-state.png`
+for the standard report's final-state requirement. A missing persisted screenshot
+rejects that passing report. Raw private operator
 receipts are outside the manifest. Existing report tooling imports these files;
 no second runner or report service is required. A presentation repair must use a
 new directory, preserve the original result/hash and failure, and dispatch no
