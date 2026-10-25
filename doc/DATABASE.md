@@ -134,6 +134,11 @@ Historical root-reader authorization has been retired; no retained-reader batch 
 loaded at admission or publication. Workspace-record disclosure still uses task
 privacy checks, independently of filesystem access.
 
+Saved-message execution-wait scans read current run state, process ownership,
+startup and cancellation receipts, task binding, and the recorded adapter kind.
+Saved profiles, output excerpts, and unrelated launch context stay in storage.
+Continuation admission and its locked mutation reads retain their existing gates.
+
 The initial agent JWT run lookup reads only the cancellation state and
 conversation flag from saved run JSON. It does not transfer the full context or
 result. Run status, responsible-user identity, company and agent boundaries,
