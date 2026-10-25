@@ -253,6 +253,84 @@ describe("LiveUpdatesProvider connection recovery", () => {
     expect(activeRead).toHaveBeenCalledTimes(2);
   });
 
+  it.each(["initial", "background", "connection setup"])("refetches after an older empty %s read settles when run events arrive during it", async (phase) => {
+    vi.stubGlobal("WebSocket", Socket);
+    vi.spyOn(document, "hasFocus").mockReturnValue(false);
+    const queryKey = queryKeys.issues.liveRuns("DEMO-1");
+    const runRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]);
+    let resolveOlder!: (value: unknown) => void;
+    const older = new Promise((resolve) => { resolveOlder = resolve; });
+    if (phase !== "background") runRead.mockImplementationOnce(() => older);
+    function TaskRuns() {
+      const connected = useTaskRunLiveUpdates({ companyId: "company-1", issueId: "issue-1", issueQueryRef: "DEMO-1", assigneeAgentId: "agent-1" });
+      const { data } = useQuery({ queryKey, queryFn: runRead,
+        refetchInterval: (query) => liveRunRefetchInterval(connected, query.state, 1000) });
+      return <span>{JSON.stringify(data)}</span>;
+    }
+    await act(async () => root.render(<QueryClientProvider client={client}><LiveUpdatesProvider><TaskRuns /></LiveUpdatesProvider></QueryClientProvider>));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    const socket = Socket.instances[0];
+    await act(async () => socket.onopen?.());
+    if (phase === "background") {
+      runRead.mockClear();
+      runRead.mockImplementationOnce(() => older);
+      await act(async () => { void client.invalidateQueries({ queryKey }); });
+    }
+    runRead.mockResolvedValue([{ id: "new-run", status: "running" }]);
+    expect(runRead).toHaveBeenCalledTimes(1);
+    await act(async () => {
+      for (let id = 1; phase !== "connection setup" && id <= 3; id += 1) socket.onmessage?.({ data: JSON.stringify({ id,
+        companyId: "company-1", type: "heartbeat.run.queued", createdAt: "2020-01-01T00:00:00Z",
+        payload: { issueId: "issue-1", agentId: "agent-1", runId: "new-run" } }) });
+    });
+    expect(runRead).toHaveBeenCalledTimes(1);
+    await act(async () => resolveOlder([]));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(runRead).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(queryKey)).toEqual([{ id: "new-run", status: "running" }]);
+    expect(container.textContent).toContain("new-run");
+  });
+
+  it.each(["unmount", "disconnect", "company", "session", "task"])("discards the old follow-up refresh after %s during an older read", async (change) => {
+    vi.stubGlobal("WebSocket", Socket);
+    let resolveOlder!: (value: unknown) => void;
+    const older = new Promise((resolve) => { resolveOlder = resolve; });
+    const runRead = vi.fn<() => Promise<unknown>>().mockResolvedValue([]).mockImplementationOnce(() => older);
+    function TaskRuns({ task = "1" }: { task?: string }) {
+      const queryRef = `DEMO-${task}`;
+      const connected = useTaskRunLiveUpdates({ companyId: "company-1", issueId: `issue-${task}`, issueQueryRef: queryRef, assigneeAgentId: "agent-1" });
+      useQuery({ queryKey: queryKeys.issues.liveRuns(queryRef), queryFn: runRead,
+        refetchInterval: (query) => liveRunRefetchInterval(connected, query.state, 1000) });
+      return null;
+    }
+    const render = async (task = "1") => {
+      await act(async () => root.render(<QueryClientProvider client={client}><LiveUpdatesProvider><TaskRuns task={task} /></LiveUpdatesProvider></QueryClientProvider>));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    };
+    await render();
+    const socket = Socket.instances[0];
+    await act(async () => socket.onopen?.());
+    await act(async () => socket.onmessage?.({ data: JSON.stringify({ id: 1, companyId: "company-1",
+      type: "heartbeat.run.queued", createdAt: "2020-01-01T00:00:00Z",
+      payload: { issueId: "issue-1", agentId: "agent-1", runId: "new-run" } }) }));
+    if (change === "unmount") await act(async () => root.unmount());
+    if (change === "disconnect") await act(async () => socket.onerror?.());
+    if (change === "company") { companySelection.id = "company-2"; await render(); }
+    if (change === "task") await render("2");
+    if (change === "session") {
+      const nextSession = { user: { id: "viewer" }, session: { id: "replacement-session", userId: "viewer" } };
+      sessionRead.mockResolvedValue(nextSession);
+      await act(async () => client.setQueryData(queryKeys.auth.session, nextSession));
+      await act(async () => vi.advanceTimersByTimeAsync(1));
+    }
+    const readsAfterChange = runRead.mock.calls.length;
+    const invalidate = vi.spyOn(client, "invalidateQueries");
+    await act(async () => resolveOlder([]));
+    await act(async () => vi.advanceTimersByTimeAsync(1));
+    expect(runRead).toHaveBeenCalledTimes(readsAfterChange);
+    expect(invalidate).not.toHaveBeenCalled();
+  });
+
   it("keeps polling unassigned tasks even with a healthy shared connection", async () => {
     vi.stubGlobal("WebSocket", Socket);
     function UnassignedTask() {

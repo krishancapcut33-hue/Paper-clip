@@ -142,6 +142,25 @@ export function useTaskRunLiveUpdates(scope: {
 }): boolean {
   const connected = useHasCompanyLiveConnection(scope.companyId);
   const queryClient = useQueryClient();
+  const refreshOwner = useRef<{ active: boolean } | null>(null);
+  const refreshRuns = useCallback(() => {
+    const owner = refreshOwner.current;
+    if (!owner?.active) return;
+    for (const queryKey of [queryKeys.issues.liveRuns(scope.issueQueryRef), queryKeys.issues.activeRun(scope.issueQueryRef)]) {
+      const wasFetching = queryClient.getQueryState(queryKey)?.fetchStatus === "fetching";
+      void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false }).then(() => {
+        if (wasFetching && owner.active) {
+          return queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+        }
+      });
+    }
+  }, [queryClient, scope.issueQueryRef]);
+  useEffect(() => {
+    const owner = { active: true };
+    refreshOwner.current = owner;
+    if (connected && scope.issueId && scope.assigneeAgentId) refreshRuns();
+    return () => { owner.active = false; };
+  }, [connected, refreshRuns, scope.companyId, scope.issueId, scope.assigneeAgentId]);
   useCompanyLiveEvent((event) => {
     if (event.companyId !== scope.companyId || !scope.issueId ||
       (event.type !== "heartbeat.run.queued" && event.type !== "heartbeat.run.status")) return;
@@ -149,10 +168,7 @@ export function useTaskRunLiveUpdates(scope: {
     const matches = issueId
       ? issueId === scope.issueId || issueId === scope.issueQueryRef
       : Boolean(scope.assigneeAgentId && event.payload.agentId === scope.assigneeAgentId);
-    if (!matches) return;
-    for (const queryKey of [queryKeys.issues.liveRuns(scope.issueQueryRef), queryKeys.issues.activeRun(scope.issueQueryRef)]) {
-      void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
-    }
+    if (matches) refreshRuns();
   });
   return connected && Boolean(scope.issueId && scope.assigneeAgentId);
 }
