@@ -64,9 +64,12 @@ update, including an edit outside the projection, defers repair to a fresh sweep
 
 Execution-blocker reads select process, lifecycle, and task-binding fields rather
 than full execution rows. Context retains typed task and pre-dispatch evidence;
-Runner profiles retain the adapter type and complete native execution input and
-workspace-sync receipts. Full result evidence stays available to the existing
-retry and workspace checks. Stored context, profiles, and output are unchanged.
+Runner profiles retain the adapter type, native input schema, binding, provider,
+workspace-access evidence, and complete workspace-sync receipts. Native task and
+runtime prompt payloads are not needed for these checks. Missing fields and
+malformed input values retain their original shape. Full result evidence stays
+available to the existing retry and workspace checks. Stored context, profiles,
+and output are unchanged.
 
 Committed native finalization reads run identity and ownership state before it
 claims the coordinator. It loads complete saved input only when finalization
