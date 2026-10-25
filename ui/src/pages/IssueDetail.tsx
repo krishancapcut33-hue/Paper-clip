@@ -1,3 +1,5 @@
+import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
+import { liveRunRefetchInterval } from "../lib/live-runs-cache";
 import { useTaskRetry } from "../hooks/useTaskRetry";
 import { grokBotApi } from "@/api/grokBot";
 import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
@@ -1475,6 +1477,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   const designSandbox = useDesignSandbox();
   const queryClient = useQueryClient();
   const issueQueryRef = queryIssueId ?? issueId;
+  const hasLiveConnection = useTaskRunLiveUpdates({ companyId, issueId, issueQueryRef, assigneeAgentId: issueAssigneeAgentId });
   const scrollLocation = useLocation();
   const scrollNavigationType = useNavigationType();
   const { pushToast } = useToastActions();
@@ -1498,7 +1501,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.liveRuns(issueQueryRef),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueQueryRef),
     enabled: !!issueId,
-    refetchInterval: 1000,
+    refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueQueryRef),
   });
@@ -1515,7 +1518,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueQueryRef),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueQueryRef),
     enabled: activeRunQueryEnabled,
-    refetchInterval: liveRunCount > 0 ? false : 1000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueQueryRef,
     ),
@@ -3275,6 +3278,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     !hasLegacyIssueDetailQuery(location.search)
   ));
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
   const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);
   // A closed isolated workspace no longer blocks the composer. The server reopens
   // the workspace when the next comment or resume arrives, so the composer stays
@@ -3414,7 +3418,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       queryKey: queryKeys.issues.liveRuns(issueId!),
       queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
       enabled: !!issueId,
-      refetchInterval: 3000,
+      refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
       select: (runs) => runs.length,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
         issueId ?? "pending",
@@ -3431,7 +3435,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled:
       !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId ?? "pending",

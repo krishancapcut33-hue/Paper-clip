@@ -7,6 +7,7 @@ import {
   useEffect,
   useMemo,
   useRef,
+  useState,
   type ReactNode,
 } from "react";
 import {
@@ -87,6 +88,13 @@ interface LiveEventSubscription {
 const LiveEventSubscriptionContext =
   createContext<LiveEventSubscription | null>(null);
 
+const CompanyLiveConnectionContext = createContext<string | null>(null);
+
+export function useHasCompanyLiveConnection(companyId: string | null | undefined): boolean {
+  const connectedCompanyId = useContext(CompanyLiveConnectionContext);
+  return Boolean(companyId && connectedCompanyId === companyId);
+}
+
 function dispatchLiveEventToSubscribers(
   subscribers: Set<CompanyLiveEventHandler>,
   expectedCompanyId: string,
@@ -124,6 +132,29 @@ export function useCompanyLiveEvent(handler: CompanyLiveEventHandler): void {
       handlerRef.current(event);
     });
   }, [subscription]);
+}
+
+export function useTaskRunLiveUpdates(scope: {
+  companyId: string | null | undefined;
+  issueId: string | null | undefined;
+  issueQueryRef: string;
+  assigneeAgentId: string | null | undefined;
+}): boolean {
+  const connected = useHasCompanyLiveConnection(scope.companyId);
+  const queryClient = useQueryClient();
+  useCompanyLiveEvent((event) => {
+    if (event.companyId !== scope.companyId || !scope.issueId ||
+      (event.type !== "heartbeat.run.queued" && event.type !== "heartbeat.run.status")) return;
+    const issueId = readString(event.payload.issueId);
+    const matches = issueId
+      ? issueId === scope.issueId || issueId === scope.issueQueryRef
+      : Boolean(scope.assigneeAgentId && event.payload.agentId === scope.assigneeAgentId);
+    if (!matches) return;
+    for (const queryKey of [queryKeys.issues.liveRuns(scope.issueQueryRef), queryKeys.issues.activeRun(scope.issueQueryRef)]) {
+      void queryClient.invalidateQueries({ queryKey }, { cancelRefetch: false });
+    }
+  });
+  return connected && Boolean(scope.issueId && scope.assigneeAgentId);
 }
 
 function readString(value: unknown): string | null {
@@ -1988,7 +2019,9 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
   const currentUserId = session?.user?.id ?? session?.session?.userId ??
     (health?.deploymentMode === "local_trusted" ? "local-board" : null);
   const socketAuthKey = session?.session?.id ?? currentUserId ?? "signed_out";
+  const [connectedScopeKey, setConnectedScopeKey] = useState<string | null>(null);
   const liveCompanyId = resolveLiveCompanyId(selectedCompanyId, selectedCompany?.id ?? null);
+  const socketScopeKey = JSON.stringify([liveCompanyId, socketAuthKey]);
   const canConnectSocket = canUseLiveSession(sessionStatus, session != null, health?.deploymentMode) && liveCompanyId !== null;
   const currentActorRef = useRef<{ userId: string | null; agentId: string | null }>({
     userId: currentUserId,
@@ -2104,6 +2137,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
           closeSocketQuietly(nextSocket, "stale_connection");
           return;
         }
+        setConnectedScopeKey(socketScopeKey);
         stopPolling();
         if (reconnectAttempt > 0) {
           gateRef.current.suppressUntil = Date.now() + RECONNECT_SUPPRESS_MS;
@@ -2155,6 +2189,8 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
       };
 
       nextSocket.onerror = () => {
+        if (closed || socket !== nextSocket) return;
+        setConnectedScopeKey((current) => current === socketScopeKey ? null : current);
         // Wait for onclose to drive the reconnect. Self-closing here is what
         // produces the "closed before connection established" browser noise.
       };
@@ -2163,6 +2199,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
         if (socket !== nextSocket) return;
         socket = null;
         if (closed) return;
+        setConnectedScopeKey((current) => current === socketScopeKey ? null : current);
         startPolling();
         scheduleReconnect();
       };
@@ -2175,6 +2212,7 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
 
     return () => {
       closed = true;
+      setConnectedScopeKey((current) => current === socketScopeKey ? null : current);
       window.clearTimeout(connectTimer);
       clearReconnect();
       stopPolling();
@@ -2191,11 +2229,16 @@ export function LiveUpdatesProvider({ children }: { children: ReactNode }) {
     pushToast,
     canConnectSocket,
     socketAuthKey,
+    socketScopeKey,
   ]);
 
   return (
-    <LiveEventSubscriptionContext.Provider value={subscriptionValue}>
-      {children}
-    </LiveEventSubscriptionContext.Provider>
+    <CompanyLiveConnectionContext.Provider value={
+      visible && canConnectSocket && connectedScopeKey === socketScopeKey ? liveCompanyId : null
+    }>
+      <LiveEventSubscriptionContext.Provider value={subscriptionValue}>
+        {children}
+      </LiveEventSubscriptionContext.Provider>
+    </CompanyLiveConnectionContext.Provider>
   );
 }

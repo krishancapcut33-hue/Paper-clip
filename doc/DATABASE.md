@@ -145,6 +145,14 @@ patch does not refetch task details, activity, or run history. Unknown runs
 retain the existing refresh fallback. Run transitions, activity events, and
 reconnect recovery still refresh their affected data.
 
+Task run queries stop interval polling only after a successful empty response
+and an open shared live connection for the current company and session. Initial
+reads, active work, errors, connection setup, and disconnections retain their
+existing polling cadence. Company or session changes require a new connection.
+Views without an assigned agent retain polling. Matching run lifecycle events
+refresh the displayed task's run queries independently of route and window
+focus. The first open and reconnect still reconcile missed events.
+
 Connection-assignment checks select profile bindings for the current company or
 agent and read rules that can match the selected connection's catalog rows.
 All five selector kinds, null application matching, exclusions, and profile
