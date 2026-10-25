@@ -154,9 +154,13 @@ describeDatabase("effective tool assignments", () => {
     let scoped: Awaited<ReturnType<typeof service.getConnectionAssignmentsForAgent>>;
     try { scoped = await service.getConnectionAssignmentsForAgent(f.company.id, f.agent.id, [f.connection.id]); }
     finally { capture.flush(); }
-    expect(scoped!).toEqual({ allowedConnectionIds: [f.connection.id], installedConnections: before.installedConnections });
     expect(Number(events.at(-1)?.completedQueries)).toBeGreaterThan(0);
     expect(Number(events.at(-1)?.responseValueBytes)).toBeLessThan(16 * 1024);
+    const catalogQueries = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+      && event.table === "tool_catalog_entries" && event.operation === "select");
+    expect(catalogQueries).toHaveLength(1);
+    expect(catalogQueries[0]).toMatchObject({ calls: 1, rows: 2 });
+    expect(scoped!).toEqual({ allowedConnectionIds: [f.connection.id], installedConnections: before.installedConnections });
     expect(JSON.stringify(events)).not.toContain(bulk.slice(0, 64));
     expect((await db.select().from(toolProfileEntries).where(eq(toolProfileEntries.id, rule.id)))[0]).toEqual(rule);
     expect(await service.getEffectiveToolAssignmentsForAgent(f.company.id, f.agent.id)).toEqual(before);
