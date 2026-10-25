@@ -51,9 +51,9 @@ and leaves all existing cases passive. Source identities are not grants.
 
 The issue-lock adapter's release read omits `result_json.stdout` and
 `result_json.stderr` before transferring a run to the controller. Native context
-also omits saved launch text, workspace and environment payloads, and the launch
-wake envelope. Task identity, retry and continuation controls, interaction and
-comment references, execution policy, unknown context fields, and every other
+also omits saved launch text, execution-continuation bodies, workspace and
+environment payloads, and the launch wake envelope. Task identity, retry and
+continuation controls, interaction and comment references, execution policy, unknown context fields, and every other
 result key stay intact. Legacy reads retain full context. Stop, retry, lease,
 and workspace-recovery checks do not change. Full inputs and output remain stored
 for execution history and detail reads. Terminal telemetry loads only its run

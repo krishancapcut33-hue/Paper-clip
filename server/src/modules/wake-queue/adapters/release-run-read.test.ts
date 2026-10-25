@@ -77,13 +77,14 @@ describe.skipIf(!support.supported)("wake release run reads", () => {
     const context = {
       issueId: randomUUID(), taskId: randomUUID(), taskKey: "saved-task",
       retryReason: "execution_review_participant_recovery", wakeReason: "issue_commented",
-      explicitUserContinuation: true, executionContinuation: { state: "pending" },
+      explicitUserContinuation: true,
       interactionId: randomUUID(), interactionKind: "review", interactionStatus: "resolved",
       wakeCommentIds: [randomUUID()], queuedCommentSourceWakeIds: [randomUUID()],
       chatConversationId: randomUUID(), executionPolicy: { requireApproval: true },
       opaqueFutureContext: { retained: [null, false, "input"] },
     };
     const launch = {
+      executionContinuation: { instruction: bulk, state: "saved" },
       paperclipWake: { savedTask: bulk }, paperclipWakeComment: bulk, paperclipTaskMarkdown: bulk,
       paperclipTaskMarkdownCompact: bulk, paperclipTaskMarkdownAssignment: bulk,
       paperclipTaskMarkdownAssignmentCompact: bulk, paperclipWorkspace: { files: bulk },

@@ -9,7 +9,7 @@ export async function readReleaseRun(db: Db, scope: { companyId: string; runId: 
     ...getTableColumns(heartbeatRuns),
     contextSnapshot: sql<Run["contextSnapshot"]>`case when ${heartbeatRuns.runtimeMode} = 'native'
       and jsonb_typeof(${heartbeatRuns.contextSnapshot}) = 'object'
-      then ${heartbeatRuns.contextSnapshot} - array['paperclipWake', 'paperclipWakeComment',
+      then ${heartbeatRuns.contextSnapshot} - array['executionContinuation', 'paperclipWake', 'paperclipWakeComment',
         'paperclipTaskMarkdown', 'paperclipTaskMarkdownCompact', 'paperclipTaskMarkdownAssignment',
         'paperclipTaskMarkdownAssignmentCompact', 'paperclipWorkspace', 'paperclipEnvironment',
         'paperclipContinuationSummary']
