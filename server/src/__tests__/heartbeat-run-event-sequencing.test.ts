@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
+import { eq, sql } from "drizzle-orm";
+import { createDatabaseResponseCapture, installDatabaseResponseCapture } from "@paperclipai/db/response-capture";
 import {
   agents,
   companies,
@@ -15,6 +16,62 @@ import {
 import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 
 describe("P6-11..13 / P6-17 canonical event allocator", () => {
+  it("keeps native cursor responses bounded with long histories and a late gap fill", async () => {
+    const temporary = await startEmbeddedPostgresTestDatabase("paperclip-native-cursor-budget-");
+    const db = createDb(temporary.connectionString);
+    const companyId = "20000000-0000-4000-8000-000000000001";
+    const agentId = "20000000-0000-4000-8000-000000000002";
+    const runId = "20000000-0000-4000-8000-000000000003";
+    const otherRunId = "20000000-0000-4000-8000-000000000004";
+    try {
+      await db.insert(companies).values({ id: companyId, name: "Cursor budget", issuePrefix: "CBG" });
+      await db.insert(agents).values({ id: agentId, companyId, name: "Cursor agent" });
+      await db.insert(heartbeatRuns).values([
+        { id: runId, companyId, agentId, status: "running", nextEventSeq: 5005 },
+        { id: otherRunId, companyId, agentId, status: "running" },
+      ]);
+      for (let batch = 0; batch < 10; batch += 1) {
+        await db.insert(heartbeatRunEvents).values(Array.from({ length: 500 }, (_, index) => {
+          const seq = batch * 500 + index + 1;
+          return { companyId, agentId, runId, seq, eventType: "item.delta", sourceInstanceId: "runner-a",
+            sourceSeq: seq, sourceEventId: `seed:${seq}` };
+        }));
+      }
+      await db.insert(heartbeatRunEvents).values([
+        ...[-1, 0, null].map((sourceSeq, index) => ({
+          companyId, agentId, runId, seq: 5001 + index, eventType: "item.delta",
+          sourceInstanceId: "runner-a", sourceSeq, sourceEventId: `legacy:${index}`,
+        })),
+        { companyId, agentId, runId, seq: 5004, eventType: "item.delta", sourceInstanceId: "runner-b",
+          sourceSeq: 5001, sourceEventId: "other-source:5001" },
+        { companyId, agentId, runId: otherRunId, seq: 1, eventType: "item.delta", sourceInstanceId: "runner-a",
+          sourceSeq: 5001, sourceEventId: "other-run:5001" },
+      ]);
+      const append = (sourceSeq: number) => appendHeartbeatRunEvent(db, {
+        companyId, agentId, runId, eventType: "item.delta", payload: { sourceSeq },
+        nativeSource: { sourceInstanceId: "runner-a", sourceSeq, sourceEventId: `runner-a:${sourceSeq}`,
+          protocolSchemaVersion: 1, canonicalPayload: { sourceSeq } },
+      });
+      const events: Array<Record<string, unknown>> = [], now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(db, { heartbeatRunEvents }, capture);
+      try { expect((await append(5002)).highestContiguousSourceSeq).toBe(5000); }
+      finally { capture.flush(); }
+      const reads = events.filter(event => event.event === "paperclip.db_response_capture.entry.v1"
+        && event.table === "heartbeat_run_events" && (event.operation === "select" || event.operation === "execute"));
+      expect(reads.reduce((sum, event) => sum + Number(event.calls), 0)).toBeGreaterThan(0);
+      expect(reads.reduce((sum, event) => sum + Number(event.rows), 0)).toBeLessThan(16);
+      expect(reads.reduce((sum, event) => sum + Number(event.responseValueBytes), 0)).toBeLessThan(2048);
+      expect((await append(5001)).highestContiguousSourceSeq).toBe(5002);
+      const replay = await append(5002);
+      expect(replay.disposition).toBe("duplicate");
+      expect(replay.highestContiguousSourceSeq).toBe(5002);
+      const [remaining] = await db.select({ count: sql<number>`count(*)::int` }).from(heartbeatRunEvents)
+        .where(eq(heartbeatRunEvents.runId, runId));
+      expect(remaining?.count).toBe(5006);
+    } finally { await temporary.cleanup(); }
+  }, 60_000);
+
   it.each([false, true])("deduplicates concurrent retry exhaustion (historical receipt: %s)", async (historical) => {
     const temporary = await startEmbeddedPostgresTestDatabase("paperclip-exhaustion-events-");
     const db = createDb(temporary.connectionString);
