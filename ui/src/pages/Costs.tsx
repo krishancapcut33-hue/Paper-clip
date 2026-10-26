@@ -7,6 +7,7 @@ import { CostEstimateLabel } from "../components/CostEstimateLabel";
 import { CostAmount } from "../components/CostAmount";
 import { CostByUserTable } from "../components/CostByUserTable";
 import { CostDataQualityNotice } from "../components/CostDataQualityNotice";
+import { Badge } from "../components/ui/badge";
 import { AgentIdentity } from "@/components/AgentIdentity";
 import { useEffect, useMemo, useRef, useState, type ComponentType, type ReactNode } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
@@ -606,6 +607,7 @@ export function Costs({
   );
   const activeBudgetIncidents = (budgetData?.activeIncidents ?? []).filter((incident) => !agentScoped || (incident.scopeType === "agent" && incident.scopeId === agentId));
   const scopedAgentSpend = agentScoped ? spendData?.byAgent.find((row) => row.agentId === agentId) : undefined;
+  const agentSpendUnpriced = scopedAgentSpend?.unpricedEventCount ?? 0;
   const visibleAgentSpend = agentScoped ? (scopedAgentSpend ? [scopedAgentSpend] : []) : spendData?.byAgent ?? [];
   const budgetPoliciesByScope = useMemo(() => ({
     company: budgetPolicies.filter((policy) => policy.scopeType === "company"),
@@ -680,9 +682,12 @@ export function Costs({
             <div className="grid gap-3 sm:grid-cols-3">
               <MetricTile
                 label="Spend"
-                value={scopedAgentSpend ? formatCents(scopedAgentSpend.costCents) : "—"}
+                value={scopedAgentSpend ? (agentSpendUnpriced > 0 && scopedAgentSpend.costCents === 0 && agentSpendUnpriced === scopedAgentSpend.eventCount ? "—" : formatCents(scopedAgentSpend.costCents)) : "—"}
                 subtitle={scopedAgentSpend
-                  ? <CostEstimateLabel eventCount={scopedAgentSpend.eventCount} estimatedEventCount={scopedAgentSpend.estimatedEventCount} />
+                  ? <span className="flex flex-wrap items-center gap-1">
+                      <CostEstimateLabel eventCount={scopedAgentSpend.eventCount} estimatedEventCount={scopedAgentSpend.estimatedEventCount} />
+                      {agentSpendUnpriced > 0 && <Badge variant="outline" className="font-normal text-muted-foreground">{agentSpendUnpriced} {agentSpendUnpriced === 1 ? "cost" : "costs"} unavailable, so the total is incomplete</Badge>}
+                    </span>
                   : spendData ? "No cost events in this period" : "Spend is loading"}
                 icon={DollarSign}
               />
@@ -838,7 +843,7 @@ export function Costs({
                                   {row.agentStatus === "terminated" ? <StatusBadge status="terminated" /> : null}
                                 </div>
                                 <div className="text-right text-sm tabular-nums">
-                                  <CostAmount costCents={row.costCents} eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} />
+                                  <CostAmount costCents={row.costCents} eventCount={row.eventCount} estimatedEventCount={row.estimatedEventCount} unpricedEventCount={row.unpricedEventCount} showUnavailableCount />
                                   <div className="text-xs text-muted-foreground">
                                     in {formatTokens(row.inputTokens + row.cachedInputTokens)} ({formatTokens(row.cachedInputTokens)} cached) · out {formatTokens(row.outputTokens)}
                                   </div>

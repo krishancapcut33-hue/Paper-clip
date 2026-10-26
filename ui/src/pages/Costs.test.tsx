@@ -198,6 +198,18 @@ describe("Shared Costs surfaces", () => {
       queryClient.clear();
     });
 
+    it.each([
+      ["only unpriced usage", { eventCount: 2, costCents: 0, unpricedEventCount: 2 }, "—", "2 costs unavailable"],
+      ["some unpriced usage", { eventCount: 3, costCents: 300, unpricedEventCount: 1 }, "$3.00", "1 cost unavailable"],
+    ])("does not show $0.00 or a complete total for an agent with %s", async (_name, usage, spend, warning) => {
+      costsApiMocks.byAgent.mockResolvedValue([{ ...agentRow("agent-a", "Agent A", usage.costCents), ...usage }]);
+      const queryClient = await renderScoped({ embedded: true, initialTab: "overview", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain(warning)); });
+      expect(container.textContent).toContain("so the total is incomplete");
+      expect(container.textContent).toContain(`Spend${spend}`);
+      queryClient.clear();
+    });
+
     it("says so when this agent has no budget policy, even if others do", async () => {
       budgetOverviewMock.mockResolvedValue({ policies: [policy("agent", "agent-b", "Agent B")], activeIncidents: [], pendingApprovalCount: 0, pausedAgentCount: 0, pausedProjectCount: 0 });
       const queryClient = await renderScoped({ embedded: true, initialTab: "budgets", lockTab: true });
