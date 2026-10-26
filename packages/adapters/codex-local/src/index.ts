@@ -147,6 +147,13 @@ export function codexChatGptRetirementForModel(model: string | null | undefined)
   return CODEX_LOCAL_CHATGPT_RETIRED_MODELS[normalizeCodexModel(model)] ?? null;
 }
 
+/** Test hint for a ChatGPT-account rejection of a retired model; shared by the legacy and native Tests. */
+export function codexChatGptRetirementHint(model: string | null | undefined): string | null {
+  const retirement = codexChatGptRetirementForModel(model);
+  if (!retirement) return null;
+  return `OpenAI retired ${normalizeCodexModel(model)} from Codex with ChatGPT sign-in on ${retirement.retiredOn}. Choose ${retirement.replacement}, or use an OpenAI API key; API-key sessions are not affected.`;
+}
+
 const STABLE_CODEX_CLI_VERSION = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)$/;
 
 function stableCodexCliVersionParts(version: string): number[] | null {
