@@ -1651,6 +1651,15 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                               }
                           : {}),
                       },
+                      // The AI connection is bound to the old adapter's provider,
+                      // so it cannot survive the switch. Clear it in the overlay
+                      // (not just in the UI) so the PATCH tells the server to drop
+                      // the binding instead of re-sending one the new adapter type
+                      // rejects at validation.
+                      runtime: {
+                        ...prev.runtime,
+                        runtimeConfig: { ...runtimeConfig, aiConnection: undefined },
+                      },
                     }));
                   }
                 }}
@@ -1659,7 +1668,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
           )}
 
           {!isCreate && selectedCompanyId && <AiConnectionField companyId={selectedCompanyId} agentId={props.agent.id} agentName={props.agent.name} adapterType={adapterType === "paperclip_runner" ? eff("adapterConfig", "provider", config.provider) === "codex" ? "codex_local" : eff("adapterConfig", "provider", config.provider) === "opencode" ? "opencode_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "grok" ? "grok_local" : eff("adapterConfig", "provider", config.provider) === "acpx" && eff("adapterConfig", "acpxAgent", config.acpxAgent) === "claude" ? "claude_local" : adapterType : adapterType}
-            value={aiConnectionBindingSchema.safeParse((overlay.runtime.runtimeConfig as Record<string, unknown> | undefined)?.aiConnection ?? runtimeConfig.aiConnection).data}
+            value={aiConnectionBindingSchema.safeParse(eff<Record<string, unknown>>("runtime", "runtimeConfig", runtimeConfig)?.aiConnection).data}
             model={String(eff("adapterConfig", "model", config.model) ?? "")} environmentId={currentDefaultEnvironmentId || undefined} legacy
             onChange={binding => mark("runtime", "runtimeConfig", { ...runtimeConfig, aiConnection: binding })} />}
 
