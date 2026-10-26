@@ -335,19 +335,39 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.fileCleanup).toBe("not_requested");
   });
 
-  it("does not let plain deletion bypass an expired managed-file cleanup claim", async () => {
+  it.each([-1_000, 60_000])("does not let unclaimed deletion bypass a stored cleanup claim (expiry offset: %s)", async (expiryOffset) => {
     const { projectId } = await seedProjectFixture();
     await db
       .update(projects)
       .set({
         status: "deleting",
         deletionClaimToken: randomUUID(),
-        deletionClaimExpiresAt: new Date(Date.now() - 1_000),
+        deletionClaimExpiresAt: new Date(Date.now() + expiryOffset),
       })
       .where(eq(projects.id, projectId));
 
     await expect(projectService(db).remove(projectId)).rejects.toMatchObject({ status: 409 });
     await expect(db.select().from(projects).where(eq(projects.id, projectId))).resolves.toHaveLength(1);
+  });
+
+  it("allows database-only deletion with a fresh recovery claim without deleting managed files", async () => {
+    const { projectId } = await seedProjectFixture();
+    const claimToken = randomUUID();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+    await db.update(projects).set({
+      status: "deleting",
+      deletionClaimToken: claimToken,
+      deletionClaimExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(projects.id, projectId));
+
+    const removed = await projectService(db, { removeManagedFiles }).remove(projectId, {
+      deleteFiles: false,
+      deletionClaimToken: claimToken,
+    });
+
+    expect(removed?.fileCleanup).toBe("not_requested");
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    await expect(db.select().from(projects).where(eq(projects.id, projectId))).resolves.toHaveLength(0);
   });
 
   it("reports project cleanup failure after completing database deletion", async () => {

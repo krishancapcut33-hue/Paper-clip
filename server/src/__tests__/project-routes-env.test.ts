@@ -260,13 +260,14 @@ describe("project env routes", () => {
     );
   });
 
-  it("allows only one concurrent project deletion claim and keeps the project fenced after stop failure", async () => {
-    let status = "backlog";
+  it.each([false, true])("allows only one concurrent project deletion claim and keeps the project fenced after stop failure (cleanup: %s)", async (deleteFiles) => {
+    let status = deleteFiles ? "backlog" : "deleting";
+    let claimHeld = false;
     let releaseStop!: () => void;
     let stopStarted!: () => void;
     const stopGate = new Promise<void>((resolve) => { releaseStop = resolve; });
     const stopStartedGate = new Promise<void>((resolve) => { stopStarted = resolve; });
-    mockProjectService.getById.mockResolvedValue(buildProject());
+    mockProjectService.getById.mockImplementation(async () => buildProject({ status }));
     mockHeartbeatService.cancelRun.mockReset();
     mockHeartbeatService.waitForRunExecutionDrain.mockImplementation(async () => {
       stopStarted();
@@ -290,7 +291,8 @@ describe("project env routes", () => {
               return Object.assign(Promise.resolve([]), {
                 returning: async () => {
                   if (nextStatus === "deleting") {
-                    if (status === "deleting") return [];
+                    if (claimHeld) return [];
+                    claimHeld = true;
                     status = "deleting";
                     return [{ id: "project-1" }];
                   }
@@ -314,11 +316,11 @@ describe("project env routes", () => {
     const baseUrl = `http://127.0.0.1:${address.port}`;
     try {
       const firstDelete = request(baseUrl)
-        .delete("/api/projects/project-1?deleteFiles=true")
+        .delete(`/api/projects/project-1?deleteFiles=${deleteFiles}`)
         .then((response) => response);
       await stopStartedGate;
 
-      const competingDelete = await request(baseUrl).delete("/api/projects/project-1?deleteFiles=true");
+      const competingDelete = await request(baseUrl).delete("/api/projects/project-1");
       expect(competingDelete.status).toBe(409);
       expect(competingDelete.body.error).toContain("already in progress");
       expect(mockProjectService.remove).not.toHaveBeenCalled();
@@ -332,6 +334,79 @@ describe("project env routes", () => {
       await new Promise<void>((resolve, reject) => {
         server.close((error) => error ? reject(error) : resolve());
       });
+    }
+  });
+
+  it.each(["cancelled", "running"])("recovers a fenced project with database-only deletion after draining a %s run", async (runStatus) => {
+    const expiredClaimToken = "expired-claim";
+    mockProjectService.getById.mockResolvedValue(buildProject({
+      status: "deleting",
+      deletionClaimToken: expiredClaimToken,
+      deletionClaimExpiresAt: new Date(Date.now() - 1_000),
+    }));
+    mockProjectService.remove.mockResolvedValue(buildProject({ fileCleanup: "not_requested" }));
+    mockHeartbeatService.cancelRun.mockResolvedValue(undefined);
+    let releaseDrain!: () => void;
+    let drainStarted!: () => void;
+    const drainGate = new Promise<void>((resolve) => { releaseDrain = resolve; });
+    const drainStartedGate = new Promise<void>((resolve) => { drainStarted = resolve; });
+    mockHeartbeatService.waitForRunExecutionDrain.mockImplementation(async () => {
+      drainStarted();
+      await drainGate;
+    });
+
+    let claimToken: string | null = null;
+    let selectCount = 0;
+    const update = vi.fn(() => ({
+      set: (value: { deletionClaimToken: string }) => {
+        claimToken = value.deletionClaimToken;
+        return { where: () => ({ returning: async () => [{ id: "project-1" }] }) };
+      },
+    }));
+    const database = {
+      update,
+      transaction: async (effect: (tx: unknown) => unknown) => effect({ update }),
+      select: () => ({
+        from: () => ({
+          where: () => {
+            const rows = selectCount++ === 1 ? [{ id: "run-1", status: runStatus }] : [];
+            return Object.assign(Promise.resolve(rows), {
+              limit: async () => [{ id: "project-1", expiresAt: new Date(Date.now() + 60_000) }],
+            });
+          },
+        }),
+      }),
+    };
+    const app = await createApp(database);
+    const server = app.listen(0, "127.0.0.1");
+    await once(server, "listening");
+    const address = server.address() as AddressInfo;
+    const pendingDelete = request(`http://127.0.0.1:${address.port}`)
+      .delete("/api/projects/project-1").then((response) => response);
+    try {
+      await drainStartedGate;
+      expect(claimToken).toEqual(expect.any(String));
+      expect(claimToken).not.toBe(expiredClaimToken);
+      expect(mockProjectService.remove).not.toHaveBeenCalled();
+    } finally {
+      releaseDrain();
+      await pendingDelete;
+      await new Promise<void>((resolve, reject) => {
+        server.close((error) => error ? reject(error) : resolve());
+      });
+    }
+    const result = await pendingDelete;
+    expect(result.status, JSON.stringify(result.body)).toBe(200);
+    expect(result.body.fileCleanup).toBe("not_requested");
+    expect(mockProjectService.remove).toHaveBeenCalledWith("project-1", {
+      deleteFiles: false,
+      deletionClaimToken: claimToken,
+    });
+    expect(mockHeartbeatService.waitForRunExecutionDrain).toHaveBeenCalledWith("run-1", { timeoutMs: 30_000 });
+    if (runStatus === "running") {
+      expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith("run-1", expect.any(String));
+    } else {
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
     }
   });
 });

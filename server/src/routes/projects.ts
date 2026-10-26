@@ -1117,8 +1117,8 @@ export function projectRoutes(db: Db) {
     let claimLost = false;
     let renewal: ReturnType<typeof setInterval> | null = null;
     let renewalInFlight: Promise<void> | null = null;
-    if (deleteFiles) {
-      assertBoard(req);
+    if (deleteFiles) assertBoard(req);
+    if (deleteFiles || existing.status === "deleting") {
       const claimToken = randomUUID();
       deletionClaimToken = claimToken;
       const claimed = await db.transaction(async (tx) =>
@@ -1207,7 +1207,7 @@ export function projectRoutes(db: Db) {
     } catch (err) {
       if (renewal) clearInterval(renewal);
       await renewalInFlight;
-      if (deleteFiles && deletionClaimToken) {
+      if (deletionClaimToken) {
         await db
           .update(projects)
           .set({ deletionClaimToken: null, deletionClaimExpiresAt: null })
