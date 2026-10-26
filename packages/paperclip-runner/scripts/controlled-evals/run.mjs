@@ -203,7 +203,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     await mkdir(dirname(resolve(outputPath)), { recursive: true, mode: 0o700 });
     await writeFile(outputPath, JSON.stringify(resultArtifact, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     return { code: failure ? 2 : child?.code ?? 2, report };
-  } finally { await observability?.close(); }
+  } finally { try { await observability?.close(); } catch {} }
 
 }
 

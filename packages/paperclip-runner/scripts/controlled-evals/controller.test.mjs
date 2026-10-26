@@ -3,7 +3,7 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
 import { execFileSync } from 'node:child_process';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, open, readFile, readdir, rm, stat, symlink, truncate, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -799,4 +799,35 @@ test('missing provider artifacts cannot bypass immutable result binding', async 
   await writeFile(join(directory, 'controller-evidence.json'), JSON.stringify(malformed));
   await assert.rejects(readAttemptControlledEvidence(directory), /Malformed immutable controller result proof/);
 
+});
+
+
+test('failed final OTLP receipt write returns its saved incomplete report', async t => {
+  const f = await fixture(t, { observability: true, requests: 1 });
+  const root = attemptDirectory(f.manifest, 'attempt-0');
+  const probe = await open(join(f.root, 'prototype-probe'), 'wx');
+  const prototype = Object.getPrototypeOf(probe), original = prototype.writeFile;
+  await probe.close();
+  let failed = false;
+  prototype.writeFile = async function (data, ...options) {
+    if (String(data).includes('"type":"closed"')) {
+      const native = await stat(join(root, 'otlp-native.jsonl')).catch(() => null);
+      if (native && (await this.stat()).ino === native.ino) {
+        failed = true;
+        throw Object.assign(new Error('synthetic final receipt write failure'), { code: 'ENOSPC' });
+      }
+    }
+    return original.call(this, data, ...options);
+  };
+  t.after(() => { prototype.writeFile = original; });
+  const result = await f.run();
+  assert.equal(failed, true); assert.equal(result.code, 2);
+  assert.equal(result.report.status, 'incomplete');
+  assert.deepEqual(JSON.parse(await readFile(join(root, 'result.json'), 'utf8')), result.report);
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.knownUsd, '0.000068000'); assert.equal(summary.committedUsd, '0.014000000');
+  const controller = (await readFile(join(root, 'otlp-controller.jsonl'), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
+  assert.equal(controller.at(-1).type, 'closed');
+  const descriptor = JSON.parse(await readFile(join(root, 'observability.json'), 'utf8'));
+  await assert.rejects(fetch(descriptor.baseUrl + '/v1/logs'));
 });
