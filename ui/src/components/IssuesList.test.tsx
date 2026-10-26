@@ -651,6 +651,29 @@ describe("IssuesList", () => {
     });
   });
 
+  it("shows a retryable external-status filter error instead of a false empty task list", async () => {
+    mockInstanceSettingsApi.getExperimental.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    localStorage.setItem("paperclip:test-issues:company-1", JSON.stringify({ externalObjectStatuses: ["failed"] }));
+    mockExternalObjectsApi.getIssueSummaries.mockRejectedValue(new Error("Status lookup unavailable"));
+    const { root, queryClient } = renderWithQueryClient(<IssuesList
+      issues={[createIssue({ id: "issue-failed", title: "Matching task after retry" })]}
+      agents={[]} projects={[]} viewStateKey="paperclip:test-issues" rowPresentation="task"
+      onUpdateIssue={() => undefined}
+    />, container);
+    await waitForAssertion(() => expect(container.textContent).toContain("Unable to filter tasks by external status"));
+    expect(container.textContent).not.toContain("No tasks match");
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    mockExternalObjectsApi.getIssueSummaries.mockResolvedValue({ summaries: {
+      "issue-failed": { total: 1, byStatusCategory: { failed: 1 }, objects: [] },
+    } });
+    await act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === "Retry external statuses")!.click());
+    await waitForAssertion(() => expect(container.textContent).toContain("Matching task after retry"));
+    expect(container.textContent).not.toContain("Unable to filter tasks by external status");
+    expect(mockExternalObjectsApi.getIssueSummaries).toHaveBeenCalledTimes(2);
+    act(() => root.unmount());
+    queryClient.clear();
+  });
+
   it("renders server search results instead of filtering the full issue list locally", async () => {
     const localIssue = createIssue({ id: "issue-local", identifier: "PAP-1", title: "Local issue" });
     const serverIssue = createIssue({ id: "issue-server", identifier: "PAP-2", title: "Server result" });

@@ -1201,6 +1201,8 @@ function StreamlinedIssuesList({
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
     isReady: externalObjectSummariesReady,
+    error: externalObjectSummariesError,
+    refetch: retryExternalObjectSummaries,
   } = useIssueExternalObjectSummaries(
     selectedCompanyId,
     issueIdsForExternalObjectSummaries,
@@ -1213,6 +1215,7 @@ function StreamlinedIssuesList({
   const externalObjectFilterLoading = hasExternalObjectStatusFilters
     && externalObjectSummariesLoading
     && !externalObjectSummariesReady;
+  const externalObjectFilterError = hasExternalObjectStatusFilters ? externalObjectSummariesError : null;
 
   const filtered = useMemo(() => {
     const filteredByControls = applyIssueFilters(
@@ -2056,9 +2059,15 @@ function StreamlinedIssuesList({
         )}
       />
 
-      {collectionLoading && <PageSkeleton variant="issues-list" collectionHeading={viewState.groupBy !== "none" ? "group"
+      {collectionLoading && !externalObjectFilterError && <PageSkeleton variant="issues-list" collectionHeading={viewState.groupBy !== "none" ? "group"
         : viewState.showDateGroupSeparators && issueDateSeparatorField(viewState) && rowPresentation === "task" ? "date" : null} />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
+      {externalObjectFilterError && (
+        <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
+          <p>Unable to filter tasks by external status: {externalObjectFilterError.message}</p>
+          <Button variant="outline" size="sm" onClick={retryExternalObjectSummaries}>Retry external statuses</Button>
+        </div>
+      )}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
           Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
@@ -2070,7 +2079,7 @@ function StreamlinedIssuesList({
         </p>
       )}
       {hierarchy.error ? <p className="text-sm text-destructive">Failed to load task hierarchy: {hierarchy.error.message}</p> : null}
-      {!collectionLoading && visibleListRowCount === 0 && viewState.viewMode === "list" && (
+      {!collectionLoading && !externalObjectFilterError && visibleListRowCount === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
           message="No tasks match the current filters or search."
@@ -2079,7 +2088,7 @@ function StreamlinedIssuesList({
         />
       )}
 
-      {!collectionLoading && (viewState.viewMode === "board" ? (
+      {!collectionLoading && !externalObjectFilterError && (viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
           agents={agents}
