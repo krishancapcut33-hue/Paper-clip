@@ -175,6 +175,17 @@ The ACK means that every source event through sequence 9 is committed or
 deduplicated. The runner rejects an ACK that moves backward or beyond its
 produced source cursor. It removes only events at or below a valid ACK.
 
+The runner sends every event it holds without waiting for ACKs, and it reads the
+next provider batch only after the ACK for the last event it sent. The core
+handles the frames of one connection in order. When more frames are already
+queued behind a committed event, the core defers that event's state write and
+ACK, up to 64 events, and writes the state once and sends one cumulative ACK
+for the last event of the burst. The core always writes before it sends the ACK,
+so the persisted cursor is never behind an ACK the runner has received. A
+semantic tool input is never deferred: it is written before it is dispatched.
+After a crash, the runner sends the unacknowledged events again and the caller's
+idempotent commit deduplicates them. The state file is compact JSON.
+
 For the lost-ACK fault, the mock commits an event, drops the ACK and socket, and
 reports the prior cursor once after reconnect. The runner sends the same bytes
 again. The mock increments delivery count, keeps one logical event, and sends

@@ -2772,6 +2772,251 @@ describe("DurablePrpControlPlane", () => {
     }
   });
 
+  describe("coalesced event persistence", () => {
+    const burstEvent = (seq: number): Record<string, unknown> => {
+      const envelope = semanticInputEvent(seq);
+      const event = envelope.payload as Record<string, unknown>;
+      event.sourceEventId = `burst-event-${seq}`;
+      event.eventType = "auth.credentials.updated";
+      event.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+        bindingId: "harness-auth", revision: seq, detection: "credential_store" };
+      return envelope;
+    };
+    const pause = (ms: number) => new Promise<void>(resolvePause => setTimeout(resolvePause, ms));
+    const countStateWrites = (statePath: string) => {
+      const rename = nodeFs.renameSync;
+      const writes: string[] = [];
+      const spy = vi.spyOn(nodeFs, "renameSync").mockImplementation((from, to) => {
+        if (String(to) === statePath) writes.push(readFileSync(String(from), "utf8"));
+        rename(from, to);
+      });
+      syncBuiltinESMExports();
+      return {
+        writes,
+        restore: () => {
+          spy.mockRestore();
+          syncBuiltinESMExports();
+        },
+      };
+    };
+    const gatedCommit = () => {
+      let release!: () => void;
+      const barrier = new Promise<void>(resolveBarrier => { release = resolveBarrier; });
+      let first = true;
+      return {
+        release: () => release(),
+        onCommittedEvent: vi.fn(async () => {
+          if (!first) return;
+          first = false;
+          await barrier;
+        }),
+      };
+    };
+    const readAcks = async (client: AuthenticatedClient, statePath: string, last: number) => {
+      const acks: number[] = [];
+      while (acks.at(-1) !== last) {
+        const frame = (await receiveSecure(client))!;
+        if (frame.kind === "command") continue;
+        expect(frame.kind).toBe("ack");
+        const acked = (frame.payload as { ackedSourceSeq: number }).ackedSourceSeq;
+        expect(JSON.parse(readFileSync(statePath, "utf8")).ackedSourceSeq).toBeGreaterThanOrEqual(acked);
+        acks.push(acked);
+      }
+      return acks;
+    };
+
+    it("writes one compact state and sends one cumulative ACK for a queued burst", async () => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-burst-"));
+      const gate = gatedCommit();
+      const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+        expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: gate.onCommittedEvent });
+      let counter: ReturnType<typeof countStateWrites> | undefined;
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        counter = countStateWrites(core.store.path);
+        for (let seq = 1; seq <= 10; seq += 1) sendSecure(client, burstEvent(seq));
+        await pause(100);
+        gate.release();
+        expect(await readAcks(client, core.store.path, 10)).toEqual([10]);
+        expect(counter.writes).toHaveLength(1);
+        expect(counter.writes[0]).not.toMatch(/\n\s+"/);
+        expect(counter.writes[0]!.trimEnd().split("\n")).toHaveLength(1);
+        const saved = JSON.parse(readFileSync(core.store.path, "utf8"));
+        expect(saved.committedEvents.map((event: { sourceSeq: number }) => event.sourceSeq))
+          .toEqual([1, 2, 3, 4, 5, 6, 7, 8, 9, 10]);
+        expect(gate.onCommittedEvent).toHaveBeenCalledTimes(10);
+        client.socket.destroy();
+      } finally {
+        counter?.restore();
+        gate.release();
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("still writes and acknowledges a lone event at once", async () => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-lone-"));
+      const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+        expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: vi.fn(async () => undefined) });
+      let counter: ReturnType<typeof countStateWrites> | undefined;
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        counter = countStateWrites(core.store.path);
+        for (let seq = 1; seq <= 3; seq += 1) {
+          sendSecure(client, burstEvent(seq));
+          expect(await readAcks(client, core.store.path, seq)).toEqual([seq]);
+        }
+        expect(counter.writes).toHaveLength(3);
+        client.socket.destroy();
+      } finally {
+        counter?.restore();
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("bounds a long burst and never sends an ACK ahead of the persisted cursor", async () => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-long-burst-"));
+      const gate = gatedCommit();
+      const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+        expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: gate.onCommittedEvent });
+      let counter: ReturnType<typeof countStateWrites> | undefined;
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        counter = countStateWrites(core.store.path);
+        for (let seq = 1; seq <= 150; seq += 1) sendSecure(client, burstEvent(seq));
+        await pause(200);
+        gate.release();
+        const acks = await readAcks(client, core.store.path, 150);
+        expect(acks).toEqual([64, 128, 150]);
+        expect(counter.writes).toHaveLength(3);
+        client.socket.destroy();
+      } finally {
+        counter?.restore();
+        gate.release();
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("replays the whole burst after a crash before its deferred write, without an early ACK", async () => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-burst-crash-"));
+      let admit!: () => void;
+      const admitted = new Promise<void>(resolveAdmit => { admit = resolveAdmit; });
+      const effects = new Map<string, number>();
+      const deliveries: number[] = [];
+      const idempotentCommit = (event: { sourceSeq?: number; sourceEventId?: string }) => {
+        deliveries.push(event.sourceSeq as number);
+        if (!effects.has(event.sourceEventId as string)) effects.set(event.sourceEventId as string, 1);
+      };
+      const crashingCommit = vi.fn(async (event: { sourceSeq?: number; sourceEventId?: string }) => {
+        if (event.sourceSeq === 1) await admitted;
+        if (event.sourceSeq === 4) await new Promise(() => undefined);
+        idempotentCommit(event);
+      });
+      const first = new DurablePrpControlPlane({ stateDirectory: root, identity,
+        expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: crashingCommit });
+      let leaseToken: string;
+      try {
+        await first.start();
+        const client = (await authenticate(first, first.issueBootstrapTicket()))!;
+        leaseToken = client.leaseToken!;
+        for (let seq = 1; seq <= 6; seq += 1) sendSecure(client, burstEvent(seq));
+        await pause(100);
+        admit();
+        await vi.waitFor(() => expect(crashingCommit).toHaveBeenCalledTimes(4));
+        expect(first.store.state.ackedSourceSeq).toBe(3);
+        expect(JSON.parse(readFileSync(first.store.path, "utf8")).ackedSourceSeq).toBe(0);
+        const early = await Promise.race([receiveSecure(client), pause(150).then(() => "none" as const)]);
+        expect(early).toBe("none");
+        client.socket.destroy();
+      } finally {
+        await first.stop();
+      }
+
+      const recovered = new DurablePrpControlPlane({ stateDirectory: root, identity,
+        expectedRunnerVersion, expectedRunnerDigest,
+        onCommittedEvent: async (event) => { idempotentCommit(event); } });
+      try {
+        await recovered.start();
+        const client = (await authenticate(recovered, leaseToken!))!;
+        expect(client.welcome.payload).toMatchObject({ ackedSourceSeq: 0 });
+        for (let seq = 1; seq <= 6; seq += 1) sendSecure(client, burstEvent(seq));
+        const acks = await readAcks(client, recovered.store.path, 6);
+        expect(acks.at(-1)).toBe(6);
+        expect(deliveries).toEqual([1, 2, 3, 1, 2, 3, 4, 5, 6]);
+        expect([...effects.values()]).toEqual([1, 1, 1, 1, 1, 1]);
+        expect(recovered.store.state.committedEvents.map(event => event.deliveryCount)).toEqual([1, 1, 1, 1, 1, 1]);
+        client.socket.destroy();
+      } finally {
+        await recovered.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("saves deferred events and the semantic input before dispatching it, then ACKs once", async () => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-burst-semantic-"));
+      const gate = gatedCommit();
+      let persistedAtDispatch: { ackedSourceSeq: number; sourceSeqs: number[] } | null = null;
+      const onSemanticToolInput = vi.fn(async () => {
+        const saved = JSON.parse(readFileSync(core.store.path, "utf8"));
+        persistedAtDispatch = {
+          ackedSourceSeq: saved.ackedSourceSeq,
+          sourceSeqs: saved.committedEvents.map((event: { sourceSeq: number }) => event.sourceSeq),
+        };
+        return { result: { ok: true } };
+      });
+      const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+        expectedRunnerVersion, expectedRunnerDigest, onSemanticToolInput,
+        onCommittedEvent: gate.onCommittedEvent });
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        for (let seq = 1; seq <= 3; seq += 1) sendSecure(client, burstEvent(seq));
+        sendSecure(client, semanticInputEvent(4));
+        sendSecure(client, burstEvent(5));
+        await pause(100);
+        gate.release();
+        const acks = await readAcks(client, core.store.path, 5);
+        expect(acks).toEqual([4, 5]);
+        expect(onSemanticToolInput).toHaveBeenCalledTimes(1);
+        expect(persistedAtDispatch).toEqual({ ackedSourceSeq: 4, sourceSeqs: [1, 2, 3, 4] });
+        client.socket.destroy();
+      } finally {
+        gate.release();
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+
+    it("writes deferred events before a non-event frame is handled", async () => {
+      const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-burst-lease-"));
+      const gate = gatedCommit();
+      const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
+        expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: gate.onCommittedEvent });
+      try {
+        await core.start();
+        const client = (await authenticate(core, core.issueBootstrapTicket()))!;
+        for (let seq = 1; seq <= 3; seq += 1) sendSecure(client, burstEvent(seq));
+        sendSecure(client, renewalRequest(client, Number((client.welcome.payload as Record<string, unknown>).connectionLeaseExpiresAtUnixMs)));
+        await pause(100);
+        gate.release();
+        const frames: Array<Record<string, unknown>> = [];
+        while (frames.length < 2) frames.push((await receiveSecure(client))!);
+        expect(frames.map(frame => frame.kind)).toEqual(["ack", "lease_renewed"]);
+        expect(frames[0]!.payload).toMatchObject({ ackedSourceSeq: 3 });
+        client.socket.destroy();
+      } finally {
+        gate.release();
+        await core.stop();
+        rmSync(root, { recursive: true, force: true });
+      }
+    });
+  });
+
   it("keeps a recovered runner attached when it reports an indeterminate command", async () => {
     const root = mkdtempSync(resolve(tmpdir(), "paperclip-prp-indeterminate-"));
     const controlPlane = new DurablePrpControlPlane({

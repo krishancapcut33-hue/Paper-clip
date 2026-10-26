@@ -68,6 +68,7 @@ class CommandJournalLimitError extends Error {
 // polling turn regains the event loop. Match the transport's explicit deferred
 // event bound so a valid burst is not compacted before it can be observed.
 const maxCommittedEventWindow = 4_096;
+const maxDeferredEventAcks = 64;
 const maxStateBytes = 256 * 1024 * 1024;
 const authChallengeTtlMs = 5_000;
 const stableIdPattern = /^[A-Za-z0-9][A-Za-z0-9._:-]{0,239}$/;
@@ -1255,7 +1256,7 @@ class DurableCoreStore {
 
   save(): void {
     this.assertWritable();
-    atomicPrivateWrite(this.path, `${JSON.stringify(this.#state, null, 2)}\n`);
+    atomicPrivateWrite(this.path, `${JSON.stringify(this.#state)}\n`);
   }
 
   assertWritable(): void {
@@ -1269,7 +1270,7 @@ class DurableCoreStore {
   commit(candidate: StoredCoreState): void {
     this.assertWritable();
     try {
-      atomicPrivateWrite(this.path, `${JSON.stringify(candidate, null, 2)}\n`);
+      atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);
       this.#state = candidate;
     } catch (error) {
       // Rename may already have succeeded before directory fsync failed.
@@ -1453,6 +1454,7 @@ class AuthorityConnection {
   identity: DurableRecoveryIdentity | null = null;
   replayOnly = false;
   activationReceipt: DurableWarmRunTransition | null = null;
+  queuedFrames = 0;
   readonly wire: PrpWireConnection;
   #closed = false;
   #onClose: () => void;
@@ -1504,6 +1506,8 @@ export class DurablePrpControlPlane {
   // next authentication. Diagnostic only: it never gates authority.
   #runnerDisconnectedAt: number | null = null;
   #connectionProcessing = new Map<AuthorityConnection, Promise<void>>();
+  #deferredEventAck: { connection: AuthorityConnection; events: number } | null =
+    null;
   #pendingSemanticCalls = new Set<string>();
   #semanticCallbacksRetired = false;
   #semanticResultPersistenceFailed = false;
@@ -2093,9 +2097,19 @@ export class DurablePrpControlPlane {
     connection = new AuthorityConnection({
       wire,
       onJson: (value) => {
+        connection.queuedFrames += 1;
         processing = processing
           .then(() => this.#handleJson(connection, value))
-          .catch(() => connection.close());
+          .catch(() => connection.close())
+          .then(() => {
+            connection.queuedFrames -= 1;
+            if (connection.queuedFrames !== 0) return;
+            try {
+              this.#flushDeferredEventAck();
+            } catch {
+              connection.close();
+            }
+          });
         const tail = processing;
         this.#connectionProcessing.set(connection, tail);
         const release = () => {
@@ -2150,6 +2164,7 @@ export class DurablePrpControlPlane {
       return;
     }
     const kind = envelope.kind;
+    if (kind !== "event") this.#flushDeferredEventAck();
     if (connection.secureChannel === null && kind === "auth_hello") {
       this.#authHello(connection, envelope);
       return;
@@ -3109,6 +3124,22 @@ export class DurablePrpControlPlane {
     }
   }
 
+  #flushDeferredEventAck(): void {
+    const deferred = this.#deferredEventAck;
+    if (deferred === null) return;
+    this.#deferredEventAck = null;
+    this.#store.save();
+    const ackedSourceSeq = this.#store.state.ackedSourceSeq;
+    deferred.connection.sendJson(
+      this.#controlEnvelope(
+        deferred.connection,
+        `ack_${ackedSourceSeq}`,
+        "ack",
+        { ackedSourceSeq },
+      ),
+    );
+  }
+
   async #event(
     connection: AuthorityConnection,
     envelope: Record<string, unknown>,
@@ -3292,6 +3323,17 @@ export class DurablePrpControlPlane {
       });
       this.#store.state.ackedSourceSeq = sourceSeq;
     }
+    if (!isSemanticInput && connection.queuedFrames > 1) {
+      const pendingAck = this.#deferredEventAck;
+      if (pendingAck === null || pendingAck.connection === connection) {
+        const events = (pendingAck?.events ?? 0) + 1;
+        if (events < maxDeferredEventAcks) {
+          this.#deferredEventAck = { connection, events };
+          return;
+        }
+      }
+    }
+    this.#deferredEventAck = null;
     this.#store.save();
 
     if (
