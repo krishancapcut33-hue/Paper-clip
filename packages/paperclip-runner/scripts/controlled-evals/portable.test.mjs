@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { execFile } from 'node:child_process';
-import { mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
+import { mkdtemp, mkdir, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -13,6 +14,7 @@ const exec = promisify(execFile);
 const source = dirname(fileURLToPath(import.meta.url));
 const isolatedProbe = `
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import { registerHooks, isBuiltin, createRequire } from 'node:module';
 import { realpath } from 'node:fs/promises';
 import { pathToFileURL } from 'node:url';
@@ -100,4 +102,32 @@ test('copied controller runs without source dependencies, retains native evidenc
   await assert.rejects(verifyControllerRuntime(input), /Unexpected runtime artifact/);
   await rm(extra);
   assert.equal((await verifyControllerRuntime(input)).receiptSha256, receipt.receiptSha256);
+});
+
+
+test('only the root runtime receipt is excluded from the verified file inventory', async t => {
+  const root = await mkdtemp(join(tmpdir(), 'runner-runtime-nested-receipt-'));
+  t.after(() => rm(root, { recursive: true, force: true }));
+  const sourceRevision = 'a'.repeat(40), files = {};
+  const digest = bytes => createHash('sha256').update(bytes).digest('hex');
+  let payloadBytes = 0;
+  for (const name of ['controlled-evals/run.mjs', 'controlled-evals/archive.mjs', 'controlled-evals/runtime.mjs', 'dependency/runtime.json']) {
+    const bytes = Buffer.from(name.endsWith('.json') ? '{"dependency":true}' : 'export {};');
+    await mkdir(dirname(join(root, name)), { recursive: true });
+    await writeFile(join(root, name), bytes);
+    files[name] = { sizeBytes: bytes.length, sha256: digest(bytes) }; payloadBytes += bytes.length;
+  }
+  const receipt = encodeRuntimeReceipt({ schema: 'paperclip.runner-eval.controller-runtime/v1', sourceRevision, nodeMajor: 24, payloadBytes, files });
+  await writeFile(join(root, 'runtime.json'), receipt);
+  const input = { directory: root, sourceRevision, receiptSha256: digest(receipt) };
+  assert.equal((await verifyControllerRuntime(input)).files, 5);
+  const nested = join(root, 'dependency/runtime.json'), original = await readFile(nested);
+  await writeFile(nested, Buffer.from('{"dependency":fake}'));
+  await assert.rejects(verifyControllerRuntime(input), /content mismatch|oversized/);
+  await writeFile(nested, original);
+  await mkdir(join(root, 'dependency/deeper'));
+  await writeFile(join(root, 'dependency/deeper/runtime.json'), '{}');
+  await assert.rejects(verifyControllerRuntime(input), /Unexpected runtime artifact file/);
+  await rm(join(root, 'dependency/deeper'), { recursive: true });
+  assert.equal((await verifyControllerRuntime(input)).files, 5);
 });
