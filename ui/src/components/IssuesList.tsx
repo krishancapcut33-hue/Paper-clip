@@ -1,3 +1,4 @@
+import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
 import { includeIssueHierarchyContext } from "../lib/issue-hierarchy-context";
@@ -919,13 +920,14 @@ function StreamlinedIssuesList({
     queryKey: [
       ...queryKeys.issues.search(selectedCompanyId!, normalizedIssueSearch, projectId),
       searchFilters ?? {},
-      "compact",
+      enableAgentCreatedVisibilityFilter && viewState.viewMode === "list" ? "index" : "compact",
       ISSUE_SEARCH_RESULT_LIMIT,
       enableAgentCreatedVisibilityFilter ? "with-routine-executions" : "without-routine-executions",
         enableAgentCreatedVisibilityFilter ? viewState.showAgentCreatedTasks : undefined,
     ],
     queryFn: ({ signal }) =>
       issuesApi.listCompact(selectedCompanyId!, {
+        projection: enableAgentCreatedVisibilityFilter && viewState.viewMode === "list" ? "index" : undefined,
         q: normalizedIssueSearch,
         projectId,
         limit: ISSUE_SEARCH_RESULT_LIMIT,
@@ -1307,6 +1309,7 @@ function StreamlinedIssuesList({
     hierarchyEnabled,
     hierarchyRowBudget,
   );
+  const collectionLoading = Boolean(isLoading || externalObjectFilterLoading || (hierarchyEnabled && hierarchy.isLoading));
   const baseGroupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
       return [{ key: "__all", label: null as string | null, items: filtered }];
@@ -1448,6 +1451,12 @@ function StreamlinedIssuesList({
     viewState.collapsedParents,
     viewState.nestingEnabled,
   ]);
+
+  const enrichIssueRow = useIssueRowDetails(
+    selectedCompanyId, rootRef,
+    flatNavEntries.filter((entry) => entry.type === "issue").map((entry) => entry.type === "issue" ? entry.issue.id : "").join(",") + ":" + renderedIssueRowLimit,
+    enableAgentCreatedVisibilityFilter && viewState.viewMode === "list" && !collectionLoading,
+  );
 
   const listNavStateRef = useRef({
     flatNavEntries,
@@ -2042,7 +2051,8 @@ function StreamlinedIssuesList({
         )}
       />
 
-      {(isLoading || externalObjectFilterLoading) && <PageSkeleton variant="issues-list" />}
+      {collectionLoading && <PageSkeleton variant="issues-list" collectionHeading={viewState.groupBy !== "none" ? "group"
+        : viewState.showDateGroupSeparators && issueDateSeparatorField(viewState) && rowPresentation === "task" ? "date" : null} />}
       {error && <p className="text-sm text-destructive">{error.message}</p>}
       {!searchWithinLoadedIssues && normalizedIssueSearch.length > 0 && searchedIssues.length === ISSUE_SEARCH_RESULT_LIMIT && (
         <p className="text-xs text-muted-foreground">
@@ -2055,7 +2065,7 @@ function StreamlinedIssuesList({
         </p>
       )}
       {hierarchy.error ? <p className="text-sm text-destructive">Failed to load task hierarchy: {hierarchy.error.message}</p> : null}
-      {!isLoading && !externalObjectFilterLoading && visibleListRowCount === 0 && viewState.viewMode === "list" && (
+      {!collectionLoading && visibleListRowCount === 0 && viewState.viewMode === "list" && (
         <EmptyState
           icon={CircleDot}
           message="No tasks match the current filters or search."
@@ -2064,7 +2074,7 @@ function StreamlinedIssuesList({
         />
       )}
 
-      {viewState.viewMode === "board" ? (
+      {!collectionLoading && (viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
           agents={agents}
@@ -2134,6 +2144,7 @@ function StreamlinedIssuesList({
                   : { roots: group.items, childMap: new Map<string, Issue[]>() };
 
                 const renderIssueRow = (issue: Issue, depth: number) => {
+                  issue = enrichIssueRow(issue);
                   if (remainingRowsToRender <= 0) return null;
                   remainingRowsToRender -= 1;
 
@@ -2236,6 +2247,7 @@ function StreamlinedIssuesList({
                       <IssueRow
                         issue={issue}
                         presentation={rowPresentation}
+                        stableLayout={enableAgentCreatedVisibilityFilter}
                         issueLinkState={issueLinkState}
                         selected={selectedNavKey === `issue:${issue.id}`}
                         onMouseEnter={() => setNavSelectionFromPointer(`issue:${issue.id}`)}
@@ -2564,7 +2576,7 @@ function StreamlinedIssuesList({
             </div>
           )}
         </div>
-      )}
+      ))}
     </div>
   );
 }

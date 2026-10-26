@@ -31,34 +31,45 @@ export function includeIssueHierarchyContext(matches: Issue[], context: Issue[])
   return [...result.values()];
 }
 
-/** Fetch each parent once and stop at the collection's current rendering budget. */
+/** Batch each breadth-first frontier; leaf-heavy lists need one read, not one per task. */
 export async function loadIssueHierarchyChildren(
   companyId: string,
   matches: Issue[],
   collapsedParents: string[],
   rowBudget: number,
-  readChildren: (parentId: string, limit: number, offset: number) => Promise<Issue[]>,
+  readChildren: (parentIds: string[], limit: number, offset: number) => Promise<Issue[]>,
 ): Promise<{ issues: Issue[]; hasMore: boolean }> {
   const context: Issue[] = [];
-  const queue = matches.map((issue) => ({ issue, offset: 0 }));
   const visited = new Set<string>();
   const fetched = new Set<string>();
+  const collapsed = new Set(collapsedParents);
   let requests = 0;
-  while (queue.length > 0 && context.length < rowBudget && requests < rowBudget) {
-    const { issue, offset } = queue.shift()!;
-    if (offset === 0 && visited.has(issue.id)) continue;
-    visited.add(issue.id);
-    const collapsed = collapsedParents.includes(issue.id);
-    const limit = collapsed ? 1 : Math.min(100, rowBudget - context.length);
-    const rows = await readChildren(issue.id, limit, offset);
-    requests += 1;
-    for (const child of rows) {
-      if (child.companyId !== companyId || fetched.has(child.id)) continue;
-      fetched.add(child.id);
-      context.push(child);
-      if (!collapsed) queue.push({ issue: child, offset: 0 });
+  let frontier = [...new Set(matches.map((issue) => issue.id))];
+  while (frontier.length > 0 && context.length < rowBudget) {
+    const next: string[] = [];
+    for (let start = 0; start < frontier.length; start += 100) {
+      const parentIds = frontier.slice(start, start + 100).filter((id) => !visited.has(id));
+      if (parentIds.length === 0) continue;
+      parentIds.forEach((id) => visited.add(id));
+      let offset = 0;
+      while (context.length < rowBudget) {
+        if (requests >= rowBudget) return { issues: context, hasMore: true };
+        requests += 1;
+        const limit = Math.min(100, rowBudget - context.length);
+        const rows = await readChildren(parentIds, limit, offset);
+        for (const child of rows) {
+          if (child.companyId !== companyId || fetched.has(child.id)) continue;
+          fetched.add(child.id);
+          context.push(child);
+          if (!collapsed.has(child.parentId ?? "") && !visited.has(child.id)) next.push(child.id);
+        }
+        if (rows.length < limit) break;
+        offset += rows.length;
+        if (context.length >= rowBudget) return { issues: context, hasMore: true };
+      }
+      if (context.length >= rowBudget && (start + 100 < frontier.length || next.length > 0)) return { issues: context, hasMore: true };
     }
-    if (!collapsed && rows.length === limit) queue.unshift({ issue, offset: offset + rows.length });
+    frontier = [...new Set(next)].filter((id) => !visited.has(id));
   }
-  return { issues: context, hasMore: queue.length > 0 };
+  return { issues: context, hasMore: frontier.length > 0 };
 }

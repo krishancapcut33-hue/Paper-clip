@@ -1,4 +1,4 @@
-import { isHeartbeatRunVisibleInMine } from "@paperclipai/shared";
+import { isHeartbeatRunVisibleInMine, latestFailedRunsByAgent as getLatestFailedRunsByAgent } from "@paperclipai/shared";
 import type {
   Approval,
   DashboardSummary,
@@ -725,20 +725,7 @@ export function getInboxKeyboardSelectionIndex(
     : Math.max(previousIndex - 1, 0);
 }
 
-export function getLatestFailedRunsByAgent(runs: HeartbeatRun[]): HeartbeatRun[] {
-  const sorted = [...runs].sort(
-    (a, b) => new Date(b.createdAt).getTime() - new Date(a.createdAt).getTime(),
-  );
-  const latestByAgent = new Map<string, HeartbeatRun>();
-
-  for (const run of sorted) {
-    if (!latestByAgent.has(run.agentId)) {
-      latestByAgent.set(run.agentId, run);
-    }
-  }
-
-  return Array.from(latestByAgent.values()).filter((run) => FAILED_RUN_STATUSES.has(run.status));
-}
+export { latestFailedRunsByAgent as getLatestFailedRunsByAgent } from "@paperclipai/shared";
 
 export function normalizeTimestamp(value: string | Date | null | undefined): number {
   if (!value) return 0;

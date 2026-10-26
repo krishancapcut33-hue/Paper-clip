@@ -645,6 +645,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
         q: "server",
+        projection: undefined,
         projectId: undefined,
         limit: 200,
       }, { signal: expect.any(AbortSignal) });
@@ -679,6 +680,7 @@ describe("IssuesList", () => {
     await waitForAssertion(() => {
       expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1", {
         q: "server",
+        projection: undefined,
         projectId: undefined,
         parentId: "parent-1",
         limit: 200,
@@ -1577,7 +1579,7 @@ describe("IssuesList", () => {
     let holdNextRead = false;
     let releaseRead: (() => void) | undefined;
     mockIssuesApi.list.mockImplementation(async (_companyId, filters) => {
-      if (filters.parentId !== parent.id) return [];
+      if (!filters.parentIds?.includes(parent.id)) return [];
       const rows = children.slice(filters.offset ?? 0, (filters.offset ?? 0) + filters.limit);
       if (holdNextRead) {
         holdNextRead = false;

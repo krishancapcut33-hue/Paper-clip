@@ -900,6 +900,24 @@ describe("Inbox toolbar", () => {
     });
   });
 
+  it("waits for the task index before revealing faster failed-run rows", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    let release: (rows: Issue[]) => void = () => undefined;
+    apiMocks.issuesList.mockImplementation((_company, filters) => filters.projection === "index"
+      ? new Promise<Issue[]>((resolve) => { release = resolve; }) : Promise.resolve([]));
+    apiMocks.heartbeatRunsList.mockResolvedValue([createFailedRun()]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(async () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(apiMocks.heartbeatRunsList).toHaveBeenCalled());
+    expect(container.querySelector('[aria-label="Loading tasks"]')).not.toBeNull();
+    expect(container.querySelector('[data-inbox-item]')).toBeNull();
+    await act(async () => release([createIssue({ title: "Delayed task index row" })]));
+    await vi.waitFor(() => expect(container.textContent).toContain("Delayed task index row"));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
   it("requests live descendant summaries for issue rows", async () => {
     routerMock.location.pathname = "/inbox/mine";
 
@@ -916,20 +934,11 @@ describe("Inbox toolbar", () => {
       );
     });
 
-    await vi.waitFor(() => {
-      expect(apiMocks.issuesList).toHaveBeenCalledTimes(3);
-    });
-
-    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.includeLiveDescendantSummary)).toEqual([
-      true,
-      true,
-      true,
-    ]);
-    expect(apiMocks.issuesList.mock.calls.map((call) => call[1]?.limit)).toEqual([
-      500,
-      500,
-      500,
-    ]);
+    await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledTimes(1));
+    expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      touchedByUserId: "me", inboxArchivedByUserId: "me", projection: "index",
+      includeLiveDescendantSummary: true, limit: 100, sortField: "updated", sortDir: "desc",
+    }));
 
     act(() => {
       root.unmount();
