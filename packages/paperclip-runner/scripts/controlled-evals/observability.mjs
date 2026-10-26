@@ -1,6 +1,7 @@
 import { randomBytes } from 'node:crypto';
-import { readFile, writeFile } from 'node:fs/promises';
+import { writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
+import { limitFor, readRegularFile } from './evidence-files.mjs';
 import { canonical, costRuntime, ROOT_OTLP_LIMITS, sha256 } from './manifest.mjs';
 
 function launchFor(manifest, request, identity, baseUrl) {
@@ -66,7 +67,7 @@ export async function startControlledObservability({ manifest, attempt, request,
           await native.close();
           signal?.throwIfAborted();
           try {
-            const receipts = costRuntime.inspectEvalOtlpReceipts(await readFile(join(root, 'otlp-native.jsonl')),
+            const receipts = costRuntime.inspectEvalOtlpReceipts(await readRegularFile(join(root, 'otlp-native.jsonl'), limitFor('otlp-native.jsonl')),
               policyFor(manifest, attempt, identity, deadlineAt, true));
             if (receipts.status !== 'accepted' || !receipts.signals.logs.records || !receipts.signals.traces.records) traceFailure ??= 'native_export_incomplete';
           } catch { traceFailure ??= 'native_evidence_incomplete'; }
@@ -79,7 +80,7 @@ export async function startControlledObservability({ manifest, attempt, request,
         } finally { await close(); }
         return inspectControlledObservability({ manifest, attempt, request, artifact: input.artifact,
           report: { startedAt, traceFinishedAt: finishedAt, cleanupVerified: input.cleanupVerified, traceFailure },
-          deadlineAt, readEvidence: name => readFile(join(root, name)) });
+          deadlineAt, readEvidence: name => readRegularFile(join(root, name), limitFor(name)) });
       })() };
   } catch (error) { await close(); throw error; }
 }

@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -18,7 +19,9 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {readFile,writeFile} from 'node:fs/promises';
+import {readFile,writeFile,rm,readdir,symlink,truncate} from 'node:fs/promises';
+import {dirname,join} from 'node:path';
+import {execFileSync} from 'node:child_process';
 const args=new Map();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);
 const request=JSON.parse(await readFile(args.get('--request'),'utf8'));
 if(${Boolean(options.resistantDescendant)}) {
@@ -51,6 +54,17 @@ if(!${Boolean(options.missingArtifact)})await writeFile(args.get('--output'),JSO
  requestRouting:${options.missingRoute ? 'null' : "{mode:'controller_gateway',provider:descriptor.provider,declaredUpstreamRoute:descriptor.upstreamRoute,campaignId:descriptor.campaignId,executionId:descriptor.executionId,attemptId:descriptor.attemptId,descriptorSha256:createHash('sha256').update(descriptorRaw).digest('hex')}"},
  nativeObservability, snapshot:{status:'closed',process:{runnerExited:true,runnerPid:process.pid,providerPid:process.pid}},statuses,
  leaked:${options.leakToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN' : options.leakOtlpToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN' : 'null'}}));
+if(${Boolean(options.invalidEvidence)}) {
+ const root=dirname(args.get('--output'));
+ const name=${JSON.stringify(options.invalidEvidence ?? '')};
+ const file=name==='receipt'?join(root,'receipts',(await readdir(join(root,'receipts')))[0]):join(root,name);
+ await rm(file);
+ const kind=${JSON.stringify(options.invalidFileType ?? '')};
+ if(kind==='fifo')execFileSync('mkfifo',[file]);
+ else if(kind==='symlink')await symlink('/dev/zero',file);
+ else {await writeFile(file,'');await truncate(file,16*1024*1024+1);}
+}
+
 if(${Boolean(options.orphanExit)})process.exit(0);
 `;
 
@@ -141,6 +155,7 @@ test('disjoint concurrent cells cannot borrow an allowance and unknown requests 
 test('rejects oversized or unqualified allocations, changed requests and changed executables before dispatch', async t => {
   const f = await fixture(t, { count: 2 });
   for (const mutate of [
+    value => { value.attempts[0].attemptId = 'nested/attempt'; },
     value => { value.maxUsd = '0.01'; }, value => { value.attempts[1].executionId = value.attempts[0].executionId; },
     value => { value.attempts[0].provider = 'acpx'; value.attempts[0].acpxAgent = 'codex'; },
     value => { delete value.overhead.components[0].provisionalBound; }, value => { value.models[0].secret = 'unexpected'; },
@@ -398,6 +413,51 @@ test('configured credentials are excluded before encoding and after archive deco
   await assert.rejects(readControlledEvidence(file, { environment }), /configured credential/);
 });
 
+for (const name of ['provider-artifact.json', 'receipt', 'ledger.jsonl']) for (const kind of ['fifo', 'symlink', 'oversized']) {
+  test(`post-child ${name} rejects ${kind} without blocking or releasing its allocation`, { timeout: 20_000 }, async t => {
+    const f = await fixture(t, { requests: 1, invalidEvidence: name, invalidFileType: kind });
+    const result = await f.run();
+    assert.equal(result.report.status, 'incomplete');
+    assert.equal(result.report.accounting.knownUsd, '0.000068000');
+    const summary = await summarizeControlledCampaign(f.manifest);
+    assert.equal(summary.incompleteAttempts, 1);
+    assert.equal(summary.committedUsd, '0.014000000');
+  });
+}
+
+test('durable reports bound every evidence file and retain full holds for invalid proof', { timeout: 20_000 }, async t => {
+  const f = await fixture(t, { requests: 1, observability: true }); await f.run();
+  const root = attemptDirectory(f.manifest, 'attempt-0');
+  const receipt = `receipts/${(await readdir(join(root, 'receipts')))[0]}`;
+  for (const name of ['admission.json', 'request.json', 'result.json', 'provider-artifact.json', 'gateway.json', 'ledger.jsonl', receipt, 'observability.json', 'otlp-native.jsonl', 'otlp-controller.jsonl', 'otlp-root.json']) {
+    const path = join(root, name), original = await readFile(path);
+    for (const kind of ['fifo', 'symlink', 'oversized']) {
+      await rm(path);
+      if (kind === 'fifo') execFileSync('mkfifo', [path]);
+      else if (kind === 'symlink') await symlink('/dev/zero', path);
+      else { await writeFile(path, ''); await truncate(path, 16 * 1024 * 1024 + 1); }
+      const summary = await summarizeControlledCampaign(f.manifest);
+      assert.equal(summary.incompleteAttempts, 1, `${name}:${kind}`);
+      assert.equal(summary.committedUsd, '0.014000000', `${name}:${kind}`);
+    }
+    await rm(path); await writeFile(path, original);
+  }
+  assert.equal((await summarizeControlledCampaign(f.manifest)).incompleteAttempts, 0);
+});
+
+for (const name of ['PAPERCLIP_AGENT_PRIVATE_KEY', 'PAPERCLIP_AI_PROVIDER_KEY', 'AWS_SECRET_ACCESS_KEY', 'OPENCODE_CONFIG_CONTENT']) {
+  test(`archive excludes configured ${name} before and after encoding`, async t => {
+    const f = await fixture(t); await f.run();
+    const secret = name === 'PAPERCLIP_AGENT_PRIVATE_KEY' ? '-----BEGIN PRIVATE KEY-----\nsynthetic-private-material\n-----END PRIVATE KEY-----' : 'synthetic-extra-credential';
+    const environment = { [name]: name === 'OPENCODE_CONFIG_CONTENT' ? JSON.stringify({ provider: { apiKey: secret } }) : secret };
+    const root = attemptDirectory(f.manifest, 'attempt-0');
+    await writeFile(join(root, 'stderr.log'), JSON.stringify({ retained: secret }));
+    await assert.rejects(packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment }), /configured credential/);
+    const unchecked = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment: {} });
+    assert.throws(() => decodeControlledEvidence(unchecked, { environment }), /configured credential/);
+  });
+}
+
 test('retention annotations preserve an already-failed controller result and its known costs', async t => {
   const f = await fixture(t, { requests: 1, missingRoute: true }); await f.run();
   const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0' });
@@ -582,7 +642,9 @@ test('cancellation aborts a pending native export and retains its uncertain rece
 test('lost ledger finalization still closes both OTLP relays', async t => {
   const f = await fixture(t, { observability: true, requests: 1 });
   const root = attemptDirectory(f.manifest, 'attempt-0');
-  await assert.rejects(f.run(0, async () => { await rm(join(root, 'ledger.jsonl')); return success(); }), { code: 'ENOENT' });
+  const result = await f.run(0, async () => { await rm(join(root, 'ledger.jsonl')); return success(); });
+  assert.equal(result.code, 2); assert.equal(result.report.failure, 'ledger_evidence_invalid');
+  assert.equal((await summarizeControlledCampaign(f.manifest)).committedUsd, '0.014000000');
   for (const file of ['otlp-native.jsonl', 'otlp-controller.jsonl']) {
     const rows = (await readFile(join(root, file), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(rows.at(-1).type, 'closed');
@@ -622,3 +684,15 @@ test('cancellation during root export stops forwarding and cannot close the atte
   const summary = await summarizeControlledCampaign(f.manifest);
   assert.equal(summary.committedUsd, '0.014000000'); assert.equal(summary.knownUsd, '0.000068000');
 });
+
+for (const name of ['observability.json', 'otlp-native.jsonl', 'otlp-controller.jsonl']) for (const kind of ['fifo', 'symlink', 'oversized']) {
+  test(`native post-child ${name} rejects ${kind} and retains model cost plus the full hold`, { timeout: 20_000 }, async t => {
+    const f = await fixture(t, { requests: 1, observability: true, invalidEvidence: name, invalidFileType: kind });
+    const result = await f.run();
+    assert.equal(result.code, 2);
+    const summary = await summarizeControlledCampaign(f.manifest);
+    assert.equal(summary.incompleteAttempts, 1);
+    assert.equal(summary.knownUsd, '0.000068000');
+    assert.equal(summary.committedUsd, '0.014000000');
+  });
+}
