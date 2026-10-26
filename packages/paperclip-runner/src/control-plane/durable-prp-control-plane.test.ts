@@ -49,8 +49,9 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
-it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_command", "replacement", "write_failure", "drain", "semantic_replacement"] as const)(
+it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "credentials", "newer_command", "command_burst", "command_failure", "replacement", "write_failure", "usage_write_failure", "drain", "usage_drain", "semantic_replacement"] as const)(
   "keeps HTTP responsive during a durable event write and preserves %s", async (mode) => {
+    if (mode === "command_failure" && process.platform === "win32") return;
     const root = mkdtempSync(resolve(tmpdir(), "runner-event-io-"));
     const dispatch = vi.fn(async () => {
       expect(JSON.parse(readFileSync(resolve(root, "control-plane-state.json"), "utf8")).ackedSourceSeq).toBe(1);
@@ -65,18 +66,21 @@ it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_comman
     const barrier = new Promise<void>(resolveWrite => { release = resolveWrite; });
     const originalOpen = fsPromises.open;
     let staged = false;
+    let stagedWrites = 0;
     let holdFirst = true;
     let client: AuthenticatedClient | null = null;
     let replacement: AuthenticatedClient | null = null;
+    let restoreCommandSync = () => {};
     const open = vi.spyOn(fsPromises, "open").mockImplementation(async (...args) => {
       const file = await originalOpen(...args);
+      if (String(args[0]).includes(".control-plane-state.json.")) stagedWrites++;
       if (holdFirst && String(args[0]).includes(".control-plane-state.json.")) {
         holdFirst = false;
         const sync = file.sync.bind(file);
         file.sync = async () => {
           staged = true;
           await barrier;
-          if (mode === "write_failure") throw new Error("controlled disk failure");
+          if (mode === "write_failure" || mode === "usage_write_failure") throw new Error("controlled disk failure");
           await sync();
         };
       }
@@ -97,11 +101,12 @@ it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_comman
           payload.payload = { schema: "paperclip.tool.execution.v1", executionId: "progress-1",
             transport: "process", operation: "execute", status: "running", output: "working",
             outputBytes: 7, outputTruncated: false, outputDigest: null };
-        } else if (mode === "lifecycle") {
+        } else if (mode === "lifecycle" || mode === "lifecycle_priority_one") {
           payload.eventType = "turn.completed";
-          payload.priority = 0;
+          // Direct TypeScript producers can label turn.completed as P1.
+          payload.priority = mode === "lifecycle_priority_one" ? 1 : 0;
           payload.payload = { status: "completed" };
-        } else if (mode === "usage") {
+        } else if (mode === "usage" || mode === "usage_drain" || mode === "usage_write_failure") {
           payload.eventType = "usage.reported";
           payload.priority = 1;
           payload.payload = { inputTokens: 100, outputTokens: 20 };
@@ -122,7 +127,7 @@ it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_comman
         await vi.waitFor(() => expect(core.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(true));
         return;
       }
-      if (mode === "lifecycle" || mode === "credentials") {
+      if (mode === "lifecycle" || mode === "lifecycle_priority_one" || mode === "credentials") {
         expect(staged).toBe(false);
         expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(1);
         expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
@@ -136,14 +141,31 @@ it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_comman
       // whose snapshot is still waiting for its first durable write.
       expect(core.store.state.ackedSourceSeq).toBe(0);
       expect(core.store.state.committedEvents).toEqual([]);
-      if (mode === "newer_command") {
+      if (mode === "newer_command" || mode === "command_burst") {
         core.queueCommand("session.snapshot", {}, "command_during_event");
+        if (mode === "command_burst") core.queueCommand("session.snapshot", {}, "second_command_during_event");
         const saved = JSON.parse(readFileSync(core.store.path, "utf8"));
-        expect(saved.ackedSourceSeq).toBe(0);
+        // The command's existing durable write can also publish the pending
+        // event. It must not need another full staged write afterward.
+        expect(saved.ackedSourceSeq).toBe(1);
+        expect(core.store.state.ackedSourceSeq).toBe(1);
         expect(saved.commands.some((command: { commandId: string }) => command.commandId === "command_during_event")).toBe(true);
       }
+      if (mode === "command_failure") {
+        const originalSync = nodeFs.fsyncSync;
+        const failDirectorySync = vi.spyOn(nodeFs, "fsyncSync").mockImplementation(fd => {
+          if (nodeFs.fstatSync(fd).isDirectory()) throw new Error("controlled directory sync failure");
+          originalSync(fd);
+        });
+        syncBuiltinESMExports();
+        restoreCommandSync = () => { failDirectorySync.mockRestore(); syncBuiltinESMExports(); };
+        expect(() => core.queueCommand("session.snapshot", {}, "failed_command_during_event")).toThrow("controlled directory sync failure");
+        expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(1);
+        expect(core.store.state.ackedSourceSeq).toBe(0);
+        expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
+      }
       let drained = false;
-      const retirement = mode === "drain" ? (async () => {
+      const retirement = mode === "drain" || mode === "usage_drain" ? (async () => {
         await core.stop();
         await core.drainPendingConnectionProcessing();
         drained = true;
@@ -169,7 +191,7 @@ it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_comman
         expect(await receiveSecure(client)).toBeNull();
         await retirement;
         expect(drained).toBe(true);
-      } else if (mode === "write_failure") {
+      } else if (mode === "write_failure" || mode === "usage_write_failure" || mode === "command_failure") {
         expect(await receiveSecure(client)).toBeNull();
         expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
       } else if (mode !== "replacement") {
@@ -179,18 +201,27 @@ it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_comman
       await core.drainPendingConnectionProcessing();
       const restored = new DurablePrpControlPlane({ stateDirectory: root, identity,
         expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit });
-      const expectedEvents = mode === "replacement" ? 2 : mode === "write_failure" ? 0 : 1;
+      const expectedEvents = mode === "replacement" ? 2 : mode === "write_failure" || mode === "usage_write_failure" ? 0 : 1;
       expect(restored.store.state.ackedSourceSeq).toBe(expectedEvents);
       expect(restored.store.state.committedEvents).toHaveLength(expectedEvents);
-      if (mode === "newer_command") {
+      if (mode === "newer_command" || mode === "command_burst") {
         expect(restored.store.state.commands.some(command => command.commandId === "command_during_event")).toBe(true);
         expect(commit).toHaveBeenCalledTimes(1);
+        expect(stagedWrites).toBe(1);
+        expect(restored.store.state.committedEvents[0].deliveryCount).toBe(1);
+        if (mode === "command_burst") {
+          expect(restored.store.state.commands.some(command => command.commandId === "second_command_during_event")).toBe(true);
+        }
       }
       if (mode === "replacement") {
         expect(commit).toHaveBeenCalledTimes(3);
         expect(effects.size).toBe(2);
       }
-      if (mode === "drain") {
+      if (mode === "command_failure") {
+        expect(restored.store.state.commands.some(command => command.commandId === "failed_command_during_event")).toBe(true);
+        expect(stagedWrites).toBe(1);
+      }
+      if (mode === "drain" || mode === "usage_drain") {
         await restored.start();
         try {
           replacement = (await authenticate(restored, client.leaseToken!))!;
@@ -207,6 +238,7 @@ it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_comman
       expect(nodeFs.readdirSync(root).filter(name => name.endsWith(".tmp"))).toEqual([]);
     } finally {
       release();
+      restoreCommandSync();
       open.mockRestore();
       client?.socket.destroy();
       replacement?.socket.destroy();

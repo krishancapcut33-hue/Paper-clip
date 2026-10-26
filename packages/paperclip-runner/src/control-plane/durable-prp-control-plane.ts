@@ -1204,6 +1204,11 @@ class DurableCoreStore {
   #state: StoredCoreState;
   #writeIndeterminate = false;
   #revision = 0;
+  #pendingEvent: {
+    buildCandidate: (state: StoredCoreState) => StoredCoreState | null;
+    isCurrentOwner: () => boolean;
+    committed: boolean;
+  } | null = null;
 
   constructor(directory: string, identity: DurableRecoveryIdentity) {
     try {
@@ -1243,7 +1248,15 @@ class DurableCoreStore {
     this.assertWritable();
     ++this.#revision;
     try {
-      atomicPrivateWrite(this.path, `${JSON.stringify(this.#state)}\n`);
+      const pending = this.#pendingEvent;
+      // A command already needs a synchronous write. Include the admitted
+      // event there, rather than invalidating and repeating its full write.
+      const withEvent = pending && !pending.committed && pending.isCurrentOwner()
+        ? pending.buildCandidate(this.#state) : null;
+      const candidate = withEvent ?? this.#state;
+      atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);
+      this.#state = candidate;
+      if (pending && withEvent) pending.committed = true;
     } catch (error) {
       this.#writeIndeterminate = true;
       throw error;
@@ -1255,31 +1268,32 @@ class DurableCoreStore {
     buildCandidate: (state: StoredCoreState) => StoredCoreState | null,
     isCurrentOwner: () => boolean,
   ): Promise<boolean> {
-    while (isCurrentOwner()) {
+    if (!isCurrentOwner()) return false;
+    const pending = { buildCandidate, isCurrentOwner, committed: false };
+    this.#pendingEvent = pending;
+    try {
       this.assertWritable();
       const revision = this.#revision;
       const candidate = buildCandidate(this.#state);
       if (candidate === null) return false;
-      let committed = false;
-      try {
-        await withStagedPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`, (temporary) => {
-          this.assertWritable();
-          if (!isCurrentOwner() || this.#revision !== revision) return;
-          renameSync(temporary, this.path);
-          syncParentDirectory(this.path);
-          this.#state = candidate;
-          ++this.#revision;
-          committed = true;
-        });
-      } catch (error) {
-        this.#writeIndeterminate = true;
-        throw error;
-      }
-      if (committed) return true;
-      // A synchronous command may have committed newer state during staging.
-      // Rebuild from that state without repeating the caller's business effect.
+      await withStagedPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`, (temporary) => {
+        this.assertWritable();
+        if (pending.committed || !isCurrentOwner() || this.#revision !== revision) return;
+        renameSync(temporary, this.path);
+        syncParentDirectory(this.path);
+        this.#state = candidate;
+        ++this.#revision;
+        pending.committed = true;
+      });
+      // Explicit authority commits do not absorb pending events. On conflict,
+      // leave the event unacknowledged for replay instead of rewriting in a loop.
+      return pending.committed;
+    } catch (error) {
+      this.#writeIndeterminate = true;
+      throw error;
+    } finally {
+      if (this.#pendingEvent === pending) this.#pendingEvent = null;
     }
-    return false;
   }
 
   assertWritable(): void {
@@ -3320,7 +3334,7 @@ export class DurablePrpControlPlane {
     };
     const isCurrentOwner = () => this.#eventOwner === connection &&
       this.#identity === identity && this.#protocolIntegrityError === null;
-    if (priority === 0 || isSemanticInput) {
+    if (priority === 0 || isSemanticInput || eventType.startsWith("turn.") || eventType.startsWith("run.")) {
       // Critical lifecycle suffixes and tool admission must finish in this
       // turn before readers react or a replacement owner adopts their cursor.
       const candidate = buildCandidate(this.#store.state);
