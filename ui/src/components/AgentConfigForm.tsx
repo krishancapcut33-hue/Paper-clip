@@ -1658,7 +1658,7 @@ export function AgentConfigForm(props: AgentConfigFormProps) {
                       // rejects at validation.
                       runtime: {
                         ...prev.runtime,
-                        runtimeConfig: { ...runtimeConfig, aiConnection: undefined },
+                        runtimeConfig: { ...runtimeConfig, aiConnection: null },
                       },
                     }));
                   }
