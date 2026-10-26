@@ -1,47 +1,39 @@
 import { isEntrypoint } from './entrypoint.mjs';
-import { constants } from 'node:fs';
-import { lstat, open, readdir, writeFile } from 'node:fs/promises';
+import { lstat, readdir, writeFile } from 'node:fs/promises';
 import { basename, join, resolve } from 'node:path';
 import { assertHostedAdmission, bindRequest, canonical, fields, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
 import { attemptDirectory, controlledResultArtifact } from './run.mjs';
 import { summarizeControlledCampaign } from './report.mjs';
+import { FILE_LIMITS, RECEIPT, limitFor, readRegularFile } from './evidence-files.mjs';
 
 const MiB = 1_048_576;
 const MAX_RAW_BYTES = 64 * MiB;
 const MAX_ARCHIVE_BYTES = 96 * MiB;
-const FILE_LIMITS = new Map([
-  ['admission.json', MiB], ['request.json', 8 * MiB], ['gateway.json', 8192],
-  ['ledger.jsonl', 16 * MiB], ['result.json', MiB], ['provider-artifact.json', 16 * MiB],
-  ['observability.json', 131_072], ['otlp-native.jsonl', 2 * MiB], ['otlp-controller.jsonl', 2 * MiB], ['otlp-root.json', 16_384],
-  ['stdout.log', MiB], ['stderr.log', MiB],
-]);
-const RECEIPT = /^receipts\/[a-f0-9]{8}(?:-[a-f0-9]{4}){3}-[a-f0-9]{12}\.json$/;
-const limitFor = name => FILE_LIMITS.get(name) ?? (RECEIPT.test(name) ? MiB : 0);
+
 
 function secretValues({ environment = process.env, secrets = [] } = {}) {
-  return [...new Set([...secrets, ...Object.entries(environment)
-    .filter(([name]) => /(?:API_KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY_ID)$/.test(name))
-    .map(([, value]) => value)].filter(value => typeof value === 'string' && value.length > 0))];
+  const configured = [...secrets, ...Object.entries(environment)
+    .filter(([name]) => /(?:KEY|TOKEN|SECRET|PASSWORD|ACCESS_KEY_ID|CONFIG_CONTENT)$/i.test(name))
+    .map(([, value]) => value)].filter(value => typeof value === 'string' && value.length > 0);
+  for (const [name, value] of Object.entries(environment)) {
+    if (!/CONFIG_CONTENT$/i.test(name) || typeof value !== 'string') continue;
+    try {
+      const visit = item => {
+        if (!item || typeof item !== 'object') return;
+        for (const [key, entry] of Object.entries(item)) {
+          if (/(?:key|token|secret|password)$/i.test(key) && typeof entry === 'string' && entry) configured.push(entry);
+          else visit(entry);
+        }
+      };
+      visit(JSON.parse(value));
+    } catch {}
+  }
+  return [...new Set(configured.flatMap(value => [value, JSON.stringify(value).slice(1, -1)]))];
 }
 function excludeSecrets(bytes, secrets) {
   if (secrets.some(secret => bytes.includes(Buffer.from(secret)))) throw new Error('Controller evidence contains a configured credential');
 }
-async function readRegularFile(path, maximum) {
-  const handle = await open(path, constants.O_RDONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
-  try {
-    const stat = await handle.stat();
-    if (!stat.isFile() || stat.size > maximum) throw new Error('Controller evidence is not a bounded regular file');
-    const bytes = Buffer.alloc(stat.size + 1);
-    let length = 0;
-    while (length < bytes.length) {
-      const { bytesRead } = await handle.read(bytes, length, bytes.length - length, null);
-      if (!bytesRead) break;
-      length += bytesRead;
-    }
-    if (length !== stat.size) throw new Error('Controller evidence changed while being read');
-    return bytes.subarray(0, length);
-  } finally { await handle.close(); }
-}
+
 async function realDirectory(path) {
   try {
     const stat = await lstat(path);
@@ -133,23 +125,22 @@ export async function readAttemptControlledEvidence(directory, options) {
   if (reportBytes) {
     let report, provider;
     try { report = JSON.parse(reportBytes.toString('utf8')); provider = providerBytes ? JSON.parse(providerBytes.toString('utf8')) : undefined; }
-    catch { return bundle; }
-    if (providerBytes || report?.providerArtifactSha256 === null) {
-      const expected = controlledResultArtifact(provider, report, allocation), actual = { ...artifact };
-      delete expected.provenance; delete actual.provenance;
-      if (actual.controllerEvidenceError !== undefined) {
-        if (typeof actual.controllerEvidenceError !== 'string' || !actual.controllerEvidenceError.trim()
-            || typeof actual.accountingError !== 'string' || !actual.accountingError.trim()
-            || canonical(actual.accountingFailure) !== canonical({ class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false })) {
-          throw new Error('Invalid immutable controller retention failure');
-        }
-        delete actual.controllerEvidenceError;
-        if (expected.accountingFailure) { actual.accountingFailure = expected.accountingFailure; actual.accountingError = expected.accountingError; }
-        else { delete actual.accountingFailure; delete actual.accountingError; }
+    catch { throw new Error('Malformed immutable controller result proof'); }
+    const expected = controlledResultArtifact(provider, report, allocation), actual = { ...artifact };
+    delete expected.provenance; delete actual.provenance;
+    if (actual.controllerEvidenceError !== undefined) {
+      if (typeof actual.controllerEvidenceError !== 'string' || !actual.controllerEvidenceError.trim()
+          || typeof actual.accountingError !== 'string' || !actual.accountingError.trim()
+          || canonical(actual.accountingFailure) !== canonical({ class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false })) {
+        throw new Error('Invalid immutable controller retention failure');
       }
-      if (canonical(actual) !== canonical(expected)) throw new Error('Immutable result disagrees with its controller proof');
+      delete actual.controllerEvidenceError;
+      if (expected.accountingFailure) { actual.accountingFailure = expected.accountingFailure; actual.accountingError = expected.accountingError; }
+      else { delete actual.accountingFailure; delete actual.accountingError; }
     }
+    if (canonical(actual) !== canonical(expected)) throw new Error('Immutable result disagrees with its controller proof');
   }
+
   return bundle;
 }
 

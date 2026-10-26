@@ -6,6 +6,7 @@ import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
 import { startControlledObservability } from './observability.mjs';
+import { limitFor, readRegularFile, replaceEvidenceFile } from './evidence-files.mjs';
 import { assertHostedAdmission, bindRequest, canonical, costRuntime, readJson, sha256, validateManifest } from './manifest.mjs';
 
 async function atomicJson(file, value) {
@@ -148,10 +149,9 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     child = await runChild({ cli: stagedCli, loader, requestPath: retainedRequestPath, artifactPath, descriptorPath, observabilityPath: observability?.descriptorPath,
       cwd: request.session.workingDirectory ?? root, environment: childEnvironment, deadlineAt, signal, closeGateway: () => Promise.all([gateway.close(), observability?.close()]) });
     for (const stream of ['stdout', 'stderr']) await writeFile(join(root, `${stream}.log`), redact(child[stream]), { flag: 'wx', mode: 0o600 });
-    const raw = await readFile(artifactPath, 'utf8');
-    if (Buffer.byteLength(raw) > 16_777_216) throw new Error('Provider artifact exceeds its byte limit');
+    const raw = (await readRegularFile(artifactPath, limitFor('provider-artifact.json'))).toString('utf8');
     secretExcluded = secrets.every(secret => !raw.includes(secret));
-    if (!secretExcluded) await writeFile(artifactPath, redact(raw), { mode: 0o600 });
+    if (!secretExcluded) await replaceEvidenceFile(artifactPath, redact(raw));
     providerArtifactSha256 = sha256(redact(raw));
     artifact = JSON.parse(redact(raw));
     const expected = { mode: 'controller_gateway', provider, declaredUpstreamRoute: manifest.route, campaignId: manifest.campaignId,
@@ -180,9 +180,11 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     if (snapshot.overBudget || snapshot.conflictingRequests || snapshot.inflight || snapshot.unknownRequests !== snapshot.boundedUnresolvedRequests) failure ??= 'request_accounting_unbounded';
     const receiptHashes = {};
     try {
-      for (const request of snapshot.requests) receiptHashes[request.requestId] = sha256(await readFile(join(root, 'receipts', `${request.requestId}.json`)));
+      for (const request of snapshot.requests) receiptHashes[request.requestId] = sha256(await readRegularFile(join(root, 'receipts', `${request.requestId}.json`), limitFor(`receipts/${request.requestId}.json`)));
     } catch { failure ??= 'request_receipt_missing'; }
-    const ledgerSha256 = sha256(await readFile(ledgerPath));
+    let ledgerSha256;
+    try { ledgerSha256 = sha256(await readRegularFile(ledgerPath, limitFor('ledger.jsonl'))); }
+    catch { failure ??= 'ledger_evidence_invalid'; }
     if (observability) {
       try {
         observabilityEvidence = await observability.finish({ artifact, cleanupVerified, failure });
@@ -202,6 +204,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     await writeFile(outputPath, JSON.stringify(resultArtifact, null, 2) + '\n', { flag: 'wx', mode: 0o600 });
     return { code: failure ? 2 : child?.code ?? 2, report };
   } finally { await observability?.close(); }
+
 }
 
 if (await isEntrypoint(import.meta.url)) {

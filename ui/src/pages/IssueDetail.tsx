@@ -1,3 +1,6 @@
+import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
+import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
+import { liveRunRefetchInterval } from "../lib/live-runs-cache";
 import { useTaskRetry } from "../hooks/useTaskRetry";
 import { grokBotApi } from "@/api/grokBot";
 import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
@@ -366,6 +369,7 @@ import {
   type IssueRecoveryAction,
   type IssueAttachment,
   type IssueComment,
+  type IssueRecentComments,
   type IssueDocumentSummary,
   type IssueWorkProduct,
   type IssueWorkMode,
@@ -1204,6 +1208,7 @@ type IssueDetailChatTabProps = {
   interruption?: Issue["interruption"];
   retryPreparing?: boolean;
   queryIssueId?: string;
+  hasLiveConnection: boolean;
   browsers?: import("@paperclipai/shared").TaskBrowser[];
   onOpenBrowser?: (browserId: string) => void;
   onOpenSkill?: (skillId: string, name: string) => void;
@@ -1242,6 +1247,9 @@ type IssueDetailChatTabProps = {
   } | null;
   comments: IssueDetailComment[];
   commentsInitialLoading?: boolean;
+  historyExpanded?: boolean;
+  onExpandHistory?: () => void;
+  hasEarlierMessages?: boolean;
   initialHistoryPending?: boolean;
   initialMetadataPending?: boolean;
   initialHistoryError?: boolean;
@@ -1309,6 +1317,7 @@ type IssueDetailChatTabProps = {
   onImageUpload: (file: File) => Promise<string>;
   onAttachImage: (file: File) => Promise<IssueAttachment | void>;
   onInterruptQueued: (runId: string | null) => Promise<void>;
+  onRemoveCommentFromCache: (commentId: string) => Promise<void>;
   onDeleteComment?: (commentId: string) => Promise<void> | void;
   onPauseWorkRun?: (runId: string, feedback?: "composer") => Promise<void>;
   onStopResponse?: (runId: string) => Promise<void>;
@@ -1365,6 +1374,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   interruption,
   retryPreparing,
   queryIssueId,
+  hasLiveConnection,
   browsers,
   onOpenBrowser,
   onOpenSkill,
@@ -1394,6 +1404,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   legacyRecoverySourceIssue,
   comments,
   commentsInitialLoading = false,
+  historyExpanded = true,
+  onExpandHistory,
+  hasEarlierMessages = false,
   initialHistoryPending = false,
   initialMetadataPending = false,
   initialHistoryError = false,
@@ -1437,6 +1450,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   onImageUpload,
   onAttachImage,
   onInterruptQueued,
+  onRemoveCommentFromCache,
   onDeleteComment,
   onPauseWorkRun,
   onStopResponse,
@@ -1484,10 +1498,23 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     isError: activityError,
     refetch: refetchActivity,
   } = useQuery({
-    queryKey: queryKeys.issues.activity(issueQueryRef),
-    queryFn: () => activityApi.forIssue(issueQueryRef),
+    queryKey: historyExpanded ? queryKeys.issues.activity(issueQueryRef) : [...queryKeys.issues.activity(issueQueryRef), "recent"],
+    queryFn: async () => {
+      if (historyExpanded) return activityApi.forIssue(issueQueryRef);
+      const recent = await activityApi.recentForIssue(issueQueryRef);
+      const previous = queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"]) ?? [];
+      return [...new Map([...previous, ...recent].map((event) => [event.id, event])).values()];
+    },
     enabled: !!issueId,
-    placeholderData: keepPreviousDataForSameQueryTail<ActivityEvent[]>(issueQueryRef),
+    placeholderData: historyExpanded
+      ? queryClient.getQueryData<ActivityEvent[]>([...queryKeys.issues.activity(issueQueryRef), "recent"])
+      : undefined,
+  });
+  const inputCommentIds = comments.filter((comment) => !("clientStatus" in comment) || !comment.clientStatus).map((comment) => comment.id).sort();
+  const inputFacts = useQuery({
+    queryKey: [...queryKeys.issues.activity(issueQueryRef), "comment-inputs", inputCommentIds],
+    queryFn: () => activityApi.inputFactsForIssue(issueQueryRef, inputCommentIds),
+    enabled: !!issueId && !historyExpanded && inputCommentIds.length > 0,
   });
   const {
     data: liveRuns,
@@ -1498,7 +1525,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.liveRuns(issueQueryRef),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueQueryRef),
     enabled: !!issueId,
-    refetchInterval: 1000,
+    refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueQueryRef),
   });
@@ -1515,7 +1542,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueQueryRef),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueQueryRef),
     enabled: activeRunQueryEnabled,
-    refetchInterval: liveRunCount > 0 ? false : 1000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueQueryRef,
     ),
@@ -1591,20 +1618,43 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     setClassicQueuedDeliveryError(null);
   }, [issueId]);
   const hasLiveRuns = liveRunCount > 0 || !!resolvedActiveRun;
+  const linkedRunsKey = historyExpanded
+    ? queryKeys.issues.runs(issueQueryRef)
+    : [...queryKeys.issues.runs(issueQueryRef), "recent"];
   const {
     data: linkedRuns,
     isPending: linkedRunsPending,
     isError: linkedRunsError,
     refetch: refetchLinkedRuns,
   } = useQuery({
-    queryKey: queryKeys.issues.runs(issueQueryRef),
-    queryFn: () => activityApi.runsForIssue(issueQueryRef),
+    queryKey: linkedRunsKey,
+    queryFn: async () => {
+      if (historyExpanded) return activityApi.runsForIssue(issueQueryRef);
+      let recent = await activityApi.recentRunsForIssue(issueQueryRef);
+      let previous = queryClient.getQueryData<RunForIssue[]>(linkedRunsKey) ?? [];
+      if (previous.some((run) =>
+        (run.status === "running" || run.status === "queued") && !recent.some((next) => next.runId === run.runId),
+      )) {
+        // After a reconnect, several turns may have completed beyond the small
+        // window. Reconcile watched runs once against authoritative summaries.
+        recent = await activityApi.runsForIssue(issueQueryRef);
+        const existingRunIds = new Set(recent.map((run) => run.runId));
+        previous = previous.filter((run) => existingRunIds.has(run.runId));
+      }
+      // The second row refreshes a just-finished predecessor. Start with only
+      // the latest run, then keep every run observed while this task is open.
+      const visible = new Set([...previous.map((run) => run.runId), ...recent.slice(0, 1).map((run) => run.runId)]);
+      return [...new Map([...previous, ...recent].filter((run) => visible.has(run.runId)).map((run) => [run.runId, run])).values()];
+    },
     enabled: !!issueId,
     refetchInterval:
       hasLiveRuns || issueStatus === "in_progress" ? 1000 : false,
-    placeholderData: keepPreviousDataForSameQueryTail<RunForIssue[]>(issueQueryRef),
+    placeholderData: historyExpanded ? queryClient.getQueryData<RunForIssue[]>([...queryKeys.issues.runs(issueQueryRef), "recent"]) : undefined,
   });
-  const resolvedActivity = activity ?? [];
+  const resolvedActivity = useMemo(
+    () => [...new Map([...(activity ?? []), ...(inputFacts.data ?? [])].map((event) => [event.id, event])).values()],
+    [activity, inputFacts.data],
+  );
   const resolvedLinkedRuns = linkedRuns ?? [];
   useEffect(() => {
     recordIssueDetailReadiness({ activity: !activityPending, "linked-runs": !linkedRunsPending, runtime: runtimeSelectionKnown });
@@ -2410,19 +2460,9 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         setDiscardedQueuedCommentIds((current) =>
           new Set(current).add(commentId),
         );
-        // Discard deletes the persisted issue comment. Remove the cached copy
-        // in the same commit as the queue update so it cannot briefly return as
-        // a normal user bubble when the now-empty queue loses its queueId.
-        queryClient.setQueryData<
-          InfiniteData<IssueComment[], string | null> | undefined
-        >(queryKeys.issues.comments(issueId), (current) =>
-          current
-            ? {
-                ...current,
-                pages: removeIssueCommentFromPages(current.pages, commentId),
-              }
-            : current,
-        );
+        // Discard deletes the persisted comment. Update both history caches
+        // and task aliases so the row stays removed after this view unmounts.
+        await onRemoveCommentFromCache(commentId);
         await queryClient.invalidateQueries({
           queryKey: queryKeys.issues.comments(issueId),
         });
@@ -2460,6 +2500,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     [
       effectiveQueuedCommentQueue?.queueId,
       issueId,
+      onRemoveCommentFromCache,
       pushToast,
       queryClient,
       refreshQueueAfterConflict,
@@ -2517,6 +2558,14 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
         >
           <EmailThreadProvider companyId={companyId} issueId={issueId}>
           <ThreadComponent
+            {...(!classicTaskInterfaceEnabled ? {
+              compactHistory: !historyExpanded,
+              historyControl: !historyExpanded && (hasEarlierMessages || (linkedRuns?.length ?? 0) > 0) ? (
+                <Button type="button" variant="ghost" size="sm" onClick={onExpandHistory}>
+                  More messages
+                </Button>
+              ) : null,
+            } : {})}
             executionBlocked={executionBlocked}
             interruption={interruption}
             retryPreparing={retryPreparing}
@@ -2526,7 +2575,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             browsers={browsers}
             onOpenBrowser={onOpenBrowser}
             hasOlderComments={hasOlderComments}
-            initialHistoryPending={!!issueId && (
+            initialHistoryPending={historyExpanded && !!issueId && (
               initialHistoryPending ||
               commentsInitialLoading ||
               // These responses add rows or change the composer takeover.
@@ -2540,6 +2589,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             initialHistoryError={
               initialHistoryError ||
               activityError ||
+              (!historyExpanded && inputFacts.isError) ||
               linkedRunsError ||
               liveRunsError ||
               (activeRunQueryEnabled && activeRunError)
@@ -2547,6 +2597,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
             onRetryInitialHistory={() => {
               onRetryInitialHistory?.();
               void refetchActivity();
+              if (!historyExpanded && inputCommentIds.length) void inputFacts.refetch();
               void refetchLinkedRuns();
               void refetchLiveRuns();
               if (activeRunQueryEnabled) void refetchActiveRun();
@@ -3223,11 +3274,22 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     [location.state, resolvedIssueDetailState],
   );
 
+  const coreIssueQuery = useQuery({
+    queryKey: [...queryKeys.issues.detail(issueId!), "core"],
+    queryFn: ({ signal }) => issuesApi.getCore(issueId!, { signal }),
+    enabled: !!issueId,
+  });
+  const { historyExpanded, expandHistory, recent: recentComments } = useIssueHistoryWindow(
+    issueId,
+    Boolean(conversation || classicTaskInterfaceEnabled || location.hash || detailTab !== "chat"),
+    coreIssueQuery.data,
+  );
   const {
     data: queriedIssue,
     isLoading,
     isPlaceholderData,
     error,
+    refetch: refetchIssueDetail,
   } = useQuery({
     ...getIssueDetailQueryOptions(queryClient, issueId!, {
       placeholderIssue: issueHeaderSeed
@@ -3237,12 +3299,15 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           }
         : null,
     }),
-    enabled: !!issueId,
+    enabled: !!issueId && (coreIssueQuery.isFetched || !!queryClient.getQueryData(queryKeys.issues.detail(issueId))),
   });
   useEffect(() => {
-    if (issueId) void prefetchIssueThread(queryClient, issueId);
-  }, [issueId, queryClient]);
-  const issue = queriedIssue ?? conversation?.issue ?? draftIssue;
+    if (issueId && historyExpanded) void prefetchIssueThread(queryClient, issueId);
+  }, [issueId, historyExpanded, queryClient]);
+  const accessError = [error, coreIssueQuery.error].find((value) =>
+    value instanceof ApiError && [401, 403, 404].includes(value.status),
+  );
+  const issue = accessError ? undefined : queriedIssue ?? coreIssueQuery.data ?? conversation?.issue ?? draftIssue;
   const taskRetry = useTaskRetry(issue ?? undefined);
   const resolveWritableIssueId = async () => {
     if (!conversation) return issueId!;
@@ -3258,7 +3323,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   // or upload against the previous task while the requested task is loading.
   const loadedIssue =
     !isPlaceholderData &&
-    !error &&
+    (!error || !!coreIssueQuery.data) &&
     issue &&
     issueId &&
     (issue.id.toLowerCase() === issueId.toLowerCase() ||
@@ -3275,6 +3340,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     !hasLegacyIssueDetailQuery(location.search)
   ));
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId: issue?.id ?? issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
   const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);
   // A closed isolated workspace no longer blocks the composer. The server reopens
   // the workspace when the next comment or resume arrives, so the composer stays
@@ -3304,7 +3370,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         limit: ISSUE_COMMENT_PAGE_SIZE,
         ...(pageParam ? { after: pageParam } : {}),
       }),
-    enabled: !!issueId,
+    enabled: !!issueId && historyExpanded,
     initialPageParam: null as string | null,
     getNextPageParam: (lastPage) =>
       getNextIssueCommentPageParam(lastPage, ISSUE_COMMENT_PAGE_SIZE),
@@ -3313,8 +3379,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     >(issueId ?? "pending"),
   });
   const comments = useMemo(
-    () => flattenIssueCommentPages(commentPages?.pages),
-    [commentPages?.pages],
+    () => mergeWindowComments(recentComments.data?.comments ?? [], flattenIssueCommentPages(commentPages?.pages)),
+    [commentPages?.pages, recentComments.data?.comments],
   );
 
   useLayoutEffect(() => {
@@ -3352,7 +3418,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
   const shouldPrefetchOlderComments = useMemo(
     () =>
-      shouldAutoloadOlderIssueComments({
+      historyExpanded && shouldAutoloadOlderIssueComments({
         activeDetailTab: detailTab,
         hasOlderComments: hasOlderComments ?? false,
         loadedCommentCount: comments.length,
@@ -3364,6 +3430,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       comments.length,
       commentsLoading,
       commentsLoadingOlder,
+      historyExpanded,
       detailTab,
       hasOlderComments,
     ],
@@ -3414,7 +3481,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       queryKey: queryKeys.issues.liveRuns(issueId!),
       queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
       enabled: !!issueId,
-      refetchInterval: 3000,
+      refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
       select: (runs) => runs.length,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
         issueId ?? "pending",
@@ -3431,7 +3498,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled:
       !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId ?? "pending",
@@ -4084,18 +4151,33 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [issueId, queryClient]);
 
   const removeCommentFromCache = useCallback(
-    (commentId: string) => {
-      queryClient.setQueryData<
-        InfiniteData<IssueComment[], string | null> | undefined
-      >(queryKeys.issues.comments(issueId!), (current) => {
-        if (!current) return current;
-        return {
-          ...current,
-          pages: removeIssueCommentFromPages(current.pages, commentId),
-        };
-      });
+    async (commentId: string) => {
+      // Cancel reads started before deletion so they cannot restore stale rows.
+      await Promise.all(issueCacheRefs.map((ref) =>
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(ref) }),
+      ));
+      for (const ref of issueCacheRefs) {
+        queryClient.setQueryData<InfiniteData<IssueComment[], string | null>>(
+          queryKeys.issues.comments(ref),
+          (current) => current && { ...current, pages: removeIssueCommentFromPages(current.pages, commentId) },
+        );
+        queryClient.setQueryData<IssueRecentComments>(
+          [...queryKeys.issues.comments(ref), "recent"],
+          (current) => {
+            if (!current) return current;
+            const comments = mergeWindowComments(current.comments.filter((comment) => comment.id !== commentId));
+            return {
+              ...current,
+              comments,
+              latestCommentId: current.latestCommentId === commentId
+                ? comments.at(-1)?.id ?? null
+                : current.latestCommentId,
+            };
+          },
+        );
+      }
     },
-    [issueId, queryClient],
+    [issueCacheRefs, queryClient],
   );
 
   const clearCommentHashIfCurrent = useCallback(
@@ -4112,7 +4194,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   const upsertCommentInCache = useCallback(
-    (comment: IssueComment) => {
+    async (comment: IssueComment) => {
+      await Promise.all(issueCacheRefs.map((ref) =>
+        queryClient.cancelQueries({ queryKey: queryKeys.issues.comments(ref) }),
+      ));
       for (const ref of issueCacheRefs) {
         queryClient.setQueryData<
           InfiniteData<IssueComment[], string | null> | undefined
@@ -4123,6 +4208,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 pages: upsertIssueCommentInPages(current.pages, comment),
               }
             : current,
+        );
+        queryClient.setQueryData<IssueRecentComments>(
+          [...queryKeys.issues.comments(ref), "recent"],
+          (current) => current && {
+            ...current,
+            comments: current.comments.map((existing) => existing.id === comment.id ? comment : existing),
+          },
         );
       }
     },
@@ -4877,6 +4969,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
         try {
           await issuesApi.cancelComment(comment.issueId, comment.id);
+          await removeCommentFromCache(comment.id);
           invalidateIssueDetail();
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
@@ -4918,6 +5011,11 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 pages: upsertIssueCommentInPages(undefined, comment),
               },
       );
+      // A locally seeded page is not a complete history page. Expansion must
+      // fetch the real first page even within the normal cache freshness window.
+      if (!historyExpanded) {
+        await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId ?? comment.issueId), exact: true, refetchType: "none" });
+      }
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
           current.filter(
@@ -5295,6 +5393,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         );
         try {
           await issuesApi.cancelComment(issueId!, comment.id);
+          await removeCommentFromCache(comment.id);
           invalidateIssueDetail();
           invalidateIssueThreadLazily();
           invalidateIssueCollections();
@@ -5339,6 +5438,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   pages: upsertIssueCommentInPages(undefined, comment),
                 },
         );
+        if (!historyExpanded) {
+          await queryClient.invalidateQueries({ queryKey: queryKeys.issues.comments(issueId!), exact: true, refetchType: "none" });
+        }
       }
       if (context?.optimisticCommentId) {
         setOptimisticComments((current) =>
@@ -5403,14 +5505,14 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const cancelQueuedComment = useMutation({
     mutationFn: async ({ commentId }: { commentId: string }) =>
       issuesApi.cancelComment(issueId!, commentId),
-    onSuccess: (comment) => {
+    onSuccess: async (comment) => {
       setLocallyQueuedCommentRunIds((current) => {
         if (!current.has(comment.id)) return current;
         const next = new Map(current);
         next.delete(comment.id);
         return next;
       });
-      removeCommentFromCache(comment.id);
+      await removeCommentFromCache(comment.id);
       restoreQueuedCommentDraft(comment.body);
       invalidateIssueDetail();
       invalidateIssueThreadLazily();
@@ -5436,8 +5538,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const deleteComment = useMutation({
     mutationFn: async ({ commentId }: { commentId: string }) =>
       issuesApi.deleteComment(issueId!, commentId),
-    onSuccess: (comment) => {
-      upsertCommentInCache(comment);
+    onSuccess: async (comment) => {
+      await upsertCommentInCache(comment);
       clearCommentHashIfCurrent(comment.id);
       invalidateIssueDetail();
       invalidateIssueThreadLazily();
@@ -7044,9 +7146,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     );
   }, [activePauseHold, issue]);
 
-  if (isLoading)
+  if (!issue && !accessError && (isLoading || coreIssueQuery.isPending))
     return <IssueDetailLoadingState headerSeed={issueHeaderSeed} />;
-  if (error) return <p className="text-sm text-destructive">{error.message}</p>;
+  if (!issue && (error || coreIssueQuery.error)) return <p className="text-sm text-destructive">{(error || coreIssueQuery.error)?.message}</p>;
   if (!issue) return null;
   // Do not expose a file chooser on the outgoing UUID/company/interface
   // branch: its input can be detached before the chosen file is returned.
@@ -7793,6 +7895,12 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               : "max-w-3xl space-y-6"
           }
         >
+          {error && coreIssueQuery.data ? (
+            <div role="status" className="flex items-center gap-2 text-sm text-muted-foreground">
+              Some task details could not be loaded.
+              <Button type="button" variant="ghost" size="sm" onClick={() => void refetchIssueDetail()}>Retry</Button>
+            </div>
+          ) : null}
           {/* Parent chain breadcrumb (redesign: rendered inside the thread viewport) */}
           {taskChatShellEnabled ? null : ancestorsNav}
           {taskChatShellEnabled ? null : createdFromNote}
@@ -8150,6 +8258,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   interruption={issue.interruption}
                   retryPreparing={taskRetry.optimistic}
                   queryIssueId={issueId ?? issue.id}
+                  hasLiveConnection={hasLiveConnection}
                   onOpenSkill={handleOpenSkill}
                   browsers={browserQuery.data}
                   onOpenBrowser={(id) => { setOpenBrowserId(id); if (isMobile) setMobilePropsOpen(true); else openTaskSidePanel(); }}
@@ -8229,7 +8338,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   canFalsePositiveRecoveryAction={canResolveBoardRecoveryAction}
                   legacyRecoverySourceIssue={legacyRecoverySourceIssue}
                   comments={threadComments}
-                  commentsInitialLoading={commentsLoading}
+                  commentsInitialLoading={historyExpanded ? commentsLoading : recentComments.isLoading}
+                  historyExpanded={historyExpanded}
+                  onExpandHistory={expandHistory}
+                  hasEarlierMessages={recentComments.data?.hasMore ?? false}
                   initialHistoryPending={linkedCommentPending}
                   initialMetadataPending={
                     interactionsLoading ||
@@ -8237,13 +8349,13 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     workProductsLoading
                   }
                   initialHistoryError={
-                    commentsError ||
+                    (historyExpanded ? commentsError : recentComments.isError) ||
                     interactionsError ||
                     attachmentsError ||
                     workProductsError
                   }
                   onRetryInitialHistory={() => {
-                    void refetchComments();
+                    void (historyExpanded ? refetchComments() : recentComments.refetch());
                     void refetchInteractions();
                     void refetchAttachments();
                     void refetchWorkProducts();
@@ -8318,6 +8430,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   onImageUpload={handleCommentImageUpload}
                   onAttachImage={handleCommentAttachImage}
                   onInterruptQueued={handleInterruptQueuedRun}
+                  onRemoveCommentFromCache={removeCommentFromCache}
                   onDeleteComment={(commentId) =>
                     deleteComment
                       .mutateAsync({ commentId })
@@ -8491,6 +8604,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             scope={treeControlScope}
             affectedCount={previewAffectedIssueCount}
             affectedAgentCount={previewAffectedAgentCount}
+            warnings={treeControlPreview?.warnings.map((warning) => warning.message)}
             loading={treeControlPreviewLoading}
             error={
               treeControlPreviewError
@@ -8512,7 +8626,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               executeTreeControl.mutate({
                 mode: treeControlMode,
                 scope: treeControlScope,
-                wakeAgents: treeControlWakeAgentsOnResume,
+                wakeAgents: treeControlWakeAgentsOnResume && previewAffectedAgentCount > 0,
               })
             }
           />

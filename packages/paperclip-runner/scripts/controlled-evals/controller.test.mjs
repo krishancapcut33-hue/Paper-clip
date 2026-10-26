@@ -2,7 +2,8 @@ import assert from 'node:assert/strict';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { test } from 'node:test';
-import { mkdtemp, mkdir, readFile, readdir, rm, symlink, writeFile } from 'node:fs/promises';
+import { execFileSync } from 'node:child_process';
+import { mkdtemp, mkdir, readFile, readdir, rm, symlink, truncate, writeFile } from 'node:fs/promises';
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -13,6 +14,7 @@ const { canonical, costRuntime, observabilityBoundConfiguration, requestBindingS
 const { attemptDirectory, runControlledEval } = await import(new URL('./run.mjs', runtime));
 const { summarizeControlledCampaign } = await import(new URL('./report.mjs', runtime));
 const { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } = await import(new URL('./archive.mjs', runtime));
+const { readRegularFile, replaceEvidenceFile } = await import(new URL('./evidence-files.mjs', runtime));
 import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runner-protocol-eval-campaign.mjs';
 
 const childScript = options => `
@@ -20,7 +22,9 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {readFile,writeFile} from 'node:fs/promises';
+import {readFile,writeFile,rm,readdir,symlink,truncate} from 'node:fs/promises';
+import {dirname,join} from 'node:path';
+import {execFileSync} from 'node:child_process';
 const args=new Map();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);
 const request=JSON.parse(await readFile(args.get('--request'),'utf8'));
 if(${Boolean(options.resistantDescendant)}) {
@@ -53,6 +57,17 @@ if(!${Boolean(options.missingArtifact)})await writeFile(args.get('--output'),JSO
  requestRouting:${options.missingRoute ? 'null' : "{mode:'controller_gateway',provider:descriptor.provider,declaredUpstreamRoute:descriptor.upstreamRoute,campaignId:descriptor.campaignId,executionId:descriptor.executionId,attemptId:descriptor.attemptId,descriptorSha256:createHash('sha256').update(descriptorRaw).digest('hex')}"},
  nativeObservability, snapshot:{status:'closed',process:{runnerExited:true,runnerPid:process.pid,providerPid:process.pid}},statuses,
  leaked:${options.leakToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN' : options.leakOtlpToken ? 'process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN' : 'null'}}));
+if(${Boolean(options.invalidEvidence)}) {
+ const root=dirname(args.get('--output'));
+ const name=${JSON.stringify(options.invalidEvidence ?? '')};
+ const file=name==='receipt'?join(root,'receipts',(await readdir(join(root,'receipts')))[0]):join(root,name);
+ await rm(file);
+ const kind=${JSON.stringify(options.invalidFileType ?? '')};
+ if(kind==='fifo')execFileSync('mkfifo',[file]);
+ else if(kind==='symlink')await symlink('/dev/zero',file);
+ else {await writeFile(file,'');await truncate(file,16*1024*1024+1);}
+}
+
 if(${Boolean(options.orphanExit)})process.exit(0);
 `;
 
@@ -143,6 +158,7 @@ test('disjoint concurrent cells cannot borrow an allowance and unknown requests 
 test('rejects oversized or unqualified allocations, changed requests and changed executables before dispatch', async t => {
   const f = await fixture(t, { count: 2 });
   for (const mutate of [
+    value => { value.attempts[0].attemptId = 'nested/attempt'; },
     value => { value.maxUsd = '0.01'; }, value => { value.attempts[1].executionId = value.attempts[0].executionId; },
     value => { value.attempts[0].provider = 'acpx'; value.attempts[0].acpxAgent = 'codex'; },
     value => { delete value.overhead.components[0].provisionalBound; }, value => { value.models[0].secret = 'unexpected'; },
@@ -400,6 +416,51 @@ test('configured credentials are excluded before encoding and after archive deco
   await assert.rejects(readControlledEvidence(file, { environment }), /configured credential/);
 });
 
+for (const name of ['provider-artifact.json', 'receipt', 'ledger.jsonl']) for (const kind of ['fifo', 'symlink', 'oversized']) {
+  test(`post-child ${name} rejects ${kind} without blocking or releasing its allocation`, { timeout: 20_000 }, async t => {
+    const f = await fixture(t, { requests: 1, invalidEvidence: name, invalidFileType: kind });
+    const result = await f.run();
+    assert.equal(result.report.status, 'incomplete');
+    assert.equal(result.report.accounting.knownUsd, '0.000068000');
+    const summary = await summarizeControlledCampaign(f.manifest);
+    assert.equal(summary.incompleteAttempts, 1);
+    assert.equal(summary.committedUsd, '0.014000000');
+  });
+}
+
+test('durable reports bound every evidence file and retain full holds for invalid proof', { timeout: 20_000 }, async t => {
+  const f = await fixture(t, { requests: 1, observability: true }); await f.run();
+  const root = attemptDirectory(f.manifest, 'attempt-0');
+  const receipt = `receipts/${(await readdir(join(root, 'receipts')))[0]}`;
+  for (const name of ['admission.json', 'request.json', 'result.json', 'provider-artifact.json', 'gateway.json', 'ledger.jsonl', receipt, 'observability.json', 'otlp-native.jsonl', 'otlp-controller.jsonl', 'otlp-root.json']) {
+    const path = join(root, name), original = await readFile(path);
+    for (const kind of ['fifo', 'symlink', 'oversized']) {
+      await rm(path);
+      if (kind === 'fifo') execFileSync('mkfifo', [path]);
+      else if (kind === 'symlink') await symlink('/dev/zero', path);
+      else { await writeFile(path, ''); await truncate(path, 16 * 1024 * 1024 + 1); }
+      const summary = await summarizeControlledCampaign(f.manifest);
+      assert.equal(summary.incompleteAttempts, 1, `${name}:${kind}`);
+      assert.equal(summary.committedUsd, '0.014000000', `${name}:${kind}`);
+    }
+    await rm(path); await writeFile(path, original);
+  }
+  assert.equal((await summarizeControlledCampaign(f.manifest)).incompleteAttempts, 0);
+});
+
+for (const name of ['PAPERCLIP_AGENT_PRIVATE_KEY', 'PAPERCLIP_AI_PROVIDER_KEY', 'AWS_SECRET_ACCESS_KEY', 'OPENCODE_CONFIG_CONTENT']) {
+  test(`archive excludes configured ${name} before and after encoding`, async t => {
+    const f = await fixture(t); await f.run();
+    const secret = name === 'PAPERCLIP_AGENT_PRIVATE_KEY' ? '-----BEGIN PRIVATE KEY-----\nsynthetic-private-material\n-----END PRIVATE KEY-----' : 'synthetic-extra-credential';
+    const environment = { [name]: name === 'OPENCODE_CONFIG_CONTENT' ? JSON.stringify({ provider: { apiKey: secret } }) : secret };
+    const root = attemptDirectory(f.manifest, 'attempt-0');
+    await writeFile(join(root, 'stderr.log'), JSON.stringify({ retained: secret }));
+    await assert.rejects(packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment }), /configured credential/);
+    const unchecked = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment: {} });
+    assert.throws(() => decodeControlledEvidence(unchecked, { environment }), /configured credential/);
+  });
+}
+
 test('retention annotations preserve an already-failed controller result and its known costs', async t => {
   const f = await fixture(t, { requests: 1, missingRoute: true }); await f.run();
   const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0' });
@@ -584,7 +645,9 @@ test('cancellation aborts a pending native export and retains its uncertain rece
 test('lost ledger finalization still closes both OTLP relays', async t => {
   const f = await fixture(t, { observability: true, requests: 1 });
   const root = attemptDirectory(f.manifest, 'attempt-0');
-  await assert.rejects(f.run(0, async () => { await rm(join(root, 'ledger.jsonl')); return success(); }), { code: 'ENOENT' });
+  const result = await f.run(0, async () => { await rm(join(root, 'ledger.jsonl')); return success(); });
+  assert.equal(result.code, 2); assert.equal(result.report.failure, 'ledger_evidence_invalid');
+  assert.equal((await summarizeControlledCampaign(f.manifest)).committedUsd, '0.014000000');
   for (const file of ['otlp-native.jsonl', 'otlp-controller.jsonl']) {
     const rows = (await readFile(join(root, file), 'utf8')).trim().split('\n').map(line => JSON.parse(line));
     assert.equal(rows.at(-1).type, 'closed');
@@ -683,4 +746,57 @@ test('hosted context requires a manifest identity and rejects invalid or later-a
   await assert.rejects(readdir(f.manifest.outputDirectory), { code: 'ENOENT' });
   f.manifest.campaignId = 'gha-12345-2';
   assert.throws(() => validateManifest(f.manifest), /hosted controller identity/);
+});
+
+for (const name of ['observability.json', 'otlp-native.jsonl', 'otlp-controller.jsonl']) for (const kind of ['fifo', 'symlink', 'oversized']) {
+  test(`native post-child ${name} rejects ${kind} and retains model cost plus the full hold`, { timeout: 20_000 }, async t => {
+    const f = await fixture(t, { requests: 1, observability: true, invalidEvidence: name, invalidFileType: kind });
+    const result = await f.run();
+    assert.equal(result.code, 2);
+    const summary = await summarizeControlledCampaign(f.manifest);
+    assert.equal(summary.incompleteAttempts, 1);
+    assert.equal(summary.knownUsd, '0.000068000');
+    assert.equal(summary.committedUsd, '0.014000000');
+  });
+}
+
+test('credential redaction replaces a swapped symlink without changing its target', async t => {
+  const f = await fixture(t, { leakToken: true, requests: 0 });
+  const result = await f.run();
+  assert.equal(result.report.secretExcluded, false);
+  const path = join(attemptDirectory(f.manifest, 'attempt-0'), 'provider-artifact.json');
+  const bytes = await readRegularFile(path, 16_777_216);
+  const target = join(f.root, 'untouched-target'); await writeFile(target, 'target must remain unchanged');
+  await rm(path); await symlink(target, path);
+  await replaceEvidenceFile(path, bytes);
+  assert.equal(await readFile(target, 'utf8'), 'target must remain unchanged');
+  assert.deepEqual(await readRegularFile(path, 16_777_216), bytes);
+  await symlink(target, `${path}.tmp`);
+  await assert.rejects(replaceEvidenceFile(path, bytes), { code: 'EEXIST' });
+  assert.equal(await readFile(target, 'utf8'), 'target must remain unchanged');
+});
+
+test('missing provider artifacts cannot bypass immutable result binding', async t => {
+  const f = await fixture(t, { missingArtifact: true, requests: 0 }); await f.run();
+  const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0' });
+  assert.equal(bundle.files['provider-artifact.json'], undefined);
+  assert.equal(JSON.parse(Buffer.from(bundle.files['result.json'].base64, 'base64')).providerArtifactSha256, undefined);
+  const directory = join(f.root, 'runs', 'attempt-0'); await mkdir(directory, { recursive: true });
+  const artifact = JSON.parse(await readFile(f.requests[0].outputPath, 'utf8'));
+  for (const [name, value] of Object.entries({ 'request.json': f.requests[0].request, 'artifact.json': artifact, 'controller-evidence.json': bundle })) await writeFile(join(directory, name), JSON.stringify(value));
+  await readAttemptControlledEvidence(directory);
+  for (const mutate of [
+    value => { value.usage = { estimatedCostNanodollars: 0 }; },
+    value => { value.turn = { status: 'completed', assistantText: 'forged success' }; },
+    value => { value.controllerAccounting.cleanupVerified = true; },
+  ]) {
+    const changed = structuredClone(artifact); mutate(changed);
+    await writeFile(join(directory, 'artifact.json'), JSON.stringify(changed));
+    await assert.rejects(readAttemptControlledEvidence(directory), /Immutable result disagrees/);
+  }
+  const malformed = structuredClone(bundle), bytes = Buffer.from('{');
+  malformed.files['result.json'] = { sizeBytes: bytes.length, sha256: sha256(bytes), base64: bytes.toString('base64') };
+  await writeFile(join(directory, 'controller-evidence.json'), JSON.stringify(malformed));
+  await assert.rejects(readAttemptControlledEvidence(directory), /Malformed immutable controller result proof/);
+
 });
