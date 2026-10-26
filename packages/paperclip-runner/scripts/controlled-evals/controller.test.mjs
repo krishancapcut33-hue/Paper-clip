@@ -6,6 +6,7 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { build } from 'esbuild';
 import { canonical, costRuntime, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
 import { attemptDirectory, runControlledEval } from './run.mjs';
 import { summarizeControlledCampaign } from './report.mjs';
@@ -49,10 +50,7 @@ if(args.has('--observability-config')) {
  }
  nativeObservability={mode:'controller_otlp',configured:true,verification:'unverified',projectId:config.projectId,traceId:config.traceId,spanId:config.spanId,descriptorSha256:createHash('sha256').update(raw).digest('hex')};
  if(${Boolean(options.realObservabilityValidator)}) {
-  const {createRequire}=await import('node:module');
-  const require=createRequire(${JSON.stringify(fileURLToPath(new URL('../../../../server/package.json', import.meta.url)))});
-  const {tsImport}=await import(require.resolve('tsx/esm/api'));
-  const {prepareEvalObservabilityRuntime}=await tsImport(${JSON.stringify(fileURLToPath(new URL('../../src/cli/eval-observability-runtime.ts', import.meta.url)))},import.meta.url);
+  const {prepareEvalObservabilityRuntime}=await import(${JSON.stringify(options.observabilityValidatorModule ?? '')});
   await mkdir(process.env.HOME+'/codex',{recursive:true});
   const prepared=await prepareEvalObservabilityRuntime(args.get('--observability-config'),request,
    {evidence:{campaignId:descriptor.campaignId,executionId:descriptor.executionId},transportOptions:{environment:{CODEX_HOME:process.env.HOME+'/codex'}}},process.env);
@@ -85,6 +83,11 @@ async function fixture(t, { count = 1, allocation = '0.01', providerProfile = 'c
   const root = await mkdtemp(join(tmpdir(), 'runner-controller-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
   const cli = join(root, 'fake-cli.mjs'), binary = join(root, 'runnerd'), archive = join(root, 'runner.tgz');
+  if (options.realObservabilityValidator) {
+    options.observabilityValidatorModule = join(root, 'eval-observability-runtime.mjs');
+    await build({ entryPoints: [fileURLToPath(new URL('../../src/cli/eval-observability-runtime.ts', import.meta.url))],
+      outfile: options.observabilityValidatorModule, bundle: true, platform: 'node', format: 'esm', target: 'node24', logLevel: 'silent' });
+  }
   await writeFile(cli, childScript(options)); await writeFile(binary, 'synthetic daemon'); await writeFile(archive, 'synthetic package');
   const provenance = async path => ({ path, sha256: sha256(await readFile(path)) });
   const now = Date.now(), verifiedAt = new Date(now - 1000).toISOString(), expiresAt = new Date(now + 86_400_000).toISOString();
