@@ -37,6 +37,12 @@ Save & exit keeps its configuration; Finish setup on the agent returns to the
 same record. Final submission requests approval when required, then follows the
 existing preparation and verification lifecycle.
 
+Agent-owned plugin environments prepare the saved draft in the background when
+their driver declares `requiresAgent`. The draft waits in `verifying` with its
+setup hold until hiring finishes. Changing environments keeps the selected
+account and Configure step, saves the selection, and invalidates its test.
+Preparation and failed-save retries remain visible without reconnecting.
+
 ### `agent-configuration`
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
@@ -86,6 +92,14 @@ Preconditions: follow the [baseline](./README.md#before-driving-a-journey). Use 
 ### `hire-agent`
 
 Automated: [new agent page](../../ui/src/pages/NewAgent.test.tsx) and [configuration form](../../ui/src/components/AgentConfigForm.render.test.tsx) cover mocked UI behavior.
+
+For an agent-owned plugin environment, verify preparation before connecting,
+same-agent probes, account preservation after an environment change, failed
+selection-save retry, and switching back while the computer stops. Confirm the
+setup hold still blocks ordinary work and API key creation before finishing.
+The [lifecycle tests](../../server/src/modules/agent-lifecycle/__tests__/lifecycle.test.ts)
+exercise durable transitions with synthetic plugin resources; they do not prove
+live VM provisioning.
 
 Manual: Hire an agent with a distinct name and role. Complete any required approval, reload the roster, and open its configuration. Confirm manager, adapter, and model persisted; run a small task to prove execution readiness.
 
