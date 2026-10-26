@@ -94,6 +94,7 @@ describe("Copilot build-owned installation", () => {
 
   it("preserves v61 while binding uncertain process checks and controller retirement in v62", async () => {
     const priorBytes = readFileSync(new URL("../../../test/fixtures/copilot-profile-v61-identity.json", import.meta.url));
+    expect(createHash("sha256").update(priorBytes).digest("hex")).toBe("ec3c8561bc123a599a01da356978b73e6d48ab030842af9f0d63d1f30413e1a5");
     const prior = JSON.parse(priorBytes.toString("utf8"));
     const current = JSON.parse(readFileSync(new URL("../../../test/fixtures/copilot-profile-v62-identity.json", import.meta.url), "utf8"));
     expect(prior.commandDigest).toBe("sha256:956276ebee59f880249fa6955adc224af9ca7b6a9da59bcc5da4a8667550c5b3");
