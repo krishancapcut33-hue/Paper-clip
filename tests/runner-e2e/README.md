@@ -2867,6 +2867,9 @@ date removal is performed. Add or change mappings only with a new price version
 and verified provider provenance. The reviewed bound digest includes the mapping;
 changing it invalidates old bound evidence. An unlisted response remains unpriced
 and disqualifies the bound. Historical receipts and ledgers remain unchanged.
+The existing supported request cache policy also uses that exact mapping when
+the pricecard provider and request model match. It does not repair missing write
+counters, malformed TTL details or an unqualified cache policy.
 
 The journal retains setup/agent/judge/tool/infrastructure attribution separately
 from heartbeat IDs. Multiple sources for the same request are retained but only

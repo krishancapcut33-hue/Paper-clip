@@ -151,7 +151,7 @@ export async function forwardEvalRequest(input: {
     receipt.clientDisconnected = true; receipt.outcome = "cancelled"; receipt.errorCode ??= "client_disconnected";
     return true;
   };
-  const usage = new ProviderUsageAccumulator(route.provider, body);
+  const usage = new ProviderUsageAccumulator(route.provider, body, route.price);
   const bound = modelReservationBound(route, reservation);
   await ledger.reserve(requestId, input.identity, reservation, bound);
   const abort = new AbortController();

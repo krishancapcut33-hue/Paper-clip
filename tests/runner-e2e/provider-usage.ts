@@ -96,7 +96,8 @@ export class ProviderUsageAccumulator {
   private usage: Row = {};
   private final = false;
   private readonly cachePolicy: ReturnType<typeof openAiRequestCachePolicy>;
-  constructor(readonly provider: "openai" | "anthropic", request?: unknown) {
+  constructor(readonly provider: "openai" | "anthropic", request?: unknown,
+    private readonly price?: Pick<EvalModelPrice, "provider" | "model" | "responseModels">) {
     this.cachePolicy = provider === "openai" ? openAiRequestCachePolicy(request) : undefined;
   }
   observe(event: unknown) {
@@ -124,7 +125,9 @@ export class ProviderUsageAccumulator {
   receipt() {
     const receipt = normalizeProviderUsage(this.provider, { ...this.body, usage: this.usage });
     const details = row(this.usage.input_tokens_details);
-    if (this.cachePolicy && receipt.model === this.cachePolicy.model && receipt.complete && receipt.tokens.cachedWrite! > 0
+    const policyMatchesResponse = this.cachePolicy && (receipt.model === this.cachePolicy.model
+      || this.price?.provider === this.provider && this.price.model === this.cachePolicy.model && matchesPriceResponseModel(this.price, receipt.model));
+    if (this.cachePolicy && policyMatchesResponse && receipt.complete && receipt.tokens.cachedWrite! > 0
         && !("cache_write_tokens_details" in details)) {
       receipt.cacheWrite30m = this.cachePolicy.ttl === "30m" ? receipt.tokens.cachedWrite : 0;
       receipt.cacheWrite12h = this.cachePolicy.ttl === "12h" ? receipt.tokens.cachedWrite : 0;

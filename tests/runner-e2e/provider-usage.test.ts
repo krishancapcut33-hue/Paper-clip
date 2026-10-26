@@ -125,6 +125,29 @@ it("prefers provider TTL splits and never repairs malformed or partial provider 
     expect(estimateProviderCost(receipt, policyPrice)).toBeNull();
   }
 });
+it.each([
+  { name: "exact reviewed mapping", mapped: true, expected: "0.077600000" },
+  { name: "no mapping", mapped: false, expected: null },
+  { name: "unlisted snapshot", mapped: true, responseModel: "unlisted-snapshot", expected: null },
+  { name: "wrong price provider", mapped: true, provider: "anthropic" as const, expected: null },
+  { name: "wrong price request model", mapped: true, model: "another-request", expected: null },
+  { name: "unqualified cache policy", mapped: true, request: { prompt_cache_options: { mode: "explicit", ttl: "12h" } }, expected: null },
+  { name: "missing write counter", mapped: true, details: { cache_write_tokens: undefined }, expected: null },
+  { name: "malformed TTL counters", mapped: true, details: { cache_write_tokens_details: null }, expected: null },
+])("uses a reviewed snapshot for cache attribution only with $name", test => {
+  const snapshot = "gpt-5.6-sol-reviewed-snapshot";
+  const selected: EvalModelPrice = { ...policyPrice, model: test.model ?? policyPrice.model, provider: test.provider ?? "openai",
+    ...(test.mapped ? { responseModels: [snapshot] } : {}) };
+  const stream = new ProviderUsageAccumulator("openai", { model: policyPrice.model, input: "hello",
+    prompt_cache_options: { mode: "implicit", ttl: "12h" }, ...test.request }, selected);
+  stream.observe({ type: "response.completed", response: { model: test.responseModel ?? snapshot, usage: {
+    input_tokens: 12_000, input_tokens_details: { cached_tokens: 4000, cache_write_tokens: 7000, ...test.details }, output_tokens: 100,
+  } } });
+  const receipt = stream.receipt();
+  expect(estimateProviderCost(receipt, selected)).toBe(test.expected);
+  expect(receipt.cacheWriteAttribution).toEqual(test.expected === null ? undefined
+    : { source: "request_policy", version: "openai-prompt-cache-2026-10-20", ttl: "12h" });
+});
 
 it.each([
   ["openai", { input_tokens: 1001, output_tokens: 1 }, 1001],

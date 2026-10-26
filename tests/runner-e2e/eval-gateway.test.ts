@@ -86,12 +86,14 @@ it("stops at the campaign cap before any upstream request", async () => {
   await expect(forwardEvalRequest({ ...f, transport })).rejects.toThrow("spending cap");
   expect(transport).not.toHaveBeenCalled();
 });
-it.each(["direct", "braintrust"] as const)("retains request-policy cost provenance without changing the %s cache policy", async mode => {
+it.each((["direct", "braintrust"] as const).flatMap(mode => (["alias", "snapshot"] as const).map(model => ({ mode, model }))))(
+  "retains request-policy cost provenance for $model responses without changing the $mode cache policy", async ({ mode, model }) => {
   const f = await fixture();
   const pricedRoute = { ...route, mode, price: { ...route.price, model: "gpt-5.6-sol", inputUsdPerMillion: "4", cachedReadUsdPerMillion: "0.4",
-    outputUsdPerMillion: "20", cacheWrite30mUsdPerMillion: "5", cacheWrite12hUsdPerMillion: "10" } };
+    outputUsdPerMillion: "20", cacheWrite30mUsdPerMillion: "5", cacheWrite12hUsdPerMillion: "10", responseModels: ["gpt-5.6-sol-reviewed-snapshot"] } };
   const payload = { ...f.payload, model: pricedRoute.price.model, prompt_cache_retention: "24h", stream: true };
-  const body = { ...usage, model: pricedRoute.price.model, usage: { ...usage.usage, input_tokens_details: { cache_write_tokens: 6, cached_tokens: 2 } } };
+  const body = { ...usage, model: model === "alias" ? pricedRoute.price.model : pricedRoute.price.responseModels[0],
+    usage: { ...usage.usage, input_tokens_details: { cache_write_tokens: 6, cached_tokens: 2 } } };
   const transport = vi.fn<typeof fetch>(async () => new Response(`data: ${JSON.stringify({ type: "response.completed", response: body })}\n\n`, {
     headers: { "content-type": "text/event-stream", "x-bt-used-endpoint": "OPENAI_API_KEY", "x-bt-cached": "MISS" },
   }));
@@ -101,6 +103,7 @@ it.each(["direct", "braintrust"] as const)("retains request-policy cost provenan
     cacheWriteAttribution: { source: "request_policy", version: "openai-prompt-cache-2026-10-20", ttl: "30m" } } });
   expect(f.receipts.at(-1)).toEqual(receipt);
   expect(f.ledger.snapshot()).toMatchObject({ knownUsd: "0.000138800", heldUsd: "0.000000000", inflight: 0 });
+  expect((await readEvalCostLedger(f.file)).state.snapshot()).toMatchObject({ knownUsd: "0.000138800", heldUsd: "0.000000000", unknownRequests: 0 });
 });
 it("retains cancelled and provider-error requests as unknown, including repeated retries", async () => {
   const f = await fixture();
