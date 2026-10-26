@@ -15544,7 +15544,7 @@ export function issueRoutes(
       });
 
       // Merge all wakeups from this update into one enqueue per agent to avoid duplicate runs.
-      void (async () => {
+      const postCommitWakeups = (async () => {
         type WakeupRequest = NonNullable<
           Parameters<typeof heartbeat.wakeup>[1]
         >;
@@ -15930,10 +15930,10 @@ export function issueRoutes(
           }
         }
 
-        for (const { agentId, wakeup } of wakeups.values()) {
-          heartbeat
-            .wakeup(agentId, wakeup)
-            .then((wakeRun) => {
+        await Promise.all(
+          Array.from(wakeups.values(), async ({ agentId, wakeup }) => {
+            try {
+              const wakeRun = await heartbeat.wakeup(agentId, wakeup);
               if (wakeup.reason !== ISSUE_BLOCKERS_RESOLVED_WAKE_REASON) return;
               const payload =
                 wakeup.payload && typeof wakeup.payload === "object"
@@ -15943,7 +15943,7 @@ export function issueRoutes(
                 typeof payload.issueId === "string"
                   ? payload.issueId
                   : issue.id;
-              return logActivity(db, {
+              await logActivity(db, {
                 companyId: issue.companyId,
                 actorType: "system",
                 actorId: "issue_update",
@@ -15966,15 +15966,25 @@ export function issueRoutes(
                     : [],
                 },
               });
-            })
-            .catch((err) =>
+            } catch (err) {
               logger.warn(
                 { err, issueId: issue.id, agentId },
                 "failed to wake agent on issue update",
-              ),
-            );
-        }
+              );
+            }
+          }),
+        );
       })();
+
+      // The old run has already been cancelled. Do not acknowledge an
+      // agent-to-agent handoff until the successor wake has settled: the
+      // request lifecycle used to abandon this fire-and-forget callback,
+      // leaving an assigned issue with no execution path.
+      if (interruptedRunId && assigneeWillChange && issue.assigneeAgentId) {
+        await postCommitWakeups;
+      } else {
+        void postCommitWakeups;
+      }
 
       await queueTaskWatchdogEvaluation(issue, actor.runId);
       const changes = issueResponse.changes ?? {};

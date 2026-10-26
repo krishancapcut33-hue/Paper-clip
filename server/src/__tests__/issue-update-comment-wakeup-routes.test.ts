@@ -436,7 +436,7 @@ describe("issue update comment wakeups", () => {
     expect(mockHeartbeatService.wakeup).not.toHaveBeenCalled();
   });
 
-  it("interrupts the active run and wakes the newly assigned agent with handoff context", async () => {
+  it("waits for the assignment wake to settle after interrupting an active handoff", async () => {
     const existing = makeIssue({
       assigneeAgentId: PREVIOUS_AGENT_ID,
       assigneeUserId: null,
@@ -470,15 +470,31 @@ describe("issue update comment wakeups", () => {
       agentId: PREVIOUS_AGENT_ID,
       status: "cancelled",
     });
+    let resolveWakeup: (() => void) | undefined;
+    mockHeartbeatService.wakeup.mockImplementationOnce(
+      () => new Promise((resolve) => { resolveWakeup = () => resolve(null); }),
+    );
 
-    const res = await request(await createApp())
+    let responseSettled = false;
+    const response = request(await createApp())
       .patch(`/api/issues/${existing.id}`)
       .send({
         assigneeAgentId: ASSIGNEE_AGENT_ID,
         assigneeUserId: null,
         comment: "stop and hand this to CodexCoder",
         interrupt: true,
+      })
+      .then((result) => {
+        responseSettled = true;
+        return result;
       });
+
+    await vi.waitFor(() => expect(mockHeartbeatService.wakeup).toHaveBeenCalledTimes(1));
+    await new Promise((resolve) => setTimeout(resolve, 0));
+    expect(responseSettled).toBe(false);
+    resolveWakeup?.();
+
+    const res = await response;
 
     expect(res.status).toBe(200);
     expect(mockHeartbeatService.cancelRun).toHaveBeenCalledWith(
