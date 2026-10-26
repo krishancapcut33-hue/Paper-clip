@@ -3,7 +3,7 @@ import type { Db } from "@paperclipai/db";
 import {
   pluginManagedResources,
 } from "@paperclipai/db";
-import { joinFrontmatterBlock, normalizeAgentUrlKey, parseFrontmatterFields, splitFrontmatterBlock, stringifyFrontmatter } from "@paperclipai/shared";
+import { joinFrontmatterBlock, normalizeAgentUrlKey, splitFrontmatterBlock } from "@paperclipai/shared";
 import type {
   CompanySkill,
   PaperclipPluginManifestV1,
@@ -61,9 +61,22 @@ function buildDefaultMarkdown(
 
 function withManagedSkillKey(markdown: string, canonicalKey: string, name: string) {
   const block = splitFrontmatterBlock(markdown.replace(/\r\n/g, "\n"));
-  return joinFrontmatterBlock({ ...block, hasFrontmatter: true,
-    frontmatterText: stringifyFrontmatter({ ...parseFrontmatterFields(block.frontmatterText), key: canonicalKey, name, slug: name }),
+  const fields: Record<string, string> = { key: canonicalKey, name, slug: name };
+  const seen = new Set<string>();
+  let continuation = false;
+  const lines = block.frontmatterText.split("\n").flatMap(line => {
+    const field = /^(key|name|slug|"(?:key|name|slug)"|'(?:key|name|slug)')\s*:/.exec(line);
+    if (field) {
+      const key = field[1].replace(/["']/g, "");
+      seen.add(key); continuation = true;
+      return [`${key}: ${yamlString(fields[key])}`];
+    }
+    if (continuation && /^(?:\s|$)/.test(line)) return [];
+    continuation = false;
+    return [line];
   });
+  for (const [key, value] of Object.entries(fields)) if (!seen.has(key)) lines.push(`${key}: ${yamlString(value)}`);
+  return joinFrontmatterBlock({ ...block, hasFrontmatter: true, frontmatterText: lines.join("\n") });
 }
 
 function buildPackageFiles(

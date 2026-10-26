@@ -1,4 +1,4 @@
-import { randomUUID } from "node:crypto";
+import { createHash, randomUUID } from "node:crypto";
 import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -99,7 +99,7 @@ describeDatabase("environment managed skills", () => {
     const [skill] = await db.select().from(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, `plugin/fixture-${pluginId}/computer-use`)));
     expect(skill.slug).toMatch(/^plugin-.*-computer-use$/);
     const runtime = states[0]!.skills[0];
-    expect(await fs.readFile(path.join(runtime.source, "SKILL.md"), "utf8")).toContain(`name: ${skill.slug}`);
+    expect(await fs.readFile(path.join(runtime.source, "SKILL.md"), "utf8")).toContain(`name: "${skill.slug}"`);
     const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime")));
     const before = (await events()).length;
     const edited = skill.markdown + "\nCompany edit.";
@@ -132,6 +132,18 @@ describeDatabase("environment managed skills", () => {
     expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id]);
     await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true);
     before = (await events()).length;
+    const [settings] = await db.insert(pluginCompanySettings).values({ companyId, pluginId, enabled: true }).returning();
+    for (let change = 0; change < 3; change++) {
+      await db.update(pluginCompanySettings).set({ settingsJson: { localFolders: { path: `fixture-${change}` } } }).where(eq(pluginCompanySettings.id, settings.id));
+    }
+    expect(await events()).toHaveLength(before);
+    await db.update(pluginCompanySettings).set({ enabled: false }).where(eq(pluginCompanySettings.id, settings.id));
+    expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id]);
+    await db.update(pluginCompanySettings).set({ enabled: true }).where(eq(pluginCompanySettings.id, settings.id));
+    expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id, agent.id]);
+    before = (await events()).length;
+    await db.delete(pluginCompanySettings).where(eq(pluginCompanySettings.id, settings.id));
+    expect(await events()).toHaveLength(before);
     await expect(db.transaction(async tx => {
       await tx.update(environments).set({ config: { ...environment.config, driverKey: "unrelated" } }).where(eq(environments.id, env.id));
       throw new Error("rollback");
@@ -155,6 +167,11 @@ describeDatabase("environment managed skills", () => {
     const key = `plugin/fixture-${pluginId}/computer-use`;
     expect(state!.skills.map(skill => skill.key)).toEqual([key]);
     expect(state!.shadowedSkills).toEqual([{ key: original.key, shadowedBy: key }]);
+    for (const reference of [name, original.key.toUpperCase(), `${name}--${createHash("sha256").update(original.key).digest("hex").slice(0, 10)}`]) {
+      const aliased = await environmentSkillConfig(db, companyId, environment, { paperclipSkillSync: { desiredSkills: [reference] } });
+      expect(aliased.config).toMatchObject({ paperclipSkillSync: { desiredSkills: [key] } });
+      expect(aliased.shadowedSkills).toEqual(state!.shadowedSkills);
+    }
     expect((await db.select().from(companySkills).where(eq(companySkills.id, original.id)))[0]).toMatchObject({ markdown: original.markdown, slug: original.slug });
     expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0].adapterConfig).toEqual(config);
     await db.update(agents).set({ defaultEnvironmentId: null }).where(eq(agents.id, agent.id));

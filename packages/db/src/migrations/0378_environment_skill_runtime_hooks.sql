@@ -69,10 +69,14 @@ DECLARE previous jsonb; current jsonb; candidate record;
 BEGIN
   IF TG_OP <> 'INSERT' THEN previous := to_jsonb(OLD); END IF;
   IF TG_OP <> 'DELETE' THEN current := to_jsonb(NEW); END IF;
-  IF TG_OP = 'UPDATE' AND (CASE TG_TABLE_NAME
+  IF TG_TABLE_NAME = 'plugin_company_settings' THEN
+    IF coalesce((previous->>'enabled')::boolean, true) IS NOT DISTINCT FROM coalesce((current->>'enabled')::boolean, true) THEN
+      IF TG_OP = 'DELETE' THEN RETURN OLD; END IF;
+      RETURN NEW;
+    END IF;
+  ELSIF TG_OP = 'UPDATE' AND (CASE TG_TABLE_NAME
     WHEN 'environments' THEN previous->'config' IS NOT DISTINCT FROM current->'config' AND previous->'driver' IS NOT DISTINCT FROM current->'driver'
     WHEN 'plugins' THEN previous->'manifest_json' IS NOT DISTINCT FROM current->'manifest_json' AND previous->'status' IS NOT DISTINCT FROM current->'status'
-    WHEN 'plugin_company_settings' THEN previous->'enabled' IS NOT DISTINCT FROM current->'enabled'
     ELSE previous->'default_environment_id' IS NOT DISTINCT FROM current->'default_environment_id' END) THEN RETURN NEW; END IF;
   FOR candidate IN SELECT a.id, a.company_id FROM agents a
     WHERE a.status NOT IN ('pending_approval', 'terminated') AND (CASE TG_TABLE_NAME

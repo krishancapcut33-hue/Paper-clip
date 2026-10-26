@@ -234,13 +234,19 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   }
   const storedVersions = parseObject(run.contextSnapshot?.skillVersions);
   const hasStoredVersions = Object.prototype.hasOwnProperty.call(run.contextSnapshot ?? {}, "skillVersions");
+  const savedShadowedSkills = Array.isArray(run.contextSnapshot?.shadowedSkills)
+    ? run.contextSnapshot.shadowedSkills.flatMap(value => {
+      const saved = parseObject(value);
+      return typeof saved.key === "string" && typeof saved.shadowedBy === "string" && Object.hasOwn(storedVersions, saved.shadowedBy)
+        ? [{ key: saved.key, shadowedBy: saved.shadowedBy }] : [];
+    }) : [];
   const selectedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys);
   const { config: effectiveResolvedConfig, skillKeys: environmentSkills, shadowedSkills } = hasStoredVersions
-    ? { config: selectedConfig, skillKeys: [] }
+    ? { config: selectedConfig, skillKeys: [], shadowedSkills: savedShadowedSkills }
     : await environmentSkillConfig(db, agent.companyId, selectedEnvironmentForConfig, selectedConfig);
   if (shadowedSkills?.length) {
     context.shadowedSkills = shadowedSkills;
-    await appendRunEvent(run, { eventType: "skills.shadowed", stream: "system", level: "warn",
+    if (!hasStoredVersions) await appendRunEvent(run, { eventType: "skills.shadowed", stream: "system", level: "warn",
       message: shadowedSkills.map(({ key, shadowedBy }) => `Skill "${key}" was skipped because required plugin skill "${shadowedBy}" uses the same name.`).join("\n"),
       payload: { shadowedSkills } });
   }

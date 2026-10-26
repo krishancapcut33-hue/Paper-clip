@@ -265,7 +265,9 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: {}, skillKeys: ["desktop"] }],
         skills: [{ skillKey: "desktop", displayName: "Desktop" }] } });
     const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "plugin", config: { pluginKey, driverKey: "tasks" } }).returning();
-    const run = await configuration(f, { paperclipSkillSync: { desiredSkills: [existing.key] } }, {}, "paperclip_runner", false, "shared_workspace", environment);
+    await db.update(issues).set({ description: `Use [company skill](skill://${existing.id}).` }).where(eq(issues.id, f.issueId));
+    const config = { paperclipSkillSync: { desiredSkills: [existing.key] } };
+    const run = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
     const result = await run.prepare();
     expect(result.prepared).toBe(true);
     if (!result.prepared) throw new Error("Configuration did not finish");
@@ -276,6 +278,12 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.run.id));
     expect(saved.contextSnapshot!.shadowedSkills).toEqual([{ key: existing.key, shadowedBy: key }]);
     expect(Object.keys(saved.contextSnapshot!.skillVersions as object)).toEqual([key]);
+    const recovery = await configuration(f, config, saved.contextSnapshot!, "paperclip_runner", false, "shared_workspace", environment);
+    const resumed = await recovery.prepare();
+    expect(resumed.prepared).toBe(true);
+    if (!resumed.prepared) throw new Error("Recovery did not finish");
+    expect(resumed.runtimeSkillEntries.map(skill => skill.key)).toEqual([key]);
+    expect(recovery.appendRunEvent.mock.calls.some(([, event]) => event.eventType === "skills.shadowed")).toBe(false);
   });
   it("keeps default task-directory configuration stable when the directory is reused", async () => {
     const f = await seed();

@@ -1,7 +1,8 @@
-import { and, eq, inArray, sql } from "drizzle-orm";
+import { and, eq, inArray, or, sql } from "drizzle-orm";
 import { companySkills, pluginCompanySettings, pluginManagedResources, plugins, type Db } from "@paperclipai/db";
-import { readPaperclipSkillSyncPreference, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
+import { readPaperclipSkillSyncPreference, resolvePaperclipDesiredSkillNames, writePaperclipSkillSyncPreference } from "@paperclipai/adapter-utils/server-utils";
 import { unprocessable } from "../errors.js";
+import { buildSkillRuntimeName } from "./company-skills.js";
 import { pluginManagedSkillService } from "./plugin-managed-skills.js";
 
 /** Environment capabilities join the normal authorized, versioned skill selection. */
@@ -41,17 +42,23 @@ export async function environmentSkillConfig(db: Db, companyId: string,
   const skillKeys = keys.flatMap(key => selected.has(key) ? [selected.get(key)!] : []);
   const candidates = await db.select({ key: companySkills.key, slug: companySkills.slug, name: companySkills.name })
     .from(companySkills).where(and(eq(companySkills.companyId, companyId),
-      inArray(companySkills.key, [...new Set([...explicit, ...skillKeys])])));
+      or(inArray(sql<string>`lower(${companySkills.key})`, [...new Set([...explicit, ...skillKeys])].map(key => key.toLowerCase())),
+        inArray(sql<string>`lower(${companySkills.slug})`, [...explicit].map(key => key.toLowerCase().split("/").at(-1)!.replace(/--[a-f0-9]{10}$/, ""))))));
+  const names = candidates.map(skill => ({ key: skill.key, runtimeName: buildSkillRuntimeName(skill.key, skill.slug) }));
+  const entries = preference.desiredSkillEntries.map(entry => ({ ...entry,
+    key: resolvePaperclipDesiredSkillNames(writePaperclipSkillSyncPreference({}, [entry]), names)[0] ?? entry.key,
+  }));
+  const selectedKeys = new Set(entries.map(entry => entry.key));
   const required = candidates.filter(skill => skillKeys.includes(skill.key));
   const shadowedSkills = candidates.flatMap(skill => {
-    if (skillKeys.includes(skill.key)) return [];
+    if (skillKeys.includes(skill.key) || !selectedKeys.has(skill.key)) return [];
     const winner = required.find(candidate => candidate.slug === skill.slug || candidate.name === skill.name);
     return winner ? [{ key: skill.key, shadowedBy: winner.key }] : [];
   });
   const shadowed = new Set(shadowedSkills.map(skill => skill.key));
   return { config: writePaperclipSkillSyncPreference(config, [
-    ...preference.desiredSkillEntries.filter(entry => !shadowed.has(entry.key)),
-    ...skillKeys.filter(key => !explicit.has(key))]), skillKeys,
+    ...entries.filter(entry => !shadowed.has(entry.key)),
+    ...skillKeys.filter(key => !selectedKeys.has(key))]), skillKeys,
     ...(shadowedSkills.length ? { shadowedSkills } : {}),
   };
 }

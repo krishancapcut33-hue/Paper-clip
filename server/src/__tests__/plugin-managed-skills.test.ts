@@ -279,6 +279,18 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
     expect(reset.defaultDrift).toBeNull();
   });
 
+  it("preserves unrelated YAML while replacing quoted and multiline identity fields", async () => {
+    const declaration = manifest();
+    declaration.skills = [{ skillKey: "yaml-skill", displayName: "YAML skill", markdown:
+      '---\n"name": |\n  Previous name\nslug: old-slug\ndescription: >\n  Keep this folded description.\nmetadata:\n  "category": desktop\n# Keep this comment.\n---\nBody stays unchanged.\n' }];
+    const { companyId, services } = await seedCompanyAndPlugin(declaration);
+    const created = await services.skills.managedReconcile({ companyId, skillKey: "yaml-skill" });
+    expect(created.skill!.markdown).toContain('name: "plugin-managed-skills-test-yaml-skill"');
+    expect(created.skill!.markdown).not.toContain("Previous name");
+    expect(created.skill!.markdown).toContain('description: >\n  Keep this folded description.\nmetadata:\n  "category": desktop\n# Keep this comment.');
+    expect(created.skill!.markdown).toMatch(/Body stays unchanged\.\n$/);
+    await services.skills.managedReset({ companyId, skillKey: "yaml-skill" });
+  });
   it("adds the canonical managed key to manifest-provided markdown skills", async () => {
     const pluginManifest = manifest();
     pluginManifest.skills = [
@@ -307,6 +319,6 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
       key: "plugin/paperclip-managed-skills-test/markdown-skill",
       name: "plugin-managed-skills-test-markdown-skill",
     });
-    expect(created.skill?.markdown).toContain("key: plugin/paperclip-managed-skills-test/markdown-skill");
+    expect(created.skill?.markdown).toContain('key: "plugin/paperclip-managed-skills-test/markdown-skill"');
   });
 });
