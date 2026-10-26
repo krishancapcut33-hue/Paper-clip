@@ -1,4 +1,5 @@
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
+import { IssueRowDetailsNotice } from "./IssueRowDetailsNotice";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
 import { useIssueHierarchyContext } from "../hooks/useIssueHierarchyContext";
 import { includeIssueHierarchyContext } from "../lib/issue-hierarchy-context";
@@ -1452,7 +1453,7 @@ function StreamlinedIssuesList({
     viewState.nestingEnabled,
   ]);
 
-  const enrichIssueRow = useIssueRowDetails(
+  const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
     selectedCompanyId, rootRef,
     flatNavEntries.filter((entry) => entry.type === "issue").map((entry) => entry.type === "issue" ? entry.issue.id : "").join(",") + ":" + renderedIssueRowLimit,
     enableAgentCreatedVisibilityFilter && viewState.viewMode === "list" && !collectionLoading,
@@ -1786,6 +1787,7 @@ function StreamlinedIssuesList({
 
   return (
     <div ref={rootRef} className="space-y-4">
+      <IssueRowDetailsNotice error={rowDetailsError} onRetry={() => void retryRowDetails()} />
       {progressSummary ? (
         <SubIssueProgressSummaryStrip
           summary={progressSummary}

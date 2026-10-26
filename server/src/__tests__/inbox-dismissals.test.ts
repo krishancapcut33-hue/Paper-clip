@@ -25,6 +25,7 @@ import { inboxDismissalRoutes } from "../routes/inbox-dismissals.js";
 import { inboxDismissalService } from "../services/inbox-dismissals.ts";
 import { sidebarBadgeRoutes } from "../routes/sidebar-badges.js";
 import { sidebarBadgeService } from "../services/sidebar-badges.ts";
+import { LOW_TRUST_REVIEW_PRESET } from "@paperclipai/shared";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -126,6 +127,24 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     const response = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
     expect(response.body).toMatchObject({ inbox: 1, unreadIssueIds: [issueId] });
     expect(JSON.stringify(response.body).length).toBeLessThan(300);
+    const agentId = randomUUID();
+    await db.insert(agents).values({
+      id: agentId, companyId, name: "Restricted reviewer", role: "engineer",
+      permissions: {
+        trustPreset: LOW_TRUST_REVIEW_PRESET,
+        authorizationPolicy: { trustBoundary: { mode: LOW_TRUST_REVIEW_PRESET, rootIssueId: otherId, projectIds: [] } },
+      },
+    });
+    const agentApp = express();
+    agentApp.use((req, _res, next) => {
+      req.actor = { type: "agent", source: "agent_jwt", agentId, companyId, onBehalfOfUserId: "local-board",
+        onBehalfOfMemberships: [{ companyId, membershipRole: "member", status: "active" }] };
+      next();
+    });
+    agentApp.use("/api", sidebarBadgeRoutes(db));
+    agentApp.use(errorHandler);
+    const agentResponse = await request(agentApp).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(agentResponse.body).toMatchObject({ inbox: 0, unreadIssueIds: [] });
     await db.insert(issueReadStates).values({ companyId, issueId, userId: "local-board", lastReadAt: replyAt });
     const read = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
     expect(read.body).toMatchObject({ inbox: 0, unreadIssueIds: [] });

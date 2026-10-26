@@ -80,8 +80,9 @@ export function sidebarBadgeRoutes(db: Db) {
         : new Map<string, number>();
 
     // Company health alerts belong in All, not the personal inbox badge.
-    const currentUserId = req.actor.type === "board"
-      ? req.actor.userId ?? null : req.actor.onBehalfOfUserId ?? null;
+    // These IDs reconcile optimistic archives in the board UI. An agent's
+    // responsible user does not grant it access to that user's task collection.
+    const currentUserId = req.actor.type === "board" ? req.actor.userId ?? null : null;
     const unreadIssueIds = currentUserId
       ? await issues.unreadInboxIssueIds(companyId, currentUserId, await issueReadSqlCondition(db, req.actor))
       : [];

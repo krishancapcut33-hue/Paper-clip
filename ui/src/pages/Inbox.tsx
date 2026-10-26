@@ -1,4 +1,5 @@
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
+import { IssueRowDetailsNotice } from "../components/IssueRowDetailsNotice";
 import { type ReactNode, useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Link, useLocation, useNavigate } from "@/lib/router";
 import { useQuery, useMutation, useQueryClient } from "@tanstack/react-query";
@@ -1129,6 +1130,22 @@ function StreamlinedInbox({
     () => getRecentTouchedIssues(touchedIssuesRaw).filter((issue) => !locallyArchivedIssueIds.has(issue.id)),
     [locallyArchivedIssueIds, touchedIssuesRaw],
   );
+  const sourceSearchIds = useMemo(() => [...new Set([...mineIssuesRaw, ...touchedIssuesRaw].map((issue) => issue.id))].sort(), [mineIssuesRaw, touchedIssuesRaw]);
+  const { data: sourceSearchMatches = [], isLoading: isSourceSearchLoading, error: sourceSearchError } = useQuery<Issue[]>({
+    queryKey: [...queryKeys.issues.list(selectedCompanyId!), "inbox-source-search", normalizedSearchQuery, sourceSearchIds],
+    queryFn: async ({ signal }) => {
+      const matches: Issue[] = [];
+      for (let offset = 0; offset < sourceSearchIds.length; offset += 100) {
+        matches.push(...await issuesApi.listCompact(selectedCompanyId!, {
+          ids: sourceSearchIds.slice(offset, offset + 100), q: normalizedSearchQuery,
+          projection: "index", includeRoutineExecutions: true, limit: 100,
+        }, { signal }) as Issue[]);
+      }
+      return matches;
+    },
+    enabled: !!selectedCompanyId && normalizedSearchQuery.length > 0 && sourceSearchIds.length > 0,
+  });
+  const sourceSearchMatchIds = useMemo(() => new Set(sourceSearchMatches.map((issue) => issue.id)), [sourceSearchMatches]);
   const shouldUseIssueSearchSupplement =
     !!selectedCompanyId
     && normalizedSearchQuery.length > 0;
@@ -1413,6 +1430,7 @@ function StreamlinedInbox({
     return workItemsToRender.filter((item) => {
       if (item.kind === "issue") {
         return matchesInboxIssueSearch(item.issue, q, {
+          matchedIssueIds: sourceSearchMatchIds,
           isolatedWorkspacesEnabled,
           executionWorkspaceById,
           projectWorkspaceById,
@@ -1456,6 +1474,7 @@ function StreamlinedInbox({
     issueById,
     isolatedWorkspacesEnabled,
     normalizedSearchQuery,
+    sourceSearchMatchIds,
     projectWorkspaceById,
   ]);
 
@@ -1466,6 +1485,7 @@ function StreamlinedInbox({
           visibleIssues: visibleMineIssues,
           searchableIssues: visibleTouchedIssues,
           query: normalizedSearchQuery,
+          matchedIssueIds: sourceSearchMatchIds,
           isolatedWorkspacesEnabled,
           executionWorkspaceById,
           projectWorkspaceById,
@@ -1477,6 +1497,7 @@ function StreamlinedInbox({
       executionWorkspaceById,
       isolatedWorkspacesEnabled,
       normalizedSearchQuery,
+      sourceSearchMatchIds,
       projectWorkspaceById,
       tab,
       visibleMineIssues,
@@ -2401,10 +2422,6 @@ function StreamlinedInbox({
     if (row) row.scrollIntoView({ block: "nearest" });
   }, [selectedIndex]);
 
-  if (!selectedCompanyId) {
-    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
-  }
-
   const hasRunFailures = failedRuns.length > 0;
   const showCompanyAlerts = shouldShowCompanyAlerts(tab) && showAlertsCategory;
   const showAggregateAgentError =
@@ -2436,7 +2453,7 @@ function StreamlinedInbox({
   ].filter((key): key is SectionKey => key !== null);
 
   const allLoaded =
-    !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
+    !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
     !isDashboardLoading &&
@@ -2446,16 +2463,20 @@ function StreamlinedInbox({
     !isRunsLoading
     && (!issueFilters.liveOnly || !isLiveRunsLoading)
     && (issueFilters.externalObjectStatuses.length === 0 || externalObjectSummariesReady);
-  const listError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
+  const listError = sourceSearchError ?? dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
     ?? (tab === "mine" ? mineIssuesError : touchedIssuesError);
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
-  const enrichIssueRow = useIssueRowDetails(
+  const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
     selectedCompanyId, listRef,
     groupedSections.map((group) => group.key + ":" + group.displayItems.map(getInboxWorkItemKey).join(",") + ":" + [...group.childrenByIssueId.values()].flat().map((issue) => issue.id).join(",")).join("|")
       + ":" + [...collapsedInboxParents].join(",") + ":" + [...collapsedGroupKeys].join(","),
     allLoaded && !listError && tab !== "blocked",
   );
+
+  if (!selectedCompanyId) {
+    return <EmptyState icon={InboxIcon} message={`Select an organization to view ${surfaceLabel.toLowerCase()}.`} />;
+  }
 
   const markAllReadIssues = (tab === "mine" ? visibleMineIssues : unreadTouchedIssues)
     .filter((issue) => issue.isUnreadForMe && !fadingOutIssues.has(issue.id) && !archivingIssueIds.has(issue.id));
@@ -2481,6 +2502,7 @@ function StreamlinedInbox({
       : null;
   return (
     <div className="space-y-6">
+      <IssueRowDetailsNotice error={rowDetailsError} onRetry={() => void retryRowDetails()} />
       <InboxCollectionToolbar
         streamlined={streamlinedUiEnabled}
         ariaLabel={`${surfaceLabel} controls`}

@@ -42,8 +42,16 @@ describe("bounded hierarchy reads", () => {
     const rows = await loadIssueHierarchyChildren("company", [task("root")], ["root"], 5,
       async (id, limit) => { calls.push([id, limit]); return [task("child", "root")]; });
     expect(rows.issues.map((issue) => issue.id)).toEqual(["child"]);
-    expect(calls).toEqual([[["root"], 5]]);
+    expect(calls).toEqual([[["root"], 1]]);
     expect(await loadIssueHierarchyChildren("company", [task("root")], [], 1,
       async () => [{ ...task("foreign", "root"), companyId: "other" }])).toEqual({ issues: [], hasMore: true });
+  });
+  it("keeps a large collapsed tree from spending an expanded sibling's budget", async () => {
+    const hidden = Array.from({ length: 200 }, (_, index) => task(`hidden-${index}`, "collapsed"));
+    const visible = task("visible", "expanded");
+    const result = await loadIssueHierarchyChildren("company", [task("collapsed"), task("expanded")], ["collapsed"], 2,
+      async (ids, limit, offset) => [...hidden, visible].filter((row) => ids.includes(row.parentId!)).slice(offset, offset + limit));
+    expect(result.issues.map((row) => row.id)).toEqual(["hidden-0", "visible"]);
+    expect(result.hasMore).toBe(false);
   });
 });

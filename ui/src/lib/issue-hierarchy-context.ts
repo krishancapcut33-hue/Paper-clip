@@ -44,32 +44,52 @@ export async function loadIssueHierarchyChildren(
   const fetched = new Set<string>();
   const collapsed = new Set(collapsedParents);
   let requests = 0;
+  let loadedRows = 0;
+  let probes = 0;
+  let moreCollapsedMarkers = false;
   let frontier = [...new Set(matches.map((issue) => issue.id))];
-  while (frontier.length > 0 && context.length < rowBudget) {
+  while (frontier.length > 0 && loadedRows < rowBudget) {
     const next: string[] = [];
+    const collapsedFrontier = frontier.filter((id) => collapsed.has(id) && !visited.has(id));
+    const collapsedIds = collapsedFrontier.slice(0, Math.max(0, rowBudget - probes));
+    moreCollapsedMarkers ||= collapsedIds.length < collapsedFrontier.length;
+    collapsedFrontier.forEach((id) => visited.add(id));
+    // One child is enough to keep a collapsed parent's expand affordance. These
+    // markers must not spend the budget reserved for expanded, readable rows.
+    for (let start = 0; start < collapsedIds.length; start += 100) {
+      const batch = collapsedIds.slice(start, start + 100);
+      const markers = await Promise.all(batch.map((id) => readChildren([id], 1, 0)));
+      probes += batch.length;
+      for (const child of markers.flat()) {
+        if (child.companyId !== companyId || fetched.has(child.id)) continue;
+        fetched.add(child.id);
+        context.push(child);
+      }
+    }
     for (let start = 0; start < frontier.length; start += 100) {
       const parentIds = frontier.slice(start, start + 100).filter((id) => !visited.has(id));
       if (parentIds.length === 0) continue;
       parentIds.forEach((id) => visited.add(id));
       let offset = 0;
-      while (context.length < rowBudget) {
+      while (loadedRows < rowBudget) {
         if (requests >= rowBudget) return { issues: context, hasMore: true };
         requests += 1;
-        const limit = Math.min(100, rowBudget - context.length);
+        const limit = Math.min(100, rowBudget - loadedRows);
         const rows = await readChildren(parentIds, limit, offset);
         for (const child of rows) {
           if (child.companyId !== companyId || fetched.has(child.id)) continue;
           fetched.add(child.id);
           context.push(child);
-          if (!collapsed.has(child.parentId ?? "") && !visited.has(child.id)) next.push(child.id);
+          loadedRows += 1;
+          if (!visited.has(child.id)) next.push(child.id);
         }
         if (rows.length < limit) break;
         offset += rows.length;
-        if (context.length >= rowBudget) return { issues: context, hasMore: true };
+        if (loadedRows >= rowBudget) return { issues: context, hasMore: true };
       }
-      if (context.length >= rowBudget && (start + 100 < frontier.length || next.length > 0)) return { issues: context, hasMore: true };
+      if (loadedRows >= rowBudget && (start + 100 < frontier.length || next.length > 0)) return { issues: context, hasMore: true };
     }
     frontier = [...new Set(next)].filter((id) => !visited.has(id));
   }
-  return { issues: context, hasMore: frontier.length > 0 };
+  return { issues: context, hasMore: moreCollapsedMarkers || frontier.length > 0 };
 }

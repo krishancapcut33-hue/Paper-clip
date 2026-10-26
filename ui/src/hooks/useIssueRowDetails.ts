@@ -56,7 +56,7 @@ export function useIssueRowDetails(
     return () => observer.disconnect();
   }, [companyId, root, rowIdentity, enabled]);
 
-  const { data } = useQuery({
+  const { data, error, refetch } = useQuery({
     queryKey: [...queryKeys.issues.list(companyId ?? "__disabled__"), "visible-row-details", visibleIds],
     queryFn: ({ signal }) => issuesApi.listCompact(companyId!, {
       ids: visibleIds, projection: "rows", includeRoutineExecutions: true, limit: 50,
@@ -72,7 +72,8 @@ export function useIssueRowDetails(
       return { companyId, rows };
     });
   }, [companyId, data]);
-  return useMemo(() => (issue: Issue) => mergeIssueRowDetails(
+  const enrichIssueRow = useMemo(() => (issue: Issue) => mergeIssueRowDetails(
     issue, saved && saved.companyId === companyId ? saved.rows.get(issue.id) : undefined,
   ), [companyId, saved]);
+  return { enrichIssueRow, error, retry: refetch };
 }

@@ -17,6 +17,7 @@ const routerMock = vi.hoisted(() => ({
   location: { pathname: "/", search: "", hash: "" },
   navigate: vi.fn(),
 }));
+const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" as string | null }));
 
 const externalObjectMocks = vi.hoisted(() => ({
   summaries: new Map(),
@@ -103,7 +104,7 @@ vi.mock("../api/projects", () => ({
 }));
 
 vi.mock("../context/CompanyContext", () => ({
-  useCompany: () => ({ selectedCompanyId: "company-1" }),
+  useCompany: () => companyState,
 }));
 
 vi.mock("../context/BreadcrumbContext", () => ({
@@ -338,6 +339,7 @@ function createFailedRun(overrides: Partial<HeartbeatRun> = {}): HeartbeatRun {
 }
 
 function resetInboxApiMocks() {
+  companyState.selectedCompanyId = "company-1";
   for (const mock of Object.values(apiMocks)) mock.mockReset();
   externalObjectMocks.summaries.clear();
   routerMock.location.pathname = "/";
@@ -915,6 +917,57 @@ describe("Inbox toolbar", () => {
     await act(async () => release([createIssue({ title: "Delayed task index row" })]));
     await vi.waitFor(() => expect(container.textContent).toContain("Delayed task index row"));
     expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    act(() => root.unmount());
+  });
+
+  it("can select a company after a cold inbox mount", async () => {
+    companyState.selectedCompanyId = null;
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    const render = () => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>);
+    await act(render);
+    await vi.waitFor(() => expect(container.textContent).toContain("Select an organization"));
+    companyState.selectedCompanyId = "company-1";
+    apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Cold company task" })]);
+    await act(render);
+    await vi.waitFor(() => expect(container.textContent).toContain("Cold company task"));
+    act(() => root.unmount());
+  });
+
+  it("keeps more than 25 description-only matches in Mine with archive actions", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const rows = Array.from({ length: 30 }, (_, index) => createIssue({ id: `source-${index}`, title: `Source task ${index}`, identifier: `PAP-${index}`, listProjection: "index" }));
+    apiMocks.issuesList.mockImplementation((_company, filters) => Promise.resolve(filters.q && !filters.ids ? [] : rows));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(container.querySelectorAll('[data-inbox-item]')).toHaveLength(30));
+    await act(() => {
+      const input = container.querySelector<HTMLInputElement>('input[type="search"]')!;
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, "value")!.set!.call(input, "only-in-description");
+      input.dispatchEvent(new Event("input", { bubbles: true }));
+    });
+    await vi.waitFor(() => expect(apiMocks.issuesList).toHaveBeenCalledWith("company-1", expect.objectContaining({ q: "only-in-description", ids: expect.arrayContaining(rows.map((row) => row.id)), projection: "index", limit: 100 }), expect.anything()));
+    await vi.waitFor(() => expect(container.querySelectorAll('[data-inbox-item]')).toHaveLength(30));
+    expect(container.querySelectorAll('button[aria-label="Archive"]')).toHaveLength(30);
+    expect(container.textContent).not.toContain("Other matching tasks");
+    act(() => root.unmount());
+  });
+
+  it("keeps rows readable and offers retry when optional details fail", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    let failDetails = true;
+    apiMocks.issuesList.mockImplementation((_company, filters) => filters.projection === "rows" && failDetails
+      ? Promise.reject(new Error("Details unavailable")) : Promise.resolve([createIssue({ title: "Readable task" })]));
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(document.body.textContent).toContain("Some task details couldn’t load."));
+    expect(container.textContent).toContain("Readable task");
+    failDetails = false;
+    await act(() => Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === "Retry details")!.click());
+    await vi.waitFor(() => expect(document.body.textContent).not.toContain("Some task details couldn’t load."));
+    expect(container.textContent).toContain("Readable task");
     act(() => root.unmount());
   });
 

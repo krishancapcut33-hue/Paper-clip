@@ -428,19 +428,22 @@ export function shouldResetInboxWorkspaceGrouping(
 
 
 export function matchesInboxIssueSearch(
-  issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId">,
+  issue: Pick<Issue, "title" | "identifier" | "description" | "executionWorkspaceId" | "projectId" | "projectWorkspaceId"> & { id?: string },
   query: string,
   {
     isolatedWorkspacesEnabled = false,
+    matchedIssueIds,
     executionWorkspaceById,
     projectWorkspaceById,
     defaultProjectWorkspaceIdByProjectId,
   }: InboxWorkspaceGroupingOptions & {
     isolatedWorkspacesEnabled?: boolean;
+    matchedIssueIds?: ReadonlySet<string>;
   } = {},
 ): boolean {
   const normalizedQuery = query.trim().toLowerCase();
   if (!normalizedQuery) return true;
+  if (issue.id && matchedIssueIds?.has(issue.id)) return true;
   if (issue.title.toLowerCase().includes(normalizedQuery)) return true;
   if (issue.identifier?.toLowerCase().includes(normalizedQuery)) return true;
   if (issue.description?.toLowerCase().includes(normalizedQuery)) return true;
@@ -458,6 +461,7 @@ export function getArchivedInboxSearchIssues({
   visibleIssues,
   searchableIssues,
   query,
+  matchedIssueIds,
   isolatedWorkspacesEnabled = false,
   executionWorkspaceById,
   projectWorkspaceById,
@@ -466,6 +470,7 @@ export function getArchivedInboxSearchIssues({
   visibleIssues: Issue[];
   searchableIssues: Issue[];
   query: string;
+  matchedIssueIds?: ReadonlySet<string>;
   isolatedWorkspacesEnabled?: boolean;
   executionWorkspaceById?: ReadonlyMap<string, InboxExecutionWorkspaceLookup>;
   projectWorkspaceById?: ReadonlyMap<string, InboxProjectWorkspaceLookup>;
@@ -479,6 +484,7 @@ export function getArchivedInboxSearchIssues({
     .filter((issue) => !visibleIssueIds.has(issue.id))
     .filter((issue) =>
       matchesInboxIssueSearch(issue, normalizedQuery, {
+        matchedIssueIds,
         isolatedWorkspacesEnabled,
         executionWorkspaceById,
         projectWorkspaceById,
