@@ -8372,6 +8372,7 @@ async function verifyLiveRunnerAdoption(
   let runnerPid: number | null = null;
   let adopted: ReturnType<typeof createCapabilityRunnerdCodexTransport> | null =
     null;
+  let restoreIntervalSpies: () => void = () => undefined;
   try {
     let opened: Record<string, unknown>;
     try {
@@ -8441,6 +8442,9 @@ async function verifyLiveRunnerAdoption(
     const signal = vi.fn(() => true);
     const probeError = new Error("fixture remote process identity is unavailable");
     let rejectLiveness = false;
+    const intervals = uncertainAtClose ? vi.spyOn(globalThis, "setInterval") : null;
+    const clearedIntervals = uncertainAtClose ? vi.spyOn(globalThis, "clearInterval") : null;
+    restoreIntervalSpies = () => { intervals?.mockRestore(); clearedIntervals?.mockRestore(); };
     adopted = createCapabilityRunnerdCodexTransport({
       ...sharedOptions,
       ...(uncertainAtClose ? { closeGraceMs: 2_000 } : {}),
@@ -8547,7 +8551,17 @@ async function verifyLiveRunnerAdoption(
     expect(duplicateLauncher).not.toHaveBeenCalled();
     if (uncertainAtClose) {
       const before = JSON.parse(await readFile(controlPlaneStatePath, "utf8"));
+      const retainedAuthority = authority as DurablePrpControlPlane | null;
       rejectLiveness = true;
+      await expect(adopted.transport.close()).rejects.toBe(probeError);
+      expect(retainedAuthority?.activeRunnerConnectionCount()).toBe(0);
+      expect(intervals!.mock.results.length).toBeGreaterThan(0);
+      for (const interval of intervals!.mock.results) if (interval.type === "return") expect(clearedIntervals).toHaveBeenCalledWith(interval.value);
+      const notificationsClosed = (async () => { for await (const _event of adopted!.transport.notifications()) {} return true; })();
+      let queueDeadline: ReturnType<typeof setTimeout> | undefined;
+      try {
+        expect(await Promise.race([notificationsClosed, new Promise<boolean>(resolve => { queueDeadline = setTimeout(() => resolve(false), 250); })])).toBe(true);
+      } finally { clearTimeout(queueDeadline); }
       await expect(adopted.transport.close()).rejects.toBe(probeError);
       expect(adopted.transport.processInfo()).toMatchObject({ exited: false });
       expect(() => process.kill(runnerPid!, 0)).not.toThrow();
@@ -8590,6 +8604,7 @@ async function verifyLiveRunnerAdoption(
       }
       await (authority as DurablePrpControlPlane | null)?.stop();
     }
+    restoreIntervalSpies();
     if (runnerPid) {
       try {
         process.kill(-runnerPid, "SIGKILL");

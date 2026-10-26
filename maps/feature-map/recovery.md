@@ -204,6 +204,8 @@ historical retained sandbox or behavior during a live provider outage.
 The [transport regression](../../packages/paperclip-runner/src/live/runnerd-codex-transport.test.ts)
 also retains a real authenticated Runner and its journal when its close probe
 rejects, without signalling it, checkpointing it, or starting a replacement.
+The failed close still retires its local connections, event timers and
+notification stream. Repeated close cannot report successful retirement.
 
 For a release change during a remote provider session, verify that reattachment
 uses the controller's admitted pack manifest and runner digest. Check useful

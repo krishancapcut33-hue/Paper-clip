@@ -1835,6 +1835,9 @@ detaching the process. These receipts do not release historical recovery holds
 or prove that workspace files and provider state have been saved.
 The transport propagates rejected adopted-process checks through close and
 command waits. It must not turn a rejected check into a positive exit observation.
+When a process check rejects close, the transport retires its local controller,
+timers and notification queue without signalling the remote Runner or replacing
+its checkpoint. Repeated close retains the same failed ownership result.
 
 Healthy native warm turns retain their runner and provider processes. After a
 controller crash, continuation can recover a completed remote session from its
