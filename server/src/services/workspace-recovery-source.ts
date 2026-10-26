@@ -19,6 +19,7 @@ export function workspaceRecoverySourceEligible(includeCompleted = false) {
       (${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,schema}' = 'paperclip.historical-workspace-source.v1'
         and ${issueRecoveryActions.evidence}#>>'{historicalWorkspaceSource,runId}' = ${heartbeatRuns.id}::text))))`;
   return and(
+    sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
     includeCompleted ? sql`(${actionEligible} or ${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' = 'complete')` : actionEligible,
     sql`coalesce(${heartbeatRuns.nativeIssueId}::text, ${heartbeatRuns.issueId}::text, ${heartbeatRuns.contextSnapshot}->>'issueId') = ${issueRecoveryActions.sourceIssueId}::text`,
     sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,sourceRunId}' = ${heartbeatRuns.id}::text`,

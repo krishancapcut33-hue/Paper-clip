@@ -1387,8 +1387,11 @@ attempt budget applies across restarts. An idempotent board request through
 `POST /api/issues/:id/recovery-actions/recover-workspace` admits one additional
 attempt after a transient failure. It requires task mutation access, accepts no
 infrastructure certification, and grants no agent or provider execution authority.
-Repeated Retry during a physical preservation attempt keeps that attempt's
-generation and revision so its fenced completion can still commit. Missing stop or descriptor proof keeps
+Each completed export frees its own slot and wakes the next scan. A slow export
+does not hold a free slot. Shutdown joins the active exports before closing the
+database. Repeated Retry during physical preservation binds the canonical intent
+without changing the attempt's generation or revision. Progress writes preserve
+that newer intent so its fenced completion can still commit. Missing stop or descriptor proof keeps
 the source allocated and exposes the specific service blocker.
 
 File recovery alone never requests another agent turn. Existing saved human

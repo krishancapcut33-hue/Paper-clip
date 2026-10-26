@@ -4,7 +4,7 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, agentWakeupRequests, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -19,7 +19,10 @@ import { markExecutionReconciliation, deliverReconciledExecutions, settleUnrecov
 import { nextWorkspaceRecoveryAt } from "../services/system-recovery.js";
 import { createSystemRecovery } from "../services/system-recovery-state.js";
 import { retainedWorkspaceCandidates } from "../services/workspace-recovery.js";
+import { registerWorkspaceRecoveryWork } from "../services/workspace-recovery-work.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
+import { heartbeatService } from "../services/heartbeat.js";
+import { requestTaskRetry } from "../services/task-retry.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
 afterEach(async () => { for (const worker of coordinators.splice(0)) await worker.stop(); vi.useRealTimers(); });
@@ -199,9 +202,39 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     await db.update(issueRecoveryActions).set({ status: "cancelled", evidence: { ...evidence,
       systemRecovery: { ...state, state: "running" } } }).where(eq(issueRecoveryActions.id, action!.id));
     const c = coordinator(db, undefined, error => { errors.push(error); });
-    await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.workspaceRecovery,
-      run: async () => {}, next: executionControlSchedule(observed).workspaceRecovery }]).ready;
-    await quiet(c);
+    const worker = registerWorkspaceRecoveryWork(observed, c,
+      {} as Parameters<typeof registerWorkspaceRecoveryWork>[2], async () => {});
+    try { await worker.ready; await quiet(c); } finally { await worker.stop(); }
+  });
+
+  it("keeps a paused Retry saved and becomes quiet after file recovery is complete", async () => {
+    const run = await runRow("failed");
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { beforeNativeSelection: true } } })
+      .where(eq(heartbeatRuns.id, run.id));
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", ownerType: "system", cause: "native_workspace_sync_out_retry_exhausted",
+      fingerprint: run.id, nextAction: "Saved work recovered", evidence: { runId: run.id,
+        systemRecovery: { ...createSystemRecovery(run.id), state: "complete" },
+        workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: run.id,
+          status: "recovered", stage: "saving_receipts", attempt: 1, attemptLimit: 6, requestIds: [] } } });
+    const retry = await requestTaskRetry({ db, companyId, issueId, actorId: "board",
+      observedRunId: run.id, idempotencyKey: randomUUID() });
+    expect(retry.accepted).toBe(true);
+    const resume = vi.fn(heartbeatService(observed).resumeRemoteStopComments);
+    const c = coordinator(db, undefined, error => { errors.push(error); });
+    const worker = registerWorkspaceRecoveryWork(observed, c,
+      {} as Parameters<typeof registerWorkspaceRecoveryWork>[2], resume);
+    try {
+      await worker.ready;
+      await quiet(c);
+      expect(resume).toHaveBeenCalledTimes(1);
+      await expect(resume.mock.results[0]!.value).rejects.toThrow("Agent is not invokable in its current state");
+      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
+      expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+      expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("paused");
+    } finally { await c.stop(); await worker.stop(); }
   });
 
   it("bounds real producer bursts with another company's completed history present", async () => {

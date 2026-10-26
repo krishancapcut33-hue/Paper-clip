@@ -140,7 +140,12 @@ export async function requestTaskRetry(input: {
     if (!busy) {
       for (const action of records) {
         const previous = readSystemRecovery(action.evidence);
-        if (!previous || previous.state === "complete" || previous.state === "running") continue;
+        if (!previous || previous.state === "complete") continue;
+        if (previous.state === "running") {
+          await updateSystemRecovery(db, { companyId: issue.companyId, issueId: issue.id, runId: latest.id,
+            actionId: action.id }, previous, { ...previous, intentId: active?.id ?? id });
+          continue;
+        }
         // Active repair keeps its attempt and cooldown. An exhausted generation
         // gets a new budget only because this click is a new durable intent.
         const next = previous.state === "exhausted"

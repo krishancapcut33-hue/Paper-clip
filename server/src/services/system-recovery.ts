@@ -59,7 +59,10 @@ export async function updateSystemRecovery(db: Db, source: WorkspaceRecoverySour
   return writeExecutionControl(db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
     const [updated] = await tx.update(issueRecoveryActions).set({
       ownerType: "system", ownerAgentId: null, ownerUserId: null,
-      evidence: sql`${issueRecoveryActions.evidence} || jsonb_build_object('systemRecovery', ${JSON.stringify(next)}::jsonb,
+      evidence: sql`${issueRecoveryActions.evidence} || jsonb_build_object('systemRecovery', ${JSON.stringify(next)}::jsonb ||
+        ${next.generationId === previous.generationId && next.intentId === previous.intentId
+          ? sql`jsonb_build_object('intentId', ${issueRecoveryActions.evidence}#>'{systemRecovery,intentId}')`
+          : sql`'{}'::jsonb`},
         'workspaceRecovery', ${JSON.stringify(compatibility)}::jsonb || jsonb_build_object('requestIds',
           coalesce(${issueRecoveryActions.evidence}#>'{workspaceRecovery,requestIds}', '[]'::jsonb)))`,
       updatedAt: new Date(),
@@ -84,7 +87,8 @@ export async function nextWorkspaceRecoveryAt(db: Db): Promise<number | null> {
     then (${issueRecoveryActions.evidence}#>>'{systemRecovery,nextAttemptAt}')::bigint else 0 end` })
     .from(issueRecoveryActions).innerJoin(heartbeatRuns, and(
       eq(heartbeatRuns.companyId, issueRecoveryActions.companyId),
-      sql`${heartbeatRuns.id}::text = ${issueRecoveryActions.evidence}->>'runId'`,
+      eq(heartbeatRuns.id, sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
+        then (${issueRecoveryActions.evidence}->>'runId')::uuid end`),
       sql`${heartbeatRuns.status} in ('failed', 'interrupted', 'timed_out', 'cancelled', 'succeeded')`,
     )).where(and(
       workspaceRecoverySourceEligible(),

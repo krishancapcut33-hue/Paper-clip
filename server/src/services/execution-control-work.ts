@@ -13,6 +13,7 @@ export function registerExecutionControlWork(
     queue: DeliveryQueue;
     run: () => Promise<unknown>;
     next: () => Promise<number | null>;
+    onSettled?: () => void;
   }>,
   canRun: () => boolean = () => true,
 ) {
@@ -21,10 +22,10 @@ export function registerExecutionControlWork(
     let reconciled = 0;
     let next: number | null = null;
     let earliestRunAt = 0;
-    return coordinator.register(duty.queue, {
+    const worker = coordinator.register(duty.queue, {
       retryMs: EXECUTION_RECONCILIATION_INTERVAL_MS,
       pausePassiveMaintenance: true,
-      onSettled: () => { requested += 1; },
+      onSettled: () => { requested += 1; duty.onSettled?.(); },
       run: async () => {
         if (!canRun()) { requested += 1; next = null; return; }
         const now = Date.now();
@@ -42,8 +43,9 @@ export function registerExecutionControlWork(
       hasPending: async () => reconciled !== requested,
       nextRunAt: () => next,
     });
+    return { ...worker, wake: () => { requested += 1; worker.wake(); } };
   });
-  return { ready: Promise.all(workers.map(worker => worker.ready)) };
+  return { ready: Promise.all(workers.map(worker => worker.ready)), wake: () => { for (const worker of workers) worker.wake(); } };
 }
 
 export function executionControlSchedule(db: Db) {
