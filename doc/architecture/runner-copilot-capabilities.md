@@ -1,6 +1,14 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current source declaration (2026-10-26): **Copilot profile v60** binds the shared
+Current source declaration (2026-10-26): **Copilot profile v61** binds controller
+journal retirement and the historical profile decoder. Its digest is
+`sha256:956276ebee59f880249fa6955adc224af9ca7b6a9da59bcc5da4a8667550c5b3`.
+The v60 declaration remains unchanged and readable as history. This source
+identity update changes no Copilot executable, arguments, permission policy,
+tool receipts, or qualification flags. Offline compatibility checks supply no
+new live qualification; prior live outcomes retain their original identities.
+
+Historical source declaration (2026-10-26): **Copilot profile v60** binds the shared
 sources that carry Codex's explicit hosted-search restriction. Its digest is
 `sha256:ca3c2b38ed5f6e25cf1c96c1f73781a86cc90c1c0add93f64716c66f28b3f3aa`.
 The v59 declaration remains unchanged and readable as history. Exact-current
