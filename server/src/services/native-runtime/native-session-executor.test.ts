@@ -11710,7 +11710,7 @@ describe("runnerd provider runtime wiring", () => {
     }
   });
 
-  it.each(["verified", "wrong-state", "no-stop-proof"] as const)("admits only an authorized same-run plugin crash checkpoint: %s", async mode => {
+  it.each(["verified", "wrong-state", "no-stop-proof", "disposition-retry", "disposition-wrong-state", "disposition-no-stop-proof"] as const)("admits only an authorized same-run plugin checkpoint: %s", async mode => {
     const current = scopedNativeExecution(`plugin-crash-${mode}`);
     const identity = { runId: current.binding.runId, normalizedSessionId: current.session.normalizedSessionId!,
       runnerInstanceId: "plugin-runner", environmentLeaseId: "old-task-lease", turnId: "old-turn", itemId: "old-item" };
@@ -11719,13 +11719,13 @@ describe("runnerd provider runtime wiring", () => {
     const journal = JSON.stringify(durableControlPlaneState(identity));
     await writeFile(join(root, "control-plane/control-plane-state.json"), journal);
     const resume = vi.spyOn(environmentTaskRuntime, "resolvePluginTaskResume").mockImplementation(async () => {
-      if (mode === "no-stop-proof") throw new Error("Plugin Runner retained session is not authorized");
+      if (mode.endsWith("no-stop-proof")) throw new Error("Plugin Runner retained session is not authorized");
       return "prior-task";
     });
     const task = vi.fn(async (operation: any) => {
       environmentTaskOperationSchema.parse(operation);
       if (operation.kind === "read_state") return { kind: "state", taskId: "next-task", state: {
-        ...durableRunnerState(identity, "ready"), ...(mode === "wrong-state" ? { itemId: "other" } : {}),
+        ...durableRunnerState(identity, "ready"), ...(mode.endsWith("wrong-state") ? { itemId: "other" } : {}),
       } };
       return { kind: "description", launchPreparationVersion: 1, projectAuthCheckVersion: 1, taskId: "next-task",
         runner: { version: "fixture", digest: `sha256:${"a".repeat(64)}` } };
@@ -11734,18 +11734,18 @@ describe("runnerd provider runtime wiring", () => {
     try {
       const backend = createRunnerdBackend({ db: leaseDb(current), execution: current, runnerInstanceId: identity.runnerInstanceId,
         runnerIngressAuthorized: true, runnerExecutionTarget: { kind: "remote", transport: "sandbox", remoteCwd: ".", leaseId: "new-task-lease", runnerTask: task },
-        restartRecovery: { kind: "resume_dead_runner", runId: current.binding.runId, leaseOwner: "controller", controllerGeneration: 2,
-          providerAttempt: 2, restartKind: "hard", recoveryRequestId: null } });
-      if (mode === "verified") {
+        ...(mode.startsWith("disposition-") ? {} : { restartRecovery: { kind: "resume_dead_runner" as const, runId: current.binding.runId, leaseOwner: "controller", controllerGeneration: 2,
+          providerAttempt: 2, restartKind: "hard" as const, recoveryRequestId: null } }) });
+      if (mode === "verified" || mode === "disposition-retry") {
         await expect(backend).resolves.toBeDefined();
         expect(state.createBackend).toHaveBeenCalledOnce();
         expect(JSON.parse(await readFile(join(root, "plugin-runner-state.json"), "utf8"))).toMatchObject({ ...identity, lifecycle: "ready" });
       } else {
-        await expect(backend).rejects.toThrow(mode === "wrong-state" ? "checkpoint identity mismatch" : "not authorized");
+        await expect(backend).rejects.toThrow(mode.endsWith("wrong-state") ? "checkpoint identity mismatch" : "not authorized");
         expect(state.createBackend).not.toHaveBeenCalled();
       }
       expect(await readFile(join(root, "control-plane/control-plane-state.json"), "utf8")).toBe(journal);
-      if (mode === "no-stop-proof") expect(task).not.toHaveBeenCalled();
+      if (mode.endsWith("no-stop-proof")) expect(task).not.toHaveBeenCalled();
       else expect(task).toHaveBeenCalledWith({ kind: "read_state", identity, resumeFrom: "prior-task" });
     } finally { resume.mockRestore(); }
   });

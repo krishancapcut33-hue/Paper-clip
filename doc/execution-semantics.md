@@ -1302,6 +1302,14 @@ recording the proof and successor lineage. Retained provider files are not edite
 
 Bootstrap retries, exact-checkpoint resumes, and fresh replacement sessions share three total provider attempts, including the original attempt. Linked run IDs, controller restarts, and duplicate wakes do not reset this budget. Automatic attempts retain the 30-second delay. Replacement scheduling and predecessor lineage commit together, with one successor per predecessor and admission through the normal task locks, authorization, pause, approval, and budget gates.
 
+When a same-run retry acquires a replacement plugin task lease, the executor
+reloads the prior task's durable Runner checkpoint before checking local
+lifecycle evidence. This includes retries after a provider turn omitted its
+completion result. The existing lease-transfer policy must verify the company,
+agent, workspace, retained session, and termination of prior execution. The
+checkpoint must match the exact Runner, lease, run, session, turn, and item.
+A missing restart claim does not remove these checks or authorize a fresh session.
+
 A prepared remote workspace interrupted before the executor's first durable
 claim may resume its untouched bootstrap on the same run. This requires attempt
 and controller generation zero, no prior owner, and no process, provider session,

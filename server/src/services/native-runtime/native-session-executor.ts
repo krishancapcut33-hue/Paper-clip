@@ -4951,13 +4951,14 @@ async function migrateRunnerdStateRootForExecution(input: {
       throw new Error("runner_state_identity_mismatch: session_scope_mismatch");
     }
     const taskTarget = input.runnerExecutionTarget;
-    if (input.restartRecovery?.kind === "resume_dead_runner" && durableIdentityMatchesExecution(identity, input.execution)
-      && taskTarget?.kind === "remote" && taskTarget.transport === "sandbox" && taskTarget.runnerTask && taskTarget.leaseId) {
+    if (durableIdentityMatchesExecution(identity, input.execution)
+      && taskTarget?.kind === "remote" && taskTarget.transport === "sandbox" && taskTarget.runnerTask && taskTarget.leaseId
+      && (input.restartRecovery?.kind === "resume_dead_runner"
+        || (!input.restartRecovery && identity.environmentLeaseId !== taskTarget.leaseId))) {
       const resumeFrom = taskTarget.sandboxLeaseAcquisition?.outcome === "resumed" ? undefined : await resolvePluginTaskResume(input.db, { companyId: input.execution.binding.companyId,
         leaseId: taskTarget.leaseId, priorIdentity: identity });
       const result = environmentTaskResultSchema.parse(await taskTarget.runnerTask({ kind: "read_state", identity, resumeFrom }));
       if (result.kind !== "state") throw new Error("Plugin Runner checkpoint unavailable");
-      // The new lease and source termination receipt authorize this exact same-run recovery.
       savePluginRunnerCheckpoint(scoped, result.state, identity);
     }
     if (input.restartRecovery?.kind === "bootstrap_incomplete") {
