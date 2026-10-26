@@ -5,13 +5,13 @@ import { telegramDeliveryHasZeroMessageId } from "../telegram/messages.js";
 import { fastResponseTurnQueued } from "../../fast-responses.js";
 import { fastResponseRequests } from "@paperclipai/db";
 import { canActorReadIssuePrivacy } from "../../authorization.js";
-import { and, eq, inArray } from "drizzle-orm";
+import { and, eq } from "drizzle-orm";
 import type { Db } from "@paperclipai/db";
 import { agentWakeupRequests, agents, chatActions, chatConversations, chatDeliveries, chatEndpointResources, chatEndpoints, chatMessageLinks, issueComments, issues } from "@paperclipai/db";
 import { forbidden } from "../../../errors.js";
 import { resolveGitHubWakeAuthority, isGitHubAutomaticDelivery } from "../github/wake-authority.js";
 import { assertSlackWakeMention } from "../slack/wake-authority.js";
-import { githubTaskRetryRuntimeFence, githubTaskRetryDestinationMatches, githubTaskRetryAppMatches, type TaskRetryWakeAuthority } from "../github/task-retry-authorization.js";
+import { githubTaskRetryRuntimeFence, githubTaskRetryDestinationMatches, createGitHubTaskRetryBatchAuthority, type TaskRetryWakeAuthority } from "../github/task-retry-authorization.js";
 import type { createChatInboundAuthority } from "./authorization.js";
 import type { createChatMessageLifecycle } from "./lifecycle.js";
 type WakeAuthorityOptions = {
@@ -222,58 +222,7 @@ export function createInboundWakeAuthority(db: Db, options: WakeAuthorityOptions
       ...(notice?.taskRetry && currentFence ? { retryRuntimeFence: currentFence } : {}) };
   }
 
-  async function authorizeGitHubTaskRetryBatch(tx: DbOrTransaction, actions: Array<typeof chatActions.$inferSelect>,
-    notice: { nonblocking: true; terminal: boolean; taskRetry: TaskRetryWakeAuthority }) {
-    const deny = () => forbidden("This accepted chat message is no longer authorized to start work",
-      { code: "chat_action_authorization_changed" });
-    const first = actions[0];
-    if (!first) throw deny();
-    const commonScope = (action: typeof chatActions.$inferSelect) => JSON.stringify([
-      action.companyId, action.endpointId, action.conversationId, action.principalId, action.kind, action.status,
-      ...["version", "issueId", "agentId", "sessionGeneration", "requestedByActorType", "requestedByActorId"]
-        .map(key => action.payload[key]),
-    ]);
-    if (actions.some(action => commonScope(action) !== commonScope(first))) throw deny();
-    const deliveries = await tx.select().from(chatDeliveries).where(and(eq(chatDeliveries.companyId, first.companyId),
-      inArray(chatDeliveries.id, actions.map(action => action.deliveryId!))));
-    const byDelivery = new Map(deliveries.map(delivery => [delivery.id, delivery]));
-    const legacy = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, first.companyId),
-      eq(chatActions.endpointId, first.endpointId), eq(chatActions.conversationId, first.conversationId!),
-      eq(chatActions.kind, "github_response_comment"), inArray(chatActions.deliveryId, deliveries.map(delivery => delivery.id))));
-    const legacyByDelivery = new Map(legacy.map(action => [action.deliveryId, action]));
-    const links = await tx.select({ deliveryId: chatMessageLinks.deliveryId, commentId: chatMessageLinks.commentId,
-      authorUserId: issueComments.authorUserId, deletedAt: issueComments.deletedAt }).from(chatMessageLinks)
-      .innerJoin(issueComments, and(eq(issueComments.id, chatMessageLinks.commentId),
-        eq(issueComments.companyId, first.companyId), eq(issueComments.issueId, String(first.payload.issueId))))
-      .where(and(eq(chatMessageLinks.companyId, first.companyId), eq(chatMessageLinks.endpointId, first.endpointId),
-        eq(chatMessageLinks.conversationId, first.conversationId!), eq(chatMessageLinks.direction, "inbound"),
-        inArray(chatMessageLinks.deliveryId, deliveries.map(delivery => delivery.id))));
-    const expectedUserId = first.payload.requestedByActorType === "user" ? first.payload.requestedByActorId : null;
-    const linked = new Set(links.filter(link => (!link.deletedAt || notice.terminal) && link.authorUserId === expectedUserId)
-      .map(link => `${link.deliveryId}:${link.commentId}`));
-    const groups = new Map<string, Awaited<ReturnType<typeof authorizeInboundWakeup>>>();
-    const authorized = new Map<string, Awaited<ReturnType<typeof authorizeInboundWakeup>>>();
-    for (const action of actions) {
-      const delivery = byDelivery.get(action.deliveryId!);
-      if (!delivery || !linked.has(`${delivery.id}:${action.payload.commentId}`)) throw deny();
-      // Reuse only the same live grant within this transaction. Automatic review
-      // policies with different contexts still receive their own full check.
-      const grant = JSON.stringify(delivery.normalizedEvent.githubAutomatic ?? delivery.normalizedEvent.githubIssue ?? null);
-      let current = groups.get(grant);
-      if (!current) {
-        current = await authorizeInboundWakeup(tx, action, notice);
-        if (current.endpoint.provider !== "github") throw deny();
-        notice.taskRetry.runtimeFence ??= current.retryRuntimeFence;
-        groups.set(grant, current);
-      }
-      if (delivery.state !== "processed" || delivery.endpointId !== current.endpoint.id ||
-          delivery.conversationId !== current.conversation.id || delivery.principalId !== action.principalId ||
-          !githubTaskRetryAppMatches(current.endpoint, delivery, legacyByDelivery.get(delivery.id)) ||
-          !githubTaskRetryDestinationMatches(delivery, current.conversation, current.resource)) throw deny();
-      authorized.set(action.id, { ...current, delivery });
-    }
-    return authorized;
-  }
+  const authorizeGitHubTaskRetryBatch = createGitHubTaskRetryBatchAuthority(authorizeInboundWakeup);
 
   async function authorizeInboundWorkStart(
     tx: DbOrTransaction,
