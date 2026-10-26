@@ -3381,7 +3381,7 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
         ...(mode === "launch-failure-sandbox" ? { externallySandboxed: true } : mode === "launch-failure-unsandboxed" ? { externallySandboxed: false } : {}),
         runnerBinary: resolve(import.meta.dirname, "../../package.json"),
         codexCommand: resolve(import.meta.dirname, "../../package.json"),
-        sourceCodexHome: "", runnerProcessLauncher: launch,
+        sourceCodexHome: "", runnerProcessLauncher: launch, disableCodexWebSearch: false,
         controlPlaneRegistration: async (_authority, _identity, signal) => {
           template = structuredClone(_authority.store.state.runAttachTemplate!);
           registrationSignal = signal;
@@ -3405,6 +3405,8 @@ it.each(["stuck", "late-release", "late-release-error", "stuck-release", "cooper
       expect(template).toMatchObject({ provider: { externallySandboxed: mode === "launch-failure-sandbox", readOnly: true, approvalPolicy: "never", collaborationMode: "plan" } });
       const args = (template!.provider as Record<string, unknown>).args as string[];
       expect(args).toContain("project_doc_max_bytes=0");
+      expect(args).toContain('web_search="disabled"');
+      expect(args.indexOf('web_search="disabled"')).toBeLessThan(args.indexOf("app-server"));
       expect(args[args.indexOf("project_doc_max_bytes=0") - 1]).toBe("-c");
       expect(args.indexOf("project_doc_max_bytes=0")).toBeLessThan(args.indexOf("app-server"));
       expect(args).not.toContain("--dangerously-bypass-approvals-and-sandbox");

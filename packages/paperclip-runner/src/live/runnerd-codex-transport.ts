@@ -1287,6 +1287,8 @@ export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionD
   codexCommand?: string;
   codexArgs?: string[];
   disableCodexProjectInstructions?: boolean;
+  /** Restrict hosted search without changing the provider default for other runs. */
+  disableCodexWebSearch?: boolean;
   /** Controller-visible Codex home used only to seed the isolated runner home. */
   sourceCodexHome?: string | null;
   opencodeCommand?: string;
@@ -5529,8 +5531,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         // Keep the durable provider profile and thread identity unchanged.
         const recordedCommand = record(runAttachTemplate.provider).command;
         runAttachTemplate.runtimeLaunchArgs =
-          this.options.codexArgs ??
           createRunnerdCodexAppServerArgs({
+            args: this.options.codexArgs,
+            disableWebSearch: this.options.disableCodexWebSearch,
             environment: this.options.environment,
             codexHome,
             workingDirectory: this.options.resumeWorkingDirectory,
@@ -7287,6 +7290,7 @@ export async function probeNativeRunnerEnvironment(options: {
     environment,
     externallySandboxed: options.transportOptions?.externallySandboxed === true,
     disableCodexProjectInstructions: true,
+    disableCodexWebSearch: true,
     closeGraceMs: 10_000,
     lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
   });
