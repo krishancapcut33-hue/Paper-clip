@@ -51,15 +51,18 @@ export async function pluginAgentRuntimeIdentity(db: Db, pluginId: string, compa
   return readState(db, pluginId, companyId, agentId, true);
 }
 
-export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyId: string, agentId: string): Promise<PluginAgentRuntimeState | null> {
+export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyId: string, agentId: string, environmentId?: string): Promise<PluginAgentRuntimeState | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const state = await readState(db, pluginId, companyId, agentId);
     if (!state) return null;
-    const [environment] = state.agent.defaultEnvironmentId
-      ? await db.select().from(environments).where(eq(environments.id, state.agent.defaultEnvironmentId)) : [];
+    const instance = await instanceSettingsService(db).get();
+    const effectiveEnvironmentId = environmentId ?? state.agent.defaultEnvironmentId ?? instance.defaultEnvironmentId;
+    const [environment] = effectiveEnvironmentId
+      ? await db.select().from(environments).where(eq(environments.id, effectiveEnvironmentId)) : [];
+    if (environmentId && !environment) throw unprocessable("The selected environment is unavailable");
     const { config: selectionConfig, skillKeys: environmentSkills } = await environmentSkillConfig(db, companyId, environment, state.agent.adapterConfig);
     const preference = readPaperclipSkillSyncPreference(selectionConfig);
-    const settings = await instanceSettingsService(db).getExperimental();
+    const settings = instance.experimental;
     const skills = await withSkillActor({ type: "agent", agentId, companyId, source: "agent_key" }, () =>
       companySkillService(db).listRuntimeSkillEntries(companyId, {
         selectionConfig, includeLegacy: state.agent.adapterType !== "paperclip_runner", snapshotLatest: true,

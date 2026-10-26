@@ -2359,7 +2359,9 @@ selection. Core installs a missing managed skill in the current company's
 library and preserves existing skill edits and explicit version pins. Run
 preparation captures the same immutable versions as ordinary assignments;
 recovery uses the saved selection. The lifecycle runtime reader includes the
-default environment's skills before synchronizing the persistent home. This
+effective default environment's skills before synchronizing the persistent home.
+A task provider can pass its selected environment ID to `agents.getRuntime` when
+a task overrides that default. This
 contract currently applies to `driver: "plugin"` environments. Other drivers
 and plugin drivers without `skillKeys` keep their existing behavior. No agent
 configuration is rewritten, and no background scan is added.

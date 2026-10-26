@@ -10,6 +10,7 @@ import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } fro
 import { environmentSkillConfig } from "../services/environment-skills.js";
 import { pluginAgentRuntimeState } from "../services/plugin-agent-runtime-state.js";
 import { companySkillService } from "../services/company-skills.js";
+import { instanceSettingsService } from "../services/instance-settings.js";
 import { withSkillActor } from "../services/skill-access.js";
 import { buildNativeRuntimeContext } from "../services/native-runtime/runtime-context.js";
 
@@ -69,6 +70,13 @@ describeDatabase("environment managed skills", () => {
         expect(await fs.readFile(path.join(context.skills[0].bundle.rootPath, "references/linux.md"), "utf8")).toContain("cua-driver");
       });
     });
+    await db.update(agents).set({ defaultEnvironmentId: null }).where(eq(agents.id, agent.id));
+    await instanceSettingsService(db).update({ defaultEnvironmentId: env.id });
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id))!.skills).toEqual(state!.skills);
+    await instanceSettingsService(db).update({ defaultEnvironmentId: null });
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id))!.skills).toEqual([]);
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, env.id))!.skills).toEqual(state!.skills);
+    await expect(pluginAgentRuntimeState(db, pluginId, companyId, agent.id, randomUUID())).rejects.toMatchObject({ status: 422 });
     const pinned = { paperclipSkillSync: { desiredSkills: [{ key: skill.key, versionId: state!.skills[0].versionId }] } };
     expect((await environmentSkillConfig(db, companyId, environment, pinned)).config).toEqual(pinned);
     await db.update(companySkills).set({ markdown: "Agent customization" }).where(eq(companySkills.id, skill.id));

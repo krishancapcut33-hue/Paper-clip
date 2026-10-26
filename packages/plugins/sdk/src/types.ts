@@ -1731,7 +1731,7 @@ export type PluginAgentRuntimeIdentity = Pick<PluginAgentRuntimeState, "revision
 
 export interface PluginAgentsClient {
   getRuntimeIdentity(agentId: string, companyId: string): Promise<PluginAgentRuntimeIdentity | null>;
-  getRuntime(agentId: string, companyId: string): Promise<PluginAgentRuntimeState | null>;
+  getRuntime(agentId: string, companyId: string, environmentId?: string): Promise<PluginAgentRuntimeState | null>;
   list(input: { companyId: string; status?: Agent["status"]; limit?: number; offset?: number }): Promise<Agent[]>;
   get(agentId: string, companyId: string): Promise<Agent | null>;
   /** Pause an agent. Throws if agent is terminated or not found. Requires `agents.pause`. */
