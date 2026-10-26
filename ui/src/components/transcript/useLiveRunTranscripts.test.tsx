@@ -148,7 +148,7 @@ describe("useLiveRunTranscripts", () => {
     const chunks = () => buildTranscriptMock.mock.calls.at(-1)?.[0];
     try {
       await act(async () => root.render(<Harness limit={32_000} />));
-      expect(logMock).toHaveBeenLastCalledWith("run-1", 68_000, 32_000, expect.anything());
+      expect(logMock).toHaveBeenLastCalledWith("run-1", 68_000, 32_000, expect.objectContaining({ alignStartToRecord: true }));
       expect(chunks()).toEqual([expect.objectContaining({ chunk: "Latest answer" })]);
       await act(async () => root.render(<Harness limit={256_000} />));
       expect(logMock).toHaveBeenLastCalledWith("run-1", 0, 256_000, expect.anything());

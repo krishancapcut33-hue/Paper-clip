@@ -314,6 +314,7 @@ export function useLiveRunTranscripts({
         return;
       }
       inFlightRunIds.add(run.id);
+      let alignStartToRecord = !logOffsetByRunRef.current.has(run.id);
       const previousReadLimit = logReadLimitByRunRef.current.get(run.id);
       if (previousReadLimit !== undefined && logReadLimitBytes > previousReadLimit) {
         // Expanding a compact tail must reread the earlier range. Retain the
@@ -321,6 +322,7 @@ export function useLiveRunTranscripts({
         const expandedOffset = resolveInitialLogOffset(run, logReadLimitBytes);
         const previousOffset = logOffsetByRunRef.current.get(run.id);
         if (previousOffset !== undefined && expandedOffset < previousOffset) {
+          alignStartToRecord = true;
           logOffsetByRunRef.current.set(run.id, expandedOffset);
           pendingLogRowsByRunRef.current.delete(run.id);
           pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
@@ -330,7 +332,10 @@ export function useLiveRunTranscripts({
       const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
         const result = await readTranscriptRequest(
-          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, { signal }),
+          (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, {
+            signal,
+            ...(alignStartToRecord && offset > 0 ? { alignStartToRecord: true } : {}),
+          }),
           controller.signal,
         );
         if (cancelled) return;

@@ -58,12 +58,12 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(response.body.latestCommentId).toBe(response.body.comments[1].id);
     expect([403, 404]).toContain((await request(app(randomUUID())).get(`/api/issues/${issueId}/recent-comments`)).status);
   });
-  it("preserves the initial human instruction when the task has no description", async () => {
+  it.each(["user", null] as const)("preserves initial and latest human instructions without a description (authorType=%s)", async (authorType) => {
     const bareIssueId = randomUUID();
     await db.insert(issues).values({ id: bareIssueId, companyId, title: "No description" });
     await db.insert(issueComments).values([
-      { companyId, issueId: bareIssueId, body: "Human direction", authorType: "user", authorUserId: "local-board", createdAt: new Date(0) },
-      { companyId, issueId: bareIssueId, body: "Newest direction", authorType: "user", authorUserId: "local-board", createdAt: new Date(50_000) },
+      { companyId, issueId: bareIssueId, body: "Human direction", authorType, authorUserId: "local-board", createdAt: new Date(0) },
+      { companyId, issueId: bareIssueId, body: "Newest direction", authorType, authorUserId: "local-board", createdAt: new Date(50_000) },
       ...Array.from({ length: 6 }, (_, i) => ({ companyId, issueId: bareIssueId, body: `New reply ${i}`, authorType: "agent" as const, authorAgentId: agentId, createdAt: new Date(60_000 + i) })),
     ]);
     const response = await request(app()).get(`/api/issues/${bareIssueId}/recent-comments`);
