@@ -2894,6 +2894,12 @@ export function issueThreadInteractionService(
             eq(issueThreadInteractions.kind, "request_confirmation"),
             eq(issueThreadInteractions.status, "pending"),
           ),
+        )
+        // A stable order lets one forbidden confirmation fail independently
+        // without preventing later eligible confirmations from being handled.
+        .orderBy(
+          asc(issueThreadInteractions.createdAt),
+          asc(issueThreadInteractions.id),
         );
 
       const candidates = rows.flatMap((row) => {

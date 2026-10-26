@@ -157,7 +157,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
     await tempDb?.cleanup();
   });
 
-  it("continues after forbidden verdicts and keeps review policies enforced", async () => {
+  it("continues to later confirmations after forbidden review verdicts", async () => {
     const companyId = randomUUID();
     const goalId = randomUUID();
     const issueId = randomUUID();
@@ -256,6 +256,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
         createdByAgentId: agentId,
         title: "Merge https://github.com/paperclipai/paperclip/pull/39?",
         payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:03.000Z"),
       },
       {
         ...common,
@@ -264,6 +265,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
         requestedResolverPolicy: "board_or_agents",
         effectiveResolverPolicy: "board_or_agents",
         payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:04.000Z"),
       },
       {
         ...common,
@@ -318,6 +320,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
         createdByAgentId: agentId,
         title: "Merge paperclipai/paperclip#39?",
         payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:01.000Z"),
       },
       {
         ...common,
@@ -326,6 +329,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
         createdByAgentId: agentId,
         title: "Merge paperclipai/paperclip#39?",
         payload: { version: 1, prompt: "Merge the PR?" },
+        createdAt: new Date("2026-01-01T00:00:02.000Z"),
       },
     ]);
     await db.insert(activityLog).values([
@@ -426,6 +430,7 @@ describeEmbeddedPostgres("merged pull-request confirmation sweep", () => {
       [interactionIds.notCreatorVerdict, "pending"],
       [unrelatedInteractionId, "pending"],
     ]));
+    expect(wakeup).toHaveBeenCalledTimes(2);
     expect(wakeup).toHaveBeenCalledWith(agentId, expect.objectContaining({
       requestedByActorType: "system",
       requestedByActorId: "system:pr-merged",
