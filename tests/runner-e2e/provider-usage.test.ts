@@ -15,6 +15,20 @@ it("never turns missing usage or incompatible model/pricing into a free charge",
   expect(estimateProviderCost(zero, price)).toBe("0.000000000");
   expect(estimateProviderCost(zero, { ...price, model: "other" })).toBeNull();
 });
+it("prices only exact response identities declared by the versioned pricecard", () => {
+  const selected = { ...price, model: "gpt-5.4-mini", responseModels: ["gpt-5.4-mini-2026-03-17"] };
+  const receipt = normalizeProviderUsage("openai", { model: selected.responseModels[0], usage: {
+    input_tokens: 100, input_tokens_details: { cache_write_tokens: 0, cached_tokens: 40 }, output_tokens: 20,
+  } });
+  expect(estimateProviderCost(receipt, selected)).toBe("0.000360000");
+  expect(estimateProviderCost({ ...receipt, model: selected.model }, selected)).toBe("0.000360000");
+  expect(estimateProviderCost(receipt, { ...selected, provider: "anthropic" })).toBeNull();
+  expect(estimateProviderCost(receipt, { ...selected, responseModels: undefined })).toBeNull();
+  expect(estimateProviderCost(receipt, { ...selected, responseModels: selected.responseModels[0] as never })).toBeNull();
+  for (const model of [undefined, "gpt-5.4-mini-2026-03-18", "gpt-5.4-mini-2026-03-17-extra", "gpt-5.4", "GPT-5.4-mini-2026-03-17"]) {
+    expect(estimateProviderCost({ ...receipt, model }, selected)).toBeNull();
+  }
+});
 it("does not add Anthropic cumulative output counters and prices cache writes by TTL", () => {
   const stream = new ProviderUsageAccumulator("anthropic");
   stream.observe({ type: "message_start", message: { id: "message", model: "fixture", usage: { input_tokens: 10, output_tokens: 1, cache_read_input_tokens: 20, cache_creation_input_tokens: 30, cache_creation: { ephemeral_5m_input_tokens: 20, ephemeral_1h_input_tokens: 10 } } } });

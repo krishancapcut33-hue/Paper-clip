@@ -451,6 +451,66 @@ it("refuses missing or unreviewed attribution checkpoints before request dispatc
 const provisionalBound = { version: 1 as const, scope: "full_lifecycle" as const, evidenceSha256: "a".repeat(64),
   configurationSha256: costBoundConfigurationSha256({ provider: route.provider, mode: route.mode, price: route.price,
     maximumInputTokens: route.maximumInputTokens, maximumOutputTokens: route.maximumOutputTokens, reservation: evalRequestReservation(route) }) };
+it.each(["json", "sse"] as const)("prices a declared exact response snapshot from forwarded %s bytes and replays the ledger", async format => {
+  const f = await fixture();
+  const selected = { ...route, price: { ...route.price, model: "gpt-5.4-mini", responseModels: ["gpt-5.4-mini-2026-03-17"], version: "snapshot-fixture-2" } };
+  const bound = { ...provisionalBound, configurationSha256: costBoundConfigurationSha256({
+    provider: selected.provider, mode: selected.mode, price: selected.price,
+    maximumInputTokens: selected.maximumInputTokens, maximumOutputTokens: selected.maximumOutputTokens, reservation: evalRequestReservation(selected),
+  }) };
+  const returned = { ...usage, model: selected.price.responseModels[0] };
+  const wire = Buffer.from(format === "sse" ? `data: ${JSON.stringify({ type: "response.completed", response: returned })}\r\n\r\ndata: [DONE]\r\n\r\n` : JSON.stringify(returned));
+  const forwarded: Uint8Array[] = [];
+  const transport = vi.fn<typeof fetch>(async (_url, init) => {
+    expect(JSON.parse(init!.body as string).model).toBe(selected.price.model);
+    expect((await readEvalCostLedger(f.file)).state.snapshot().inflight).toBe(1);
+    return new Response(new ReadableStream<Uint8Array>({ start(controller) {
+      for (let index = 0; index < wire.length; index += 3) controller.enqueue(wire.subarray(index, index + 3));
+      controller.close();
+    } }), { headers: { "content-type": format === "sse" ? "text/event-stream" : "application/json", "x-bt-used-endpoint": selected.endpointName! } });
+  });
+  const receipt = await forwardEvalRequest({ ...f, route: { ...selected, provisionalBound: bound },
+    payload: { ...f.payload, model: selected.price.model }, transport, onChunk: async chunk => { forwarded.push(chunk); } });
+  expect(Buffer.concat(forwarded)).toEqual(wire);
+  expect(receipt).toMatchObject({ outcome: "succeeded", costUsd: "0.000068000", usageComplete: true, final: true, usage: { model: returned.model } });
+  expect(f.receipts.at(-1)).toEqual(receipt);
+  const replay = (await readEvalCostLedger(f.file)).state;
+  expect(replay.snapshot()).toMatchObject({ knownUsd: "0.000068000", heldUsd: "0.000000000", unknownRequests: 0, boundedUnresolvedRequests: 0, inflight: 0 });
+  const request = [...replay.requests.values()][0]!;
+  expect(request.boundInvalidated).not.toBe(true);
+  expect(request.observations).toEqual(expect.arrayContaining([expect.objectContaining({
+    classification: "estimated", model: returned.model, costUsd: "0.000068000", pricingVersion: selected.price.version,
+  })]));
+  expect(transport).toHaveBeenCalledOnce();
+});
+
+it.each(["listed-partial", "unlisted-snapshot", "unlisted-suffix", "no-mapping"] as const)("preserves unknown usage and the correct bound for %s response bytes", async reason => {
+  const f = await fixture();
+  const selected = { ...route, price: { ...route.price, model: "gpt-5.4-mini",
+    ...(reason === "no-mapping" ? {} : { responseModels: ["gpt-5.4-mini-2026-03-17"] }) } };
+  const bound = { ...provisionalBound, configurationSha256: costBoundConfigurationSha256({
+    provider: selected.provider, mode: selected.mode, price: selected.price,
+    maximumInputTokens: selected.maximumInputTokens, maximumOutputTokens: selected.maximumOutputTokens, reservation: evalRequestReservation(selected),
+  }) };
+  const model = reason === "unlisted-snapshot" ? "gpt-5.4-mini-2026-03-18"
+    : reason === "unlisted-suffix" ? "gpt-5.4-mini-2026-03-17-extra" : "gpt-5.4-mini-2026-03-17";
+  const returned = { ...usage, model, ...(reason === "listed-partial" ? { status: "in_progress", usage: undefined } : {}) };
+  const receipt = await forwardEvalRequest({ ...f, route: { ...selected, provisionalBound: bound }, payload: { ...f.payload, model: selected.price.model },
+    transport: async () => new Response(JSON.stringify(returned), { headers: { "x-bt-used-endpoint": selected.endpointName! } }) });
+  expect(receipt.costUsd).toBeNull();
+  const replay = (await readEvalCostLedger(f.file)).state;
+  expect(replay.snapshot()).toMatchObject({ knownUsd: "0.000000000", heldUsd: "0.003000000", unknownRequests: 1,
+    boundedUnresolvedRequests: reason === "listed-partial" ? 1 : 0, inflight: 0 });
+  expect([...replay.requests.values()][0]!.boundInvalidated === true).toBe(reason !== "listed-partial");
+});
+
+it("does not admit a declared response snapshot as the request model", async () => {
+  const f = await fixture(), transport = vi.fn<typeof fetch>(), persist = vi.fn();
+  const selected = { ...route, price: { ...route.price, responseModels: ["fixture-2026-03-17"] } };
+  await expect(forwardEvalRequest({ ...f, route: selected, payload: { ...f.payload, model: selected.price.responseModels[0] }, transport, persist })).rejects.toThrow("unqualified_model");
+  expect(transport).not.toHaveBeenCalled(); expect(persist).not.toHaveBeenCalled();
+  expect(f.ledger.snapshot().requests).toHaveLength(0);
+});
 it("retains a reviewed model bound through a partial response and durable reload without releasing the hold", async () => {
   const f = await fixture();
   const receipt = await forwardEvalRequest({ ...f, route: { ...route, provisionalBound }, transport: async () => {
@@ -476,9 +536,10 @@ it.each(["no-headers", "route", "failover", "model", "input-limit", "output-limi
   expect([...replay.requests.values()][0]!.boundInvalidated).toBe(true);
 });
 
-it("refuses a changed model limit or rate with a stale reviewed bound before dispatch", async () => {
+it("refuses a changed model limit, rate or response mapping with a stale reviewed bound before dispatch", async () => {
   const f = await fixture(), transport = vi.fn<typeof fetch>();
-  for (const changed of [{ ...route, maximumInputTokens: 500 }, { ...route, price: { ...route.price, inputUsdPerMillion: "20" } }]) {
+  for (const changed of [{ ...route, maximumInputTokens: 500 }, { ...route, price: { ...route.price, inputUsdPerMillion: "20" } },
+    { ...route, price: { ...route.price, responseModels: ["fixture-2026-03-17"] } }]) {
     await expect(forwardEvalRequest({ ...f, route: { ...changed, provisionalBound }, transport })).rejects.toThrow("configuration changed");
   }
   expect(transport).not.toHaveBeenCalled();
