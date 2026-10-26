@@ -177,6 +177,7 @@ export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCap
 // validation error, not a silently dropped field. A misspelled capability name
 // (for example `supportsLoginPTY`) fails validation instead of dropping.
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
+  skillKeys: z.array(z.string().min(1).max(100)).max(100).optional(),
   supportsTasks: z.boolean().optional(),
   freshWorkspaceVersion: z.literal(1).optional(),
   warmTaskVersion: z.literal(1).optional(),
@@ -895,6 +896,13 @@ export const pluginManifestV1Schema = z.object({
         message: "Capability 'environment.drivers.register' is required when environmentDrivers are declared",
         path: ["capabilities"],
       });
+    }
+  }
+
+  for (const [index, driver] of (manifest.environmentDrivers ?? []).entries()) {
+    const keys = driver.skillKeys ?? [];
+    if (new Set(keys).size !== keys.length || keys.some(key => !manifest.skills?.some(skill => skill.skillKey === key))) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Environment skill keys must be unique references to this plugin's managed skills", path: ["environmentDrivers", index, "skillKeys"] });
     }
   }
 

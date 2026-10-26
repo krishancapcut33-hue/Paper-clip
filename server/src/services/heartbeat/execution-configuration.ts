@@ -26,6 +26,7 @@ import { resolveAssignedConnectionInstructionsForRun } from "../native-runtime/a
 import { recordFailedSkillPreparation, type NativeRunHistoricalSpan } from "../native-runtime/native-run-trace.js";
 import { collectRunFailureSecretValues } from "../run-failure-diagnostics.js";
 import { skillVersionSelectionMap } from "../runtime-skill-selections.js";
+import { environmentSkillConfig } from "../environment-skills.js";
 import type { selectHeartbeatEnvironment } from "./environment-selection.js";
 import type { createHeartbeatRetries } from "./retries.js";
 import type { createHeartbeatLifecycle } from "./run-lifecycle.js";
@@ -231,10 +232,8 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   } else {
     delete context.paperclipSecrets;
   }
-  const effectiveResolvedConfig = applyRunScopedMentionedSkillKeys(
-    resolvedConfig,
-    runScopedSkillKeys,
-  );
+  const { config: effectiveResolvedConfig, skillKeys: environmentSkills } = await environmentSkillConfig(db, agent.companyId, selectedEnvironmentForConfig,
+    applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys));
   const runtimeSkillPreference = readPaperclipSkillSyncPreference(
     effectiveResolvedConfig,
   );
@@ -270,7 +269,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         // assignments from delivery; explicit task mentions remain errors below.
         skillDeliveryConfig = writePaperclipSkillSyncPreference(effectiveResolvedConfig,
           resolved.map(entry => ({ key: entry.key, versionId: entry.versionId ?? null })));
-        for (const key of runScopedMentionedSkillKeys) {
+        for (const key of [...runScopedMentionedSkillKeys, ...(hasStoredVersions ? [] : environmentSkills)]) {
           const entry = resolved.find(candidate => candidate.key === key);
           if (!entry || entry.sourceStatus === "missing") {
             throw new ConfigurationIncompleteFailure("A referenced skill is unavailable. Restore its installed version or update the task's skill reference.", {

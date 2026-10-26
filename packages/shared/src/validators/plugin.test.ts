@@ -33,6 +33,17 @@ describe("plugin capability constants", () => {
 });
 
 describe("plugin manifest validators", () => {
+  it("limits environment skills to unique declarations owned by the plugin", () => {
+    const manifest = { ...buildSandboxProviderManifest({ skillKeys: ["desktop"] }),
+      capabilities: ["environment.drivers.register", "skills.managed"],
+      skills: [{ skillKey: "desktop", displayName: "Desktop" }] };
+    expect(pluginManifestV1Schema.parse(manifest).environmentDrivers![0].skillKeys).toEqual(["desktop"]);
+    for (const keys of [["missing"], ["desktop", "desktop"]]) {
+      expect(pluginManifestV1Schema.safeParse({ ...manifest,
+        environmentDrivers: [{ ...manifest.environmentDrivers[0], skillKeys: keys }] }).success).toBe(false);
+    }
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["environment.drivers.register"] }).success).toBe(false);
+  });
   it("requires authority for required agent lifecycle participants", () => {
     const manifest = { id: "example.lifecycle", apiVersion: 1, version: "0.1.0", displayName: "Lifecycle", description: "Lifecycle tests", author: "Tests", categories: ["automation"], entrypoints: { worker: "worker.js" }, agentLifecycle: true };
     expect(pluginManifestV1Schema.safeParse({ ...manifest, capabilities: ["agents.read"] }).success).toBe(false);
