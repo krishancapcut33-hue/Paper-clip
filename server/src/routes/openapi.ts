@@ -48,6 +48,7 @@ import {
   updateAgentSchema,
   updatePrimaryAgentSchema,
   updateAgentPermissionsSchema,
+  addAgentProjectAccessSchema,
   updateAgentInstructionsPathSchema,
   updateAgentInstructionsBundleSchema,
   upsertAgentInstructionsFileSchema,
@@ -1390,6 +1391,8 @@ const browserUseOperations = [
 ] as const;
 
 const BOARD_ONLY_OPERATIONS = new Set([
+  "GET /api/agents/{id}/project-access",
+  "POST /api/agents/{id}/project-access",
   "POST /api/issues/{id}/interactions/{interactionId}/dismiss",
   "POST /api/issues/{id}/retry",
   "GET /api/companies/{companyId}/prompt-injection-prevention",
@@ -3790,6 +3793,26 @@ registry.registerPath({
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
+const agentProjectAccessResponse = z.object({ projectIds: z.array(z.string().uuid()), canManage: z.boolean() });
+registry.registerPath({
+  method: "get",
+  path: "/api/agents/{id}/project-access",
+  tags: ["agents"],
+  summary: "Read an agent's allowed projects and the current operator's management capability",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(agentProjectAccessResponse), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
+});
+registry.registerPath({
+  method: "post",
+  path: "/api/agents/{id}/project-access",
+  tags: ["agents"],
+  summary: "Add allowed projects without replacing an agent's other permissions",
+  description: "Requires board access and agents:create in the agent's company. Accepts 1 to 100 project IDs. Selected projects must be readable and in that company. Locks the low-trust agent, preserves existing containment, audits new additions, and rejects pending-approval agents or changed trust settings. Repeated additions are idempotent. Saving does not start or retry a task.",
+  request: { params: z.object({ id: z.string() }), body: jsonBody(addAgentProjectAccessSchema) },
+  responses: { 200: r.ok(agentProjectAccessResponse), 400: r.badRequest, 401: r.unauthorized,
+    403: r.forbidden, 404: r.notFound, 409: r.conflict },
+});
+
 registry.registerPath({
   method: "patch",
   path: "/api/agents/{id}/instructions-path",
@@ -4294,7 +4317,7 @@ registry.registerPath({
   path: "/api/issues/{id}",
   tags: ["issues"],
   summary: "Get an issue",
-  request: { params: z.object({ id: z.string() }) },
+  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("core").optional().describe("Core task fields without related enrichment.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized, 404: r.notFound },
 });
 
@@ -4599,6 +4622,16 @@ registry.registerPath({
     body: jsonBody(restoreIssueDocumentRevisionSchema),
   },
   responses: { 200: r.ok(), 401: r.unauthorized },
+});
+
+registry.registerPath({
+  method: "get",
+  path: "/api/issues/{id}/recent-comments",
+  tags: ["issues"],
+  summary: "Read a bounded recent task exchange",
+  description: "Returns four recent comments, the latest human comment, and the first human instruction when the task has no description. Includes latestCommentId and hasMore. Uses the same authorization and redaction as full comment reads.",
+  request: { params: z.object({ id: z.string() }) },
+  responses: { 200: r.ok(), 401: r.unauthorized, 403: r.forbidden, 404: r.notFound },
 });
 
 registry.registerPath({
@@ -6057,8 +6090,11 @@ registry.registerPath({
   path: "/api/issues/{id}/activity",
   tags: ["activity"],
   summary: "List activity for an issue",
-  request: { params: z.object({ id: z.string() }) },
-  responses: { 200: r.ok(), 401: r.unauthorized },
+  request: { params: z.object({ id: z.string() }), query: z.object({
+    view: z.enum(["recent", "comment-inputs"]).optional().describe("Recent activity (at most 50 rows), or original comment/steering facts for selected comments."),
+    commentIds: z.string().optional().describe("For comment-inputs: up to 100 comma-separated comment UUIDs. Returns at most two original facts per comment."),
+  }) },
+  responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
 registry.registerPath({
@@ -6066,7 +6102,7 @@ registry.registerPath({
   path: "/api/issues/{id}/runs",
   tags: ["activity"],
   summary: "List runs for an issue",
-  request: { params: z.object({ id: z.string() }) },
+  request: { params: z.object({ id: z.string() }), query: z.object({ view: z.literal("recent").optional().describe("At most two recent run summaries.") }) },
   responses: { 200: r.ok(), 401: r.unauthorized },
 });
 
@@ -7798,7 +7834,11 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/events",
   tags: ["runs"],
   summary: "Get events for a heartbeat run",
-  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  request: { params: z.object({ runId: heartbeatRunIdParamSchema }), query: z.object({
+      view: z.literal("conversation").optional().describe("Assistant text and request lifecycle events, excluding historical tool activity."),
+      afterSeq: z.coerce.number().int().min(0).optional(),
+      limit: z.coerce.number().int().min(1).max(1000).optional(),
+    }) },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
@@ -7807,7 +7847,14 @@ registry.registerPath({
   path: "/api/heartbeat-runs/{runId}/log",
   tags: ["runs"],
   summary: "Get log for a heartbeat run",
-  request: { params: z.object({ runId: heartbeatRunIdParamSchema }) },
+  request: {
+    params: z.object({ runId: heartbeatRunIdParamSchema }),
+    query: z.object({
+      offset: z.coerce.number().int().min(0).optional(),
+      limitBytes: z.coerce.number().int().min(1).max(1024 * 1024).optional(),
+      alignStartToRecord: z.enum(["true", "false"]).optional().describe("Extend the tail backward to include its first complete log record. The response can exceed limitBytes by that record's prefix."),
+    }),
+  },
   responses: { 200: r.ok(), 400: r.badRequest, 401: r.unauthorized },
 });
 
