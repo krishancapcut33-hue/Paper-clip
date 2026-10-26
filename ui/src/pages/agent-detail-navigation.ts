@@ -88,7 +88,7 @@ export function agentScopedAuditHref(agentRef: string, section: AgentAuditSectio
 
 /**
  * Where an agent URL should be rewritten to, or `null` when it is already canonical. Fixes a non-canonical
- * agent ref and legacy tab names. Audit sections keep `search` so filters such as `?action=` survive.
+ * agent ref and legacy tab names. Every redirect except a run detail keeps `search`, so filters such as `?action=` survive.
  */
 export function agentRouteRedirect(input: {
   routeAgentRef: string | undefined;
@@ -109,5 +109,5 @@ export function agentRouteRedirect(input: {
   }
   const canonicalTab = input.view === "run-detail" ? "overview" : input.view;
   if (refIsCanonical && input.tab === canonicalTab) return null;
-  return agentDetailHref(input.canonicalAgentRef, canonicalTab);
+  return `${agentDetailHref(input.canonicalAgentRef, canonicalTab)}${input.search}`;
 }

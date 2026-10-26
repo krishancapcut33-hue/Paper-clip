@@ -96,6 +96,11 @@ describe("agent detail navigation", () => {
         .toBe("/agents/codexcoder/runtime");
     });
 
+    it("keeps the query string when it canonicalizes a local tab", () => {
+      expect(agentRouteRedirect({ ...base, routeAgentRef: "agent-uuid", tab: "runtime", view: "runtime", search: "?x=1" }))
+        .toBe("/agents/codexcoder/runtime?x=1");
+    });
+
     it("canonicalizes legacy local tabs and a missing tab", () => {
       expect(agentRouteRedirect({ ...base, tab: "configuration", view: "runtime" })).toBe("/agents/codexcoder/runtime");
       expect(agentRouteRedirect({ ...base, tab: undefined })).toBe("/agents/codexcoder/overview");
