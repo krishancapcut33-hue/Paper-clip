@@ -7678,6 +7678,18 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                 </Button>
               </PopoverTrigger>
               <PopoverContent className="w-52 p-1" align="end">
+                {taskChatShellEnabled && !historyExpanded ? (
+                  <button
+                    className="flex w-full items-center gap-2 rounded px-2 py-1.5 text-xs hover:bg-accent/50"
+                    onClick={() => {
+                      expandHistory();
+                      setMoreOpen(false);
+                    }}
+                  >
+                    <ActivityIcon className="h-3 w-3" />
+                    Show task activity
+                  </button>
+                ) : null}
                 {streamlinedTaskDetailEnabled ? (
                   <>
                     <button
