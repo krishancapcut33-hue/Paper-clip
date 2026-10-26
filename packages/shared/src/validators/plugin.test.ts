@@ -487,6 +487,9 @@ describe("plugin task side-panel declarations", () => {
   it("accepts an optional panel backed by an authorized plugin-local agent route", () => {
     expect(pluginManifestV1Schema.parse(manifest).ui?.slots?.[0]?.taskSidePanel).toEqual(slot.taskSidePanel);
   });
+  it("accepts a GET availability route when a POST at the same path is declared first", () => {
+    expect(pluginManifestV1Schema.safeParse({ ...manifest, apiRoutes: [{ ...route, routeKey: "view.update", method: "POST" }, route] }).success).toBe(true);
+  });
   it.each(["https://example.test/:entityId", "//example/:entityId", "/../:entityId", "/agents/:entityId?redirect=elsewhere", "/agents/:agentId/view"])("rejects unsafe or unsupported path %s", availabilityPath => {
     expect(pluginUiSlotDeclarationSchema.safeParse({ ...slot, taskSidePanel: { availabilityPath } }).success).toBe(false);
   });

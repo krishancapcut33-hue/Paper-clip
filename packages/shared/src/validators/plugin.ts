@@ -978,8 +978,8 @@ export const pluginManifestV1Schema = z.object({
 
   for (const [index, slot] of (manifest.ui?.slots ?? []).entries()) {
     if (!slot.taskSidePanel) continue;
-    const route = manifest.apiRoutes?.find(route => route.path === slot.taskSidePanel!.availabilityPath);
-    if (!route || route.method !== "GET" || route.auth !== "board" || route.transport
+    const route = manifest.apiRoutes?.find(route => route.path === slot.taskSidePanel!.availabilityPath && route.method === "GET");
+    if (!route || route.auth !== "board" || route.transport
       || route.companyResolution?.from !== "agent" || route.companyResolution.param !== "entityId") {
       ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel availability requires a declared board GET route scoped to agent :entityId", path: ["ui", "slots", index, "taskSidePanel"] });
     }

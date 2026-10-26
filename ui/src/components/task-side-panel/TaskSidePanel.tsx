@@ -99,6 +99,7 @@ import { TaskSkillPanel } from "./TaskSkillPanel";
 export interface TaskSidePanelProps {
   issue: Issue;
   pluginPanels?: TaskPluginPanel[];
+  openedPluginPanelKeys?: Set<string>;
   openBrowserId?: string | null;
   onBrowserOpened?: () => void;
   accountScope: string;
@@ -246,6 +247,7 @@ function useTaskSidePanelFileRouting() {
 
 export function TaskSidePanel({
   pluginPanels = EMPTY_PLUGIN_PANELS,
+  openedPluginPanelKeys,
   openBrowserId,
   onBrowserOpened,
   issue,
@@ -349,25 +351,21 @@ export function TaskSidePanel({
     });
   }, [accountScope, issue.companyId, issue.id, launcherOpen]);
   const controller = useSidePanelTabs<TaskSidePanelTabPayload>({ initialState, onStateChange: persist });
-  const openedPluginPanels = useRef(new Set<string>());
-  const activePluginPanels = useRef(new Set<string>());
+  const localOpenedPluginPanels = useRef(new Set<string>());
+  const openedPluginPanels = openedPluginPanelKeys ?? localOpenedPluginPanels.current;
   useEffect(() => {
     const ids = new Set(pluginPanels.map(taskPluginPanelId));
     for (const tab of controller.tabs) {
       if (tab.payload.kind === "plugin-panel" && !ids.has(tab.id)) controller.closeTab(tab.id);
     }
-    const active = new Set<string>();
     for (const panel of pluginPanels) {
-      const key = JSON.stringify([panel.runId, taskPluginPanelId(panel)]);
-      active.add(key);
-      if (activePluginPanels.current.has(key)) continue;
-      const firstArrival = !openedPluginPanels.current.has(key);
-      openedPluginPanels.current.add(key);
-      if (firstArrival) setLauncherOpen(false);
-      controller.openTab(taskPanelPluginTab(panel), firstArrival);
+      const key = JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]);
+      if (openedPluginPanels.has(key)) continue;
+      openedPluginPanels.add(key);
+      setLauncherOpen(false);
+      controller.openTab(taskPanelPluginTab(panel));
     }
-    activePluginPanels.current = active;
-  }, [pluginPanels, controller.tabs, controller.closeTab, controller.openTab]);
+  }, [accountScope, issue.companyId, issue.id, openedPluginPanels, pluginPanels, controller.tabs, controller.closeTab, controller.openTab]);
   const browsersQuery = useTaskBrowsers(issue.id);
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {

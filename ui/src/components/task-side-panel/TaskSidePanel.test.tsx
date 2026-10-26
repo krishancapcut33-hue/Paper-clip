@@ -196,11 +196,26 @@ describe("TaskSidePanel", () => {
     expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
     await render(panel({ pluginPanels: [] }));
     await render(panel({ pluginPanels: [pluginPanel] }));
-    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).not.toBeNull();
-    // A plugin panel returning in the same run does not take focus again.
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    // An already handled panel remains available in the launcher without reopening.
     expect(container.textContent).not.toContain("Plugin viewer");
     await render(panel({ pluginPanels: [] }));
     expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
+  it("preserves dismissal and saved selection when the mobile drawer remounts", async () => {
+    const openedPluginPanelKeys = new Set<string>();
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, mobile: true }));
+    await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label^="Switch tabs"]')?.click());
+    const close = document.querySelector<HTMLButtonElement>('button[aria-label="Close Live view"]');
+    expect(close).not.toBeNull();
+    await act(async () => close!.click());
+    const selected = container.querySelector('[id^="side-panel-tab-"]')?.id;
+    expect(container.textContent).not.toContain("Plugin viewer");
+    await render(null);
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, mobile: true }));
+    expect(container.querySelector('[id^="side-panel-tab-"]')?.id).toBe(selected);
     expect(container.textContent).not.toContain("Plugin viewer");
   });
 

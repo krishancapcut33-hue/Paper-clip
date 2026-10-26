@@ -3958,6 +3958,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   }, [issue?.id, openTaskSidePanel, isMobile]);
   const pluginPanels = useTaskPluginPanels(issue, taskChatShellEnabled);
   const revealedPluginPanels = useRef(new Set<string>());
+  const openedPluginPanelKeys = useRef(new Set<string>());
   useEffect(() => {
     for (const panel of pluginPanels) {
       const key = JSON.stringify([currentUserId, issue?.id, panel.runId, taskPluginPanelId(panel)]);
@@ -6123,6 +6124,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         <IssueGalleryContext.Provider value={openIssueGallery}>
           <TaskSidePanel
             pluginPanels={pluginPanels}
+            openedPluginPanelKeys={openedPluginPanelKeys.current}
             openBrowserId={openBrowserId}
             onBrowserOpened={handleBrowserOpened}
             key={panelIssue.id}
@@ -8701,6 +8703,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   </SheetHeader>
                   <TaskSidePanel
                     pluginPanels={pluginPanels}
+                    openedPluginPanelKeys={openedPluginPanelKeys.current}
                     openBrowserId={openBrowserId}
                     onBrowserOpened={handleBrowserOpened}
                     key={`${issue.id}:mobile`}
