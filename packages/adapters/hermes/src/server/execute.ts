@@ -19,6 +19,7 @@
  */
 
 import fs from "node:fs/promises";
+import { homedir } from "node:os";
 import path from "node:path";
 
 import type {
@@ -123,12 +124,13 @@ function isSafeHermesProfileName(profile: string): boolean {
 export function resolveHermesConfigPath(
   config: Record<string, unknown>,
   extraArgs: string[] | undefined,
-): string | undefined {
+): string {
   const envConfig = config.env as Record<string, unknown> | undefined;
-  const hermesHome = envConfig && typeof envConfig === "object"
+  const configuredHome = envConfig && typeof envConfig === "object"
     ? cfgEnvString(envConfig.HERMES_HOME)
     : undefined;
-  if (!hermesHome) return undefined;
+  const userHome = cfgEnvString(envConfig?.HOME) || homedir();
+  const hermesHome = configuredHome || process.env.HERMES_HOME || path.join(userHome, ".hermes");
 
   const profile = extractHermesProfileFromArgs(extraArgs);
   if (profile && !isSafeHermesProfileName(profile)) {

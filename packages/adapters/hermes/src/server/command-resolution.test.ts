@@ -1,7 +1,7 @@
 import os from "node:os";
 import path from "node:path";
 import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import { HERMES_CLI } from "../shared/constants.js";
 import {
@@ -98,15 +98,18 @@ test("testEnvironment accepts config.command when hermesCommand is absent", asyn
   }
 });
 
-test("execute detects model and provider from configured Hermes profile config", async () => {
+test.each(["configured", "inherited", "default", "configured-user-home"])("execute detects model and provider from %s Hermes profile config", async (homeSource) => {
   const tempDir = await mkdtemp(path.join(os.tmpdir(), "hermes-profile-config-"));
   const cliPath = path.join(tempDir, "fake-hermes");
   const argvPath = path.join(tempDir, "argv.txt");
-  const hermesHome = path.join(tempDir, "hermes-home");
+  const hermesHome = path.join(tempDir, homeSource === "default" || homeSource === "configured-user-home" ? ".hermes" : "hermes-home");
   const profileConfigDir = path.join(hermesHome, "profiles", "research");
 
   try {
+    vi.stubEnv("HERMES_HOME", homeSource === "inherited" ? hermesHome : undefined);
+    vi.stubEnv("HOME", homeSource === "default" ? tempDir : os.homedir());
     await mkdir(profileConfigDir, { recursive: true });
+    await writeFile(path.join(hermesHome, "config.yaml"), "model:\n  default: root-model\n  provider: anthropic\n", "utf8");
     await writeFile(
       path.join(profileConfigDir, "config.yaml"),
       [
@@ -138,9 +141,9 @@ test("execute detects model and provider from configured Hermes profile config",
       },
       config: {
         hermesCommand: cliPath,
-        env: {
+        env: homeSource === "configured" ? {
           HERMES_HOME: { type: "plain", value: hermesHome },
-        },
+        } : homeSource === "configured-user-home" ? { HOME: tempDir } : {},
         extraArgs: ["--profile", "research"],
       },
       runtime: {},
@@ -150,7 +153,9 @@ test("execute detects model and provider from configured Hermes profile config",
     const argv = await readFile(argvPath, "utf8");
     expect(argv).toContain("-m\ngpt-5.5\n");
     expect(argv).toContain("--provider\nopenai-codex\n");
+    expect(argv).not.toContain("root-model");
   } finally {
+    vi.unstubAllEnvs();
     await rm(tempDir, { recursive: true, force: true });
   }
 });
