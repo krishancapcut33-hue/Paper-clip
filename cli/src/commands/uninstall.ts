@@ -65,8 +65,6 @@ export async function uninstallCommand(
 
   const paths = resolveInstallStorePaths();
   const hadStore = fs.existsSync(paths.cliRoot);
-  // Verify the store and take its lock before stopping the service, so a
-  // refused uninstall leaves the running service and its definition intact.
   if (hadStore) assertManagedInstallStore(paths);
   const shimRemoved = await withInstallStoreLock(async () => {
     if (hadStore) assertManagedInstallStore(paths);

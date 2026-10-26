@@ -52,8 +52,6 @@ describe("managed install commands", () => {
     fs.rmSync(root, { recursive: true, force: true });
   });
 
-  // Uninstall tests must inject the service manager: the default one drives the
-  // host's real systemd user manager, where the default instance may be live.
   const installedServiceManager = () => {
     const uninstallService = vi.fn(async () => undefined);
     const detectServiceManager = vi.fn(async () => ({
