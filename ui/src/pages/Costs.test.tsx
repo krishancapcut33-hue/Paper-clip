@@ -210,6 +210,25 @@ describe("Shared Costs surfaces", () => {
       queryClient.clear();
     });
 
+    it("does not claim 'no budget' until the budget request has finished", async () => {
+      let resolveBudget: (value: unknown) => void = () => {};
+      budgetOverviewMock.mockReturnValue(new Promise((resolve) => { resolveBudget = resolve; }));
+      const queryClient = await renderScoped({ embedded: true, initialTab: "overview", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Budget is loading")); });
+      expect(container.textContent).not.toContain("No budget configured for this agent");
+      await act(async () => resolveBudget({ policies: [], activeIncidents: [], pendingApprovalCount: 0, pausedAgentCount: 0, pausedProjectCount: 0 }));
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("No budget configured for this agent")); });
+      queryClient.clear();
+    });
+
+    it("says budget status is unavailable when the budget request fails", async () => {
+      budgetOverviewMock.mockRejectedValue(new Error("unavailable"));
+      const queryClient = await renderScoped({ embedded: true, initialTab: "overview", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Budget status is unavailable")); });
+      expect(container.textContent).not.toContain("No budget configured for this agent");
+      queryClient.clear();
+    });
+
     it("says so when this agent has no budget policy, even if others do", async () => {
       budgetOverviewMock.mockResolvedValue({ policies: [policy("agent", "agent-b", "Agent B")], activeIncidents: [], pendingApprovalCount: 0, pausedAgentCount: 0, pausedProjectCount: 0 });
       const queryClient = await renderScoped({ embedded: true, initialTab: "budgets", lockTab: true });

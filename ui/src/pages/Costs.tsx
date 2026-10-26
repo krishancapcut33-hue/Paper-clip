@@ -699,8 +699,8 @@ export function Costs({
               />
               <MetricTile
                 label="Budget"
-                value={activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : budgetPolicies.length > 0 ? "Set" : "Open"}
-                subtitle={activeBudgetIncidents.length > 0 ? "Active budget incidents for this agent" : budgetPolicies.length > 0 ? "Monthly policy configured" : "No budget configured for this agent"}
+                value={!budgetData ? "—" : activeBudgetIncidents.length > 0 ? String(activeBudgetIncidents.length) : budgetPolicies.length > 0 ? "Set" : "Open"}
+                subtitle={!budgetData ? (budgetError ? "Budget status is unavailable" : "Budget is loading") : activeBudgetIncidents.length > 0 ? "Active budget incidents for this agent" : budgetPolicies.length > 0 ? "Monthly policy configured" : "No budget configured for this agent"}
                 icon={Coins}
               />
             </div>
