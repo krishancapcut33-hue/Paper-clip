@@ -113,6 +113,7 @@ it.each(["drain", "timeout", "external_close"] as const)("joins an output flush 
     if (mode === "timeout") {
       await expect(detached).rejects.toThrow("journal drain timed out");
       await expect(bundle.detachControllerForRestart()).rejects.toThrow("journal drain timed out");
+      await expect(bundle.transport.close()).rejects.toThrow("journal drain timed out");
       release();
       await core.drainPendingConnectionProcessing();
     } else {

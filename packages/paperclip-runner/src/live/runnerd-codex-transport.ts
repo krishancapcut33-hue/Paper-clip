@@ -4469,7 +4469,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   close(reason?: string): Promise<void> {
     // Detachment relinquishes process ownership. A late execution finalizer
     // must not suspend or signal the runner now owned by the next controller.
-    if (this.#controllerDetachedForRestart) return Promise.resolve();
+    if (this.#controllerDetachedForRestart)
+      return this.#detachPromise ?? Promise.resolve();
     if (reason) {
       this.#diagnostic(
         `runner transport close requested: ${reason.replaceAll(/[\r\n]/g, " ").slice(0, 1_000)}`,
@@ -4526,9 +4527,12 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // A successor must not share this journal with an admitted async write.
     // A timeout rejects detachment, including repeated calls, instead of
     // reporting that the old writer has retired.
-    await this.#stopAndDrainAuthority(deadline);
+    try {
+      await this.#stopAndDrainAuthority(deadline);
+    } finally {
+      this.#queue.close();
+    }
     this.#handle = null;
-    this.#queue.close();
     this.#diagnostic(
       "controller authority detached for restart; durable runner left alive",
     );
