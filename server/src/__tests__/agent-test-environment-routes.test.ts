@@ -1034,6 +1034,8 @@ describe("agent test-environment route", () => {
         expect.objectContaining({ code: "environment_target_unsupported", level: "warn" }),
         expect.objectContaining({ code: "environment_env_binding_missing", level: "error" }),
       ]);
+      expect(mockSecretService.resolveEnvBindings).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
     });
   });
 
@@ -1201,7 +1203,8 @@ describe("agent test-environment route", () => {
     };
 
     it("redirects a local-environment Test onto the managed sandbox and never probes the host", async () => {
-      mockEnvironmentService.getById.mockResolvedValue(localEnvironment);
+      mockEnvironmentService.getById.mockImplementation(async id =>
+        id === localEnvironmentId ? localEnvironment : managedSandboxEnvironment);
       mockInstanceSettingsService.getExperimental.mockResolvedValue({
         enableManagedSandboxOnly: true,
       });
@@ -1234,6 +1237,11 @@ describe("agent test-environment route", () => {
         executionTarget: expect.objectContaining({ kind: "remote", transport: "sandbox" }),
         environmentName: "Managed sandbox",
       });
+      expect(mockEnvironmentService.findManagedSandboxEnvironment).toHaveBeenCalledOnce();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).toHaveBeenCalledWith(
+        "company-1", {}, expect.objectContaining({ consumerType: "environment", consumerId: managedSandboxEnvironment.id }),
+        expect.any(Object),
+      );
     });
 
     it("fails closed when the policy is on and no managed sandbox environment exists", async () => {
@@ -1252,6 +1260,8 @@ describe("agent test-environment route", () => {
       // No fall back to a host probe: the Test reports fail-closed.
       expect(testEnvironmentSpy).not.toHaveBeenCalled();
       expect(mockEnvironmentRuntime.acquireRunLease).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveEnvBindings).not.toHaveBeenCalled();
+      expect(mockSecretService.resolveAdapterConfigForRuntime).not.toHaveBeenCalled();
       expect(res.body.status).toBe("fail");
       expect(res.body.checks).toEqual([
         expect.objectContaining({ code: "managed_sandbox_unavailable", level: "error" }),
