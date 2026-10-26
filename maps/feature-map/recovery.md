@@ -242,6 +242,14 @@ gap.
 
 ### `operator-retry`
 
+The [workspace recovery regression](../../server/src/services/workspace-recovery.test.ts)
+uses the real Retry producer and a quiet delivery coordinator. It checks that a
+committed request starts one physical source preservation, duplicate Retry keeps
+the active owner's receipt valid, and startup reconstructs a resolved files-only
+obligation without provider replay. The [execution-control lifecycle suite](../../server/src/__tests__/execution-control-work.test.ts)
+checks independent finalization, stored deadlines, and quiet retained history.
+These local checks do not prove recovery of a deployed allocation.
+
 Automated: [disposition notices](../../ui/src/components/DispositionRecoveryNotice.test.tsx)
 tests pending/error/gated states and waiting for the real retry acknowledgement.
 The recovery-card suite covers workspace divergence, reissue, reconcile, and

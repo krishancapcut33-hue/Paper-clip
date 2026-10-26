@@ -1,3 +1,5 @@
+import { writeExecutionControl } from "./execution-control-notifications.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 import { z } from "zod";
 import { randomUUID } from "node:crypto";
 import { and, desc, eq, inArray, or, sql } from "drizzle-orm";
@@ -59,7 +61,7 @@ export async function requestTaskRetry(input: {
   prepareChatRetry?: (tx: Db, scope: { companyId: string; issueId: string; agentId: string;
     failedRunId: string; initiatedByUserId: string; retryIntentId?: string }) => Promise<{ actionId: string }>;
 }) {
-  return input.db.transaction(async tx => {
+  return writeExecutionControl(input.db, DELIVERY_QUEUES.workspaceRecovery, async tx => {
     const db = tx as unknown as Db;
     const [issue] = await tx.select().from(issues).where(and(eq(issues.companyId, input.companyId),
       eq(issues.id, input.issueId))).for("update");
@@ -138,7 +140,7 @@ export async function requestTaskRetry(input: {
     if (!busy) {
       for (const action of records) {
         const previous = readSystemRecovery(action.evidence);
-        if (!previous || previous.state === "complete") continue;
+        if (!previous || previous.state === "complete" || previous.state === "running") continue;
         // Active repair keeps its attempt and cooldown. An exhausted generation
         // gets a new budget only because this click is a new durable intent.
         const next = previous.state === "exhausted"
@@ -148,8 +150,7 @@ export async function requestTaskRetry(input: {
           : { ...previous, revision: previous.revision + 1, intentId: active?.id ?? id,
             // Retry may advance our backoff, never a provider's cooldown and
             // never an operation whose physical owner is still running.
-            nextAttemptAt: previous.state === "running" ? previous.nextAttemptAt
-              : Math.max(Date.now(), previous.providerCooldownAt ?? 0) };
+            nextAttemptAt: Math.max(Date.now(), previous.providerCooldownAt ?? 0) };
         if (next.generationId !== previous.generationId) await persistActivity(db, {
           companyId: issue.companyId, actorType: "system", actorId: "task-retry", entityType: "issue", entityId: issue.id,
           action: "issue.recovery_generation_replaced", runId: latest.id,

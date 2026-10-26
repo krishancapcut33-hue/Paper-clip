@@ -1,3 +1,4 @@
+import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { writeEnvironmentCleanup } from "./environment-cleanup-notifications.js";
 import { resumePreservedResultFinalization } from "./preserved-result-finalization.js";
 import { and, asc, eq, gt, inArray, ne, or, sql } from "drizzle-orm";
@@ -19,7 +20,7 @@ import { classifyNativeWorkspaceFailure } from "./native-runtime/native-workspac
 
 import { adoptSystemRecovery, loadSystemRecovery, updateSystemRecovery } from "./system-recovery.js";
 import { createSystemRecovery, failSystemRecovery, readSystemRecovery, reserveSystemRecoveryAttempt, SystemRecoveryFailure, type SystemRecoveryState } from "./system-recovery-state.js";
-import { inspectWorkspaceRecoverySource } from "./workspace-recovery-source.js";
+import { inspectWorkspaceRecoverySource, workspaceRecoverySourceEligible } from "./workspace-recovery-source.js";
 import { preserveWorkspaceSnapshot } from "./workspace-recovery-snapshot.js";
 import { adoptHistoricalWorkspaceRecoveries } from "./workspace-recovery-backfill.js";
 
@@ -48,12 +49,13 @@ export async function requestWorkspaceRecovery(input: Source & { db: Db; idempot
         requestIds: [...(prior?.requestIds ?? []), input.idempotencyKey] };
     const previous = readSystemRecovery(action.evidence);
     const active = previous && ["scheduled", "running", "awaiting_evidence"].includes(previous.state);
-    const system = active ? { ...previous, revision: previous.revision + 1,
-      nextAttemptAt: previous.state === "running" ? previous.nextAttemptAt : Math.max(Date.now(), previous.providerCooldownAt ?? 0) } : { ...createSystemRecovery(run.id),
+    const system = previous?.state === "running" ? previous : active ? { ...previous, revision: previous.revision + 1,
+      nextAttemptAt: Math.max(Date.now(), previous.providerCooldownAt ?? 0) } : { ...createSystemRecovery(run.id),
       revision: (previous?.revision ?? -1) + 1,
       preservationOperationIds: previous?.preservationOperationIds ?? [],
       providerCooldownAt: previous?.providerCooldownAt ?? null,
       nextAttemptAt: previous?.providerCooldownAt ?? null };
+    await notifyDeliveryWork(tx, DELIVERY_QUEUES.workspaceRecovery);
     await tx.update(issueRecoveryActions).set({ ownerType: "system", ownerAgentId: null, ownerUserId: null,
       evidence: { ...action.evidence, workspaceRecovery: state, systemRecovery: system }, updatedAt: new Date() })
       .where(eq(issueRecoveryActions.id, action.id));
@@ -309,16 +311,14 @@ export async function scheduleRecoveredWorkspaceCleanup(db: Db, run: typeof hear
     sql`${environmentLeases.metadata} = ${JSON.stringify(lease.metadata)}::jsonb`,
     sql`${environmentLeases.metadata}->>'workspaceRecoveryCleanup' is null`)));
 }
-export function retainedWorkspaceCandidates(db: Db, cursor?: string) {
+export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedOnly = false) {
   return db.select({ action: issueRecoveryActions, run: heartbeatRuns }).from(issueRecoveryActions)
     .innerJoin(heartbeatRuns, and(eq(heartbeatRuns.companyId, issueRecoveryActions.companyId), eq(heartbeatRuns.id,
       sql`case when ${issueRecoveryActions.evidence}->>'runId' ~* '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$'
         then (${issueRecoveryActions.evidence}->>'runId')::uuid end`)))
     .where(and(inArray(heartbeatRuns.status, terminal),
-      sql`(${issueRecoveryActions.evidence}->'workspaceRestoreRecovery'->>'schema' = 'paperclip.workspace-restore-recovery.v1'
-        or ${issueRecoveryActions.evidence}->'historicalWorkspaceSource'->>'schema' = 'paperclip.historical-workspace-source.v1'
-        or ${issueRecoveryActions.cause} in ('native_workspace_sync_out_unrecoverable', 'native_workspace_sync_out_retry_exhausted'))`,
-      sql`${issueRecoveryActions.evidence} ? 'systemRecovery'`,
+      workspaceRecoverySourceEligible(true),
+      unfinishedOnly ? sql`${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence')` : undefined,
       sql`(${issueRecoveryActions.evidence}#>>'{systemRecovery,state}' in ('scheduled', 'running', 'awaiting_evidence', 'complete', 'exhausted')
         and (${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' = 'null'::jsonb
           or ${issueRecoveryActions.evidence}#>'{systemRecovery,nextAttemptAt}' <= to_jsonb(${Date.now()}::bigint)))`,
@@ -344,14 +344,16 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
   if (pending.size >= 2) return;
-  let rows = await retainedWorkspaceCandidates(db, cursors.get(db));
+  let rows = await retainedWorkspaceCandidates(db, undefined, true);
+  if (!rows.length) rows = await retainedWorkspaceCandidates(db, cursors.get(db));
   if (!rows.length) rows = await retainedWorkspaceCandidates(db);
+  const work: Promise<void>[] = [];
   for (const { action, run } of rows) {
     if (pending.size >= 2) break;
     cursors.set(db, action.id);
     if (pending.has(run.id)) continue;
     pending.add(run.id);
-    void (async () => { try {
+    work.push((async () => { try {
       await recoverRetainedWorkspace({ db, environmentRuntime: runtime, companyId: action.companyId, issueId: action.sourceIssueId, runId: run.id, actionId: action.id });
       const [updated] = await db.select().from(issueRecoveryActions).where(eq(issueRecoveryActions.id, action.id));
       const recovered = readWorkspaceRecovery(updated?.evidence ?? null)?.status === "recovered";
@@ -370,6 +372,7 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
         }
       }
     } catch { logger.warn({ runId: run.id }, "Retained workspace remains pending"); }
-    finally { pending.delete(run.id); } })();
+    finally { pending.delete(run.id); } })());
   }
+  return work;
 }

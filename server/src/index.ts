@@ -1,3 +1,4 @@
+import { reconcileRetainedWorkspaces } from "./services/workspace-recovery.js";
 import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-work.js";
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
 import { registerLoginCleanupWork } from "./services/login-cleanup-work.js";
@@ -1342,8 +1343,13 @@ async function startServerWithDatabaseTeardown(
   });
   const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
   const executionSchedule = executionControlSchedule(db);
+  const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
   registerExecutionControlWork(deliveryWork, [
     { queue: DELIVERY_QUEUES.executionFinalization, run: () => reconcileAbandonedExecutionControl(db), next: executionSchedule.finalization },
+    { queue: DELIVERY_QUEUES.workspaceRecovery, run: async () => {
+      const work = await reconcileRetainedWorkspaces(db, workspaceRecoveryRuntime, accountingHeartbeat.resumeRemoteStopComments);
+      await Promise.all(work ?? []);
+    }, next: executionSchedule.workspaceRecovery },
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
     { queue: DELIVERY_QUEUES.executionDisposition, run: () => settleUnrecoverableExecutions(db), next: executionSchedule.disposition },
     { queue: DELIVERY_QUEUES.localLoginCleanup, run: () => localAiLoginService(db).reapExpired(), next: executionSchedule.localLogin },

@@ -1,3 +1,4 @@
+import { nextWorkspaceRecoveryAt } from "./system-recovery.js";
 import { and, asc, eq, isNotNull, sql } from "drizzle-orm";
 import { adapterAuthSessions, heartbeatRuns, issueRecoveryActions, nativeRunFinalizations, type Db } from "@paperclipai/db";
 import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
@@ -62,6 +63,10 @@ export function executionControlSchedule(db: Db) {
           .where(isNotNull(heartbeatRuns.executionControlDeadlineAt)).orderBy(asc(heartbeatRuns.executionControlDeadlineAt)).limit(1),
       ]);
       return deadline([native[0]?.at, legacy[0]?.at]);
+    },
+    async workspaceRecovery() {
+      const at = await nextWorkspaceRecoveryAt(db);
+      return at === null ? null : deadline([new Date(at)]);
     },
     async replacement() {
       const rows = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns)

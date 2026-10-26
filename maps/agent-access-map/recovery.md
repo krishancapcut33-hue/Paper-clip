@@ -225,6 +225,13 @@ Gaps: An acknowledged retry can remain pending or fail; report actual useful res
 
 Capability ID: `recovery/workspace`.
 
+Committed authorized Retry and workspace-recovery requests notify the internal
+preservation worker. Startup reconstructs its source-bound obligations and saved
+retry deadlines. A duplicate request during physical preservation does not
+replace the owner's generation or revision. Resolved files-only recovery retains
+its no-replay restriction. The local PostgreSQL regression checks the producer,
+worker, and physical source receipt; it is not deployed provider acceptance.
+
 The internal preservation resume path grants no board or agent execution API.
 It requires the exact source action, company, run, lease and environment, a
 held physical workspace owner, and its current stop-only cleanup claim. The

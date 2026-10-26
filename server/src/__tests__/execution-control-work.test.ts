@@ -4,7 +4,7 @@ import { localAiLoginService } from "../services/local-ai-login.js";
 import { randomUUID } from "node:crypto";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { eq, sql } from "drizzle-orm";
-import { agents, companies, createDb, heartbeatRuns, issues, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
+import { agents, companies, createDb, heartbeatRuns, issues, issueRecoveryActions, nativeRunFinalizations, applyPendingMigrations } from "@paperclipai/db";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
@@ -16,6 +16,9 @@ import { terminalizeLegacyExecution } from "../services/legacy-execution-recover
 import { reconcileAbandonedExecutionControl } from "../services/execution-control-reconciliation.js";
 import { issueRecoveryActionService } from "../services/issue-recovery-actions.js";
 import { markExecutionReconciliation, deliverReconciledExecutions, settleUnrecoverableExecutions } from "../services/execution-recovery-resolution.js";
+import { nextWorkspaceRecoveryAt } from "../services/system-recovery.js";
+import { createSystemRecovery } from "../services/system-recovery-state.js";
+import { retainedWorkspaceCandidates } from "../services/workspace-recovery.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
 
 const coordinators: ReturnType<typeof createDeliveryWorkCoordinator>[] = [];
@@ -94,13 +97,13 @@ describe("execution-control lifecycle", () => {
     expect(run).toHaveBeenCalledTimes(1); expect(next).toHaveBeenCalledTimes(1);
     await c.stop(); expect(c.nextWakeAt()).toBeNull();
   });
-  it("keeps other obligations responsive while one is waiting, and awaits shutdown", async () => {
+  it.each([DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.workspaceRecovery])("keeps finalization responsive while %s is waiting, and awaits shutdown", async heldQueue => {
     vi.useFakeTimers(); const owner = fakeOwner(); const c = coordinator(owner);
     let release!: () => void; const gate = new Promise<void>(resolve => { release = resolve; });
     const status = vi.fn(async () => {});
     const started = registerExecutionControlWork(c, [
-      { queue: DELIVERY_QUEUES.executionReplacement, run: () => gate, next: async () => null },
-      { queue: DELIVERY_QUEUES.executionStatus, run: status, next: async () => null },
+      { queue: heldQueue, run: () => gate, next: async () => null },
+      { queue: DELIVERY_QUEUES.executionFinalization, run: status, next: async () => null },
     ]);
     await vi.advanceTimersByTimeAsync(1); expect(status).toHaveBeenCalledTimes(1);
     let stopped = false; const stopping = c.stop().then(() => { stopped = true; });
@@ -149,18 +152,58 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status, runtimeMode: "legacy", contextSnapshot: { issueId } }).returning();
     return run!;
   }
-  it("stops all six pending/deadline scans with empty queues and completed history", async () => {
+  it("stops all pending/deadline scans with empty queues and completed history", async () => {
     await runRow("succeeded");
     const schedule = executionControlSchedule(observed);
     const c = coordinator(db, undefined, error => { errors.push(error); });
-    const topics = [DELIVERY_QUEUES.executionFinalization, DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.executionContinuation,
+    const topics = [DELIVERY_QUEUES.executionFinalization, DELIVERY_QUEUES.workspaceRecovery, DELIVERY_QUEUES.executionReplacement, DELIVERY_QUEUES.executionContinuation,
       DELIVERY_QUEUES.executionStatus, DELIVERY_QUEUES.executionDisposition, DELIVERY_QUEUES.localLoginCleanup];
-    const runs = [() => reconcileAbandonedExecutionControl(observed), () => reconcileSafeNativeReplacements(observed),
+    const runs = [() => reconcileAbandonedExecutionControl(observed), async () => {}, () => reconcileSafeNativeReplacements(observed),
       () => deliverReconciledExecutions(observed, vi.fn(async () => null)), () => deliverExecutionStatuses(observed),
       () => settleUnrecoverableExecutions(observed), () => localAiLoginService(observed).reapExpired()];
     await registerExecutionControlWork(c, Object.values(schedule).map((next, i) => ({ queue: topics[i]!, run: runs[i]!, next }))).ready;
     await quiet(c);
   });
+  it("schedules only a current unfinished workspace recovery and becomes quiet with retained history", async () => {
+    const run = await runRow("failed");
+    const state = createSystemRecovery(run.id);
+    const evidence = { runId: run.id, systemRecovery: state,
+      workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: run.id,
+        status: "queued", stage: "verifying_stop", attempt: 0, attemptLimit: 6, requestIds: [] } };
+    const [action] = await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
+      kind: "active_run_watchdog", ownerType: "system", cause: "native_workspace_sync_out_retry_exhausted",
+      fingerprint: run.id, nextAction: "Save work", evidence }).returning();
+    expect(await nextWorkspaceRecoveryAt(db)).toBe(0);
+    const due = Date.now() + 60_000;
+    await db.update(issueRecoveryActions).set({ evidence: { ...evidence, systemRecovery: { ...state, nextAttemptAt: due } } })
+      .where(eq(issueRecoveryActions.id, action!.id));
+    expect(await executionControlSchedule(db).workspaceRecovery()).toBe(due);
+    for (const status of ["cancelled", "resolved"] as const) {
+      await db.update(issueRecoveryActions).set({ status }).where(eq(issueRecoveryActions.id, action!.id));
+      expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
+      expect(await retainedWorkspaceCandidates(db)).toEqual([]);
+    }
+    for (const system of [{ ...state, sourceRunId: randomUUID() }, { ...state, state: "complete" }, { ...state, state: "exhausted" }]) {
+      await db.update(issueRecoveryActions).set({ status: "active", evidence: { ...evidence, systemRecovery: system } })
+        .where(eq(issueRecoveryActions.id, action!.id));
+      expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
+    }
+    await db.update(issueRecoveryActions).set({ evidence, cause: "agent_unreachable" })
+      .where(eq(issueRecoveryActions.id, action!.id));
+    expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
+    await db.update(issueRecoveryActions).set({ cause: "native_workspace_sync_out_retry_exhausted",
+      evidence: { ...evidence, workspaceRecovery: { ...evidence.workspaceRecovery, runId: randomUUID() } } })
+      .where(eq(issueRecoveryActions.id, action!.id));
+    expect(await nextWorkspaceRecoveryAt(db)).toBeNull();
+    expect(await retainedWorkspaceCandidates(db)).toEqual([]);
+    await db.update(issueRecoveryActions).set({ status: "cancelled", evidence: { ...evidence,
+      systemRecovery: { ...state, state: "running" } } }).where(eq(issueRecoveryActions.id, action!.id));
+    const c = coordinator(db, undefined, error => { errors.push(error); });
+    await registerExecutionControlWork(c, [{ queue: DELIVERY_QUEUES.workspaceRecovery,
+      run: async () => {}, next: executionControlSchedule(observed).workspaceRecovery }]).ready;
+    await quiet(c);
+  });
+
   it("bounds real producer bursts with another company's completed history present", async () => {
     const otherCompany = randomUUID(), otherAgent = randomUUID();
     await db.insert(companies).values({ id: otherCompany, name: "Other tenant", issuePrefix: "OTH" });
