@@ -49,15 +49,17 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
-it.each(["event", "newer_command", "replacement", "write_failure", "drain", "semantic_replacement"] as const)(
+it.each(["event", "progress", "lifecycle", "usage", "credentials", "newer_command", "replacement", "write_failure", "drain", "semantic_replacement"] as const)(
   "keeps HTTP responsive during a durable event write and preserves %s", async (mode) => {
     const root = mkdtempSync(resolve(tmpdir(), "runner-event-io-"));
     const dispatch = vi.fn(async () => {
       expect(JSON.parse(readFileSync(resolve(root, "control-plane-state.json"), "utf8")).ackedSourceSeq).toBe(1);
       return { result: { ok: true } };
     });
+    const effects = new Set<string>();
+    const commit = vi.fn(async (event: { sourceEventId: string }) => { effects.add(event.sourceEventId); });
     const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
-      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: async () => {}, onSemanticToolInput: dispatch });
+      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit, onSemanticToolInput: dispatch });
     const http = createServer((_req, res) => res.end("responsive"));
     let release!: () => void;
     const barrier = new Promise<void>(resolveWrite => { release = resolveWrite; });
@@ -90,10 +92,29 @@ it.each(["event", "newer_command", "replacement", "write_failure", "drain", "sem
         payload.eventType = "item.delta";
         payload.priority = 2;
         payload.payload = { delta: "output while the volume is slow" };
+        if (mode === "progress") {
+          payload.eventType = "tool.execution.progressed";
+          payload.payload = { schema: "paperclip.tool.execution.v1", executionId: "progress-1",
+            transport: "process", operation: "execute", status: "running", output: "working",
+            outputBytes: 7, outputTruncated: false, outputDigest: null };
+        } else if (mode === "lifecycle") {
+          payload.eventType = "turn.completed";
+          payload.priority = 0;
+          payload.payload = { status: "completed" };
+        } else if (mode === "usage") {
+          payload.eventType = "usage.reported";
+          payload.priority = 1;
+          payload.payload = { inputTokens: 100, outputTokens: 20 };
+        } else if (mode === "credentials") {
+          payload.eventType = "auth.credentials.updated";
+          payload.priority = 0;
+          payload.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+            bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+        }
       }
       expect(validatePrpEvent(payload)).toMatchObject({ ok: true });
       sendSecure(client, event);
-      await vi.waitFor(() => expect(staged || dispatch.mock.calls.length > 0).toBe(true));
+      await vi.waitFor(() => expect(staged || dispatch.mock.calls.length > 0 || core.store.state.ackedSourceSeq > 0).toBe(true));
       if (mode === "semantic_replacement") {
         replacement = (await authenticate(core, client.leaseToken!))!;
         release();
@@ -101,11 +122,26 @@ it.each(["event", "newer_command", "replacement", "write_failure", "drain", "sem
         await vi.waitFor(() => expect(core.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(true));
         return;
       }
+      if (mode === "lifecycle" || mode === "credentials") {
+        expect(staged).toBe(false);
+        expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(1);
+        expect(await receiveSecure(client)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+        return;
+      }
       // The actual socket request completes while the real file's fsync is held.
       const address = http.address() as { port: number };
       expect(await (await fetch(`http://127.0.0.1:${address.port}`)).text()).toBe("responsive");
       expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(0);
-      if (mode === "newer_command") core.queueCommand("session.snapshot", {}, "command_during_event");
+      // Lifecycle readers and replacement handshakes must not observe an event
+      // whose snapshot is still waiting for its first durable write.
+      expect(core.store.state.ackedSourceSeq).toBe(0);
+      expect(core.store.state.committedEvents).toEqual([]);
+      if (mode === "newer_command") {
+        core.queueCommand("session.snapshot", {}, "command_during_event");
+        const saved = JSON.parse(readFileSync(core.store.path, "utf8"));
+        expect(saved.ackedSourceSeq).toBe(0);
+        expect(saved.commands.some((command: { commandId: string }) => command.commandId === "command_during_event")).toBe(true);
+      }
       let drained = false;
       const retirement = mode === "drain" ? (async () => {
         await core.stop();
@@ -118,6 +154,9 @@ it.each(["event", "newer_command", "replacement", "write_failure", "drain", "sem
       }
       if (mode === "replacement") {
         replacement = (await authenticate(core, client.leaseToken!))!;
+        expect(replacement.welcome.payload).toMatchObject({ ackedSourceSeq: 0 });
+        sendSecure(replacement, event);
+        expect(await receiveSecure(replacement)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
         const second = structuredClone(event);
         const next = second.payload as Record<string, unknown>;
         next.sourceSeq = 2;
@@ -139,12 +178,31 @@ it.each(["event", "newer_command", "replacement", "write_failure", "drain", "sem
       await core.stop();
       await core.drainPendingConnectionProcessing();
       const restored = new DurablePrpControlPlane({ stateDirectory: root, identity,
-        expectedRunnerVersion, expectedRunnerDigest });
+        expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit });
       const expectedEvents = mode === "replacement" ? 2 : mode === "write_failure" ? 0 : 1;
       expect(restored.store.state.ackedSourceSeq).toBe(expectedEvents);
       expect(restored.store.state.committedEvents).toHaveLength(expectedEvents);
       if (mode === "newer_command") {
         expect(restored.store.state.commands.some(command => command.commandId === "command_during_event")).toBe(true);
+        expect(commit).toHaveBeenCalledTimes(1);
+      }
+      if (mode === "replacement") {
+        expect(commit).toHaveBeenCalledTimes(3);
+        expect(effects.size).toBe(2);
+      }
+      if (mode === "drain") {
+        await restored.start();
+        try {
+          replacement = (await authenticate(restored, client.leaseToken!))!;
+          sendSecure(replacement, event);
+          expect(await receiveSecure(replacement)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 1 } });
+          expect(commit).toHaveBeenCalledTimes(2);
+          expect(effects.size).toBe(1);
+        } finally {
+          replacement?.socket.destroy();
+          await restored.stop();
+          await restored.drainPendingConnectionProcessing();
+        }
       }
       expect(nodeFs.readdirSync(root).filter(name => name.endsWith(".tmp"))).toEqual([]);
     } finally {
