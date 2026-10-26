@@ -325,6 +325,7 @@ function Setup({
     if (requestCopilotModels) void refreshCopilotModels();
   }, [requestCopilotModels, copilotModelScope, refreshCopilotModels]);
   const environment = envs.data?.find((env) => env.id === environmentId);
+  const lifecycleVerification = !completed && environment?.driver === "plugin";
   const setupEnvironmentKey = JSON.stringify([companyId, environmentId, environment?.config]);
   const setupEnvironmentRef = useRef("");
   setupEnvironmentRef.current = setupEnvironmentKey;
@@ -656,6 +657,8 @@ function Setup({
 
   async function runTest(nextConnection = connection): Promise<Record<string, unknown> | null> {
     if (!ready) return null;
+    // The lifecycle must prepare the agent-owned environment before it can run a probe.
+    if (lifecycleVerification) return preparedConfig(nextConnection);
     const run = ++generation.current;
     const setupEnvironment = setupEnvironmentRef.current;
     setTestState("running");
@@ -678,6 +681,7 @@ function Setup({
       const config = preparedConfig(nextConnection, qualified?.runner);
       const tested = await testAgentSetup({
         companyId,
+        agentId: created?.id,
         adapterType: requestAdapterType,
         providerAdapter: brandType,
         ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
@@ -1394,7 +1398,9 @@ function Setup({
                         </section>
                       )}
                     </fieldset>
-                    <RuntimeTestCard
+                    {lifecycleVerification ? <p className="text-sm text-muted-foreground">
+                      This environment prepares the agent and tests its model connection after you finish setup.
+                    </p> : <RuntimeTestCard
                       variant={isDot ? "prerequisites" : "connection"}
                       metadataOnly={brandType === "copilot_runtime"}
                       state={testState}
@@ -1402,7 +1408,7 @@ function Setup({
                       error={error}
                       disabled={!ready || busy || Boolean(connectionAdapter && !connection)}
                       onTest={() => void runTest()}
-                    />
+                    />}
                     {error && testState !== "fail" && (
                       <p role="alert" className="text-sm text-destructive">
                         {error}

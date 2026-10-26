@@ -10,6 +10,25 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it.each([["codex", "OpenAI"], ["claude", "Claude"]])("finishes %s setup before probing an agent-owned plugin environment", async (provider, label) => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "plugin-1" });
+    envApi.list.mockResolvedValue([
+      { id: "plugin-1", name: "Agent environment", status: "active", driver: "plugin", config: {} },
+    ]);
+    api.testEnvironment.mockRejectedValue(new Error("Computer has not been prepared"));
+    await render("paperclip_runner", provider);
+    await connect(label);
+    expect(container.textContent).toContain("tests its model connection after you finish setup");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      setupAgentId: api.create.mock.calls[0][1].setupId,
+      adapterType: "paperclip_runner",
+      defaultEnvironmentId: null,
+    }));
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+  });
+
   it("creates an inactive record before connecting and finishes that same agent", async () => {
     await render("codex_local");
     expect(api.create).toHaveBeenCalledTimes(1);
@@ -22,6 +41,7 @@ describe("New agent setup", () => {
     await fill("API key", "setup-test-key");
     await click("Connect");
     expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: expect.anything() }) }), "company-1");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "codex_local", expect.objectContaining({ agentId: setupId }));
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].setupAgentId).toBe(setupId);
     expect(api.create).toHaveBeenCalledTimes(1);
