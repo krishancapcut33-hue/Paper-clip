@@ -87,10 +87,11 @@ it.each(["event", "newer_command", "replacement", "write_failure", "drain", "sem
       const event = semanticInputEvent();
       const payload = event.payload as Record<string, unknown>;
       if (mode !== "semantic_replacement") {
-        payload.eventType = "auth.credentials.updated";
-        payload.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
-          bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+        payload.eventType = "item.delta";
+        payload.priority = 2;
+        payload.payload = { delta: "output while the volume is slow" };
       }
+      expect(validatePrpEvent(payload)).toMatchObject({ ok: true });
       sendSecure(client, event);
       await vi.waitFor(() => expect(staged || dispatch.mock.calls.length > 0).toBe(true));
       if (mode === "semantic_replacement") {
@@ -120,7 +121,7 @@ it.each(["event", "newer_command", "replacement", "write_failure", "drain", "sem
         const second = structuredClone(event);
         const next = second.payload as Record<string, unknown>;
         next.sourceSeq = 2;
-        next.sourceEventId = "credential-event-2";
+        next.sourceEventId = "output-event-2";
         sendSecure(replacement, second);
         expect(await receiveSecure(replacement)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 2 } });
       }

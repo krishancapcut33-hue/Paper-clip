@@ -3323,13 +3323,13 @@ export class DurablePrpControlPlane {
       });
       this.#store.state.ackedSourceSeq = sourceSeq;
     }
-    // Tool admission must not yield between its durable input and dispatch:
-    // a replacement welcome can acknowledge that input before replay can run.
-    if (isSemanticInput) {
-      this.#store.save();
-    } else {
+    // Output deltas have no lifecycle or control effects. Other events must
+    // become durable before transport readers can observe them in memory.
+    if (eventType === "item.delta") {
       await this.#store.saveEvent();
       if (this.#eventOwner !== connection || this.#identity !== identity || this.#protocolIntegrityError !== null) return;
+    } else {
+      this.#store.save();
     }
 
     if (
