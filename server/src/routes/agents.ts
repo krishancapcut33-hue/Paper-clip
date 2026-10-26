@@ -5394,7 +5394,9 @@ export function agentRoutes(
     if (loaded.interaction.status !== "pending") throw conflict("Connection intent is already resolved");
     const setup = await intents.setupOptions(interactionId);
     if (!setup.aiConnectionRequiresAdoption || !setup.aiConnection) throw conflict("The agent’s AI configuration changed. Reload the task and try again.");
-    // Probe in the agent's execution environment without installing access.
+    const agentAdapterCfg = agent.adapterConfig as Record<string, unknown>;
+    if (!isAiConnectionCompatible(setup.aiConnection, agent.adapterType, agentAdapterCfg.model, agentAdapterCfg.provider, agentAdapterCfg.acpxAgent)) throw conflict("The agent AI configuration changed. Reload the task and try again.");
+    // Probe in the agent’s execution environment without installing access.
     // The binding, install, audit, and card resolution commit together below.
     const validatedConnectionId = await validateManagedAgentBinding(req, agent.companyId, agent.id, agent.adapterType, agent.adapterConfig, setup.aiConnection, agent.defaultEnvironmentId, true, true);
     if (validatedConnectionId !== connectionId) throw conflict("This is no longer the selected account. Reload the task and try again.");
@@ -5545,7 +5547,7 @@ export function agentRoutes(
         adapterConfig: patchData.adapterConfig,
       });
     }
-    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
+    if (existing.runtimeConfig.aiConnection && requestedRuntimeConfig && !requestedRuntimeConfig.aiConnection && nextAdapterType === existing.adapterType) requestedRuntimeConfig.aiConnection = existing.runtimeConfig.aiConnection;
     const nextAiBinding = aiConnectionBindingSchema.safeParse(requestedRuntimeConfig?.aiConnection ?? existing.runtimeConfig.aiConnection).data;
     if (nextAiBinding) {
       await assertCanUpdateAgent(req, existing);

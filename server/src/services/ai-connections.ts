@@ -28,10 +28,18 @@ import {
   type AiManagedConnectionSummary,
   type CreateAiConnection,
   type AiConnectionLoginIntent,
+  type AiProvider,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
+
+const ADAPTER_REQUIRED_PROVIDER: Partial<Record<string, AiProvider>> = {
+  claude_local: "anthropic",
+  codex_local: "openai",
+  opencode_local: "openrouter",
+  grok_local: "xai",
+};
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -230,11 +238,30 @@ export function aiConnectionService(db: Db) {
         input.runnerProvider,
         input.acpxAgent,
       )
-    )
+    ) {
+      let effectiveAdapterType = input.adapterType;
+      if (effectiveAdapterType === "paperclip_runner") {
+        const rp = input.runnerProvider;
+        const ax = input.acpxAgent;
+        effectiveAdapterType =
+          rp === "claude" || (rp === "acpx" && ax === "claude") ? "claude_local"
+          : rp === "acpx" && ax === "grok" ? "grok_local"
+          : rp === "codex" ? "codex_local"
+          : rp === "opencode" ? "opencode_local"
+          : "unsupported";
+      }
+      const requiredProvider = ADAPTER_REQUIRED_PROVIDER[effectiveAdapterType];
+      if (requiredProvider && requiredProvider !== binding.provider) {
+        throw unprocessable(
+          `Select a ${AI_CONNECTION_CAPABILITIES[requiredProvider].name} connection; the current selection uses ${AI_CONNECTION_CAPABILITIES[binding.provider].name}`,
+          { code: "ai_connection_incompatible" },
+        );
+      }
       throw unprocessable(
         "Select an AI connection compatible with this harness and model",
         { code: "ai_connection_incompatible" },
       );
+    }
     if (binding.mode === "responsible_user" && !userId)
       throw unprocessable(
         "This run needs a responsible user to select an AI connection",
