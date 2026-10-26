@@ -11,6 +11,9 @@ import {
   heartbeatRuns,
   inboxDismissals,
   invites,
+  issues,
+  issueComments,
+  issueReadStates,
   joinRequests,
 } from "@paperclipai/db";
 import {
@@ -46,6 +49,9 @@ describeEmbeddedPostgres("inbox dismissals", () => {
   }, 20_000);
 
   afterEach(async () => {
+    await db.delete(issueReadStates);
+    await db.delete(issueComments);
+    await db.delete(issues);
     await db.delete(inboxDismissals);
     await db.delete(joinRequests);
     await db.delete(invites);
@@ -98,6 +104,31 @@ describeEmbeddedPostgres("inbox dismissals", () => {
     const response = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
     expect(response.body.failedRuns).toBe(expected);
     expect(response.body.inbox).toBe(expected);
+  });
+
+  it("counts only unread Mine tasks without returning their bodies", async () => {
+    const companyId = randomUUID(), issueId = randomUUID(), otherId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Badge fixture", issuePrefix: "BADGE" });
+    const createdAt = new Date("2026-03-11T01:00:00Z");
+    const replyAt = new Date("2026-03-11T02:00:00Z");
+    await db.insert(issues).values([
+      { id: issueId, companyId, title: "Mine", description: "Large body".repeat(10000), createdByUserId: "local-board", createdAt },
+      { id: otherId, companyId, title: "Not mine", createdByUserId: "someone-else", createdAt },
+    ]);
+    await db.insert(issueComments).values([issueId, otherId].map((id) => ({ companyId, issueId: id, authorType: "user" as const, authorUserId: "someone-else", body: "Reply", createdAt: replyAt })));
+    const app = express();
+    app.use((req, _res, next) => {
+      req.actor = { type: "board", source: "local_implicit", userId: "local-board", companyIds: [companyId], isInstanceAdmin: true };
+      next();
+    });
+    app.use("/api", sidebarBadgeRoutes(db));
+    app.use(errorHandler);
+    const response = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(response.body).toMatchObject({ inbox: 1, unreadIssueIds: [issueId] });
+    expect(JSON.stringify(response.body).length).toBeLessThan(300);
+    await db.insert(issueReadStates).values({ companyId, issueId, userId: "local-board", lastReadAt: replyAt });
+    const read = await request(app).get(`/api/companies/${companyId}/sidebar-badges`).expect(200);
+    expect(read.body).toMatchObject({ inbox: 0, unreadIssueIds: [] });
   });
 
   it("upserts a single dismissal record per user and inbox item key", async () => {
