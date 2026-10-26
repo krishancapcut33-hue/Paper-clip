@@ -60,7 +60,7 @@ export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyI
     const [environment] = effectiveEnvironmentId
       ? await db.select().from(environments).where(eq(environments.id, effectiveEnvironmentId)) : [];
     if (environmentId && !environment) throw unprocessable("The selected environment is unavailable");
-    const { config: selectionConfig, skillKeys: environmentSkills } = await environmentSkillConfig(db, companyId, environment, state.agent.adapterConfig);
+    const { config: selectionConfig, skillKeys: environmentSkills } = await environmentSkillConfig(db, companyId, environment, state.agent.adapterConfig, false);
     const preference = readPaperclipSkillSyncPreference(selectionConfig);
     const settings = instance.experimental;
     const skills = await withSkillActor({ type: "agent", agentId, companyId, source: "agent_key" }, () =>

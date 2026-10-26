@@ -2356,7 +2356,10 @@ Plugin environment drivers can declare `skillKeys` that reference their own
 manifest-managed skills. Selecting that environment adds those skills to the
 normal authorized skill selection, including an explicitly empty optional
 selection. Core installs a missing managed skill in the current company's
-library and preserves existing skill edits and explicit version pins. Run
+library at new-run admission and preserves existing skill edits and explicit
+version pins. Slug collisions create a separate skill while retaining its declared
+plugin key. Lifecycle runtime reads do not install newly declared skills; recovery
+also skips installation and keeps its saved selection. Run
 preparation captures the same immutable versions as ordinary assignments;
 recovery uses the saved selection. The lifecycle runtime reader includes the
 effective default environment's skills before synchronizing the persistent home.

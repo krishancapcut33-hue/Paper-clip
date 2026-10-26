@@ -286,7 +286,7 @@ export function pluginManagedSkillService(
     const results = await skills.importPackageFiles(
       companyId,
       buildPackageFiles(options.pluginKey, declaration),
-      { onConflict: "replace" },
+      { onConflict: mode === "reset" ? "replace" : "rename", preserveKeyOnRename: true },
     );
     const imported = results.find((result) =>
       result.skill.key === canonicalSkillKey(options.pluginKey, declaration.skillKey)

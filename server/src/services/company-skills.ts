@@ -6238,6 +6238,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     files: Record<string, string>,
     options?: {
       onConflict?: PackageSkillConflictStrategy;
+      /** Preserve a declared identity when only the slug conflicts. */
+      preserveKeyOnRename?: boolean;
     },
   ): Promise<ImportPackageSkillResult[]> {
     await ensureSkillInventoryCurrent(companyId);
@@ -6328,7 +6330,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       }
 
       const renamedSlug = uniqueSkillSlug(normalizedSlug || "skill", usedSlugs);
-      const renamedKey = uniqueImportedSkillKey(companyId, renamedSlug, usedKeys);
+      const renamedKey = options?.preserveKeyOnRename && !existingByIncomingKey
+        ? originalKey : uniqueImportedSkillKey(companyId, renamedSlug, usedKeys);
       const renamedSkill: ImportedSkill = {
         ...importedSkill,
         slug: renamedSlug,

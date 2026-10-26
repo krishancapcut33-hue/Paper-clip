@@ -7,7 +7,7 @@ import { pluginManagedSkillService } from "./plugin-managed-skills.js";
 /** Environment capabilities join the normal authorized, versioned skill selection. */
 export async function environmentSkillConfig(db: Db, companyId: string,
   environment: { driver: string; config: Record<string, unknown> | null } | null | undefined,
-  config: Record<string, unknown>): Promise<{ config: Record<string, unknown>; skillKeys: string[] }> {
+  config: Record<string, unknown>, installMissing = true): Promise<{ config: Record<string, unknown>; skillKeys: string[] }> {
   if (environment?.driver !== "plugin") return { config, skillKeys: [] };
   const { pluginKey, driverKey } = environment.config ?? {};
   if (typeof pluginKey !== "string" || typeof driverKey !== "string") return { config, skillKeys: [] };
@@ -27,7 +27,7 @@ export async function environmentSkillConfig(db: Db, companyId: string,
       eq(pluginManagedResources.resourceKind, "skill"), inArray(pluginManagedResources.resourceKey, keys)));
   const selected = new Map(installed.map(skill => [skill.resourceKey, skill.key]));
   for (const key of keys) {
-    if (selected.has(key)) continue;
+    if (selected.has(key) || !installMissing) continue;
     const result = await db.transaction(async tx => {
       // Serialize first installation across concurrent agents in this company.
       await tx.execute(sql`select pg_advisory_xact_lock(hashtextextended(${`environment-skill:${companyId}:${plugin.id}:${key}`}, 0))`);
@@ -38,7 +38,7 @@ export async function environmentSkillConfig(db: Db, companyId: string,
   }
   const preference = readPaperclipSkillSyncPreference(config);
   const explicit = new Set(preference.desiredSkillEntries.map(entry => entry.key));
-  const skillKeys = keys.map(key => selected.get(key)!);
+  const skillKeys = keys.flatMap(key => selected.has(key) ? [selected.get(key)!] : []);
   return { config: writePaperclipSkillSyncPreference(config, [...preference.desiredSkillEntries,
     ...skillKeys.filter(key => !explicit.has(key))]), skillKeys };
 }

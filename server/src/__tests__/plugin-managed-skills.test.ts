@@ -14,6 +14,7 @@ import {
   getEmbeddedPostgresTestSupport,
   startEmbeddedPostgresTestDatabase,
 } from "./helpers/embedded-postgres.js";
+import { companySkillService } from "../services/company-skills.js";
 import { buildHostServices } from "../services/plugin-host-services.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
@@ -142,6 +143,20 @@ describeEmbeddedPostgres("plugin-managed skills", () => {
       resourceKey: "wiki-maintainer",
       resourceId: created.skillId,
     });
+  });
+
+  it("keeps a same-slug user skill separate through automatic install, reset, and relinking", async () => {
+    const { companyId, services } = await seedCompanyAndPlugin();
+    const original = await companySkillService(db).createLocalSkill(companyId, { name: "Wiki Maintainer Skill", markdown: "# User instructions\n" });
+    const created = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(created.skillId).not.toBe(original.id);
+    expect(created.skill!.key).toBe("plugin/paperclip-managed-skills-test/wiki-maintainer");
+    expect(created.skill!.slug).not.toBe(original.slug);
+    await services.skills.managedReset({ companyId, skillKey: "wiki-maintainer" });
+    await db.delete(pluginManagedResources).where(eq(pluginManagedResources.resourceId, created.skillId!));
+    const relinked = await services.skills.managedReconcile({ companyId, skillKey: "wiki-maintainer" });
+    expect(relinked.skillId).toBe(created.skillId);
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, original.id)))[0]).toMatchObject({ key: original.key, slug: original.slug, markdown: original.markdown });
   });
 
   it("preserves operator edits during reconcile and restores manifest defaults on reset", async () => {

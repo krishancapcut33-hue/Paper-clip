@@ -7,7 +7,7 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
-import { agents, authUsers, companies, companyMemberships, companySkills, createDb, heartbeatRunEvents, heartbeatRuns, issues, projects } from "@paperclipai/db";
+import { agents, authUsers, companies, companyMemberships, companySkills, createDb, heartbeatRunEvents, heartbeatRuns, issues, projects, plugins, environments } from "@paperclipai/db";
 import { companySkillService } from "../services/company-skills.js";
 import { withSkillVersionCacheLock } from "../services/skill-version-cache.js";
 import { registerServerAdapter, unregisterServerAdapter, type AdapterExecutionContext } from "../adapters/index.js";
@@ -220,7 +220,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     }
   });
 
-  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace") {
+  async function configuration(f: Awaited<ReturnType<typeof seed>>, config: Record<string, unknown>, snapshot: Record<string, unknown> = {}, type = "paperclip_runner", explicitTaskDirectory = false, requestedExecutionWorkspaceMode: HeartbeatExecutionConfigurationInput["policy"]["requestedExecutionWorkspaceMode"] = "shared_workspace", selectedEnvironmentForConfig: HeartbeatExecutionConfigurationInput["environment"]["selectedEnvironmentForConfig"] = null) {
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
@@ -231,12 +231,28 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
         taskProjectContext: null, routineEnvContext: { routineId: null, env: null, responsibleUserId: null } },
       config: { sourceWorkspaceConfig: config, aiBinding: undefined },
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory, requestedExecutionWorkspaceMode },
-      environment: { selectedEnvironmentId: null, selectedEnvironmentForConfig: null,
+      environment: { selectedEnvironmentId: selectedEnvironmentForConfig?.id ?? null, selectedEnvironmentForConfig,
         resolvedInstanceSettings, persistedNativeExecutionInput: null },
       services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
   }
+
+  it("does not install new environment declarations when recovering a saved skill selection", async () => {
+    const f = await seed(), pluginId = randomUUID(), pluginKey = `fixture.${randomUUID()}`;
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "fixture", version: "1.0.0", status: "ready",
+      manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Fixture", description: "Fixture", author: "Tests", categories: ["automation"],
+        capabilities: ["environment.drivers.register", "skills.managed"], entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: {}, skillKeys: ["new-invalid"] }],
+        skills: [{ skillKey: "new-invalid", displayName: "New invalid skill", markdown: "---\nname: new-invalid\nmetadata:\n  sources:\n    - kind: github-dir\n      repo: fixture/skills\n---\nUnpinned." }] } });
+    const [environment] = await db.insert(environments).values({ name: "Fixture", driver: "plugin", config: { pluginKey, driverKey: "tasks", driverConfig: {} } }).returning();
+    const config = { paperclipSkillSync: { desiredSkills: [] } };
+    const restoring = await configuration(f, config, { skillVersions: {}, skillSelectionSnapshot: true }, "paperclip_runner", false, "shared_workspace", environment);
+    expect(await restoring.prepare()).toMatchObject({ prepared: true, runtimeSkillEntries: [] });
+    const fresh = await configuration(f, config, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const rejected = await fresh.prepare().then(() => false, error => { expect(error.message).toMatch(/pinned Git commit/); return true; });
+    expect(rejected).toBe(true);
+  });
 
   it("keeps default task-directory configuration stable when the directory is reused", async () => {
     const f = await seed();

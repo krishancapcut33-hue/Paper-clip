@@ -232,16 +232,18 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   } else {
     delete context.paperclipSecrets;
   }
-  const { config: effectiveResolvedConfig, skillKeys: environmentSkills } = await environmentSkillConfig(db, agent.companyId, selectedEnvironmentForConfig,
-    applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys));
+  const storedVersions = parseObject(run.contextSnapshot?.skillVersions);
+  const hasStoredVersions = Object.prototype.hasOwnProperty.call(run.contextSnapshot ?? {}, "skillVersions");
+  const selectedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys);
+  const { config: effectiveResolvedConfig, skillKeys: environmentSkills } = hasStoredVersions
+    ? { config: selectedConfig, skillKeys: [] }
+    : await environmentSkillConfig(db, agent.companyId, selectedEnvironmentForConfig, selectedConfig);
   const runtimeSkillPreference = readPaperclipSkillSyncPreference(
     effectiveResolvedConfig,
   );
   const nativeRunnerPreparationSpans: NativeRunHistoricalSpan[] = [];
   const skillsPrepareStartedAtMs = Date.now();
   let skillDeliveryConfig = effectiveResolvedConfig;
-  const storedVersions = parseObject(run.contextSnapshot?.skillVersions);
-  const hasStoredVersions = Object.prototype.hasOwnProperty.call(run.contextSnapshot ?? {}, "skillVersions");
   const prepareSkills = async () => {
 
     try {

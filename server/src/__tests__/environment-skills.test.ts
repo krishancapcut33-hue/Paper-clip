@@ -77,6 +77,12 @@ describeDatabase("environment managed skills", () => {
     expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id))!.skills).toEqual([]);
     expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, env.id))!.skills).toEqual(state!.skills);
     await expect(pluginAgentRuntimeState(db, pluginId, companyId, agent.id, randomUUID())).rejects.toMatchObject({ status: 422 });
+    const invalidSkill = { skillKey: "new-invalid", displayName: "New invalid skill", markdown: "---\nname: new-invalid\nmetadata:\n  sources:\n    - kind: github-dir\n      repo: fixture/skills\n---\nUnpinned." };
+    const changedManifest = { ...manifest, skills: [...manifest.skills!, invalidSkill], environmentDrivers: manifest.environmentDrivers!.map(driver => ({ ...driver, skillKeys: [...driver.skillKeys!, "new-invalid"] })) };
+    await db.update(plugins).set({ manifestJson: changedManifest }).where(eq(plugins.id, pluginId));
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, env.id))!.skills).toEqual(state!.skills);
+    await expect(environmentSkillConfig(db, companyId, environment, config)).rejects.toThrow(/pinned Git commit/);
+    await db.update(plugins).set({ manifestJson: manifest }).where(eq(plugins.id, pluginId));
     const pinned = { paperclipSkillSync: { desiredSkills: [{ key: skill.key, versionId: state!.skills[0].versionId }] } };
     expect((await environmentSkillConfig(db, companyId, environment, pinned)).config).toEqual(pinned);
     await db.update(companySkills).set({ markdown: "Agent customization" }).where(eq(companySkills.id, skill.id));
