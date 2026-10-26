@@ -528,7 +528,10 @@ async function assertRequestConfirmationResolutionAllowedUnderLock(
       issueExecutionRunId: issue.executionRunId,
     })) throw conflict("This completion review is no longer current or assigned to this agent.");
   }
-  if (!isReviewVerdict || isMergedPullRequestSweepConfirmation) return;
+  const mergeSweepCanResolveReviewVerdict =
+    isMergedPullRequestSweepConfirmation &&
+    (issue.reviewPolicy ?? "anyone") === "anyone";
+  if (!isReviewVerdict || mergeSweepCanResolveReviewVerdict) return;
 
   const verdictActor = actor.agentId
     ? { type: "agent" as const, id: actor.agentId }
