@@ -332,6 +332,7 @@ describe("project workspace host-path floor", () => {
     const res = await request(app).delete("/api/projects/project-1?deleteFiles=true");
 
     expect(res.status).toBe(403);
+    expect(mockProjectService.getById).not.toHaveBeenCalled();
     expect(mockProjectService.remove).not.toHaveBeenCalled();
   });
 });

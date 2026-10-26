@@ -14,6 +14,7 @@ const mockProjectService = vi.hoisted(() => ({
   updateWorkspace: vi.fn(),
   removeWorkspace: vi.fn(),
   remove: vi.fn(),
+  assertDeletionAllowed: vi.fn(),
   resolveByReference: vi.fn(),
 }));
 const mockSecretService = vi.hoisted(() => ({
@@ -170,6 +171,7 @@ describe("project env routes", () => {
     vi.doUnmock("../services/secrets.js");
     registerModuleMocks();
     vi.clearAllMocks();
+    mockProjectService.assertDeletionAllowed.mockReset();
     mockAccessService.decide.mockResolvedValue({
       allowed: true,
       action: "project:read",
@@ -258,6 +260,29 @@ describe("project env routes", () => {
         },
       }),
     );
+  });
+
+  it.each([false, true])("rejects retained task workspaces before claiming deletion or stopping activity (cleanup: %s)", async (deleteFiles) => {
+    const { conflict } = await import("../errors.js");
+    const project = buildProject({ status: deleteFiles ? "backlog" : "deleting" });
+    mockProjectService.getById.mockResolvedValue(project);
+    mockProjectService.assertDeletionAllowed.mockRejectedValue(conflict("This project still supplies access policy for retained task workspaces."));
+    const update = vi.fn();
+    const transaction = vi.fn();
+    const select = vi.fn();
+    const app = await createApp({ update, transaction, select });
+
+    const result = await request(app).delete(`/api/projects/project-1?deleteFiles=${deleteFiles}`);
+
+    expect(result.status).toBe(409);
+    expect(result.body.error).toContain("retained task workspaces");
+    expect(mockProjectService.assertDeletionAllowed).toHaveBeenCalledWith(project);
+    expect(update).not.toHaveBeenCalled();
+    expect(transaction).not.toHaveBeenCalled();
+    expect(select).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+    expect(mockHeartbeatService.waitForRunExecutionDrain).not.toHaveBeenCalled();
+    expect(mockProjectService.remove).not.toHaveBeenCalled();
   });
 
   it.each([false, true])("allows only one concurrent project deletion claim and keeps the project fenced after stop failure (cleanup: %s)", async (deleteFiles) => {

@@ -49,6 +49,12 @@ export async function lockProjectRootMutation(tx: ProjectTransaction, projectId:
   return tx.select().from(projects).where(eq(projects.id, projectId)).for("update").then(rows => rows[0] ?? null);
 }
 
+async function assertProjectDeletionAllowed(db: Db | ProjectTransaction, project: { id: string; companyId: string }) {
+  const [retained] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
+    .where(and(eq(executionWorkspaces.companyId, project.companyId), eq(executionWorkspaces.projectId, project.id))).limit(1);
+  if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
+}
+
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";
 import { logger } from "../middleware/logger.js";
 
@@ -1109,6 +1115,8 @@ export function projectService(
       return cleared;
     },
 
+    assertDeletionAllowed: (project: { id: string; companyId: string }) => assertProjectDeletionAllowed(db, project),
+
     remove: async (
       id: string,
       removeOptions: { deleteFiles?: boolean; deletionClaimToken?: string | null } = {},
@@ -1116,9 +1124,7 @@ export function projectService(
       const result = await db.transaction(async (tx) => {
         const project = await lockProjectRootMutation(tx, id);
         if (!project) return { row: null };
-        const [retained] = await tx.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
-          .where(eq(executionWorkspaces.projectId, id)).limit(1);
-        if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
+        await assertProjectDeletionAllowed(tx, project);
         await tx.select({ id: projectWorkspaces.id }).from(projectWorkspaces).where(eq(projectWorkspaces.projectId, id)).for("update");
         await recordProjectLifecycleEvent(tx as unknown as Db, project.companyId, id, "delete");
         await notifyDeliveryWork(tx, DELIVERY_QUEUES.skillSourceSync);

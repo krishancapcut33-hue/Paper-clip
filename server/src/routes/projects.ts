@@ -1108,17 +1108,18 @@ export function projectRoutes(db: Db) {
   });
 
   router.delete("/projects/:id", async (req, res) => {
+    const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
+    if (deleteFiles) assertBoard(req);
     const id = req.params.id as string;
     const existing = await getAccessibleResource(req, res, svc.getById(id), "Project not found");
     if (!existing) return;
     if (!(await assertProjectReadAllowed(req, res, existing))) return;
-    const deleteFiles = req.query.deleteFiles === "true" || req.query.deleteFiles === "1";
     let deletionClaimToken: string | null = null;
     let claimLost = false;
     let renewal: ReturnType<typeof setInterval> | null = null;
     let renewalInFlight: Promise<void> | null = null;
-    if (deleteFiles) assertBoard(req);
     if (deleteFiles || existing.status === "deleting") {
+      await svc.assertDeletionAllowed(existing);
       const claimToken = randomUUID();
       deletionClaimToken = claimToken;
       const claimed = await db.transaction(async (tx) =>
