@@ -359,6 +359,12 @@ export function projectRoutes(db: Db) {
 
   router.param("id", async (req, _res, next, rawId) => {
     try {
+      if (
+        req.method === "DELETE" && req.route?.path === "/projects/:id" &&
+        (req.query.deleteFiles === "true" || req.query.deleteFiles === "1")
+      ) {
+        assertBoard(req);
+      }
       req.params.id = await normalizeProjectReference(req, rawId);
       next();
     } catch (err) {

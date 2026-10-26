@@ -327,11 +327,13 @@ describe("project workspace host-path floor", () => {
     expect(mockProjectService.createWorkspace).toHaveBeenCalled();
   });
 
-  it("requires board authorization before deleting managed project files", async () => {
+  it.each(["project-1", "7d0812aa-49cd-4697-b3df-d5ebf5f87da5"].flatMap((id) =>
+    ["true", "1"].map((deleteFiles) => ({ id, deleteFiles }))))("requires board authorization before resolving $id for managed-file deletion ($deleteFiles)", async ({ id, deleteFiles }) => {
     const app = await createApp("agent");
-    const res = await request(app).delete("/api/projects/project-1?deleteFiles=true");
+    const res = await request(app).delete(`/api/projects/${id}?deleteFiles=${deleteFiles}`);
 
     expect(res.status).toBe(403);
+    expect(mockProjectService.list).not.toHaveBeenCalled();
     expect(mockProjectService.getById).not.toHaveBeenCalled();
     expect(mockProjectService.remove).not.toHaveBeenCalled();
   });
