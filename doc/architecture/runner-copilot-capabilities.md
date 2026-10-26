@@ -1,6 +1,16 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current integration (2026-10-17): **Copilot profile v21 remains pending** with
+Current source declaration (2026-10-26): **Copilot profile v60** binds the shared
+sources that carry Codex's explicit hosted-search restriction. Its digest is
+`sha256:ca3c2b38ed5f6e25cf1c96c1f73781a86cc90c1c0add93f64716c66f28b3f3aa`.
+The v59 declaration remains unchanged and readable as history. Exact-current
+launch admission still applies. The Copilot executable, arguments, permissions,
+receipts, and qualification flags are unchanged. Copilot authentication probes
+do not carry the Codex-only setting. Offline compatibility checks do not supply
+new live qualification; prior live outcomes remain attached to their original
+source identities.
+
+Historical integration (2026-10-17): **Copilot profile v21 remained pending** with
 digest `sha256:1dad3d26d91e66c6f911dbfa43e7963f36c0bbf0d7709f4bbb568029a8b4b46a`.
 It binds the shared provider completion contract, direct driver, production sidecar, and controller
 continuation resolver. Installation verification requires this generated v21
