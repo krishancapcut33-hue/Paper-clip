@@ -100,6 +100,7 @@ export interface TaskSidePanelProps {
   issue: Issue;
   pluginPanels?: TaskPluginPanel[];
   openedPluginPanelKeys?: Set<string>;
+  dismissedPluginPanelKeys?: Set<string>;
   openBrowserId?: string | null;
   onBrowserOpened?: () => void;
   accountScope: string;
@@ -248,6 +249,7 @@ function useTaskSidePanelFileRouting() {
 export function TaskSidePanel({
   pluginPanels = EMPTY_PLUGIN_PANELS,
   openedPluginPanelKeys,
+  dismissedPluginPanelKeys,
   openBrowserId,
   onBrowserOpened,
   issue,
@@ -353,19 +355,24 @@ export function TaskSidePanel({
   const controller = useSidePanelTabs<TaskSidePanelTabPayload>({ initialState, onStateChange: persist });
   const localOpenedPluginPanels = useRef(new Set<string>());
   const openedPluginPanels = openedPluginPanelKeys ?? localOpenedPluginPanels.current;
+  const localDismissedPluginPanels = useRef(new Set<string>());
+  const dismissedPluginPanels = dismissedPluginPanelKeys ?? localDismissedPluginPanels.current;
+  const pluginPanelKey = useCallback((panel: TaskPluginPanel) => JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]), [accountScope, issue.companyId, issue.id]);
   useEffect(() => {
     const ids = new Set(pluginPanels.map(taskPluginPanelId));
     for (const tab of controller.tabs) {
       if (tab.payload.kind === "plugin-panel" && !ids.has(tab.id)) controller.closeTab(tab.id);
     }
     for (const panel of pluginPanels) {
-      const key = JSON.stringify([accountScope, issue.companyId, issue.id, panel.runId, taskPluginPanelId(panel)]);
-      if (openedPluginPanels.has(key)) continue;
+      const key = pluginPanelKey(panel);
+      if (dismissedPluginPanels.has(key)) continue;
+      const firstArrival = !openedPluginPanels.has(key);
       openedPluginPanels.add(key);
-      setLauncherOpen(false);
-      controller.openTab(taskPanelPluginTab(panel));
+      if (controller.tabs.some(tab => tab.id === taskPluginPanelId(panel))) continue;
+      if (firstArrival) setLauncherOpen(false);
+      controller.openTab(taskPanelPluginTab(panel), firstArrival);
     }
-  }, [accountScope, issue.companyId, issue.id, openedPluginPanels, pluginPanels, controller.tabs, controller.closeTab, controller.openTab]);
+  }, [dismissedPluginPanels, openedPluginPanels, pluginPanelKey, pluginPanels, controller.tabs, controller.closeTab, controller.openTab]);
   const browsersQuery = useTaskBrowsers(issue.id);
   const newestLiveBrowser = browsersQuery.data?.findLast((browser) => browser.status === "running" || browser.status === "idle");
   useEffect(() => {
@@ -556,6 +563,10 @@ export function TaskSidePanel({
     markInteracted();
     if (tabId === "subtasks") subtasksDismissedRef.current = true;
     const tab = controller.tabs.find((candidate) => candidate.id === tabId);
+    if (tab?.payload.kind === "plugin-panel") {
+      const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === tabId);
+      if (panel) dismissedPluginPanels.add(pluginPanelKey(panel));
+    }
     controller.closeTab(tabId);
     if (tabId === controller.activeTabId && (tab?.payload.kind === "workspace-file" || tab?.payload.kind === "files-browser")) {
       viewer.close();
@@ -671,7 +682,10 @@ export function TaskSidePanel({
     if (item.id.startsWith("browser:")) controller.openTab(taskPanelBrowserTab(item.id.slice(8)));
     else if (item.id.startsWith("plugin:")) {
       const panel = pluginPanels.find(panel => taskPluginPanelId(panel) === item.id);
-      if (panel) controller.openTab(taskPanelPluginTab(panel));
+      if (panel) {
+        dismissedPluginPanels.delete(pluginPanelKey(panel));
+        controller.openTab(taskPanelPluginTab(panel));
+      }
     }
     else if (item.id === "properties") controller.openTab(taskPanelPropertiesTab());
     else if (item.id === "subtasks") {

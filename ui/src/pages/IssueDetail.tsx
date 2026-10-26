@@ -3959,6 +3959,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   const pluginPanels = useTaskPluginPanels(issue, taskChatShellEnabled);
   const revealedPluginPanels = useRef(new Set<string>());
   const openedPluginPanelKeys = useRef(new Set<string>());
+  const dismissedPluginPanelKeys = useRef(new Set<string>());
   useEffect(() => {
     for (const panel of pluginPanels) {
       const key = JSON.stringify([currentUserId, issue?.id, panel.runId, taskPluginPanelId(panel)]);
@@ -6084,7 +6085,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   );
 
   useLayoutEffect(() => {
-    if (!panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue)) {
+    if (!panelIssue || suppressPanelUntilPlan || (conversation && !conversation.issue) || (taskChatShellEnabled && isMobile)) {
       closePanel();
       return;
     }
@@ -6125,6 +6126,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           <TaskSidePanel
             pluginPanels={pluginPanels}
             openedPluginPanelKeys={openedPluginPanelKeys.current}
+            dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}
             openBrowserId={openBrowserId}
             onBrowserOpened={handleBrowserOpened}
             key={panelIssue.id}
@@ -8704,6 +8706,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   <TaskSidePanel
                     pluginPanels={pluginPanels}
                     openedPluginPanelKeys={openedPluginPanelKeys.current}
+                    dismissedPluginPanelKeys={dismissedPluginPanelKeys.current}
                     openBrowserId={openBrowserId}
                     onBrowserOpened={handleBrowserOpened}
                     key={`${issue.id}:mobile`}

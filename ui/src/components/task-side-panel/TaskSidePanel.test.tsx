@@ -204,18 +204,32 @@ describe("TaskSidePanel", () => {
     expect(container.textContent).not.toContain("Plugin viewer");
   });
 
+  it("restores an automatically removed panel without taking focus after availability recovers", async () => {
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    await act(async () => container.querySelector<HTMLButtonElement>('#side-panel-tab-properties')?.click());
+    await render(panel({ pluginPanels: [] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).toBeNull();
+    await render(panel({ pluginPanels: [pluginPanel] }));
+    expect(container.querySelector('[data-side-panel-tab-target^="plugin:"]')).not.toBeNull();
+    expect(container.querySelector('[role="tab"][aria-selected="true"]')?.textContent).toContain("Properties");
+    expect(container.textContent).not.toContain("Plugin viewer");
+  });
+
   it("preserves dismissal and saved selection when the mobile drawer remounts", async () => {
     const openedPluginPanelKeys = new Set<string>();
-    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, mobile: true }));
+    const dismissedPluginPanelKeys = new Set<string>();
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, dismissedPluginPanelKeys, mobile: true }));
     await act(async () => container.querySelector<HTMLButtonElement>('button[aria-label^="Switch tabs"]')?.click());
     const close = document.querySelector<HTMLButtonElement>('button[aria-label="Close Live view"]');
     expect(close).not.toBeNull();
     await act(async () => close!.click());
     const selected = container.querySelector('[id^="side-panel-tab-"]')?.id;
+    expect(container.querySelector('button[aria-label^="Switch tabs"]')?.getAttribute("aria-label")).toBe("Switch tabs, 1 open");
     expect(container.textContent).not.toContain("Plugin viewer");
     await render(null);
-    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, mobile: true }));
+    await render(panel({ pluginPanels: [pluginPanel], openedPluginPanelKeys, dismissedPluginPanelKeys, mobile: true }));
     expect(container.querySelector('[id^="side-panel-tab-"]')?.id).toBe(selected);
+    expect(container.querySelector('button[aria-label^="Switch tabs"]')?.getAttribute("aria-label")).toBe("Switch tabs, 1 open");
     expect(container.textContent).not.toContain("Plugin viewer");
   });
 
