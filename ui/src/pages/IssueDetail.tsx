@@ -1,4 +1,6 @@
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
+import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
+import { liveRunRefetchInterval } from "../lib/live-runs-cache";
 import { useTaskRetry } from "../hooks/useTaskRetry";
 import { grokBotApi } from "@/api/grokBot";
 import { WorkspaceBaseRefRecoveryProvider } from "../components/WorkspaceBaseRefRecovery";
@@ -1205,6 +1207,7 @@ type IssueDetailChatTabProps = {
   interruption?: Issue["interruption"];
   retryPreparing?: boolean;
   queryIssueId?: string;
+  hasLiveConnection: boolean;
   browsers?: import("@paperclipai/shared").TaskBrowser[];
   onOpenBrowser?: (browserId: string) => void;
   onOpenSkill?: (skillId: string, name: string) => void;
@@ -1369,6 +1372,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
   interruption,
   retryPreparing,
   queryIssueId,
+  hasLiveConnection,
   browsers,
   onOpenBrowser,
   onOpenSkill,
@@ -1518,7 +1522,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.liveRuns(issueQueryRef),
     queryFn: () => heartbeatsApi.liveRunsForIssue(issueQueryRef),
     enabled: !!issueId,
-    refetchInterval: 1000,
+    refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData:
       keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(issueQueryRef),
   });
@@ -1535,7 +1539,7 @@ const IssueDetailChatTab = memo(function IssueDetailChatTab({
     queryKey: queryKeys.issues.activeRun(issueQueryRef),
     queryFn: () => heartbeatsApi.activeRunForIssue(issueQueryRef),
     enabled: activeRunQueryEnabled,
-    refetchInterval: liveRunCount > 0 ? false : 1000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 1000),
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueQueryRef,
     ),
@@ -3342,6 +3346,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     !hasLegacyIssueDetailQuery(location.search)
   ));
   const resolvedCompanyId = issue?.companyId ?? selectedCompanyId;
+  const hasLiveConnection = useTaskRunLiveUpdates({ companyId: resolvedCompanyId, issueId: issue?.id ?? issueId, issueQueryRef: issueId ?? "pending", assigneeAgentId: issue?.assigneeAgentId });
   const externalObjectsState = useIssueExternalObjects(conversation && !conversation.issue ? null : issue?.id ?? null);
   // A closed isolated workspace no longer blocks the composer. The server reopens
   // the workspace when the next comment or resume arrives, so the composer stays
@@ -3482,7 +3487,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       queryKey: queryKeys.issues.liveRuns(issueId!),
       queryFn: () => heartbeatsApi.liveRunsForIssue(issueId!),
       enabled: !!issueId,
-      refetchInterval: 3000,
+      refetchInterval: (query) => liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
       select: (runs) => runs.length,
       placeholderData: keepPreviousDataForSameQueryTail<LiveRunForIssue[]>(
         issueId ?? "pending",
@@ -3499,7 +3504,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     queryFn: () => heartbeatsApi.activeRunForIssue(issueId!),
     enabled:
       !!issueId && (!!issue?.executionRunId || issue?.status === "in_progress"),
-    refetchInterval: liveRunCount > 0 ? false : 3000,
+    refetchInterval: (query) => liveRunCount > 0 ? false : liveRunRefetchInterval(hasLiveConnection, query.state, 3000),
     select: (run) => !!run,
     placeholderData: keepPreviousDataForSameQueryTail<ActiveRunForIssue | null>(
       issueId ?? "pending",
@@ -8224,6 +8229,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                   interruption={issue.interruption}
                   retryPreparing={taskRetry.optimistic}
                   queryIssueId={issueId ?? issue.id}
+                  hasLiveConnection={hasLiveConnection}
                   onOpenSkill={handleOpenSkill}
                   browsers={browserQuery.data}
                   onOpenBrowser={(id) => { setOpenBrowserId(id); if (isMobile) setMobilePropsOpen(true); else openTaskSidePanel(); }}
@@ -8568,6 +8574,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             scope={treeControlScope}
             affectedCount={previewAffectedIssueCount}
             affectedAgentCount={previewAffectedAgentCount}
+            warnings={treeControlPreview?.warnings.map((warning) => warning.message)}
             loading={treeControlPreviewLoading}
             error={
               treeControlPreviewError
@@ -8589,7 +8596,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
               executeTreeControl.mutate({
                 mode: treeControlMode,
                 scope: treeControlScope,
-                wakeAgents: treeControlWakeAgentsOnResume,
+                wakeAgents: treeControlWakeAgentsOnResume && previewAffectedAgentCount > 0,
               })
             }
           />
