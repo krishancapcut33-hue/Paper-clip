@@ -502,7 +502,14 @@ export function createGitHubExternalObjectProvider(
         if (token) headers.authorization = `Bearer ${token}`;
 
         if (!companyScoped) {
-          const probe = await cachedProbeRepoVisibility(companyId, identity, headers);
+          // A server-environment token is instance-wide, so it can read repositories
+          // this company cannot. Before reading with it, verify that the repository is
+          // public RIGHT NOW. Never serve this authorization decision from the probe
+          // cache: a repository can become private inside the cache TTL, and a cached
+          // "public" verdict must not authorize a later read of its private contents.
+          // The cache is still used below to classify a 404, where a stale verdict can
+          // only make the object look deleted — it can never expose private data.
+          const probe = await probeRepoVisibility(identity, { fetch: fetchImpl, headers });
           if (probe.visibility === "hidden") {
             return {
               ok: false,

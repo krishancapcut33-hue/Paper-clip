@@ -616,6 +616,45 @@ describe("GitHub external object provider", () => {
     expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
   });
 
+  it("re-verifies public access for a server-environment token instead of reusing a cached verdict", async () => {
+    let repoPrivate = false;
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: repoPrivate });
+      return response({ state: "open", draft: false, merged: false, title: "acme/app PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    // First refresh while the repository is public: the object resolves.
+    const publicResult = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+    expect(publicResult.ok).toBe(true);
+
+    // The repository becomes private inside the probe-cache TTL. The server token
+    // still has access, but this company did not authorize it, so the second object
+    // must not reuse the cached "public" verdict to read private details.
+    repoPrivate = true;
+    const privateResult = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/43", "pull_request"),
+    });
+
+    expect(privateResult).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/43"), expect.anything());
+    expect(JSON.stringify(privateResult)).not.toContain("env-token");
+  });
+
   it("lets a company-scoped token resolve a private repository", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/repos/acme/app")) return response({ private: true });
