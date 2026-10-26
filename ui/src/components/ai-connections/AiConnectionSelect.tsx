@@ -18,11 +18,11 @@ import { aiConnectionDisplayLabel, aiConnectionProblem, personalAiDefault } from
 import type { AiConnectionPickerProps } from "./AiConnectionPicker";
 import type { AiConnectionSummary } from "./model";
 
-function ConnectionLabel({ connection, label }: { connection: AiConnectionSummary; label?: string }) {
+function ConnectionLabel({ connection, label, wrap = false }: { connection: AiConnectionSummary; label?: string; wrap?: boolean }) {
   return (
     <span className="flex min-w-0 items-center gap-2">
       <AppLogo name={connection.name} brandKey={aiConnectionCatalogSlug(connection.provider, connection.routing)} size={20} compact />
-      <span className="truncate">{label ?? aiConnectionDisplayLabel(connection)}</span>
+      <span className={wrap ? "min-w-0 break-words whitespace-normal" : "truncate"}>{label ?? aiConnectionDisplayLabel(connection)}</span>
     </span>
   );
 }
@@ -135,7 +135,7 @@ export function AiConnectionSelect({
         <SelectContent>
           {incompatible && selected && (
             <SelectItem value={selected.id} disabled>
-              <ConnectionLabel connection={selected} label={`${aiConnectionDisplayLabel(selected)} · Incompatible`} />
+              <ConnectionLabel connection={selected} label={`${aiConnectionDisplayLabel(selected)} · Incompatible`} wrap />
             </SelectItem>
           )}
           {compatible.map((c) => (
@@ -144,7 +144,7 @@ export function AiConnectionSelect({
               value={c.id}
               disabled={Boolean(aiConnectionProblem(c))}
             >
-              <ConnectionLabel connection={c} label={`${aiConnectionDisplayLabel(c)}${c.status !== "connected" ? " · Reconnect" : ""}`} />
+              <ConnectionLabel connection={c} label={`${aiConnectionDisplayLabel(c)}${c.status !== "connected" ? " · Reconnect" : ""}`} wrap />
             </SelectItem>
           ))}
           {(canUseDefault || value?.mode === "responsible_user") && (

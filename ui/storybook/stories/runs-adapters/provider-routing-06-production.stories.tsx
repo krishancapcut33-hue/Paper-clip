@@ -61,6 +61,13 @@ const accounts: AiManagedConnectionSummary[] = [
     isDefault: true,
     status: "connected",
   },
+  ...["engineering@example.test", "design@example.test"].map((accountLabel, index) => ({
+    id: `00000000-0000-4000-8000-00000000000${index + 8}`,
+    grantId: `00000000-0000-4000-8000-00000000001${index}`,
+    companyId, provider: "openai" as const, method: "subscription" as const,
+    name: "OpenAI", ownership: "shared" as const, accountLabel,
+    isDefault: false, status: "connected" as const,
+  })),
 ];
 function Providers({ canManageConnections = true }: { canManageConnections?: boolean }) {
   const [client] = useState(() => {
@@ -261,6 +268,8 @@ export const CompatibleConnectionDropdown: Story = {
     await expect(
       body.getByRole("option", { name: "Company OpenRouter · API key · Company shared" }),
     ).toBeVisible();
+    await expect(body.getByRole("option", { name: "OpenAI · ChatGPT subscription · Company shared · engineering@example.test" })).toBeVisible();
+    await expect(body.getByRole("option", { name: "OpenAI · ChatGPT subscription · Company shared · design@example.test" })).toBeVisible();
     await expect(
       body.queryByRole("option", { name: /My Claude subscription/ }),
     ).not.toBeInTheDocument();
