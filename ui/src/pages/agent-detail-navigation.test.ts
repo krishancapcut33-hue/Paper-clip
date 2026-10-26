@@ -3,6 +3,7 @@ import {
   AGENT_AUDIT_SECTIONS,
   AGENT_DETAIL_NAVIGATION,
   agentDetailHref,
+  agentRouteRedirect,
   parseAgentAuditSection,
   agentScopedAuditHref,
   parseAgentDetailView,
@@ -57,6 +58,49 @@ describe("agent detail navigation", () => {
       expect(parseAgentAuditSection(segment)).toBeNull();
     },
   );
+
+  describe("agentRouteRedirect", () => {
+    const base = {
+      routeAgentRef: "codexcoder", canonicalAgentRef: "codexcoder", runId: undefined, tab: "overview",
+      view: "overview", auditSection: null, search: "",
+    } as const;
+
+    it.each([
+      ["an overview page", { ...base }],
+      ["a runtime page", { ...base, tab: "runtime", view: "runtime" }],
+      ["a canonical Audit section", { ...base, tab: "costs", auditSection: "costs", search: "?x=1" }],
+      ["a run detail on the canonical ref", { ...base, tab: undefined, runId: "run-1", view: "run-detail" }],
+    ] as const)("leaves %s alone", (_name, input) => {
+      expect(agentRouteRedirect(input)).toBeNull();
+    });
+
+    it.each([
+      ["audit", "activity"],
+      ["cost", "costs"],
+      ["budget", "budgets"],
+    ] as const)("rewrites the legacy %s segment to the %s section and keeps the filters", (tab, section) => {
+      expect(agentRouteRedirect({ ...base, tab, auditSection: section, search: "?action=tool_" }))
+        .toBe(`/agents/codexcoder/${section}?action=tool_`);
+    });
+
+    it("rewrites a non-canonical agent ref for an Audit section without leaving the agent page", () => {
+      const target = agentRouteRedirect({ ...base, routeAgentRef: "agent-uuid", tab: "runs", auditSection: "runs", search: "?runStatus=failed" });
+      expect(target).toBe("/agents/codexcoder/runs?runStatus=failed");
+      expect(target).not.toContain("/activity");
+    });
+
+    it("rewrites a non-canonical agent ref for a run detail and a local page", () => {
+      expect(agentRouteRedirect({ ...base, routeAgentRef: "agent-uuid", tab: undefined, runId: "run-1", view: "run-detail" }))
+        .toBe("/agents/codexcoder/runs/run-1");
+      expect(agentRouteRedirect({ ...base, routeAgentRef: "agent-uuid", tab: "runtime", view: "runtime" }))
+        .toBe("/agents/codexcoder/runtime");
+    });
+
+    it("canonicalizes legacy local tabs and a missing tab", () => {
+      expect(agentRouteRedirect({ ...base, tab: "configuration", view: "runtime" })).toBe("/agents/codexcoder/runtime");
+      expect(agentRouteRedirect({ ...base, tab: undefined })).toBe("/agents/codexcoder/overview");
+    });
+  });
 
   it("lists exactly the sections the agent route can host, each with a canonical href", () => {
     expect(AGENT_AUDIT_SECTIONS.map((section) => section.value)).toEqual(["activity", "runs", "costs", "budgets"]);

@@ -148,6 +148,7 @@ import {
   agentDetailHref,
   AGENT_AUDIT_SECTIONS,
   parseAgentAuditSection,
+  agentRouteRedirect,
   agentScopedAuditHref,
   parseAgentDetailView,
   type AgentDetailView,
@@ -977,24 +978,10 @@ export function AgentDetail() {
 
   useEffect(() => {
     if (!agent) return;
-    if (urlRunId) {
-      if (routeAgentRef !== canonicalAgentRef) {
-        navigate(`/agents/${canonicalAgentRef}/runs/${urlRunId}`, { replace: true });
-      }
-      return;
-    }
-    if (auditSection) {
-      if (routeAgentRef !== canonicalAgentRef || urlTab !== auditSection) {
-        // Keep Audit filters (`?action=…`) while canonicalizing the ref and legacy aliases.
-        navigate(`${agentScopedAuditHref(canonicalAgentRef, auditSection)}${window.location.search}`, { replace: true });
-      }
-      return;
-    }
-    const canonicalTab = activeView === "run-detail" ? "overview" : activeView;
-    if (routeAgentRef !== canonicalAgentRef || urlTab !== canonicalTab) {
-      navigate(agentDetailHref(canonicalAgentRef, canonicalTab), { replace: true });
-      return;
-    }
+    const target = agentRouteRedirect({
+      routeAgentRef, canonicalAgentRef, runId: urlRunId, tab: urlTab, view: activeView, auditSection, search: window.location.search,
+    });
+    if (target) navigate(target, { replace: true });
   }, [agent, routeAgentRef, canonicalAgentRef, urlRunId, urlTab, activeView, auditSection, navigate]);
 
   useEffect(() => {

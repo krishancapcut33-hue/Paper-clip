@@ -106,13 +106,13 @@ describe("AuditRuns", () => {
     vi.clearAllMocks();
   });
 
-  async function render(routineId?: string) {
+  async function render(routineId?: string, embed: { lockedAgentId?: string; hideHeader?: boolean } = {}) {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);
     flushSync(() => {
       root.render(
         <QueryClientProvider client={queryClient}>
-          <AuditRuns companyId="company-1" routineId={routineId} />
+          <AuditRuns companyId="company-1" routineId={routineId} {...embed} />
         </QueryClientProvider>,
       );
     });
@@ -139,6 +139,54 @@ describe("AuditRuns", () => {
 
     expect(listRunsMock).toHaveBeenCalledWith("company-1", "agent-1", 200, { summary: true });
     expect(container.textContent).toContain("Clear filters");
+  });
+
+  describe("embedded on an agent page", () => {
+    const filterLabels = () => Array.from(container.querySelectorAll("label > span")).map((label) => label.textContent);
+
+    it("requests only the locked agent's runs, even when the URL names another agent", async () => {
+      currentSearch = "agentId=agent-2";
+      await render(undefined, { lockedAgentId: "agent-1" });
+
+      expect(listRunsMock).toHaveBeenCalledWith("company-1", "agent-1", 200, { summary: true });
+      expect(listRunsMock).not.toHaveBeenCalledWith("company-1", "agent-2", expect.anything(), expect.anything());
+    });
+
+    it("hides the agent filter and keeps the status filter", async () => {
+      await render(undefined, { lockedAgentId: "agent-1" });
+      expect(filterLabels()).toEqual(["Status"]);
+
+      flushSync(() => root.unmount());
+      await render();
+      expect(filterLabels()).toEqual(["Agent", "Status"]);
+    });
+
+    it("offers Clear filters only for a filter the user can change", async () => {
+      await render(undefined, { lockedAgentId: "agent-1" });
+      expect(container.textContent).not.toContain("Clear filters");
+
+      flushSync(() => root.unmount());
+      currentSearch = "runStatus=succeeded";
+      await render(undefined, { lockedAgentId: "agent-1" });
+      expect(container.textContent).toContain("Clear filters");
+    });
+
+    it("calls an empty locked list 'No runs yet.', not a filter mismatch", async () => {
+      listRunsMock.mockResolvedValue([]);
+      await render(undefined, { lockedAgentId: "agent-1" });
+      expect(container.textContent).toContain("No runs yet.");
+      expect(container.textContent).not.toContain("No runs match these filters.");
+    });
+
+    it("hides the section header only when asked", async () => {
+      await render(undefined, { lockedAgentId: "agent-1", hideHeader: true });
+      expect(container.textContent).not.toContain("Recent agent executions across the organization");
+      expect(container.querySelector("h2")).toBeNull();
+
+      flushSync(() => root.unmount());
+      await render(undefined, { lockedAgentId: "agent-1" });
+      expect(container.textContent).toContain("Recent agent executions across the organization");
+    });
   });
 
   it("loads routine runs directly when the Audit scope is a routine", async () => {
