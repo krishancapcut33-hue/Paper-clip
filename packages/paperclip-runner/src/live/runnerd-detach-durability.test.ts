@@ -4,9 +4,35 @@ import { tmpdir } from "node:os";
 import { join, resolve } from "node:path";
 import { expect, it, vi } from "vitest";
 import { DurablePrpControlPlane } from "../control-plane/durable-prp-control-plane.js";
-import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding } from "./runnerd-codex-transport.js";
+import { createCapabilityRunnerdCodexTransport, defaultCapabilityRunnerdBinary, readRunnerdArtifactBinding, runnerdRecoveryInternals } from "./runnerd-codex-transport.js";
 
-it.each(["drain", "timeout"] as const)("joins an output flush before restart detach permits a successor writer (%s)", async mode => {
+it.each(["resolved", "rejected"] as const)("keeps the checkpoint behind controller retirement (%s)", async outcome => {
+  const steps: string[] = [];
+  let release!: () => void;
+  let reject!: (error: Error) => void;
+  const barrier = new Promise<void>((resolveDrain, rejectDrain) => { release = resolveDrain; reject = rejectDrain; });
+  const operation = runnerdRecoveryInternals.releaseRunnerProcessOwnership({
+    runnerSettled: true,
+    release: () => { steps.push("route"); },
+    retireController: async () => { steps.push("drain"); await barrier; },
+    checkpoint: () => { steps.push("checkpoint"); },
+    forceKill: () => { steps.push("containment"); },
+  });
+  await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+  expect(steps).toEqual(["route", "drain"]);
+  if (outcome === "rejected") {
+    const failed = expect(operation).rejects.toThrow("journal unavailable");
+    reject(new Error("journal unavailable"));
+    await failed;
+    expect(steps).toEqual(["route", "drain", "containment"]);
+  } else {
+    release();
+    await operation;
+    expect(steps).toEqual(["route", "drain", "checkpoint", "containment"]);
+  }
+});
+
+it.each(["drain", "timeout", "external_close"] as const)("joins an output flush before controller retirement permits a successor writer (%s)", async mode => {
   const root = await fs.mkdtemp(join(tmpdir(), "runnerd-detach-write-"));
   await fs.mkdir(join(root, "diagnostics"), { mode: 0o700 });
   const binary = defaultCapabilityRunnerdBinary();
@@ -31,12 +57,24 @@ it.each(["drain", "timeout"] as const)("joins an output flush before restart det
   });
   let child: ChildProcess | undefined;
   let exit: Promise<void> | undefined;
+  const closeSteps: string[] = [];
+  let stopSpy: ReturnType<typeof vi.spyOn> | undefined;
   const bundle = createCapabilityRunnerdCodexTransport({
     runnerBinary: binary,
     codexCommand: resolve(import.meta.dirname, "../../runner/target/debug/fake-codex-app-server"),
     codexArgs: ["--state-file", join(root, "provider-state.json"), "--split-event-burst", "--split-event-prefix-count", "1"],
     stateDirectory: root,
     closeGraceMs: mode === "timeout" ? 200 : 1_500,
+    ...(mode === "external_close" ? { controlPlaneRegistration: async (authority: DurablePrpControlPlane) => {
+      await authority.start();
+      const stop = authority.stop.bind(authority);
+      stopSpy = vi.spyOn(authority, "stop").mockImplementation(async () => {
+        closeSteps.push("stop");
+        release();
+        await stop();
+      });
+      return { connectUrl: authority.connectUrl, release: () => { closeSteps.push("release"); } };
+    } } : {}),
     runnerProcessLauncher: spec => {
       child = spawn(spec.command, [...spec.args], { cwd: spec.cwd, env: spec.environment, stdio: ["ignore", "pipe", "pipe"] });
       const owned = child;
@@ -59,6 +97,14 @@ it.each(["drain", "timeout"] as const)("joins an output flush before restart det
     }] });
     await bundle.transport.request("turn/start", { input: [{ type: "text", text: "Exercise a held output flush." }] });
     await vi.waitFor(() => expect(staged).toBe(true), { timeout: 5_000 });
+    if (mode === "external_close") {
+      await bundle.transport.close().catch(error => {
+        expect(error.message).toMatch(/journal drain timed out|did not durably suspend/);
+      });
+      expect(closeSteps.indexOf("release")).toBeGreaterThanOrEqual(0);
+      expect(closeSteps.indexOf("release")).toBeLessThan(closeSteps.indexOf("stop"));
+      return;
+    }
     let settled = false;
     detached = bundle.detachControllerForRestart().then(() => { settled = true; });
     await vi.waitFor(() => expect(core.activeRunnerConnectionCount()).toBe(0));
@@ -97,6 +143,7 @@ it.each(["drain", "timeout"] as const)("joins an output flush before restart det
     child?.kill("SIGKILL");
     await exit;
     await core?.drainPendingConnectionProcessing();
+    stopSpy?.mockRestore();
     await fs.rm(root, { recursive: true, force: true });
   }
 }, 15_000);

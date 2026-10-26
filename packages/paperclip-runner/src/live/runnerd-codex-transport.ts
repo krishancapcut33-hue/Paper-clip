@@ -726,6 +726,7 @@ async function releaseRunnerProcessOwnership(input: {
     ((settlement: "settled" | "unsettled") => Promise<void> | void) | null;
   forceKill: () => Promise<void> | void;
   release: (() => Promise<void> | void) | null;
+  retireController?: () => Promise<void>;
 }): Promise<void> {
   let releaseFailure: unknown;
   try {
@@ -735,6 +736,9 @@ async function releaseRunnerProcessOwnership(input: {
   }
   let checkpointFailure: unknown;
   try {
+    // External ingress must stop reconnecting before admitted journal writes
+    // can be joined. A failed retirement cannot authorize a new checkpoint.
+    await input.retireController?.();
     if (input.checkpoint !== null) {
       // Release only the authenticated control route first. In provider-ingress
       // mode this stops its reconnect loop; it does not release the sandbox
@@ -4715,7 +4719,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     // provider state. Quiesce the authenticated route, then probe its
     // independently verified durable state before releasing the process owner;
     // an incomplete or identity-conflicting state remains fail-closed.
-    await this.#stopAndDrainAuthority(closeDeadline);
     const finalProviderState = this.#providerDrainState();
     const runnerSettled =
       preparationConfirmed && runnerSuspended &&
@@ -4749,6 +4752,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           this.#evidence.runnerSignal = result.signal as NodeJS.Signals | null;
         },
         release: this.#controlPlaneRelease,
+        retireController: () => this.#stopAndDrainAuthority(closeDeadline),
       });
     } finally {
       await this.#core?.stop();

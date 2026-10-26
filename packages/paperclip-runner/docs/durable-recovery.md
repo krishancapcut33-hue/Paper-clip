@@ -186,7 +186,9 @@ Lifecycle, control, authentication, and semantic tool events retain synchronous
 persistence before transport readers can observe their state. Semantic tool
 admission and dispatch cannot yield to a replacement connection between those operations.
 Controller replacement must still stop ingress and drain admitted processing
-before a successor reuses the journal. Snapshots use compact JSON; existing
+before a successor reuses the journal. External control routes stop their
+reconnect loop before the controller joins admitted work. An incomplete drain
+cannot certify a reusable checkpoint. Snapshots use compact JSON; existing
 indented snapshots remain readable.
 
 For the lost-ACK fault, the mock commits an event, drops the ACK and socket, and
