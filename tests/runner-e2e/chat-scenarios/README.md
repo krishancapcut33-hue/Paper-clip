@@ -154,6 +154,10 @@ with the Sub-features keys in `maps/feature-map/*.md`. Check both missing and
 unknown IDs. The schema alone cannot validate references or uniqueness across
 files. `defaults.yaml` is shared context and is not an area-schema document.
 
+`chat-scenario-catalog.test.ts` performs these structural checks in
+`pnpm test:e2e:runner:unit`, including the 35 areas, 244 scenario IDs and 191 mapped
+capabilities. Update the inventory counts intentionally when the catalog grows.
+
 After editing map links, also run `node scripts/check-maps.mjs`. That existing
 check validates the maps, not this YAML catalog and not live chat behavior. Keep
 structural validation and any future execution evidence separate. Do not label a

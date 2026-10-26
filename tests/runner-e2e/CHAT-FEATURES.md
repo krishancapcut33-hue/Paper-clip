@@ -46,7 +46,13 @@ the rest of the YAML inventory.
 
 Creation expects one accounted native work run; delegation expects three (CEO
 handoff, Morgan work, CEO completion response). Runs have a 120-second timeout
-and attempts a seven-minute deadline. Automatic retries are disabled. Company
+and attempts a seven-minute deadline. The visible task and completion reply must
+settle within five minutes after the human request, including a five-second stable
+observation. This is an independent journey acceptance bound: three runs may not
+each consume their maximum timeout and still pass. The outer attempt also covers
+fixture setup, reload and link checks, and evidence collection. A failed provider
+run rejects immediately; the historical missing turn-start event was not a
+five-minute poll timeout. Automatic retries are disabled. Company
 and agent budgets are 500 cents each, CEO daily work runs are capped at three,
 Morgan at one, and periodic heartbeats are disabled. Initial production hello
 probes fall outside heartbeat usage and budget accounting; detailed setup tokens
