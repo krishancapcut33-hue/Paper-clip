@@ -985,7 +985,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     // Include every receipt that fed this run, including a deferred owner's
     // coalesced children. A mutable latest-comment hint cannot drop a sibling.
     const admittedBatch =
-      await tx.execute(sql`select source.id, source.payload->>'commentId' as comment_id
+      pendingSources ? [] : await tx.execute(sql`select source.id, source.payload->>'commentId' as comment_id
       from agent_wakeup_requests receipt join chat_actions source on source.id = receipt.id
       where receipt.company_id = ${input.companyId}::uuid and receipt.agent_id = ${input.agentId}::uuid
         and (receipt.run_id = ${failedRun.id}::uuid or receipt.id = ${failedRun.wakeupRequestId}::uuid

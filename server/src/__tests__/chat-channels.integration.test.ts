@@ -60934,7 +60934,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it.each(["changed_bot", "disabled_repository", "retargeted_repository", "revoked_sender", "paused_endpoint",
-    "edited_source", "deleted_source", "reassigned_task", "second_reconnect", "later_message_wrong_bot", "later_message_deleted"] as const)(
+    "edited_source", "deleted_source", "reassigned_task", "second_reconnect", "later_message_wrong_bot", "later_message_deleted", "later_message_revoked_policy"] as const)(
     "keeps current GitHub task Retry authority gated: %s", async gate => {
       const f = await currentGitHubTaskRetryFixture(true, gate.startsWith("later_message") ? 2 : 1);
       try {
@@ -60942,6 +60942,30 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         await f.service.configure(f.endpoint.id, { action: "reconnect" }, "owner-user");
         const input = { db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
           observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry };
+        if (gate === "later_message_revoked_policy") {
+          const [resource] = await db.select().from(chatEndpointResources).where(eq(chatEndpointResources.id, f.conversation.resourceId!));
+          await db.update(chatEndpointResources).set({ availability: "available",
+            metadata: { ...resource.metadata, providerRepositoryId: "418" },
+          }).where(eq(chatEndpointResources.id, resource.id));
+          await db.insert(chatGitHubConfigurations).values({ companyId, endpointId: f.endpoint.id,
+            updatedByUserId: "owner-user", configuration: { version: 1, toolsEnabled: true, responsibleUserId: "owner-user",
+              memberAccess: "all_linked", people: [], repositories: {},
+              defaults: { ...defaultGitHubReviewPolicy(), invocation: "linked_authors", events: ["opened", "synchronize"] },
+            } });
+          const sources = await db.select().from(chatActions).where(and(eq(chatActions.conversationId, f.conversation.id),
+            eq(chatActions.kind, "inbound_wakeup"), sql`${chatActions.id} <> ${f.action.id}::uuid`))
+            .orderBy(asc(chatActions.createdAt), asc(chatActions.id));
+          for (const [index, source] of sources.entries()) {
+            const context = { event: index === 0 ? "opened" : "synchronize", deliveryId: source.deliveryId,
+              repositoryId: "418", repository: resource.providerResourceId,
+              pullNumber: 7, title: "Saved review request", body: "", baseSha: "a".repeat(40), headSha: "b".repeat(40),
+              baseBranch: "master", author: { id: "42", login: "octocat", isBot: false },
+              sender: { id: "42", login: "octocat" }, draft: false, labels: [] };
+            await db.update(chatDeliveries).set({
+              normalizedEvent: sql`${chatDeliveries.normalizedEvent} || ${JSON.stringify({ githubAutomatic: { context } })}::jsonb`,
+            }).where(eq(chatDeliveries.id, source.deliveryId!));
+          }
+        }
         const accepted = await requestTaskRetry(input);
         if (gate.startsWith("later_message")) {
           const [later] = await db.select().from(chatActions).where(and(eq(chatActions.conversationId, f.conversation.id),
@@ -60949,7 +60973,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           if (gate === "later_message_wrong_bot") await db.update(chatDeliveries).set({
             normalizedEvent: sql`jsonb_set(${chatDeliveries.normalizedEvent}, '{githubAuthority,botExternalId}', ${JSON.stringify(randomUUID())}::jsonb)`,
           }).where(eq(chatDeliveries.id, later.deliveryId!));
-          else await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, String(later.payload.commentId)));
+          else if (gate === "later_message_deleted") await db.update(issueComments).set({ deletedAt: new Date() })
+            .where(eq(issueComments.id, String(later.payload.commentId)));
+          else await db.update(chatGitHubConfigurations).set({ revision: sql`${chatGitHubConfigurations.revision} + 1`,
+            configuration: sql`jsonb_set(${chatGitHubConfigurations.configuration}, '{defaults,events}', '["opened"]'::jsonb)`,
+          }).where(eq(chatGitHubConfigurations.endpointId, f.endpoint.id));
         }
         if (gate === "changed_bot") await db.update(chatEndpoints).set({ botExternalId: randomUUID() })
           .where(eq(chatEndpoints.id, f.endpoint.id));
