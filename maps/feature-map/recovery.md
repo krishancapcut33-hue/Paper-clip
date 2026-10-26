@@ -247,7 +247,8 @@ uses the real Retry producer and a quiet delivery coordinator. It checks that a
 committed request starts one physical source preservation, duplicate Retry keeps
 the active owner's receipt valid, and startup reconstructs a resolved files-only
 obligation without provider replay. The [execution-control lifecycle suite](../../server/src/__tests__/execution-control-work.test.ts)
-checks independent finalization, stored deadlines, and quiet retained history.
+checks independent finalization, stored deadlines, and a bounded pass through
+completed obligations followed by quiet paused input.
 The physical export regression holds one export while another completes, then
 verifies a third Retry can use the free slot and shutdown joins the held work.
 These local checks do not prove recovery of a deployed allocation.

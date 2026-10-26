@@ -346,7 +346,7 @@ export function retainedWorkspaceCandidates(db: Db, cursor?: string, unfinishedO
  * still owes cleanup even without saved input or after task reconciliation. */
 export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRuntimeService,
   onRecovered: (run: typeof heartbeatRuns.$inferSelect) => Promise<void>, obligationsOnly = false,
-  onFinished?: (unfinished: boolean) => void) {
+  onFinished?: (continueSweep: boolean) => void, passiveSweep?: { cursor?: string }) {
   await adoptHistoricalWorkspaceRecoveries(db);
   let pending = workInFlight.get(db);
   if (!pending) { pending = new Set(); workInFlight.set(db, pending); }
@@ -354,12 +354,15 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
   let rows = await retainedWorkspaceCandidates(db, unfinishedCursors.get(db), true);
   if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, true);
   const unfinished = rows.length > 0;
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, cursors.get(db), false, obligationsOnly);
-  if (!rows.length) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly);
+  if (!rows.length) rows = await retainedWorkspaceCandidates(db, passiveSweep ? passiveSweep.cursor : cursors.get(db), false, obligationsOnly);
+  if (!rows.length && !passiveSweep) rows = await retainedWorkspaceCandidates(db, undefined, false, obligationsOnly);
   const work: Promise<void>[] = [];
+  let hasUnvisited = false;
   for (const { action, run } of rows) {
-    if (pending.size >= 2) break;
-    (unfinished ? unfinishedCursors : cursors).set(db, action.id);
+    if (pending.size >= 2) { hasUnvisited = true; break; }
+    if (unfinished) unfinishedCursors.set(db, action.id);
+    else if (passiveSweep) passiveSweep.cursor = action.id;
+    else cursors.set(db, action.id);
     if (pending.has(run.id)) continue;
     pending.add(run.id);
     const finish = beginIdleTrackedWork();
@@ -383,7 +386,7 @@ export async function reconcileRetainedWorkspaces(db: Db, runtime: EnvironmentRu
         }
       }
     } catch { logger.warn({ runId: run.id }, "Retained workspace remains pending"); }
-    finally { pending.delete(run.id); finish(); onFinished?.(physical); } })());
+    finally { pending.delete(run.id); finish(); onFinished?.(physical || hasUnvisited); } })());
   }
   return work;
 }

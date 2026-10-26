@@ -140,12 +140,9 @@ describe("automatic retained workspace recovery", () => {
   it("wakes physical preservation from HTTP Retry before passive history without replaying the provider", async () => {
     for (let index = 0; index < 5; index++) {
       const old = await seed();
-      const historical = await action(old.actionId);
+      await recoverRetainedWorkspace(old.input);
       await db.update(issueRecoveryActions).set({
         id: `00000000-000${index}-4000-8000-${randomUUID().slice(-12)}`,
-        evidence: { ...historical.evidence, systemRecovery: { ...createSystemRecovery(old.runId), state: "exhausted" },
-          workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: old.runId,
-            status: "blocked", stage: "verifying_stop", attempt: 0, attemptLimit: 6, requestIds: [] } },
       }).where(eq(issueRecoveryActions.id, old.actionId));
     }
     const f = await seed();
@@ -157,8 +154,9 @@ describe("automatic retained workspace recovery", () => {
       evidence: { ...before.evidence, systemRecovery: exhausted } })
       .where(eq(issueRecoveryActions.id, f.actionId));
     const errors = vi.fn();
-    expect((await retainedWorkspaceCandidates(db)).map(row => row.action.id)).toHaveLength(5);
-    expect((await retainedWorkspaceCandidates(db)).every(row => row.action.id.startsWith("00000000"))).toBe(true);
+    const competingCleanup = await retainedWorkspaceCandidates(db, undefined, false, true);
+    expect(competingCleanup).toHaveLength(5);
+    expect(competingCleanup.every(row => row.action.id.startsWith("00000000"))).toBe(true);
     const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, canReconcile: () => true, onError: errors });
     const recovered = vi.fn(async () => {});
     const worker = registerWorkspaceRecoveryWork(db, coordinator, f.environmentRuntime, recovered);

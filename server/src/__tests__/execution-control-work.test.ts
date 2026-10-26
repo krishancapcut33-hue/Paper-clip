@@ -126,6 +126,7 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     if (external) await applyPendingMigrations(external);
     else temporary = await startEmbeddedPostgresTestDatabase("execution-sleep-");
     db = createDb(external ?? temporary!.connectionString, { maxConnections: 6 });
+    await Promise.all(Array.from({ length: 6 }, () => db.execute(sql`select pg_sleep(0.05)`)));
   }, 90000);
   afterAll(async () => { await db?.$client.end({ timeout: 1 }); await temporary?.cleanup(); });
   beforeEach(async () => {
@@ -151,9 +152,28 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     await settle(); expect(c.nextWakeAt()).toBeNull(); const before = calls;
     await vi.advanceTimersByTimeAsync(90_000); expect(calls).toBe(before);
   }
-  async function runRow(status = "running") {
-    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status, runtimeMode: "legacy", contextSnapshot: { issueId } }).returning();
+  async function runRow(status = "running", sourceIssueId = issueId) {
+    const [run] = await db.insert(heartbeatRuns).values({ companyId, agentId, status, runtimeMode: "legacy", contextSnapshot: { issueId: sourceIssueId } }).returning();
     return run!;
+  }
+  async function pausedRecoveredSource(actionId = randomUUID()) {
+    const sourceIssueId = randomUUID();
+    await db.insert(issues).values({ id: sourceIssueId, companyId, title: "Recovered execution",
+      status: "in_progress", assigneeAgentId: agentId });
+    const run = await runRow("failed", sourceIssueId);
+    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { beforeNativeSelection: true } } })
+      .where(eq(heartbeatRuns.id, run.id));
+    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
+    await db.insert(issueRecoveryActions).values({ id: actionId, companyId, sourceIssueId,
+      kind: "active_run_watchdog", ownerType: "system", cause: "native_workspace_sync_out_retry_exhausted",
+      fingerprint: run.id, nextAction: "Saved work recovered", evidence: { runId: run.id,
+        systemRecovery: { ...createSystemRecovery(run.id), state: "complete" },
+        workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: run.id,
+          status: "recovered", stage: "saving_receipts", attempt: 1, attemptLimit: 6, requestIds: [] } } });
+    const retry = await requestTaskRetry({ db, companyId, issueId: sourceIssueId, actorId: "board",
+      observedRunId: run.id, idempotencyKey: randomUUID() });
+    expect(retry.accepted).toBe(true);
+    return { run, retry };
   }
   it("stops all pending/deadline scans with empty queues and completed history", async () => {
     await runRow("succeeded");
@@ -207,34 +227,63 @@ describe.skipIf(!support.supported)("execution-control durable work", () => {
     try { await worker.ready; await quiet(c); } finally { await worker.stop(); }
   });
 
-  it("keeps a paused Retry saved and becomes quiet after file recovery is complete", async () => {
-    const run = await runRow("failed");
-    await db.update(heartbeatRuns).set({ resultJson: { startupCancellation: { beforeNativeSelection: true } } })
-      .where(eq(heartbeatRuns.id, run.id));
-    await db.update(agents).set({ status: "paused" }).where(eq(agents.id, agentId));
-    await db.insert(issueRecoveryActions).values({ companyId, sourceIssueId: issueId,
-      kind: "active_run_watchdog", ownerType: "system", cause: "native_workspace_sync_out_retry_exhausted",
-      fingerprint: run.id, nextAction: "Saved work recovered", evidence: { runId: run.id,
-        systemRecovery: { ...createSystemRecovery(run.id), state: "complete" },
-        workspaceRecovery: { schema: "paperclip.workspace-recovery.v1", runId: run.id,
-          status: "recovered", stage: "saving_receipts", attempt: 1, attemptLimit: 6, requestIds: [] } } });
-    const retry = await requestTaskRetry({ db, companyId, issueId, actorId: "board",
-      observedRunId: run.id, idempotencyKey: randomUUID() });
-    expect(retry.accepted).toBe(true);
+  it.each([1, 3, 7])("visits all %i paused Retry sources once and becomes quiet after file recovery", async count => {
+    const sources = [];
+    for (let index = 0; index < count; index++) sources.push(await pausedRecoveredSource());
     const resume = vi.fn(heartbeatService(observed).resumeRemoteStopComments);
     const c = coordinator(db, undefined, error => { errors.push(error); });
     const worker = registerWorkspaceRecoveryWork(observed, c,
       {} as Parameters<typeof registerWorkspaceRecoveryWork>[2], resume);
     try {
       await worker.ready;
+      for (let pass = 0; pass < 10 && resume.mock.calls.length < count; pass++) await settle();
+      expect(resume).toHaveBeenCalledTimes(count);
       await quiet(c);
-      expect(resume).toHaveBeenCalledTimes(1);
-      await expect(resume.mock.results[0]!.value).rejects.toThrow("Agent is not invokable in its current state");
-      const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
-      expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null });
-      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(1);
+      for (const result of resume.mock.results) {
+        await expect(result.value).rejects.toThrow("Agent is not invokable in its current state");
+      }
+      for (const { retry } of sources) {
+        const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
+        expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      }
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(count);
       expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("paused");
     } finally { await c.stop(); await worker.stop(); }
+  });
+
+  it("visits a newly committed earlier Retry during a busy recovered-source pass, then becomes quiet", async () => {
+    const sources = [];
+    for (let index = 0; index < 3; index++) {
+      sources.push(await pausedRecoveredSource(`ffffffff-000${index}-4000-8000-${randomUUID().slice(-12)}`));
+    }
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const heartbeat = heartbeatService(observed);
+    const resume = vi.fn(async (run: Parameters<typeof heartbeat.resumeRemoteStopComments>[0]) => {
+      await gate;
+      return heartbeat.resumeRemoteStopComments(run);
+    });
+    const c = coordinator(db, undefined, error => { errors.push(error); });
+    const worker = registerWorkspaceRecoveryWork(observed, c,
+      {} as Parameters<typeof registerWorkspaceRecoveryWork>[2], resume);
+    try {
+      await worker.ready;
+      await vi.waitFor(() => expect(resume).toHaveBeenCalledTimes(2));
+      const earlier = await pausedRecoveredSource(`00000000-0000-4000-8000-${randomUUID().slice(-12)}`);
+      sources.push(earlier);
+      release();
+      for (let pass = 0; pass < 10 && sources.some(({ run }) =>
+        !resume.mock.calls.some(([visited]) => visited.id === run.id)); pass++) await settle();
+      expect(resume.mock.calls.map(([run]) => run.id)).toContain(earlier.run.id);
+      await quiet(c);
+      for (const { run, retry } of sources) {
+        expect(resume.mock.calls.map(([visited]) => visited.id)).toContain(run.id);
+        const [saved] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, retry.requestId!));
+        expect(saved).toMatchObject({ status: "deferred_issue_execution", runId: null });
+      }
+      expect(await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId))).toHaveLength(4);
+      expect((await db.select().from(agents).where(eq(agents.id, agentId)))[0]?.status).toBe("paused");
+    } finally { release(); await c.stop(); await worker.stop(); }
   });
 
   it("bounds real producer bursts with another company's completed history present", async () => {

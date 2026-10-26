@@ -1388,8 +1388,11 @@ attempt budget applies across restarts. An idempotent board request through
 attempt after a transient failure. It requires task mutation access, accepts no
 infrastructure certification, and grants no agent or provider execution authority.
 Each completed export frees its own slot and wakes the next scan. A slow export
-does not hold a free slot. Shutdown joins the active exports before closing the
-database. Repeated Retry during physical preservation binds the canonical intent
+does not hold a free slot. Completed cleanup and saved-input obligations receive
+one bounded pass through unvisited sources. The pass stops at its tail so paused
+input does not keep the worker active; a committed change starts a fresh pass.
+Shutdown joins this worker's exports before closing the database. Repeated Retry
+during physical preservation binds the canonical intent
 without changing the attempt's generation or revision. Progress writes preserve
 that newer intent so its fenced completion can still commit. Missing stop or descriptor proof keeps
 the source allocated and exposes the specific service blocker.

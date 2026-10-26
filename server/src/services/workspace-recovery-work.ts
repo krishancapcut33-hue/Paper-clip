@@ -12,14 +12,15 @@ export function registerWorkspaceRecoveryWork(db: Db, coordinator: ReturnType<ty
   let stopped = false;
   let scan: Promise<void> | undefined;
   let wakeWhileBusy = false;
+  let passiveSweep: { cursor?: string } = {};
   const schedule = executionControlSchedule(db);
   const worker = registerExecutionControlWork(coordinator, [{
     queue: DELIVERY_QUEUES.workspaceRecovery,
-    onSettled: () => { if (pending.size >= 2) wakeWhileBusy = true; },
+    onSettled: () => { passiveSweep = {}; if (pending.size >= 2) wakeWhileBusy = true; },
     run: () => scan = (async () => {
-      const work = await reconcileRetainedWorkspaces(db, runtime, onRecovered, true, unfinished => {
-        if (!stopped && (unfinished || wakeWhileBusy)) { wakeWhileBusy = false; worker.wake(); }
-      });
+      const work = await reconcileRetainedWorkspaces(db, runtime, onRecovered, true, continueSweep => {
+        if (!stopped && (continueSweep || wakeWhileBusy)) { wakeWhileBusy = false; worker.wake(); }
+      }, passiveSweep);
       for (const job of work ?? []) {
         pending.add(job);
         const settled = () => { pending.delete(job); };
