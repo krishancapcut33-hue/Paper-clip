@@ -12,7 +12,6 @@ export interface ChatScenario {
   id: string; capabilities: string[]; context: string; query: string; expected_outcome: string;
 }
 
-/** Load authored requests, never the evaluator's context or outcome as model instructions. */
 export function readChatFeatureScenarios(text = readFileSync(new URL("./chat-scenarios/tasks.yaml", import.meta.url), "utf8")): ChatScenario[] {
   const document = parseDocument(text, { uniqueKeys: true });
   if (document.errors.length) throw new Error(`Invalid chat scenario YAML: ${document.errors[0]!.message}`);

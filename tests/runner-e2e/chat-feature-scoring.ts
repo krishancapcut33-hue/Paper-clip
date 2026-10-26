@@ -45,7 +45,6 @@ export function announcementMatchesBrief(body: string, marker: string): boolean 
     && sentences.length === 2 && sentences.every(sentence => /[.!?]["'”’]*$/.test(sentence));
 }
 
-/** Grade saved state and attribution independently of the agent's success claim. */
 export function gradeChatFeature(input: ChatFeatureObservation) {
   const checks: Array<{ id: string; passed: boolean; detail: string }> = [];
   const add = (id: string, passed: boolean, detail: string) => checks.push({ id, passed, detail });

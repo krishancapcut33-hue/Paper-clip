@@ -109,8 +109,6 @@ export function isEphemeralCodexRuntimeAuthFile(
   );
 }
 
-/** Upstream Codex records account identity in its private diagnostic database.
- * This is never an exception for bearer tokens, conversation files or artifacts. */
 export function isEphemeralCodexRuntimeIdentityDatabase(paperclipHome: string, file: string) {
   return /^(?:logs|state)_\d+\.sqlite(?:-wal|-shm)?$/.test(path.basename(file)) &&
     isEphemeralCodexRuntimeAuthFile(paperclipHome, path.join(path.dirname(file), "auth.json"));
@@ -125,7 +123,6 @@ function privateCodexAccountIdentity(sources: SecretScanOptions["sources"]): str
   try {
     const accountId = JSON.parse(sources?.CODEX_AUTH_JSON ?? "null")?.tokens?.account_id;
     if (typeof accountId !== "string" || accountId.length < 8) return;
-    // A value also used as a credential must still be rejected, even in a log.
     for (const [name, raw] of Object.entries(sources ?? {})) {
       if (secretEntries(raw).some(entry => entry.value === accountId &&
         (name !== "CODEX_AUTH_JSON" || entry.fieldPath !== ".tokens.account_id"))) return;
@@ -274,7 +271,6 @@ export async function findSecretLeakInDirectory(
     sources?: SecretScanOptions["sources"];
     ignoreFile?: (file: string) => boolean;
     allowDisappearedFile?: (file: string) => boolean;
-    /** Only for the ephemeral home scan, never evidence/workspace publication. */
     privateCodexRuntimeIdentityRoot?: string;
   } = {},
 ): Promise<({ file: string } & SecretLeakMatch) | null> {
@@ -318,13 +314,11 @@ export async function findSecretLeakInDirectory(
               let scanned = line;
               try {
                 const record = JSON.parse(line);
-                // This upstream session-ownership field is not model-visible text.
-                // Every other field, including instructions and messages, stays scanned.
                 if (record?.type === "session_meta" && record.payload?.creator_account_id === privateIdentity) {
                   delete record.payload.creator_account_id;
                   scanned = JSON.stringify(record);
                 }
-              } catch { /* Malformed records still receive the complete secret scan. */ }
+              } catch {}
               const match = matchSecret(scanned, index, options);
               if (match) return { file, ...match };
             }
