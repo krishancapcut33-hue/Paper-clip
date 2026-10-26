@@ -74,7 +74,7 @@ describe("server-owned Codex runner selection", () => {
     const input = { adapterType: "codex_local", target, adapterConfig: { model: "gpt-5.6-sol", modelReasoningEffort: "high", env: { OPENAI_API_KEY: { type: "secret_ref", secretId: "secret" } }, cwd: "/workspace", instructionsFilePath: "/workspace/AGENTS.md", workspaceStrategy: { type: "git_worktree" }, timeoutSec: 60, search: false, fastMode: false, dangerouslyBypassApprovalsAndSandbox: true } };
     const resolved = resolveNewAgentRunner(input);
     expect(resolved).toMatchObject({ adapterType: "paperclip_runner", adapterConfig: { provider: "codex", codexPermissionMode: "never", modelReasoningEffort: "high", env: input.adapterConfig.env, workspaceStrategy: input.adapterConfig.workspaceStrategy, timeoutSec: 60 } });
-    expect(resolved.adapterConfig).not.toHaveProperty("search");
+    expect(resolved.adapterConfig).toHaveProperty("search", false);
     expect(resolveNewAgentRunner(resolved)).toEqual(resolved);
     expect(input.adapterConfig).toHaveProperty("search", false);
   });
@@ -616,7 +616,17 @@ describe("Claude runner defaults", () => {
     expect(resolveNewAgentRunner({ ...saved, runner: "legacy" })).toEqual({ adapterType: "claude_local", adapterConfig: { model: "custom", dangerouslySkipPermissions: true } });
     expect(() => resolveNewAgentRunner({ ...saved, runner: "legacy", adapterConfig: { ...saved.adapterConfig, acpxPermissionMode: "deny-all" } })).toThrow("cannot honor");
   });
-  it.each(["chrome", "agentCommand", "maxTurnsPerRun", "networkScope"])("rejects unsupported %s without fallback", key => {
+  it.each(["maxTurnsPerRun", "chrome", "warmHandleIdleMs", "acpWarmHandleIdleMs"])("warns and ignores obsolete Claude %s on conversion and native saves", field => {
+    for (const adapterType of ["claude_local", "paperclip_runner"]) {
+      const onConfigurationWarnings = vi.fn();
+      const result = resolveNewAgentRunner({ adapterType, target: mac, runner: "paperclip",
+        adapterConfig: { provider: "acpx", acpxAgent: "claude", model: "claude-opus-5-5", [field]: 1000 }, onConfigurationWarnings });
+      expect(result.adapterType).toBe("paperclip_runner");
+      expect(result.adapterConfig).not.toHaveProperty(field);
+      expect(onConfigurationWarnings).toHaveBeenCalledWith([expect.objectContaining({ field, code: "runner_option_ignored" })]);
+    }
+  });
+  it.each(["agentCommand", "networkScope"])("rejects unsupported %s without fallback", key => {
     expect(() => resolveNewAgentRunner({ adapterType: "claude_local", target: mac, adapterConfig: { [key]: "configured" } })).toThrow("Legacy runner");
   });
   it.each(["low", "medium", "high", "xhigh", "max"])("translates Claude effort %s and preserves it on an explicit Legacy switch", effort => {

@@ -38,6 +38,9 @@ without restricting the root span name. Compare workspace preparation with its
 `controller.startup.<phase>`. A recovery pause or deployment drain is not model
 execution time. See the [tracing contract](../../doc/observability.md#controller-preparation-phases).
 These source-level diagnostics do not establish a live response-time budget.
+`task.time_to_first_token` measures accepted ingress through the first committed
+text that the task transcript can show, including thinking and completed
+responses. It includes preparation and startup, and excludes browser latency.
 Inspect `native.controller.<phase>` for backend construction, assigned-tool
 discovery and post-turn cleanup. Compare those intervals with the actual model
 turn; do not count a nested discovery interval twice.
@@ -142,6 +145,16 @@ is released before failure returns. Repeat a warm follow-up and retain its actua
 reply time. The [executor controls](../../server/src/services/native-runtime/native-session-executor.test.ts)
 cover ordering, failure drain and credential projection; they do not qualify a
 live response-time target.
+For native OpenCode with assigned connections, inspect the provider tool surface
+on both local and sandbox execution. It should contain bounded assigned-tool
+search/call schemas. Discover an allowed tool, call its returned alias, revoke
+its grant, and confirm discovery and execution enforce that revocation. Repeat
+in planning/ask mode with a write tool and confirm denial. The controller must
+retain the assigned gateway URL and token. An older direct-catalog OpenCode
+checkpoint must refresh without changing another provider's fingerprint. The
+[assigned-tool](../../server/src/services/native-runtime/assigned-mcp-tools.test.ts)
+and executor controls cover source behavior; live sandbox discovery and a real
+call remain separate acceptance evidence.
 Missing dependencies, failed authentication, invalid models and
 incompatible custom settings must remain actionable errors without silent runner
 switching. Saved unchanged execution can still be tested without applying new
@@ -177,6 +190,17 @@ a separate acceptance requirement.
 Automated: [live run routes](../../server/src/__tests__/agent-live-run-routes.test.ts) and [run event sequencing](../../server/src/__tests__/heartbeat-run-event-sequencing.test.ts) cover run data contracts.
 
 Manual: Start a disposable task, open its running transcript, and follow it to a terminal outcome. Reload and compare task/run IDs, status, output, and cost. Verify a failed run remains distinguishable from a completed run with useful output.
+
+For Legacy OpenCode on a disposable Linux sandbox, run a Bash tool that reads
+`/proc/self/oom_score_adj` and its parent's score. The tool should report `1000`;
+OpenCode should retain its original score. Repeat with an operator `BASH_ENV`
+and confirm that it takes precedence. Repeat with a linked operator plugins
+directory; it must remain unchanged, and the uploaded runtime must contain a
+real plugins directory with the guard and existing plugins. Under controlled memory pressure, record
+the cgroup OOM counters and verify that a killed tool can return an error while
+the agent continues. Local and SSH execution must keep their original shell
+environment. See the [adapter contract](../../docs/adapters/overview.md#opencode-sandbox-memory-pressure).
+These controls do not guarantee that every memory exhaustion preserves the agent.
 
 An explicit runner change starts a configuration revision and invalidates the
 eligible session. Active runs, restart recovery and historical transcript parsing
