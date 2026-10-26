@@ -189,7 +189,7 @@ it("offers Pi account selection before choosing its required model", async () =>
 });
 
 it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a matching saved Pi %s API-key account selectable", async provider => {
-  const saved = account({ provider, method: "api_key", name: "Pi provider account", status: "connected" });
+  const saved = account({ provider, method: "api_key", name: "Pi provider account", accountLabel: "avery@example.test", status: "connected" });
   mocks.list.mockResolvedValue({ currentUserId: "owner", connections: [saved], canManageConnections: true });
   flushSync(() => root.render(<QueryClientProvider client={client}>
     <AiConnectionField companyId="company" agentId="agent" agentName="Pi" adapterType="pi_local" model={`${provider}/provider-model`}
@@ -200,6 +200,7 @@ it.each(["openai", "anthropic", "google", "openrouter"] as const)("keeps a match
   expect(container.textContent).not.toContain("incompatible");
   expect(container.textContent).not.toContain("does not support");
   const trigger = container.querySelector('[role="combobox"][aria-label="Connection"]')!;
+  expect(trigger.getAttribute("title")).toBe("Pi provider account · API key · Personal · avery@example.test");
   flushSync(() => trigger.dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true })));
   await settle();
   const choice = [...document.querySelectorAll<HTMLElement>('[role="option"]')].find(node => node.textContent?.includes("Pi provider account"));

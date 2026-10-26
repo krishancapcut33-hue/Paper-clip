@@ -119,7 +119,7 @@ export function AiConnectionSelect({
         onValueChange={change}
         disabled={readOnly || loading || Boolean(error)}
       >
-        <SelectTrigger id={selectId} aria-label="Connection" className="w-full">
+        <SelectTrigger id={selectId} aria-label="Connection" title={selected ? aiConnectionDisplayLabel(selected) : undefined} className="w-full">
           <SelectValue
             placeholder={
               loading ? "Loading connections…" : "Choose a connection"
