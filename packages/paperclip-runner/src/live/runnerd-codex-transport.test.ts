@@ -2871,6 +2871,33 @@ it.each(["missing", "changed"] as const)("reuses the recorded Codex command when
   }
 });
 
+it("binds the installed pack artifacts before constructing a remote OpenCode launch", async () => {
+  const root = await mkdtemp(join(tmpdir(), "paperclip-installed-pack-"));
+  const digest = `sha256:${"a".repeat(64)}`;
+  const artifacts = { providerNodeCommand: "/opt/provider-pack/node", providerNodeCommandSha256: digest,
+    providerPackAuthorityDigest: digest, opencodeCommand: "/opt/provider-pack/opencode", opencodeCommandSha256: digest,
+    opencodeProxyPath: "/opt/provider-pack/proxy.cjs", opencodeProxySha256: digest };
+  const prepare = vi.fn(async () => artifacts);
+  let attachment: unknown;
+  const registration = vi.fn(async (authority: DurablePrpControlPlane) => {
+    attachment = authority.store.state.commands.find(command => command.type === "run.prepare")?.payload;
+    throw new Error("fixture_stop_before_runner_launch");
+  });
+  const { transport } = createCapabilityRunnerdCodexTransport({ provider: "opencode", stateDirectory: root,
+    runnerFilesystemRoot: "/workspace/runtime", runnerArtifact: { version: "0.0.0", digest },
+    prepareProviderArtifacts: prepare, controlPlaneRegistration: registration });
+  try {
+    await expect(transport.request("thread/start", { cwd: "/workspace", model: "openrouter/model", dynamicTools: [] }))
+      .rejects.toThrow("fixture_stop_before_runner_launch");
+    expect(prepare).toHaveBeenCalledOnce();
+    expect(attachment).toMatchObject({ provider: { command: artifacts.providerNodeCommand, args: [artifacts.opencodeProxyPath] } });
+    expect(prepare.mock.invocationCallOrder[0]).toBeLessThan(registration.mock.invocationCallOrder[0]);
+  } finally {
+    await transport.close();
+    await rm(root, { recursive: true, force: true });
+  }
+});
+
 it("rejects remote OpenCode before spawn when provider-pack paths are absent", async () => {
   const root = await mkdtemp(join(tmpdir(), "paperclip-runner-remote-pack-"));
   const { transport } = createCapabilityRunnerdCodexTransport({

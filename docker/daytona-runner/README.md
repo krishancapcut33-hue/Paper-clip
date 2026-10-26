@@ -94,10 +94,25 @@ editor's **Configure image** flow to produce a Daytona snapshot. Set the
 environment image to that immutable tag or snapshot. Paperclip probes the
 sandbox user's `PATH` for `paperclip-runnerd` and `codex` and checks
 `/opt/paperclip-runner/provider-pack` for OpenCode and ACPX. It uses the pack
-only when its complete manifest matches the controller's build-owned pack;
-otherwise it stages the pack configured by
+when its selected provider interface and platform are compatible. App source
+revisions and unrelated provider pins do not force an update. Startup reads the
+small manifest in the existing runner metadata query. It does not scan the pack,
+run a version command, or transfer files on this path. Otherwise it stages the pack configured by
 `PAPERCLIP_RUNNER_REMOTE_PROVIDER_PACK_PATH`. Remote OpenCode and ACPX never
 fall back to host-local processes.
+
+`src/live/provider-pack-contract.json` in the Runner package declares the
+OpenCode and ACPX interface revisions. Change a revision only for an incompatible
+runner/pack boundary change, and qualify the new pack before publishing it.
+Dependency versions and Git SHAs remain build provenance. ACPX retains its
+selected agent's qualified profile checks.
+
+The image build seals the pack as root-owned and non-writable. Fast admission
+requires protected ancestors and manifest, with no writable path alias. Task-owned
+packs and older packs without an interface declaration keep full content
+verification. An attached session retains the exact pack and daemon identity
+admitted at launch. Publish one new image with the interface declaration to enable
+reuse across later compatible app releases.
 
 Do not promote `paperclip-runner-e2e-20260826-v2` for OpenCode or ACPX. Build a
 new immutable image or snapshot from a clean committed revision and pass that
