@@ -497,8 +497,17 @@ export async function execute(
   }
 
   // ── Build prompt ───────────────────────────────────────────────────────
+  const userEnvForPrompt = config.env as Record<string, unknown> | undefined;
+  const promptConfig: Record<string, unknown> = { ...config };
+  if (!cfgString(promptConfig.paperclipApiUrl) && userEnvForPrompt && typeof userEnvForPrompt === "object") {
+    const configuredPaperclipApiUrl = cfgEnvString(userEnvForPrompt.PAPERCLIP_API_URL);
+    if (configuredPaperclipApiUrl) {
+      promptConfig.paperclipApiUrl = configuredPaperclipApiUrl;
+    }
+  }
+
   const sessionId = persistSession ? prevSessionId : undefined;
-  const prompt = buildPrompt(ctx, config, { resumedSession: Boolean(sessionId) });
+  const prompt = buildPrompt(ctx, promptConfig, { resumedSession: Boolean(sessionId) });
 
   // ── Build command args ─────────────────────────────────────────────────
   // Use -Q (quiet) to get clean output: just response + session_id line
