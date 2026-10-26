@@ -1838,6 +1838,9 @@ command waits. It must not turn a rejected check into a positive exit observatio
 When a process check rejects close, the transport retires its local controller,
 timers and notification queue without signalling the remote Runner or replacing
 its checkpoint. Repeated close retains the same failed ownership result.
+Copilot profile 62 binds this shared transport implementation. Profile 61 remains
+decodable for recovery, but exact launch admission uses the current profile and
+digest. Earlier live qualification results keep their original profile identity.
 
 Healthy native warm turns retain their runner and provider processes. After a
 controller crash, continuation can recover a completed remote session from its
