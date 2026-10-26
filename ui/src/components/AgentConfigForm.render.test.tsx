@@ -719,6 +719,29 @@ describe("AgentConfigForm environment selector", () => {
     expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed Cody" });
   });
 
+  it.each([
+    { harness: "claude_local", label: "Claude", profile: { provider: "acpx", acpxAgent: "claude" } },
+    { harness: "pi_local", label: "Pi", profile: { provider: "acpx", acpxAgent: "pi" } },
+    { harness: "codex_local", label: "Codex", profile: { provider: "codex" } },
+    { harness: "opencode_local", label: "OpenCode", profile: { provider: "opencode" } },
+  ])("uses only Harness to choose $label for new and saved native agents", async ({ harness, label, profile }) => {
+    mockAdaptersApi.list.mockResolvedValue([{ type: harness, supportedRunners: ["paperclip", "legacy"], defaultRunner: "paperclip" }]);
+    const created = await renderCreateForm([], { adapterType: harness, runner: "auto" });
+    roots.push(created.root);
+    expect(created.container.querySelector('[aria-label="ACP agent"]')).toBeNull();
+    if (harness === "pi_local") expect(created.container.querySelector('[aria-label="Pi thinking level"]')).not.toBeNull();
+
+    const edited = await renderForm([], { adapterType: "paperclip_runner", adapterConfig: profile }, { showAdapterTypeField: true });
+    roots.push(edited.root);
+    expect(edited.container.querySelector('[aria-label="Harness"]')?.textContent).toContain(label);
+    expect(edited.container.querySelector('[aria-label="ACP agent"]')).toBeNull();
+    if (harness === "pi_local") expect(edited.container.querySelector('[aria-label="Pi thinking level"]')).not.toBeNull();
+    await act(async () => setInputValue(edited.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed agent"));
+    await flushReact();
+    await clickByText(edited.container, "Save");
+    expect(edited.onSave).toHaveBeenCalledWith({ name: "Renamed agent" });
+  });
+
   it.each(["codex_local", "claude_local"])("upgrades a saved %s in one click with pending edits", async adapterType => {
     mockAdaptersApi.list.mockResolvedValueOnce([{ type: adapterType, supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
     const result = await renderForm([], { adapterType, adapterConfig: { model: "existing-model", effort: "high" } });
