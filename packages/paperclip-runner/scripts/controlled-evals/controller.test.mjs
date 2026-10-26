@@ -17,8 +17,6 @@ import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runn
 
 const childScript = options => `
 import assert from 'node:assert/strict';
-import { execFile } from 'node:child_process';
-import { promisify } from 'node:util';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
@@ -664,8 +662,13 @@ test('hosted workers reject reruns and identity drift before requests, while ret
 
 test('hosted context requires a manifest identity and rejects invalid or later-attempt manifests', async t => {
   const f = await fixture(t);
-  f.environment.GITHUB_ACTIONS = 'true';
-  await assert.rejects(f.run(), /requires a hosted controller identity/);
+  let calls = 0;
+  const transport = async () => { calls++; return success(); };
+  for (const key of ['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA']) {
+    f.environment[key] = key === 'GITHUB_SHA' ? 'c'.repeat(40) : 'true';
+    await assert.rejects(f.run(0, transport), /requires a hosted controller identity/);
+    delete f.environment[key];
+  }
   const hosted = { repository: 'paperclipai/paperclip', runId: '12345', runAttempt: 1, workflowRevision: 'c'.repeat(40) };
   f.manifest.campaignId = 'gha-12345-1';
   for (const change of [{ repository: '' }, { repository: 'paperclip' }, { runId: 12345 }, { runId: '012345' },
@@ -674,6 +677,10 @@ test('hosted context requires a manifest identity and rejects invalid or later-a
     assert.throws(() => validateManifest(f.manifest), /hosted controller identity|controller fields/);
   }
   f.manifest.hosted = hosted;
+  await f.save();
+  await assert.rejects(f.run(0, transport), /current first-attempt worker/);
+  assert.equal(calls, 0);
+  await assert.rejects(readdir(f.manifest.outputDirectory), { code: 'ENOENT' });
   f.manifest.campaignId = 'gha-12345-2';
   assert.throws(() => validateManifest(f.manifest), /hosted controller identity/);
 });

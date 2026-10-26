@@ -239,8 +239,8 @@ The manifest schema is `paperclip.runner-eval.controller/v1`. It contains:
   the controller starts no exporter or OTLP relay.
 
 For GitHub workers, the manifest must also contain `hosted` with `repository`,
-`runId` (a decimal string), `runAttempt: 1`, and `workflowRevision` (the trusted
-orchestration commit). Its `campaignId` must be `gha-<runId>-1`. Before creating
+`runId` (a decimal string), `runAttempt: 1`, and `workflowRevision` (the run's
+`GITHUB_SHA`, including the merge commit for a pull-request run). Its `campaignId` must be `gha-<runId>-1`. Before creating
 an admission record, reading provider credentials, or starting a proxy, both
 `archive.mjs verify` and `run.mjs` compare this identity with the current
 `GITHUB_ACTIONS`, `GITHUB_REPOSITORY`, `GITHUB_RUN_ID`, `GITHUB_RUN_ATTEMPT` and

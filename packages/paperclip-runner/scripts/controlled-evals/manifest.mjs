@@ -97,7 +97,7 @@ export function assertHostedAdmission(manifest, attempt, environment) {
   validateHostedIdentity(manifest);
   const hosted = manifest.hosted;
   if (!hosted) {
-    if (['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT'].some(key => environment[key] !== undefined)) {
+    if (['GITHUB_ACTIONS', 'GITHUB_REPOSITORY', 'GITHUB_RUN_ID', 'GITHUB_RUN_ATTEMPT', 'GITHUB_SHA'].some(key => environment[key] !== undefined)) {
       throw new Error('GitHub execution requires a hosted controller identity');
     }
     return;
