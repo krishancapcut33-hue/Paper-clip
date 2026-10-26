@@ -249,7 +249,6 @@ export function pluginUiStaticRoutes(db: Db, options: PluginUiStaticRouteOptions
     try {
       plugin = await registry.getById(pluginId);
     } catch (error) {
-      // A plugin key is not a UUID, so the id lookup raises 22P02; fall through to the key lookup.
       if (!isInvalidTextRepresentation(error)) {
         throw error;
       }
