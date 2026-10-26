@@ -49,11 +49,15 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
-it.each(["event", "newer_command", "replacement", "write_failure"] as const)(
+it.each(["event", "newer_command", "replacement", "write_failure", "drain", "semantic_replacement"] as const)(
   "keeps HTTP responsive during a durable event write and preserves %s", async (mode) => {
     const root = mkdtempSync(resolve(tmpdir(), "runner-event-io-"));
+    const dispatch = vi.fn(async () => {
+      expect(JSON.parse(readFileSync(resolve(root, "control-plane-state.json"), "utf8")).ackedSourceSeq).toBe(1);
+      return { result: { ok: true } };
+    });
     const core = new DurablePrpControlPlane({ stateDirectory: root, identity,
-      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: async () => {} });
+      expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: async () => {}, onSemanticToolInput: dispatch });
     const http = createServer((_req, res) => res.end("responsive"));
     let release!: () => void;
     const barrier = new Promise<void>(resolveWrite => { release = resolveWrite; });
@@ -82,16 +86,35 @@ it.each(["event", "newer_command", "replacement", "write_failure"] as const)(
       client = (await authenticate(core, core.issueBootstrapTicket()))!;
       const event = semanticInputEvent();
       const payload = event.payload as Record<string, unknown>;
-      payload.eventType = "auth.credentials.updated";
-      payload.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
-        bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+      if (mode !== "semantic_replacement") {
+        payload.eventType = "auth.credentials.updated";
+        payload.payload = { schema: "paperclip.auth.credentials.updated.v1", provider: "codex",
+          bindingId: "harness-auth", revision: 1, detection: "credential_store" };
+      }
       sendSecure(client, event);
-      await vi.waitFor(() => expect(staged).toBe(true));
+      await vi.waitFor(() => expect(staged || dispatch.mock.calls.length > 0).toBe(true));
+      if (mode === "semantic_replacement") {
+        replacement = (await authenticate(core, client.leaseToken!))!;
+        release();
+        await vi.waitFor(() => expect(dispatch).toHaveBeenCalledTimes(1));
+        await vi.waitFor(() => expect(core.store.state.commands.some(command => command.type === "semantic_tool.result")).toBe(true));
+        return;
+      }
       // The actual socket request completes while the real file's fsync is held.
       const address = http.address() as { port: number };
       expect(await (await fetch(`http://127.0.0.1:${address.port}`)).text()).toBe("responsive");
       expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(0);
       if (mode === "newer_command") core.queueCommand("session.snapshot", {}, "command_during_event");
+      let drained = false;
+      const retirement = mode === "drain" ? (async () => {
+        await core.stop();
+        await core.drainPendingConnectionProcessing();
+        drained = true;
+      })() : null;
+      if (retirement) {
+        await new Promise<void>(resolveTurn => setImmediate(resolveTurn));
+        expect(drained).toBe(false);
+      }
       if (mode === "replacement") {
         replacement = (await authenticate(core, client.leaseToken!))!;
         const second = structuredClone(event);
@@ -102,7 +125,11 @@ it.each(["event", "newer_command", "replacement", "write_failure"] as const)(
         expect(await receiveSecure(replacement)).toMatchObject({ kind: "ack", payload: { ackedSourceSeq: 2 } });
       }
       release();
-      if (mode === "write_failure") {
+      if (retirement) {
+        expect(await receiveSecure(client)).toBeNull();
+        await retirement;
+        expect(drained).toBe(true);
+      } else if (mode === "write_failure") {
         expect(await receiveSecure(client)).toBeNull();
         expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
       } else if (mode !== "replacement") {

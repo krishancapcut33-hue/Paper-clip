@@ -3323,8 +3323,14 @@ export class DurablePrpControlPlane {
       });
       this.#store.state.ackedSourceSeq = sourceSeq;
     }
-    await this.#store.saveEvent();
-    if (this.#eventOwner !== connection || this.#identity !== identity || this.#protocolIntegrityError !== null) return;
+    // Tool admission must not yield between its durable input and dispatch:
+    // a replacement welcome can acknowledge that input before replay can run.
+    if (isSemanticInput) {
+      this.#store.save();
+    } else {
+      await this.#store.saveEvent();
+      if (this.#eventOwner !== connection || this.#identity !== identity || this.#protocolIntegrityError !== null) return;
+    }
 
     if (
       isSemanticInput &&
