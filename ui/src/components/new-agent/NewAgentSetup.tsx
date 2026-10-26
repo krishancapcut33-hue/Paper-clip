@@ -706,7 +706,7 @@ function Setup({
       setTestState(blocking(tested) ? "fail" : tested.status);
       return (
         !blocking(tested) &&
-        (!connectionAdapter ||
+        (tested.checks.some(check => check.code === "environment_agent_approval_required") || !connectionAdapter ||
           tested.checks.some((check) =>
             check.code.endsWith("hello_probe_passed") || check.code === "ai_connection_api_key_reverified",
           ))

@@ -10,6 +10,26 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it("retains the selected account while a company requires approval before preparing the computer", async () => {
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "computer" });
+    envApi.list.mockResolvedValue([{ id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} }]);
+    api.testEnvironment.mockResolvedValue({ ...pass, status: "warn", checks: [{
+      code: "environment_agent_approval_required", level: "warn", message: "Verification follows hire approval",
+    }] });
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    expect(container.textContent).toContain("Configure your agent");
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({
+      setupAgentId: api.create.mock.calls[0][1].setupId,
+      runtimeConfig: expect.objectContaining({ aiConnection: expect.objectContaining({ provider: "openai" }) }),
+    }));
+    expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(envApi.probe).not.toHaveBeenCalled();
+  });
+
   it("keeps the account on an environment save failure and blocks probes until the selection is saved", async () => {
     envApi.list.mockResolvedValue([
       { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },

@@ -63,6 +63,9 @@ and retrying their draft during preparation; other actors still require the
 ordinary configuration permission. This is a board wizard path, not new agent
 execution or probe authority. Lifecycle and component regressions cover these
 transitions; no permitted-agent or live-provider journey is claimed here.
+Companies requiring hire approval keep drafts paused and allocate no agent-owned
+resource before approval. Selecting an account there is pending verification,
+not approval or execution authority.
 
 The creation boundary resolves the request-level runner before adapter validation
 and credential normalization. Omitted/automatic new Codex selection uses the

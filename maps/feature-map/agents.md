@@ -42,6 +42,8 @@ their driver declares `requiresAgent`. The draft waits in `verifying` with its
 setup hold until hiring finishes. Changing environments keeps the selected
 account and Configure step, saves the selection, and invalidates its test.
 Preparation and failed-save retries remain visible without reconnecting.
+Companies requiring hire approval save the account with pending verification;
+resource allocation waits for approval.
 
 ### `agent-configuration`
 

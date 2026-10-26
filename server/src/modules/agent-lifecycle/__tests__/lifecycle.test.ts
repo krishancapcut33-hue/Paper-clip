@@ -193,6 +193,26 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(call.mock.calls.map(([, , request]) => request.phase).at(-1)).toBe("verifying");
   });
 
+  it("does not prepare agent-owned resources before required hire approval", async () => {
+    const pluginId = randomUUID(), environmentId = randomUUID();
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "approval-computer-test", version: "1.0.0", status: "ready",
+      manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", requiresAgent: true, supportsTasks: true }] } as never });
+    await db.insert(environments).values({ id: environmentId, name: "Approval computer", driver: "plugin", status: "active",
+      config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
+    const runHost = vi.fn(async () => "complete" as const);
+    const work = worker(runHost);
+    const lifecycle = createAgentLifecycle(db);
+    const draft = await lifecycle.requestHire(companyId, { name: "Unapproved computer", adapterType: "paperclip_runner",
+      adapterConfig: { provider: "codex" }, defaultEnvironmentId: environmentId }, { setupOnly: true, runnerResolved: true });
+    await work.process(draft.id);
+    await lifecycle.updateConfiguration(draft.id, { adapterConfig: { provider: "codex", model: "changed" } });
+    await work.process(draft.id);
+    expect(await current(draft.id)).toMatchObject({ lifecycleState: "paused", lifecycleHolds: ["setup"] });
+    expect(runHost).not.toHaveBeenCalled();
+  });
+
   it("freezes the final setup configuration for hire approval", async () => {
     const lifecycle = createAgentLifecycle(db);
     const id = randomUUID();

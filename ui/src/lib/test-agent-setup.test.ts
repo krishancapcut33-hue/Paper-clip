@@ -31,7 +31,7 @@ const ready = {
 };
 beforeEach(() => testEnvironment.mockReset());
 afterEach(() => vi.restoreAllMocks());
-it.each(["environment_agent_required", "environment_agent_preparing"])("does not start a supplementary provider probe while %s", async code => {
+it.each(["environment_agent_required", "environment_agent_preparing", "environment_agent_approval_required"])("does not start a supplementary provider probe while %s", async code => {
   const pending = { ...ready, status: "warn", checks: [{ code, level: "warn", message: "Waiting for the agent computer" }] };
   testEnvironment.mockResolvedValue(pending);
   expect(await testAgentSetup(input)).toEqual(pending);

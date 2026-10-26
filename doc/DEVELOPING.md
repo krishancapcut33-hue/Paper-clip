@@ -2010,6 +2010,9 @@ use that draft's identity and a bounded Core-issued probe; ordinary tasks remain
 blocked. Environment changes save immediately, preserve the selected account,
 and invalidate the previous test. Tests without an agent report that prerequisite
 without allocating a lease. Finishing setup still verifies the saved configuration.
+Companies that require hire approval keep drafts paused and defer allocation and
+verification until that approval. The wizard saves the account with a pending
+verification warning instead of requiring a pre-approval computer.
 
 Pi also requires an explicit `provider/model` before testing or hiring; inactive
 setup drafts may precede model selection. Install its pinned runtime on the

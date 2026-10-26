@@ -78,6 +78,9 @@ databaseSuite("Core plugin Runner task lifecycle", () => {
     expect((await setup.resolveAdapterTestExecutionContext(input)).fallbackChecks).toMatchObject([{ code: "environment_agent_required", level: "warn" }]);
     await db.insert(agents).values({ id: agentId, companyId, name: "Draft", lifecycleState: "preparing", lifecycleHolds: ["setup"], status: "paused" });
     expect((await setup.resolveAdapterTestExecutionContext({ ...input, agentId })).fallbackChecks).toMatchObject([{ code: "environment_agent_preparing", level: "warn" }]);
+    await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
+    await db.update(agents).set({ lifecycleState: "paused", pauseReason: "setup" }).where(eq(agents.id, agentId));
+    expect((await setup.resolveAdapterTestExecutionContext({ ...input, agentId })).fallbackChecks).toMatchObject([{ code: "environment_agent_approval_required", level: "warn" }]);
     const foreign = randomUUID();
     await db.insert(companies).values({ id: foreign, name: "Other company", issuePrefix: "OTHER" });
     expect((await setup.resolveAdapterTestExecutionContext({ ...input, companyId: foreign, agentId })).fallbackChecks).toMatchObject([{ code: "environment_agent_preparing" }]);
