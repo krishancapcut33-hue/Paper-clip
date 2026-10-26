@@ -2002,6 +2002,15 @@ extra arguments, model variants, and inherited permission rules require the
 Legacy runner; incompatible settings return remediation instead of being ignored.
 Saved OpenCode agents keep their runner and runtime policies.
 
+Plugin environment drivers can declare `requiresAgent: true` when their leases
+need an agent-owned resource. Setup saves the draft and environment, runs its
+existing lifecycle preparation, and waits in `verifying` with the `setup` hold.
+The worker becomes idle there until the user finishes hiring. Connection tests
+use that draft's identity and a bounded Core-issued probe; ordinary tasks remain
+blocked. Environment changes save immediately, preserve the selected account,
+and invalidate the previous test. Tests without an agent report that prerequisite
+without allocating a lease. Finishing setup still verifies the saved configuration.
+
 Pi also requires an explicit `provider/model` before testing or hiring; inactive
 setup drafts may precede model selection. Install its pinned runtime on the
 execution host with `paperclipai runtime setup pi` before testing the connection.

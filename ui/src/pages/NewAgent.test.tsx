@@ -10,6 +10,29 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it("waits for background preparation and tests the same saved computer after it completes", async () => {
+    const id = "00000000-0000-4000-8000-000000000092";
+    const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+      runtimeConfig: {}, lifecycleState: "preparing", pauseReason: "setup", defaultEnvironmentId: "computer", status: "paused" };
+    state.params = new URLSearchParams({ name: "Atlas", adapterType: "codex_local", setupAgentId: id });
+    api.get.mockResolvedValue(draft);
+    settings.get.mockResolvedValue({ defaultEnvironmentId: "computer" });
+    envApi.list.mockResolvedValue([{ id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} }]);
+    await renderCurrentParams();
+    expect(container.textContent).toContain("Preparing your agent computer");
+    await click("OpenAIAPI key");
+    expect(api.testEnvironment).not.toHaveBeenCalled();
+    api.get.mockResolvedValue({ ...draft, lifecycleState: "verifying" });
+    await act(async () => { await cache.invalidateQueries({ queryKey: queryKeys.agents.detail(id) }); });
+    await settle();
+    expect(container.textContent).not.toContain("Preparing your agent computer");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    expect(api.testEnvironment).toHaveBeenCalledWith("company-1", expect.any(String), expect.objectContaining({ agentId: id, environmentId: "computer" }));
+    expect(api.create).not.toHaveBeenCalled();
+  });
+
   it("creates an inactive record before connecting and finishes that same agent", async () => {
     await render("codex_local");
     expect(api.create).toHaveBeenCalledTimes(1);
@@ -21,6 +44,7 @@ describe("New agent setup", () => {
     await click("OpenAIAPI key");
     await fill("API key", "setup-test-key");
     await click("Connect");
+    expect(api.testEnvironment.mock.calls[0][2].agentId).toBe(setupId);
     expect(api.update).toHaveBeenCalledWith(setupId, expect.objectContaining({ runtimeConfig: expect.objectContaining({ aiConnection: expect.anything() }) }), "company-1");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].setupAgentId).toBe(setupId);
@@ -349,7 +373,7 @@ describe("New agent setup", () => {
     const environment = container.querySelector<HTMLSelectElement>('select[aria-label="Environment"]')!;
     await act(async () => { environment.value = "linux-ssh"; environment.dispatchEvent(new Event("change", { bubbles: true })); });
     await settle();
-    await connect("OpenAI");
+    expect(container.textContent).toContain("Configure your agent");
     await click("Finish setup");
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ environmentId: "linux-ssh", runner: "legacy" }));
     expect(api.hire.mock.calls[0][1]).toMatchObject({ adapterType: "codex_local", runner: "legacy" });
@@ -392,7 +416,6 @@ describe("New agent setup", () => {
     await act(async () => (container.querySelector("summary") as HTMLElement).click());
     expect(container.querySelector('[aria-label="Runner"]')?.textContent).toBe("Legacy runner (default)");
     expect(adapterApi.list).toHaveBeenCalledWith({ companyId: "company-1", environmentId: "local-1" });
-    await connect("OpenAI");
     await click("Finish setup");
     expect(api.testEnvironment).toHaveBeenCalledTimes(2);
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", "codex_local", expect.objectContaining({ environmentId: "local-1" }));
@@ -557,7 +580,8 @@ describe("New agent setup", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await settle();
-    expect(container.querySelector('select[aria-label="Environment"]')).toBeNull();
+    expect(container.querySelector('select[aria-label="Environment"]')).not.toBeNull();
+    await click("Connect model");
     await click("Complete subscription login");
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1]).toMatchObject({ defaultEnvironmentId: "login-env", runtimeConfig: { aiConnection: { method: "subscription" } } });
@@ -597,10 +621,8 @@ describe("New agent setup", () => {
       select.dispatchEvent(new Event("change", { bubbles: true }));
     });
     await settle();
-    if (container.querySelector('[role="radiogroup"][aria-label="Connection type"]')) {
-      await click("GrokAPI key");
-      await click("Use saved API key");
-    }
+    expect(container.textContent).toContain("Configure your agent");
+    await click("Run test");
     expect(api.testEnvironment).toHaveBeenCalledWith("company-1", "paperclip_runner", expect.objectContaining({ environmentId: "grok-sandbox" }));
     await click("Finish setup");
     expect(api.hire.mock.calls[0][1].defaultEnvironmentId).toBe("grok-sandbox");

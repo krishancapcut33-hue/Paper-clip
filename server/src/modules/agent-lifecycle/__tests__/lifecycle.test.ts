@@ -16,7 +16,7 @@ import { errorHandler } from "../../../middleware/error-handler.js";
 import { createLifecycleDriver } from "../../../services/agent-lifecycle-driver.js";
 import { randomUUID } from "node:crypto";
 import { and, eq, sql } from "drizzle-orm";
-import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
+import { agents, approvals, projects, issues, heartbeatRuns, nativeRunFinalizations, budgetPolicies, environmentLeases, environments, agentApiKeys, activityLog, agentConfigRevisions, userCompanyPreferences, companies, companyMemberships, principalPermissionGrants, plugins, pluginCompanySettings, createDb, type Db } from "@paperclipai/db";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../../__tests__/helpers/embedded-postgres.js";
 import { createAgentLifecycle, configureAgentLifecycle, startAgentLifecycle } from "../../../services/agent-lifecycle.js";
@@ -138,6 +138,54 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(await current(id)).toMatchObject({ status: "idle", lifecycleState: "ready", lifecycleHolds: [] });
     expect(await db.select().from(agents).where(eq(agents.companyId, companyId))).toHaveLength(1);
     await expect(lifecycle.requestHire(companyId, { id, name: "Early agent" }, { setupAgentId: id })).rejects.toThrow("no longer available");
+  });
+
+  it("prepares agent-dependent drafts, stays idle until finish, and invalidates changed environments", async () => {
+    const pluginId = randomUUID(), environmentId = randomUUID();
+    await db.insert(plugins).values({ id: pluginId, pluginKey: pluginId, packageName: "agent-environment-test", version: "1.0.0", status: "ready",
+      manifestJson: { agentLifecycle: true, capabilities: ["agents.lifecycle.manage", "environment.drivers.register"],
+        environmentDrivers: [{ driverKey: "tasks", requiresAgent: true, supportsTasks: true }] } as never });
+    await db.insert(environments).values({ id: environmentId, name: "Agent-owned test computer", driver: "plugin", status: "active",
+      config: { pluginKey: pluginId, driverKey: "tasks", driverConfig: {} } });
+    const call = vi.fn(async (_id, _method, input) => ({ operationId: input.operationId, version: input.version, status: "complete" }));
+    const driver = createLifecycleDriver(db, { call } as never);
+    const runHost = vi.fn(async () => "complete" as const);
+    const work = configureAgentLifecycle(db, { ...driver, requiredPluginIds: async () => [pluginId], runHost });
+    workers.push(work);
+    const lifecycle = createAgentLifecycle(db);
+    const id = randomUUID();
+    const input = { id, name: "Early computer", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" }, defaultEnvironmentId: environmentId };
+    const draft = await lifecycle.requestHire(companyId, input, { setupOnly: true, runnerResolved: true });
+    expect(draft).toMatchObject({ lifecycleState: "preparing", status: "paused", pauseReason: "setup" });
+    await work.process(id);
+    expect(await current(id)).toMatchObject({ lifecycleState: "verifying", status: "paused", lifecycleHolds: ["setup"] });
+    expect(call.mock.calls.map(([, , request]) => request.phase)).toEqual(["preparing"]);
+    const store = createLifecycleStore(db);
+    expect(await store.pending(100, new Date())).not.toContain(id);
+    expect(await store.claim(id, "unexpected", new Date())).toBeNull();
+    await work.process(id);
+    expect(runHost).toHaveBeenCalledTimes(1);
+    await expect(agentConfiguration(db).createApiKey(id, "Incomplete computer")).rejects.toThrow("Finish agent setup");
+    await expect(lifecycle.resumeAgent(id)).rejects.toThrow("Finish agent setup");
+    await lifecycle.pauseAgent(id, "budget"); await work.process(id);
+    expect(await current(id)).toMatchObject({ lifecycleState: "paused", lifecycleHolds: ["setup", "budget"] });
+    await lifecycle.updateConfiguration(id, { adapterConfig: { provider: "codex", model: "changed" } });
+    expect((await current(id)).lifecycleState).toBe("paused");
+    // Restore only the setup hold to exercise environment changes under the wizard's authority.
+    await db.update(agents).set({ lifecycleHolds: ["setup"], pauseReason: "setup" }).where(eq(agents.id, id));
+    await lifecycle.updateConfiguration(id, { adapterConfig: { provider: "codex", model: "prepared" } });
+    await work.process(id);
+    expect((await current(id)).lifecycleState).toBe("verifying");
+    const [local] = await db.select().from(environments).where(eq(environments.driver, "local"));
+    await lifecycle.updateConfiguration(id, { defaultEnvironmentId: local.id }); await work.process(id);
+    expect((await current(id)).lifecycleState).toBe("paused");
+    await lifecycle.updateConfiguration(id, { defaultEnvironmentId: environmentId }); await work.process(id);
+    expect((await current(id)).lifecycleState).toBe("verifying");
+    const finished = await lifecycle.requestHire(companyId, input, { setupAgentId: id, runnerResolved: true });
+    expect(finished.id).toBe(id);
+    await work.process(id);
+    expect(await current(id)).toMatchObject({ lifecycleState: "ready", lifecycleHolds: [] });
+    expect(call.mock.calls.map(([, , request]) => request.phase).at(-1)).toBe("verifying");
   });
 
   it("freezes the final setup configuration for hire approval", async () => {
