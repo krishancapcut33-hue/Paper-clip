@@ -200,7 +200,7 @@ export const NewAgentConnectionModes: Story = {
     await expect(canvas.getByRole("radio", { name: "Advanced Custom Gateway" })).toBeChecked();
     await expect(canvas.getByRole("button", { name: "Use connection" })).toBeDisabled();
     await userEvent.click(canvas.getByRole("combobox", { name: "Connection" }));
-    await userEvent.click(within(canvasElement.ownerDocument.body).getByRole("option", { name: "Company OpenRouter" }));
+    await userEvent.click(within(canvasElement.ownerDocument.body).getByRole("option", { name: "Company OpenRouter · API key · Company shared" }));
     await userEvent.click(canvas.getByRole("button", { name: "Use connection" }));
     await expect(canvas.getByRole("status")).toHaveTextContent("Continue to Configure with openrouter.");
     await userEvent.click(canvas.getByRole("radio", { name: "OpenAI Subscription" }));
@@ -259,13 +259,13 @@ export const CompatibleConnectionDropdown: Story = {
       body.getByRole("option", { name: "Responsible user’s default" }),
     ).toHaveAttribute("data-state", "checked");
     await expect(
-      body.getByRole("option", { name: "Company OpenRouter" }),
+      body.getByRole("option", { name: "Company OpenRouter · API key · Company shared" }),
     ).toBeVisible();
     await expect(
-      body.queryByRole("option", { name: "My Claude subscription" }),
+      body.queryByRole("option", { name: /My Claude subscription/ }),
     ).not.toBeInTheDocument();
     await userEvent.click(
-      body.getByRole("option", { name: "Company OpenRouter" }),
+      body.getByRole("option", { name: "Company OpenRouter · API key · Company shared" }),
     );
     await expect(
       within(canvasElement).getByRole("combobox", { name: "Connection" }),
