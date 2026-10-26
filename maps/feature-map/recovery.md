@@ -201,6 +201,9 @@ during its metadata read, keep unknown adopted-process ownership held, and rejec
 launch before detachment when Node is unavailable. The diagnostic tests cover
 permission failures and generation-bound zombie receipts. This coverage does not prove recovery of a
 historical retained sandbox or behavior during a live provider outage.
+The [transport regression](../../packages/paperclip-runner/src/live/runnerd-codex-transport.test.ts)
+also retains a real authenticated Runner and its journal when its close probe
+rejects, without signalling it, checkpointing it, or starting a replacement.
 
 For a release change during a remote provider session, verify that reattachment
 uses the controller's admitted pack manifest and runner digest. Check useful

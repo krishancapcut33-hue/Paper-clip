@@ -1833,6 +1833,8 @@ that uncertainty rather than returning the same `false` value as a confirmed
 exit. Launch checks that Node can run the probe before creating launch state or
 detaching the process. These receipts do not release historical recovery holds
 or prove that workspace files and provider state have been saved.
+The transport propagates rejected adopted-process checks through close and
+command waits. It must not turn a rejected check into a positive exit observation.
 
 Healthy native warm turns retain their runner and provider processes. After a
 controller crash, continuation can recover a completed remote session from its

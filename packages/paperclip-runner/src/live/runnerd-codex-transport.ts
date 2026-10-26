@@ -6898,11 +6898,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     if (this.#handle) return this.#handle.isExitConfirmed?.() ?? this.#handle.child.exitCode !== null;
     const adoptedRunner = this.options.adoptExistingRunner;
     if (!adoptedRunner) return true;
-    try {
-      return !(await adoptedRunner.isAlive());
-    } catch {
-      return true;
-    }
+    return !(await adoptedRunner.isAlive());
   }
 
   #watchAdoptedRunner(
