@@ -11215,7 +11215,7 @@ export async function verifyRemoteRunnerReattachment(input: {
         command: "sh",
         args: [
           "-c",
-          `${REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT}; if ${REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT}; then :; else exit 46; fi; test "$process_fingerprint" = "$5" || exit 47` +
+          REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT +
             (signal ? '; kill -"$6" "$pid"' : ""),
           "paperclip-runner-recovery-check",
           identityPath,
@@ -11228,8 +11228,12 @@ export async function verifyRemoteRunnerReattachment(input: {
         bypassSession: true,
       },
     });
-    return { alive: result.exitCode === 0 && !result.timedOut,
-      reason: remoteRecoveryProbeReason("process_verification", result.exitCode, result.timedOut) };
+    const alive = result.exitCode === 0 && !result.timedOut;
+    const reason = remoteRecoveryProbeReason("process_verification", result.exitCode, result.timedOut);
+    if (!alive && reason !== "process_not_running") {
+      throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason });
+    }
+    return { alive, reason };
   };
   const verified = await check(undefined, probeDeadline);
   if (!verified.alive) throw new RemoteRunnerRecoveryError({ stage: "process_verification", reason: verified.reason });
@@ -11415,7 +11419,7 @@ export function createRemoteRunnerProcessLauncher(input: {
         command: "sh",
         args: [
           "-c",
-          'set -eu; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; child_script=$4; shift 4; umask 077; identity_dir=$(dirname -- "$identity_path"); mkdir -p -- "$identity_dir"; if command -v setsid >/dev/null 2>&1; then nohup setsid sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & else nohup sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & fi',
+          'set -eu; node -e "process.kill(process.pid, 0)"; identity_path=$1; identity_nonce=$2; runner_instance_id=$3; child_script=$4; shift 4; umask 077; identity_dir=$(dirname -- "$identity_path"); mkdir -p -- "$identity_dir"; if command -v setsid >/dev/null 2>&1; then nohup setsid sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & else nohup sh -c "$child_script" paperclip-runner-child "$identity_path" "$identity_nonce" "$runner_instance_id" "$@" </dev/null >/dev/null 2>&1 & fi',
           "paperclip-runner-launch",
           input.processIdentityPath,
           identityNonce,
@@ -11494,9 +11498,7 @@ export function createRemoteRunnerProcessLauncher(input: {
             command: "sh",
             args: [
               "-c",
-              REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT + (identity.processStartFingerprint
-                ? `; if ${REMOTE_RUNNER_PROCESS_FINGERPRINT_SCRIPT}; then :; else exit 46; fi; test "$process_fingerprint" = "$5" || exit 47`
-                : ""),
+              REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT,
               "paperclip-runner-monitor",
               input.processIdentityPath,
               identityNonce,

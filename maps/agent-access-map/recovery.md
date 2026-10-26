@@ -8,6 +8,11 @@ Native finalization deadline reconciliation records unfinished workspace
 preservation through the existing server-owned recovery path. It grants no
 additional agent API, provider-stop authority or permission to replay work.
 
+Remote process probes remain server-owned. Confirmed exit requires `ESRCH` or a
+zombie with the saved generation. Unknown adopted-process ownership rejects the
+probe and grants no permission to replace a runner, signal a different process,
+or replay work. Launch requires a working Node probe before detachment.
+
 Ordinary board Retry can reauthorize saved GitHub input for the same App after
 reconnect. It pins current runtime authority and preserves sender, repository,
 conversation and task checks. Pending input takes precedence over the older
