@@ -495,6 +495,12 @@ export interface PluginUiSlotDeclaration {
    * Required for `detailTab`, `taskDetailView`, and `contextMenuItem`.
    */
   entityTypes?: PluginUiSlotEntityType[];
+  /** Also offer this agent detail tab beside a task while its agent is running.
+   * GET this plugin-relative path with :entityId replaced by the agent ID.
+   * The board/agent-scoped route returns { available: boolean }.
+   */
+  taskSidePanel?: { availabilityPath: string };
+
   /**
    * Optional company-scoped route segment for page, routeSidebar, and
    * companySettingsPage slots.

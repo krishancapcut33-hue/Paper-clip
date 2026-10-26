@@ -388,11 +388,17 @@ export const pluginUiSlotDeclarationSchema = z.object({
   displayName: z.string().min(1),
   exportName: z.string().min(1),
   entityTypes: z.array(z.enum(PLUGIN_UI_SLOT_ENTITY_TYPES)).optional(),
+  taskSidePanel: z.object({
+    availabilityPath: z.string().regex(/^\/(?:[a-zA-Z0-9_-]+\/)*:entityId(?:\/[a-zA-Z0-9_-]+)*$/),
+  }).strict().optional(),
   routePath: z.string().regex(/^[a-z0-9][a-z0-9-]*$/, {
     message: "routePath must be a lowercase single-segment slug (letters, numbers, hyphens)",
   }).optional(),
   order: z.number().int().optional(),
 }).superRefine((value, ctx) => {
+  if (value.taskSidePanel && (value.type !== "detailTab" || !value.entityTypes?.includes("agent"))) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel requires an agent detailTab", path: ["taskSidePanel"] });
+  }
   // context-sensitive slots require explicit entity targeting.
   const entityScopedTypes = ["detailTab", "taskDetailView", "contextMenuItem", "commentAnnotation", "commentContextMenuItem", "projectSidebarItem"];
   if (
@@ -967,6 +973,15 @@ export const pluginManifestV1Schema = z.object({
         message: "Capability 'webhooks.receive' is required when webhooks are declared",
         path: ["capabilities"],
       });
+    }
+  }
+
+  for (const [index, slot] of (manifest.ui?.slots ?? []).entries()) {
+    if (!slot.taskSidePanel) continue;
+    const route = manifest.apiRoutes?.find(route => route.path === slot.taskSidePanel!.availabilityPath);
+    if (!route || route.method !== "GET" || route.auth !== "board" || route.transport
+      || route.companyResolution?.from !== "agent" || route.companyResolution.param !== "entityId") {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: "taskSidePanel availability requires a declared board GET route scoped to agent :entityId", path: ["ui", "slots", index, "taskSidePanel"] });
     }
   }
 
