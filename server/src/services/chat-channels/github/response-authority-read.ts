@@ -5,7 +5,7 @@ const authorizationEvent = sql<Record<string, unknown>>`case
   when jsonb_typeof(${chatDeliveries.normalizedEvent}) = 'object' then (
     select coalesce(jsonb_object_agg(field.key, case
       when jsonb_typeof(field.value->'context') = 'object' then
-        jsonb_set(field.value, '{context}', (field.value->'context') - 'body' - 'title', false)
+        jsonb_build_object('context', (field.value->'context') - 'body' - 'title')
       else field.value end), '{}'::jsonb)
     from jsonb_each(${chatDeliveries.normalizedEvent}) as field(key, value)
     where field.key in ('githubAutomatic', 'githubIssue')

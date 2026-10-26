@@ -2627,12 +2627,22 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         author: { id: "42", login: "octocat", isBot: false }, sender: { id: "42", login: "octocat" },
         labels: ["review"], draft: false, baseBranch: "master", headSha: "a".repeat(40),
         body: "unused-body".repeat(32_768), title: "unused-title".repeat(8_192) };
-      const normalizedEvent = { text: "unrelated message text", [key]: { context, retainedAuthority: true } };
+      const normalizedEvent = { text: "unrelated message text", [key]: { context, revision: 42,
+        policy: { instructions: "unused-policy-instructions".repeat(32_768),
+          prompts: { opened: "unused-policy-prompt".repeat(32_768) } },
+      } };
       await db.update(chatDeliveries).set({ normalizedEvent }).where(eq(chatDeliveries.id, delivery.id));
-      const [projected] = await db.select({ event: githubResponseAuthorityFields.delivery.normalizedEvent })
-        .from(chatDeliveries).where(eq(chatDeliveries.id, delivery.id));
+      const events: Array<Record<string, unknown>> = [], now = Date.now();
+      const capture = createDatabaseResponseCapture({ start: now - 100, end: now + 59_000 }, event => events.push(event));
+      installDatabaseResponseCapture(db, { chatDeliveries }, capture);
+      let projected: { event: Record<string, unknown> };
+      try {
+        [projected] = await db.select({ event: githubResponseAuthorityFields.delivery.normalizedEvent })
+          .from(chatDeliveries).where(eq(chatDeliveries.id, delivery.id));
+      } finally { capture.flush(); }
       const { body: _body, title: _title, ...policy } = context;
-      expect(projected.event).toEqual({ [key]: { context: policy, retainedAuthority: true } });
+      expect(Number(events.at(-1)?.responseValueBytes)).toBeLessThan(2_048);
+      expect(projected.event).toEqual({ [key]: { context: policy } });
       expect((await db.select({ event: chatDeliveries.normalizedEvent }).from(chatDeliveries)
         .where(eq(chatDeliveries.id, delivery.id)))[0].event).toEqual(normalizedEvent);
     });
