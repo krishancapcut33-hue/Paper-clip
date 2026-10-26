@@ -1,9 +1,8 @@
 import { createHash } from "node:crypto";
 import type { Db } from "@paperclipai/db";
 import type { ExternalObjectCanonicalUrl } from "@paperclipai/shared";
-import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES, resolveGitHubApiToken } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
-import { secretService } from "./secrets.js";
 import type {
   ExternalObjectDetection,
   ExternalObjectDetector,
@@ -126,7 +125,19 @@ function retryAfterSeconds(response: Response) {
   return 300;
 }
 
-function failureFromGitHubResponse(response: Response): ExternalObjectResolveResult | null {
+function rateLimitedResult(authenticated: boolean, retryAfterSeconds: number): ExternalObjectResolveResult {
+  return {
+    ok: false,
+    liveness: "rate_limited",
+    errorCode: "github_rate_limited",
+    errorMessage: authenticated
+      ? "GitHub rate limit reached while refreshing this object. It will retry after the limit resets."
+      : "GitHub rate limit reached while refreshing this object because no GitHub credential is configured, so requests are anonymous. Add a GitHub token to raise the limit.",
+    retryAfterSeconds,
+  };
+}
+
+function failureFromGitHubResponse(response: Response, authenticated: boolean): ExternalObjectResolveResult | null {
   if (response.status === 401) {
     return {
       ok: false,
@@ -140,13 +151,7 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
   if (response.status === 403) {
     const rateLimitRemaining = response.headers.get("x-ratelimit-remaining");
     if (rateLimitRemaining === "0") {
-      return {
-        ok: false,
-        liveness: "unreachable",
-        errorCode: "github_rate_limited",
-        errorMessage: "GitHub rate limit reached while refreshing this object.",
-        retryAfterSeconds: retryAfterSeconds(response),
-      };
+      return rateLimitedResult(authenticated, retryAfterSeconds(response));
     }
     return {
       ok: false,
@@ -157,11 +162,15 @@ function failureFromGitHubResponse(response: Response): ExternalObjectResolveRes
     };
   }
 
-  if (response.status === 429 || response.status >= 500) {
+  if (response.status === 429) {
+    return rateLimitedResult(authenticated, retryAfterSeconds(response));
+  }
+
+  if (response.status >= 500) {
     return {
       ok: false,
       liveness: "unreachable",
-      errorCode: response.status === 429 ? "github_rate_limited" : "github_unreachable",
+      errorCode: "github_unreachable",
       errorMessage: `GitHub returned HTTP ${response.status} while refreshing this object.`,
       retryAfterSeconds: retryAfterSeconds(response),
     };
@@ -207,15 +216,17 @@ function notFoundSnapshot(identity: GitHubObjectIdentity, etag: string | null): 
  * behind 404). This probes the repo metadata with the same credentials to tell the
  * two apart:
  *
-* - "visible": the repo returns 2xx — the referenced object really is gone.
+ * - "visible": the repo returns 2xx — the referenced object really is gone.
  * - "hidden": the repo returns 404/403 — the credentials lack access to the repo,
  *   so the object status cannot be determined and should not be frozen as "Not found".
- * - "uncertain": the probe itself failed (network/rate limit) — retry later.
+ * - "rate_limited": the probe was rejected by a GitHub rate limit — retry later, with a
+ *   distinct state so a quota problem is not reported as a network failure.
+ * - "uncertain": the probe itself failed (network/other) — retry later.
  */
 async function probeRepoVisibility(
   identity: GitHubObjectIdentity,
   opts: { fetch: FetchLike; headers?: Record<string, string> | undefined },
-): Promise<"visible" | "hidden" | "uncertain"> {
+): Promise<"visible" | "hidden" | "rate_limited" | "uncertain"> {
   try {
     const probe = await opts.fetch(
       `${gitHubApiBase(identity.host)}/repos/${encodeURIComponent(identity.owner)}/${encodeURIComponent(identity.repo)}`,
@@ -223,12 +234,13 @@ async function probeRepoVisibility(
     );
     if (probe.ok) return "visible";
     if (probe.status === 404) return "hidden";
+    if (probe.status === 429) return "rate_limited";
     if (probe.status === 403) {
       // GitHub can return 403 for both "credentials lack access" and "rate limit
       // reached". A rate-limited probe cannot tell the two apart, so treat it as
-      // uncertain (retry later) instead of implying missing access.
+      // a rate limit (retry later) instead of implying missing access.
       const rateLimitRemaining = probe.headers.get("x-ratelimit-remaining");
-      if (rateLimitRemaining === "0") return "uncertain";
+      if (rateLimitRemaining === "0") return "rate_limited";
       return "hidden";
     }
     return "uncertain";
@@ -363,15 +375,7 @@ async function safeJson(response: Response) {
 }
 
 async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
-  const secrets = secretService(db);
-  for (const secretName of secretNames) {
-    const secret = await secrets.getByName(companyId, secretName);
-    if (!secret) continue;
-    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest");
-    const trimmed = token.trim();
-    if (trimmed) return trimmed;
-  }
-  return null;
+  return resolveGitHubApiToken(db, companyId, { secretNames });
 }
 
 export function createGitHubExternalObjectProvider(
@@ -396,13 +400,13 @@ export function createGitHubExternalObjectProvider(
     companyId: string,
     identity: GitHubObjectIdentity,
     headers: Record<string, string>,
-  ): Promise<"visible" | "hidden" | "uncertain"> {
+  ): Promise<"visible" | "hidden" | "rate_limited" | "uncertain"> {
     const credentialFingerprint = createHash("sha256").update(headers.authorization ?? "anonymous").digest("hex");
     const key = `${companyId}\u0000${credentialFingerprint}\u0000${identity.owner.toLowerCase()}\u0000${identity.repo.toLowerCase()}`;
     const cached = probeCache.get(key);
     if (cached && cached.expiresAt > Date.now()) return cached.result;
     const result = await probeRepoVisibility(identity, { fetch: fetchImpl, headers });
-    if (result !== "uncertain") {
+    if (result === "visible" || result === "hidden") {
       probeCache.set(key, { result, expiresAt: Date.now() + GITHUB_OBJECT_TTL_SECONDS * 1000 });
     }
     return result;
@@ -458,6 +462,7 @@ export function createGitHubExternalObjectProvider(
           };
         }
         token = token?.trim() || null;
+        const authenticated = Boolean(token);
         const headers: Record<string, string> = {
           accept: "application/vnd.github+json",
           "user-agent": "paperclip-external-object-resolver",
@@ -502,6 +507,9 @@ export function createGitHubExternalObjectProvider(
               retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
             };
           }
+          if (repoVisibility === "rate_limited") {
+            return rateLimitedResult(authenticated, GITHUB_OBJECT_TTL_SECONDS);
+          }
           return {
             ok: false,
             liveness: "unreachable",
@@ -511,7 +519,7 @@ export function createGitHubExternalObjectProvider(
           };
         }
 
-        const failure = failureFromGitHubResponse(response);
+        const failure = failureFromGitHubResponse(response, authenticated);
         if (failure) return failure;
         if (!response.ok) {
           return {

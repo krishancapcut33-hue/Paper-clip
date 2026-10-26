@@ -11,6 +11,7 @@ import {
   createGitRemoteAuthProvider,
   describeGitAuthFailure,
   isGitHubHttpsRemoteUrl,
+  resolveGitHubApiToken,
   scrubGitCredentialText,
 } from "../services/git-credentials.ts";
 
@@ -44,6 +45,32 @@ describe("isGitHubHttpsRemoteUrl", () => {
     expect(isGitHubHttpsRemoteUrl("https://gitlab.com/example/repo.git")).toBe(false);
     expect(isGitHubHttpsRemoteUrl("https://alice:token@github.com/example/repo.git")).toBe(false);
     expect(isGitHubHttpsRemoteUrl("/local/path/repo.git")).toBe(false);
+  });
+});
+
+describe("resolveGitHubApiToken", () => {
+  it("prefers a company secret over the server environment", async () => {
+    const secrets = buildSecretsFake({ GH_TOKEN: "gh-token" });
+    const token = await resolveGitHubApiToken(fakeDb, "company-1", {
+      secrets,
+      env: { GITHUB_TOKEN: "env-token" },
+    });
+    expect(token).toBe("gh-token");
+  });
+
+  it("falls back to the server environment so the resolver is never silently anonymous", async () => {
+    const secrets = buildSecretsFake({});
+    const token = await resolveGitHubApiToken(fakeDb, "company-1", {
+      secrets,
+      env: { GITHUB_TOKEN: "env-token" },
+    });
+    expect(token).toBe("env-token");
+  });
+
+  it("returns null when neither a secret nor the environment provides a token", async () => {
+    const secrets = buildSecretsFake({});
+    const token = await resolveGitHubApiToken(fakeDb, "company-1", { secrets, env: {} });
+    expect(token).toBeNull();
   });
 });
 

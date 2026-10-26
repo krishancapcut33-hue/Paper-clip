@@ -200,6 +200,42 @@ type GitCredentialSecretsDeps = {
 };
 
 /**
+ * Resolve a plain GitHub API token for company-scoped, non-run work (for example the
+ * external-object refresh sweep, which has no agent or responsible-user context).
+ *
+ * This is the background-safe subset of the git credential order: it reads a company
+ * secret by well-known name, then the server process environment (`GITHUB_TOKEN`/`GH_TOKEN`)
+ * that self-hosted operators already set for Git. It deliberately cannot resolve a managed
+ * GitHub connection, because every managed grant is scoped to one agent or one person and a
+ * background sweep has neither. Callers that have a run context must use
+ * `createGitRemoteAuthProvider`/`resolveManagedGitHubCredential` instead so the managed
+ * identity and its consent boundary are honored.
+ *
+ * The server-environment fallback matters: without it a resolver silently runs anonymous,
+ * and anonymous GitHub requests are capped at 60/hour, so a busy company is rate-limited
+ * into misleading failures.
+ */
+export async function resolveGitHubApiToken(
+  db: Db,
+  companyId: string,
+  opts: { secretNames?: readonly string[]; env?: NodeJS.ProcessEnv; secrets?: GitCredentialSecretsDeps } = {},
+): Promise<string | null> {
+  const secrets = opts.secrets ?? secretService(db);
+  for (const secretName of opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
+    const secret = await Promise.resolve(secrets.getByName(companyId, secretName)).catch(() => null);
+    if (!secret) continue;
+    const token = await secrets
+      .resolveSecretValue(companyId, secret.id, "latest")
+      .then((value) => value.trim())
+      .catch(() => "");
+    if (token) return token;
+  }
+  const env = opts.env ?? process.env;
+  const envToken = env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || "";
+  return envToken || null;
+}
+
+/**
  * Build the credential provider for one run. Resolution order: the managed GitHub identity
  * resolver, then a company secret by well-known name, then the server process environment
  * (`GITHUB_TOKEN`/`GH_TOKEN`) for self-hosted operators. A configured managed identity fails

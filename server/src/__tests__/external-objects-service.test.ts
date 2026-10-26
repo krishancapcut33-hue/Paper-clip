@@ -326,7 +326,7 @@ describe("GitHub external object provider", () => {
         status: 403,
         headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
       }),
-      { ok: false, liveness: "unreachable", errorCode: "github_rate_limited" },
+      { ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" },
     ],
   ])("maps %s responses to provider-safe results", async (_name, githubResponse, expected) => {
     const provider = createGitHubExternalObjectProvider({} as any, {
@@ -498,7 +498,7 @@ describe("GitHub external object provider", () => {
     expect(JSON.stringify(result)).not.toContain("http");
   });
 
-  it("classifies a 404 as unreachable when the repository probe is rate-limited", async () => {
+  it("classifies a 404 as rate-limited when the repository probe is rate-limited", async () => {
     const fetch = vi.fn(async (url: string) => {
       if (url.endsWith("/repos/acme/app")) {
         return new Response("", {
@@ -519,14 +519,54 @@ describe("GitHub external object provider", () => {
     expect(result).toEqual(
       expect.objectContaining({
         ok: false,
-        liveness: "unreachable",
-        errorCode: "github_repo_probe_failed",
+        liveness: "rate_limited",
+        errorCode: "github_rate_limited",
       }),
     );
     expect(result).not.toEqual(
       expect.objectContaining({ ok: false, liveness: "auth_required", errorCode: "github_repo_not_accessible" }),
     );
     expect(JSON.stringify(result)).not.toContain("http");
+  });
+
+  it("classifies an authenticated rate limit as rate-limited rather than unreachable", async () => {
+    const fetch = vi.fn(async () => new Response("", {
+      status: 403,
+      headers: { "x-ratelimit-remaining": "0", "x-ratelimit-reset": String(Math.floor(Date.now() / 1000) + 120) },
+    }));
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      tokenProvider: async () => "ghp_secret",
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" }),
+    );
+    expect(JSON.stringify(result)).not.toContain("ghp_secret");
+  });
+
+  it("classifies a 429 as rate-limited", async () => {
+    const fetch = vi.fn(async () => new Response("", {
+      status: 429,
+      headers: { "retry-after": "60" },
+    }));
+    const provider = createGitHubExternalObjectProvider({} as any, { fetch, tokenProvider: null });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({ ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" }),
+    );
   });
 });
 

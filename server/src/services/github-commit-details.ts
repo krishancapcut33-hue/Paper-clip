@@ -1,7 +1,6 @@
 import type { Db } from "@paperclipai/db";
-import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES } from "./git-credentials.js";
+import { DEFAULT_GITHUB_TOKEN_SECRET_NAMES, resolveGitHubApiToken } from "./git-credentials.js";
 import { ghFetch, gitHubApiBase } from "./github-fetch.js";
-import { secretService } from "./secrets.js";
 
 type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 
@@ -58,15 +57,7 @@ export function extractGitHubCommitReference(values: readonly unknown[]): GitHub
 }
 
 async function defaultTokenProvider(db: Db, companyId: string, secretNames: readonly string[]) {
-  const secrets = secretService(db);
-  for (const secretName of secretNames) {
-    const secret = await secrets.getByName(companyId, secretName);
-    if (!secret) continue;
-    const token = await secrets.resolveSecretValue(companyId, secret.id, "latest");
-    const trimmed = token.trim();
-    if (trimmed) return trimmed;
-  }
-  return null;
+  return resolveGitHubApiToken(db, companyId, { secretNames });
 }
 
 function hasNextPage(response: Response): boolean {
