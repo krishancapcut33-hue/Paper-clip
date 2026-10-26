@@ -748,6 +748,53 @@ async function startServerChild() {
   await markChildAsCurrent();
 }
 
+async function tryHotReload(changedPathsArray: string[]): Promise<boolean> {
+  if (!devServerStatusToken) return false;
+  if (changedPathsArray.length === 0) return false;
+
+  try {
+    const response = await fetch(
+      `http://127.0.0.1:${serverPort}/api/dev/hot-reload`,
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          [devServerStatusTokenHeader]: devServerStatusToken,
+        },
+        body: JSON.stringify({ changedFiles: changedPathsArray }),
+      },
+    );
+
+    if (!response.ok) {
+      const errorText = await response.text();
+      console.log(`[paperclip] hot reload request failed: ${response.status}`);
+      if (errorText) console.log(errorText);
+      return false;
+    }
+
+    const result = await parseJsonResponseWithLimit(response);
+    const status = typeof result.status === "string" ? result.status : null;
+    if (status === "success") {
+      console.log(
+        `[paperclip] hot reload succeeded: ${result.reloadedModules?.length ?? 0} modules in ${result.duration ?? "?"}ms`,
+      );
+      return true;
+    }
+
+    if (status === "partial") {
+      console.log(`[paperclip] hot reload partial: ${result.errors?.length ?? 0} errors, falling back to restart`);
+      return false;
+    }
+
+    console.log("[paperclip] hot reload failed, falling back to restart");
+    return false;
+  } catch (error) {
+    const errorMsg = error instanceof Error ? error.message : String(error);
+    console.log(`[paperclip] hot reload request error: ${errorMsg}`);
+    return false;
+  }
+}
+
 async function maybeAutoRestartChild() {
   if (mode !== "dev" || restartInFlight || !child) return;
   const manualRestartRequest = getDevServerRestartRequest();
@@ -796,6 +843,21 @@ async function maybeAutoRestartChild() {
   }
 
   try {
+    const hasPendingMigrations = pendingMigrations.length > 0;
+
+    if (!hasPendingMigrations && dirtyPaths.size > 0) {
+      const changedPathsArray = [...dirtyPaths].sort();
+      const hotReloadSucceeded = await tryHotReload(changedPathsArray);
+
+      if (hotReloadSucceeded) {
+        dirtyPaths.clear();
+        lastChangedAt = null;
+        writeDevServerStatus();
+        restartInFlight = false;
+        return;
+      }
+    }
+
     await maybePreflightMigrations({
       autoApply: true,
       interactive: false,

@@ -42,6 +42,7 @@ import {
 } from "./services/company-import-transfers.js";
 import { companyTransferRunService } from "./services/company-transfer-runs.js";
 import { healthRoutes } from "./routes/health.js";
+import { hotReloadRoutes } from "./routes/hot-reload.js";
 import { cloudRuntimeIdentityMiddleware } from "./middleware/cloud-runtime-identity.js";
 import { cloudControlMiddleware } from "./middleware/cloud-control.js";
 import { cloudRoutes } from "./routes/cloud.js";
@@ -652,6 +653,7 @@ export async function createApp(
       databaseBackupHealth: opts.databaseBackupHealth,
     }),
   );
+  api.use(hotReloadRoutes());
   api.use(openApiRoutes());
   api.use("/cloud", cloudRoutes());
   api.use("/companies", companyRoutes(db, opts.storageService));
