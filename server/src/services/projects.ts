@@ -1011,11 +1011,15 @@ export function projectService(
       const { goalIds: inputGoalIds, ...projectData } = data;
       const ids = resolveGoalIds({ goalIds: inputGoalIds, goalId: projectData.goalId });
       const existingProject = await db
-        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
+        .select({ id: projects.id, companyId: projects.companyId, name: projects.name, status: projects.status, deletionClaimToken: projects.deletionClaimToken, archivedAt: projects.archivedAt, executionWorkspacePolicy: projects.executionWorkspacePolicy })
         .from(projects)
         .where(eq(projects.id, id)).for("update")
         .then((rows) => rows[0] ?? null);
       if (!existingProject) return null;
+      if (projectData.status !== undefined && projectData.status !== existingProject.status &&
+          (existingProject.status === "deleting" || existingProject.deletionClaimToken)) {
+        throw conflict("Project deletion is in progress. Retry the deletion before changing its status.");
+      }
       if (projectData.executionWorkspacePolicy !== undefined &&
           projectData.executionWorkspacePolicy?.storageProviderPluginId !== existingProject.executionWorkspacePolicy?.storageProviderPluginId) {
         const providers = await listProjectWorkspaceProviders(db, existingProject.companyId);

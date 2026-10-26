@@ -1,8 +1,14 @@
 import { once } from "node:events";
+import { randomUUID } from "node:crypto";
+import { companies, createDb, projects, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
+import { eq } from "drizzle-orm";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import type { AddressInfo } from "node:net";
 import express from "express";
 import request from "supertest";
 import { beforeEach, describe, expect, it, vi } from "vitest";
+
+const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 
 const mockProjectService = vi.hoisted(() => ({
   list: vi.fn(),
@@ -361,6 +367,31 @@ describe("project env routes", () => {
       });
     }
   });
+
+  it.skipIf(!embeddedPostgresSupport.supported)("does not replace an unexpired deletion claim when status is not deleting", async () => {
+    const database = await startEmbeddedPostgresTestDatabase("paperclip-deletion-claim-");
+    try {
+      const db = createDb(database.connectionString);
+      const companyId = randomUUID();
+      await db.insert(companies).values({ id: companyId, name: "Deletion claim", issuePrefix: `C${companyId.slice(0, 6)}` });
+      const [project] = await db.insert(projects).values({
+        companyId, name: "Claimed project", status: "in_progress",
+        deletionClaimToken: randomUUID(), deletionClaimExpiresAt: new Date(Date.now() + 60_000),
+      }).returning();
+      mockProjectService.getById.mockResolvedValue(buildProject(project));
+      const app = await createApp(db as unknown as Record<string, any>);
+      const response = await request(app).delete(`/api/projects/${project.id}?deleteFiles=true`);
+      expect(response.status, JSON.stringify(response.body)).toBe(409);
+      expect(response.body.error).toContain("already in progress");
+      expect(mockProjectService.remove).not.toHaveBeenCalled();
+      expect(mockHeartbeatService.cancelRun).not.toHaveBeenCalled();
+      expect(await db.select().from(projects).where(eq(projects.id, project.id))).toMatchObject([{
+        status: "in_progress", deletionClaimToken: project.deletionClaimToken,
+      }]);
+    } finally {
+      await database.cleanup();
+    }
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   it.each(["cancelled", "running"])("recovers a fenced project with database-only deletion after draining a %s run", async (runStatus) => {
     const expiredClaimToken = "expired-claim";

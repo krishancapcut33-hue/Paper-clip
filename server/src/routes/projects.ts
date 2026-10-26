@@ -1,6 +1,6 @@
 import { skillAccessRequestContext } from "../services/skill-access.js";
 import { createHash, randomUUID } from "node:crypto";
-import { and, eq, gt, inArray, isNull, lt, ne, or, sql } from "drizzle-orm";
+import { and, eq, gt, inArray, isNull, lt, or, sql } from "drizzle-orm";
 import { activityLog, executionWorkspaces, heartbeatRuns, issues, projects, type Db } from "@paperclipai/db";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { museExternalAgents, withExternalExecutionAdmission } from "../modules/external-agents/index.js";
@@ -1141,7 +1141,6 @@ export function projectRoutes(db: Db) {
             eq(projects.id, existing.id),
             eq(projects.companyId, existing.companyId),
             or(
-              ne(projects.status, "deleting"),
               isNull(projects.deletionClaimToken),
               isNull(projects.deletionClaimExpiresAt),
               lt(projects.deletionClaimExpiresAt, new Date()),

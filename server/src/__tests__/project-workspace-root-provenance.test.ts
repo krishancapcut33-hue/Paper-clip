@@ -68,6 +68,27 @@ const support = await getEmbeddedPostgresTestSupport();
       await expect(assertTaskWorkspaceSourceProjectAccess(db, actor, companyId, source.id)).resolves.toBeUndefined();
     });
 
+  it.each([
+    { status: "deleting", claim: "active" },
+    { status: "deleting", claim: "expired" },
+    { status: "deleting", claim: "released" },
+    { status: "in_progress", claim: "active" },
+  ])("rejects reopening a $status project with a $claim deletion claim", async ({ status, claim }) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Deletion fence", issuePrefix: `F${companyId.slice(0, 6)}` });
+    const [project] = await db.insert(projects).values({
+      companyId, name: "Deleting project", status,
+      deletionClaimToken: claim === "released" ? null : randomUUID(),
+      deletionClaimExpiresAt: claim === "released" ? null : new Date(Date.now() + (claim === "expired" ? -60_000 : 60_000)),
+    }).returning();
+    const service = projectService(db, { captureWorkspaceUpdates: false });
+
+    await expect(service.update(project.id, { status: "backlog" })).rejects.toThrow("Project deletion is in progress");
+    expect(await db.select().from(projects).where(eq(projects.id, project.id))).toMatchObject([{
+      status, deletionClaimToken: project.deletionClaimToken,
+    }]);
+  });
+
   it("rechecks retained task workspaces transactionally after deletion preflight", async () => {
     const companyId = randomUUID();
     await db.insert(companies).values({ id: companyId, name: "Deletion eligibility", issuePrefix: `D${companyId.slice(0, 6)}` });

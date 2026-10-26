@@ -504,8 +504,8 @@ export function ProjectDetail() {
       }
       navigate("/projects");
     },
-    onError: () => {
-      pushToast({ title: "Failed to delete project", tone: "error" });
+    onError: (error) => {
+      pushToast({ title: "Failed to delete project", body: error instanceof Error ? error.message : undefined, tone: "error" });
     },
   });
 
