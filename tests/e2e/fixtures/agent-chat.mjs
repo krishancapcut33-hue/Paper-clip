@@ -36,6 +36,11 @@ if (!task.conversationAgentId) {
   });
   process.exit(0);
 }
+if (["issue_continuation_needed", "chat_task_completed"].includes(ctx.wakeReason)) {
+  // System follow-ups must not replay the last user command and rewrite its plan.
+  await comment("System follow-up received; no new user command.");
+  process.exit(0);
+}
 const comments = await api(`/issues/${task.id}/comments?order=asc`);
 const current =
   comments.find((c) => c.id === ctx.wakeCommentId) ??

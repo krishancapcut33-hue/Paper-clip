@@ -1,3 +1,4 @@
+import { useBoardColumnCounts } from "../hooks/useBoardColumnCounts";
 import { useIssueRowDetails } from "../hooks/useIssueRowDetails";
 import { IssueRowDetailsNotice } from "./IssueRowDetailsNotice";
 import { useShowAgentCreatedTasks } from "../hooks/useShowAgentCreatedTasks";
@@ -964,6 +965,19 @@ function StreamlinedIssuesList({
       enabled: !!selectedCompanyId && viewState.viewMode === "board" && !searchWithinLoadedIssues,
       placeholderData: (previousData: Issue[] | undefined) => previousData,
     })),
+  });
+  const { columnCounts: boardColumnCounts, cappedStatuses: cappedBoardStatuses, hasError: boardCountError } = useBoardColumnCounts({
+    companyId: selectedCompanyId,
+    enabled: viewState.viewMode === "board" && !searchWithinLoadedIssues,
+    filters: {
+      ...searchFilters,
+      ...(normalizedIssueSearch.length > 0 ? { q: normalizedIssueSearch } : {}),
+      projectId,
+      ...(enableAgentCreatedVisibilityFilter ? { includeRoutineExecutions: true, includeAgentCreatedTasks: viewState.showAgentCreatedTasks } : {}),
+    },
+    viewState,
+    columnPageLengths: boardIssueQueries.map((query) => query.data?.length),
+    cardLimit: ISSUE_BOARD_COLUMN_RESULT_LIMIT,
   });
   const { data: executionWorkspaces = [] } = useQuery({
     queryKey: selectedCompanyId
@@ -2073,6 +2087,9 @@ function StreamlinedIssuesList({
           Showing up to {ISSUE_SEARCH_RESULT_LIMIT} matches. Refine the search to narrow further.
         </p>
       )}
+      {boardCountError && (
+        <p className="text-xs text-destructive">Totals could not be loaded. Capped columns show a lower bound.</p>
+      )}
       {boardColumnLimitReached && (
         <p className="text-xs text-muted-foreground">
           Some board columns are showing up to {ISSUE_BOARD_COLUMN_RESULT_LIMIT} tasks. Refine filters or search to reveal the rest.
@@ -2091,6 +2108,8 @@ function StreamlinedIssuesList({
       {!collectionLoading && !externalObjectFilterError && (viewState.viewMode === "board" ? (
         <KanbanBoard
           issues={filtered}
+          columnCounts={boardColumnCounts}
+          cappedStatuses={cappedBoardStatuses}
           agents={agents}
           liveIssueIds={liveIssueIds}
           compactCards={boardCompactCards}
