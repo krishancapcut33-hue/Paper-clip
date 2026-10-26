@@ -158,17 +158,19 @@ it("validates the native daemon's namespace envelope before reserving and forwar
   expect(transport).toHaveBeenCalledOnce();
 });
 it.each([
-  { type: "namespace", name: " ", tools: [{ type: "function" }] },
-  { type: "namespace", name: "local", description: {}, tools: [{ type: "function" }] },
+  { type: "namespace", name: " ", tools: [{ type: "function", name: "local" }] },
+  { type: "namespace", name: "local", description: {}, tools: [{ type: "function", name: "local" }] },
   { type: "namespace", name: "local", tools: [] },
   { type: "namespace", name: "local", tools: null },
   { type: "namespace", name: "local", tools: [null] },
   { type: ["function"], name: "local" },
   { type: ["custom"], name: "local" },
-  { type: "namespace", name: "local", tools: [{ type: ["function"] }] },
-  { type: "namespace", name: "local", tools: [{ type: ["custom"] }] },
-  { type: "namespace", name: "local", tools: [{ type: "function" }], future_hosted_tool: true },
-  { type: "namespace", name: "local", tools: [{ type: "namespace", name: "nested", tools: [{ type: "function" }] }] },
+  { type: "namespace", name: "local", tools: [{ type: ["function"], name: "local" }] },
+  { type: "namespace", name: "local", tools: [{ type: ["custom"], name: "local" }] },
+  ...[undefined, null, 7, "", " "].flatMap(name => ["function", "custom"].flatMap(type =>
+    [{ type, name }, { type: "namespace", name: "local", tools: [{ type, name }] }])),
+  { type: "namespace", name: "local", tools: [{ type: "function", name: "local" }], future_hosted_tool: true },
+  { type: "namespace", name: "local", tools: [{ type: "namespace", name: "nested", tools: [{ type: "function", name: "local" }] }] },
   ...["web_search", "file_search", "image_generation", "code_interpreter", "computer", "mcp", "unknown"].map(type =>
     ({ type: "namespace", name: "local", tools: [{ type }] })),
 ])("rejects malformed, nested, or hosted namespace tools before any side effects", async tool => {

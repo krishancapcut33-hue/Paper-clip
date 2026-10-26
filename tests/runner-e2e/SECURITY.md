@@ -510,6 +510,7 @@ The manifest, journal, and receipts are not public report projections.
 normalizer. Qualification callers must apply it before recording budget-denial
 proof. The forwarding path applies the same policy before a ledger reservation.
 OpenAI tools may use one namespace level around local function or custom tools.
+Function and custom leaves require nonblank string names.
 Namespace wrappers contain only `type`, `name`, optional `description`, and
 `tools`. Nested namespaces, hosted tools, and tool lists attached to leaves fail
 closed. The request may contain at most 1,024 tool definitions, counting namespace

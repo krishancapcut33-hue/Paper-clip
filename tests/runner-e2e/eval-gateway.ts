@@ -70,7 +70,8 @@ function qualifiedOpenAiTools(tools: unknown): boolean {
   let remaining = 1024;
   const leaf = (tool: unknown): boolean => {
     const definition = row(tool);
-    return --remaining >= 0 && (definition.type === "function" || definition.type === "custom") && !Object.hasOwn(definition, "tools");
+    return --remaining >= 0 && (definition.type === "function" || definition.type === "custom")
+      && typeof definition.name === "string" && Boolean(definition.name.trim()) && !Object.hasOwn(definition, "tools");
   };
   return tools.every(tool => {
     const definition = row(tool);

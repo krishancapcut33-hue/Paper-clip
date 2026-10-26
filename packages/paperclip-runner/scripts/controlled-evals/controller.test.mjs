@@ -6,13 +6,15 @@ import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { build } from 'esbuild';
+import { createRequire } from 'node:module';
 import { canonical, costRuntime, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
 import { attemptDirectory, runControlledEval } from './run.mjs';
 import { summarizeControlledCampaign } from './report.mjs';
 import { readRegularFile, replaceEvidenceFile } from './evidence-files.mjs';
 import { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } from './archive.mjs';
 import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runner-protocol-eval-campaign.mjs';
+
+const { build } = createRequire(new URL('../../../../package.json', import.meta.url))('esbuild');
 
 const childScript = options => `
 import assert from 'node:assert/strict';
