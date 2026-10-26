@@ -26,6 +26,7 @@ const transcriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
   isInitialHydrating: false,
   hydratedRunIds: undefined as Set<string> | undefined,
+  truncatedRunIds: new Set<string>(),
 }));
 const nativeTranscriptState = vi.hoisted(() => ({
   transcriptByRun: new Map(),
@@ -51,8 +52,7 @@ const DIRECT_ADAPTER_TYPES = [
 const editorCallbacks = vi.hoisted(() => ({ change: (_value: string) => {} }));
 const streamlinedState = vi.hoisted(() => ({ enabled: true }));
 
-vi.mock("@/components/transcript/useLiveRunTranscripts", async (importOriginal) => ({
-  ...await importOriginal<typeof import("@/components/transcript/useLiveRunTranscripts")>(),
+vi.mock("@/components/transcript/useLiveRunTranscripts", () => ({
   useLiveRunTranscripts: ({ runs, logReadLimitBytes }: { runs: unknown[]; logReadLimitBytes?: number }) => {
     transcriptHookRuns.legacy.push(runs);
     transcriptHookRuns.legacyReadLimits.push(logReadLimitBytes);
@@ -60,6 +60,7 @@ vi.mock("@/components/transcript/useLiveRunTranscripts", async (importOriginal) 
       transcriptByRun: new Map(transcriptState.transcriptByRun),
       isInitialHydrating: transcriptState.isInitialHydrating,
       hydratedRunIds: transcriptState.hydratedRunIds,
+      truncatedRunIds: transcriptState.truncatedRunIds,
     };
   },
 }));
@@ -125,6 +126,7 @@ beforeEach(() => {
   transcriptState.transcriptByRun.clear();
   transcriptState.isInitialHydrating = false;
   transcriptState.hydratedRunIds = undefined;
+  transcriptState.truncatedRunIds.clear();
   nativeTranscriptState.transcriptByRun.clear();
   nativeTranscriptState.errorsByRun.clear();
   nativeTranscriptState.hydratedRunIds = undefined;
@@ -377,6 +379,7 @@ it.each([true, false])("keeps cold-open messages readable while history is pendi
 
 it.each([0, 32_000, 100_000])("offers earlier output only when a single legacy run exceeds the compact window (%s bytes)", (logBytes) => {
   const onExpandHistory = vi.fn();
+  if (logBytes > 32_000) transcriptState.truncatedRunIds.add("legacy-run");
   const props = {
     issueId: "single-legacy-run", comments: [], onAdd: async () => {}, onExpandHistory,
     linkedRuns: [{ runId: "legacy-run", agentId: "agent", status: "succeeded", adapterType: "claude_local", runtimeMode: "legacy" as const, createdAt: "2025-01-01T10:00:00Z", startedAt: "2025-01-01T10:00:00Z", logBytes }],

@@ -31,7 +31,6 @@ import {
 } from "@/components/IssueChatThread";
 import {
   useLiveRunTranscripts,
-  resolveInitialLogOffset,
   type RunTranscriptSource,
 } from "@/components/transcript/useLiveRunTranscripts";
 import { useNativeRunTranscripts } from "@/components/transcript/useNativeRunTranscripts";
@@ -970,6 +969,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     transcriptByRun: logTranscriptByRun,
     isInitialHydrating: logsAreInitiallyHydrating,
     hydratedRunIds: hydratedLogRunIds,
+    truncatedRunIds,
     errorsByRun: logErrorsByRun,
     retry: retryLogs,
   } = useLiveRunTranscripts({ runs: logRuns, companyId, ...(props.compactHistory ? { logReadLimitBytes: COMPACT_RUN_LOG_READ_LIMIT_BYTES } : {}) });
@@ -2830,7 +2830,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
 
   const historyControl = props.historyControl ?? (
     props.compactHistory && props.onExpandHistory
-    && logRuns.some((run) => resolveInitialLogOffset(run, COMPACT_RUN_LOG_READ_LIMIT_BYTES) > 0)
+    && logRuns.some((run) => truncatedRunIds?.has(run.id))
       ? <Button type="button" variant="ghost" size="sm" onClick={props.onExpandHistory}>More run output</Button>
       : null
   );
