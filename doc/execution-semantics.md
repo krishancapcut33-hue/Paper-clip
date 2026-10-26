@@ -2000,7 +2000,10 @@ remote execution. The provider receives only bounded search and call schemas,
 even when its protocol can fit the full catalog. This bounds provider grammar
 compilation independently of the transport's tool-count and byte limits. Search
 returns pinned tool aliases and schemas, intersects fresh grants, and respects
-planning/ask restrictions. Calls retain the original gateway binding and its
+planning/ask restrictions. OpenCode discovery pages use a 32 KiB budget; larger
+schemas use 16K-character chunks so JSON escaping and the result envelope fit
+its HTTP MCP bridge. Other harnesses keep the existing PRP discovery budgets.
+Calls retain the original gateway binding and its
 argument validation, approvals, revocation, and audit rules; prompt arguments
 cannot choose a gateway or credential. Assigned gateway launch credentials stay
 on the controller. The MCP bridge preserves exact declared operation names,
