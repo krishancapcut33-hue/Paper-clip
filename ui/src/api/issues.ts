@@ -89,6 +89,7 @@ export type ResolveRecoveryActionResponse = {
 export type IssueListFilters = {
   ids?: readonly string[];
   parentIds?: readonly string[];
+  oneChildPerParent?: boolean;
   projection?: "index" | "rows";
   attention?: "blocked";
   status?: string;
@@ -130,6 +131,7 @@ function issueListSearchParams(filters?: IssueListFilters) {
   if (filters?.projectId) params.set("projectId", filters.projectId);
   if (filters?.parentId) params.set("parentId", filters.parentId);
   if (filters?.parentIds) params.set("parentIds", filters.parentIds.join(","));
+  if (filters?.oneChildPerParent) params.set("oneChildPerParent", "true");
   if (filters?.assigneeAgentId)
     params.set("assigneeAgentId", filters.assigneeAgentId);
   if (filters?.participantAgentId)

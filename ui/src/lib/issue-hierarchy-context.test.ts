@@ -54,4 +54,16 @@ describe("bounded hierarchy reads", () => {
     expect(result.issues.map((row) => row.id)).toEqual(["hidden-0", "visible"]);
     expect(result.hasMore).toBe(false);
   });
+  it("checks many collapsed parents in one bounded request", async () => {
+    const parents = Array.from({ length: 30 }, (_, index) => task(`parent-${index}`));
+    const calls: unknown[] = [];
+    const result = await loadIssueHierarchyChildren("company", parents, parents.map((row) => row.id), 100,
+      async (ids, limit, offset, oneChildPerParent) => {
+        calls.push({ ids, limit, offset, oneChildPerParent });
+        return ids.map((id) => task(`child-${id}`, id));
+      });
+    expect(calls).toEqual([{ ids: parents.map((row) => row.id), limit: 30, offset: 0, oneChildPerParent: true }]);
+    expect(result.issues).toHaveLength(30);
+    expect(result.hasMore).toBe(false);
+  });
 });

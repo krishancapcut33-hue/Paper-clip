@@ -8357,6 +8357,11 @@ export function issueRoutes(
     const compactView = view === "compact" || view === "index" || view === "rows";
     const issueIds = typeof req.query.ids === "string" ? [...new Set(req.query.ids.split(","))] : undefined;
     const parentIds = typeof req.query.parentIds === "string" ? [...new Set(req.query.parentIds.split(","))] : undefined;
+    const oneChildPerParent = parseOptionalBooleanQuery(req.query.oneChildPerParent);
+    if (oneChildPerParent === null || (oneChildPerParent && (view !== "index" || !parentIds))) {
+      res.status(400).json({ error: "oneChildPerParent must be a boolean and requires view=index with parentIds" });
+      return;
+    }
     if (req.query.ids !== undefined && (!issueIds?.length || issueIds.length > 100 || issueIds.some((id) => !z.string().uuid().safeParse(id).success))) {
       res.status(400).json({ error: "ids must contain one to 100 comma-separated UUIDs" });
       return;
@@ -8525,6 +8530,7 @@ export function issueRoutes(
     const listFilters: IssueFilters = {
       issueIds,
       parentIds,
+      oneChildPerParent,
       listProjection: view === "index" || view === "rows" ? view : undefined,
       readCondition: await issueReadSqlCondition(db, req.actor),
       attention: attention === "blocked" ? "blocked" : undefined,

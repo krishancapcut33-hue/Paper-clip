@@ -39,8 +39,8 @@ export function useIssueHierarchyContext(companyId: string | null, matches: Issu
       ...previous, issues: previous.issues.filter((issue) => issue.companyId === companyId),
     } : undefined,
     queryFn: ({ signal }) => loadIssueHierarchyChildren(companyId!, matches, collapsedParents, rowBudget,
-      async (parentIds, limit, offset) => await issuesApi.listCompact(companyId!, {
-        parentIds, projection: "index", limit, offset, includeRoutineExecutions: true,
+      async (parentIds, limit, offset, oneChildPerParent) => await issuesApi.listCompact(companyId!, {
+        parentIds, oneChildPerParent, projection: "index", limit, offset, includeRoutineExecutions: true,
       }, { signal }) as Issue[]),
   });
   return {

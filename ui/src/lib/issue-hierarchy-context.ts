@@ -37,7 +37,7 @@ export async function loadIssueHierarchyChildren(
   matches: Issue[],
   collapsedParents: string[],
   rowBudget: number,
-  readChildren: (parentIds: string[], limit: number, offset: number) => Promise<Issue[]>,
+  readChildren: (parentIds: string[], limit: number, offset: number, oneChildPerParent?: boolean) => Promise<Issue[]>,
 ): Promise<{ issues: Issue[]; hasMore: boolean }> {
   const context: Issue[] = [];
   const visited = new Set<string>();
@@ -58,9 +58,9 @@ export async function loadIssueHierarchyChildren(
     // markers must not spend the budget reserved for expanded, readable rows.
     for (let start = 0; start < collapsedIds.length; start += 100) {
       const batch = collapsedIds.slice(start, start + 100);
-      const markers = await Promise.all(batch.map((id) => readChildren([id], 1, 0)));
+      const markers = await readChildren(batch, batch.length, 0, true);
       probes += batch.length;
-      for (const child of markers.flat()) {
+      for (const child of markers) {
         if (child.companyId !== companyId || fetched.has(child.id)) continue;
         fetched.add(child.id);
         context.push(child);

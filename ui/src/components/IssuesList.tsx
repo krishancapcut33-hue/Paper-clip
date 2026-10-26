@@ -2265,7 +2265,9 @@ function StreamlinedIssuesList({
                           <>
                             {hasChildren && !isExpanded ? (
                               <span className="ml-1.5 text-xs text-muted-foreground">
-                                ({totalDescendants} sub-task{totalDescendants !== 1 ? "s" : ""})
+                                {enableAgentCreatedVisibilityFilter
+                                  ? "(sub-tasks)"
+                                  : `(${totalDescendants} sub-task${totalDescendants !== 1 ? "s" : ""})`}
                               </span>
                             ) : null}
                             {issueBadge ? (

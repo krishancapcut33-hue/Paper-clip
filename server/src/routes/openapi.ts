@@ -4276,6 +4276,7 @@ registry.registerPath({
       view: z.enum(["compact", "index", "rows"]).optional(),
       ids: z.string().optional().describe("One to 100 comma-separated task UUIDs; requires index or rows without attention."),
       parentIds: z.string().optional().describe("One to 100 comma-separated parent UUIDs; requires index or rows without attention."),
+      oneChildPerParent: z.boolean().optional().describe("Return at most one readable child per parent; requires view=index and parentIds."),
     }).passthrough(),
   },
   responses: {

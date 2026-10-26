@@ -21,6 +21,7 @@ Query parameters:
 | `view` | `index`: collection rows without bodies or diagnostics; `rows`: rows with diagnostic summaries but no bodies; `compact`: existing board row contract |
 | `ids` | One to 100 comma-separated task UUIDs; requires `view=index` or `view=rows` without `attention` |
 | `parentIds` | One to 100 comma-separated parent UUIDs for batched child context; same projection restriction as `ids` |
+| `oneChildPerParent` | With `view=index` and `parentIds`, return at most one readable child per parent for collapsed-tree affordances |
 
 Results sorted by priority.
 

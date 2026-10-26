@@ -1879,6 +1879,7 @@ export interface IssueFilters {
   issueIds?: string[];
   listProjection?: "index" | "rows";
   parentIds?: string[];
+  oneChildPerParent?: boolean;
   assigneeUserId?: string;
   touchedByUserId?: string;
   inboxArchivedByUserId?: string;
@@ -8255,11 +8256,14 @@ export function issueService(db: Db) {
       }
       const priorityOrder = sql`CASE ${issues.priority} WHEN 'critical' THEN 0 WHEN 'high' THEN 1 WHEN 'medium' THEN 2 WHEN 'low' THEN 3 ELSE 4 END`;
       const searchOrder = sql<number>`-task_search.score`;
-      const issueSource = db.select(filters?.listProjection ? {
+      const selectedFields = filters?.listProjection ? {
         ...issueListSelect,
         description: sql<string | null>`NULL`,
         descriptionTruncated: sql<boolean>`false`,
-      } : issueListSelect).from(issues);
+      } : issueListSelect;
+      const issueSource = (filters?.oneChildPerParent
+        ? db.selectDistinctOn([issues.parentId], selectedFields)
+        : db.select(selectedFields)).from(issues);
       const searchedSource = hasSearch
         ? issueSource.innerJoin(sql`(
             ${taskSearchCtes(companyId, taskSearch, true, and(...conditions), filters?.readCondition)}
@@ -8269,6 +8273,7 @@ export function issueService(db: Db) {
       const baseQuery = searchedSource
         .where(and(...conditions))
         .orderBy(
+          ...(filters?.oneChildPerParent ? [asc(issues.parentId)] : []),
           ...issueListOrderBy(companyId, {
             hasSearch,
             priorityOrder,

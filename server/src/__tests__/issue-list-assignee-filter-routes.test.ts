@@ -137,15 +137,38 @@ describeEmbeddedPostgres("issue list routes assigneeAgentId filter", () => {
         expect(children.status).toBe(200);
         expect(children.body.map((row: { id: string }) => row.id)).toEqual([childId]);
       }
+      const preview = await request(app).get(`/api/companies/${companyId}/issues`).query({ view: "index", parentIds: parentId, oneChildPerParent: true }).expect(200);
+      expect(preview.body.map((row: { id: string }) => row.id)).toEqual([childId]);
       for (const query of [
         { view: "index", ids: "invalid" },
         { view: "index", parentIds: Array.from({ length: 101 }, () => randomUUID()).join(",") },
         { view: "index", ids: parentId, attention: "blocked" },
         { view: "compact", ids: parentId },
+        { view: "index", oneChildPerParent: true },
+        { view: "rows", parentIds: parentId, oneChildPerParent: true },
+        { view: "index", parentIds: parentId, oneChildPerParent: "invalid" },
       ]) {
         expect((await request(app).get(`/api/companies/${companyId}/issues`).query(query)).status).toBe(400);
       }
     } finally { vi.unstubAllEnvs(); }
+  });
+
+  it("returns one child per parent without letting a large collapsed tree fill the page", async () => {
+    const companyId = randomUUID(), firstParentId = randomUUID(), secondParentId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Collapsed trees", issuePrefix: uniqueIssuePrefix() });
+    await seedCloudTenantMember(companyId);
+    await db.insert(issues).values([
+      { id: firstParentId, companyId, title: "First parent" },
+      { id: secondParentId, companyId, title: "Second parent" },
+    ]);
+    await db.insert(issues).values([
+      ...Array.from({ length: 120 }, (_, index) => ({ companyId, parentId: firstParentId, title: `Child ${index}` })),
+      { companyId, parentId: secondParentId, title: "Other child" },
+    ]);
+    const response = await request(createApp(companyId)).get(`/api/companies/${companyId}/issues`)
+      .query({ view: "index", parentIds: [firstParentId, secondParentId].join(","), oneChildPerParent: true, limit: 2 }).expect(200);
+    expect(response.body).toHaveLength(2);
+    expect(new Set(response.body.map((row: { parentId: string }) => row.parentId))).toEqual(new Set([firstParentId, secondParentId]));
   });
 
   it("returns only unassigned issues for assigneeAgentId=null", async () => {
