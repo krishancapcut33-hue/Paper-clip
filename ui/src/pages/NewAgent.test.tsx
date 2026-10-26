@@ -41,11 +41,17 @@ describe("New agent setup", () => {
     await click("Connect");
     const originalBinding = api.testEnvironment.mock.calls[0][2].aiConnection;
     const probes = api.testEnvironment.mock.calls.length;
+    let finishDiscovery!: (adapters: typeof state.adapters) => void;
+    adapterApi.list.mockImplementationOnce(() => new Promise(resolve => { finishDiscovery = resolve; }));
     api.update.mockRejectedValueOnce(new Error("Environment save unavailable"));
     const select = container.querySelector<HTMLSelectElement>('[aria-label="Environment"]')!;
     await act(async () => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
     await settle();
     expect(container.textContent).toContain("Configure your agent");
+    expect(container.textContent).toContain("Environment save unavailable");
+    await act(async () => finishDiscovery(state.adapters.map((adapter: any) => adapter.type === "codex_local"
+      ? { ...adapter, defaultRunner: "paperclip", supportedRunners: ["paperclip", "legacy"] } : adapter)));
+    await settle();
     expect(container.textContent).toContain("Environment save unavailable");
     await click("Run test");
     expect(api.testEnvironment).toHaveBeenCalledTimes(probes);
@@ -54,6 +60,36 @@ describe("New agent setup", () => {
     expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", expect.any(String), expect.objectContaining({
       environmentId: "computer", aiConnection: originalBinding,
     }));
+  });
+
+  it("ignores a detail read that completes after a newer environment save", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },
+      { id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} },
+    ]);
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    const id = api.create.mock.calls[0][1].setupId;
+    state.params.set("setupAgentId", id);
+    await renderCurrentParams();
+    const key = queryKeys.agents.detail(id);
+    const oldDraft = cache.getQueryData(key);
+    let finishRead!: (agent: unknown) => void;
+    api.get.mockImplementationOnce(() => new Promise(resolve => { finishRead = resolve; }));
+    await act(async () => { void cache.refetchQueries({ queryKey: key }); });
+    expect(finishRead).toBeTypeOf("function");
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Environment"]')!;
+    await act(async () => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    await act(async () => finishRead(oldDraft));
+    await settle();
+    expect(cache.getQueryData(key)).toMatchObject({ defaultEnvironmentId: "computer" });
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", expect.any(String), expect.objectContaining({ agentId: id, environmentId: "computer" }));
+    await click("Finish setup");
+    expect(api.hire).toHaveBeenCalledWith("company-1", expect.objectContaining({ setupAgentId: id, defaultEnvironmentId: "computer" }));
   });
 
   it("waits for background preparation and tests the same saved computer after it completes", async () => {
@@ -262,6 +298,7 @@ describe("New agent setup", () => {
     expect(calls).toEqual(["discovery-before", "platform", "discovery-after", "adapter"]);
     expect(envApi.probe).toHaveBeenCalledExactlyOnceWith("sandbox-1", "company-1");
     expect(api.testEnvironment).toHaveBeenCalledTimes(1);
+    expect(api.testEnvironment.mock.calls[0][2]).toMatchObject({ agentId: api.create.mock.calls[0][1].setupId, runner: measured });
     expect(api.hire).toHaveBeenCalledTimes(1);
     const tested = api.testEnvironment.mock.calls[0][2].adapterConfig;
     const saved = api.hire.mock.calls[0][1];

@@ -220,6 +220,7 @@ function Setup({
   );
   const [error, setError] = useState<string | null>(null);
   const [environmentSaving, setEnvironmentSaving] = useState(false);
+  const [environmentSaveError, setEnvironmentSaveError] = useState<string | null>(null);
   const generation = useRef(0);
   const qualificationTransition = useRef<{ run: number; companyId: string; environmentId: string | null; runner: AgentRunner } | null>(null);
   const savingRef = useRef(false);
@@ -571,7 +572,8 @@ function Setup({
         ...(["claude", "grok", "copilot", "pi"].includes(runnerProvider) ? { acpxAgent: runnerProvider } : {}),
       } : {}, defaultEnvironmentId: environmentOverride || (forced.forced || managedOnly ? environmentId : null),
       runtimeConfig: buildNewAgentRuntimeConfig({ heartbeatEnabled: false }),
-    }).then(agent => {
+    }).then(async agent => {
+      await cache.cancelQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       setCreated(agent);
       cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
       void cache.invalidateQueries({ queryKey: queryKeys.agents.list(companyId) });
@@ -635,6 +637,7 @@ function Setup({
         ...(nextConnection?.applyStoredClaudeLogin ? { applyStoredClaudeLogin: true } : {}),
       }, companyId);
       rememberCredentials();
+      await cache.cancelQueries({ queryKey: queryKeys.agents.detail(agent.id) });
       setCreated(agent);
       cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
       if (exit) navigate("/agents/all");
@@ -663,8 +666,9 @@ function Setup({
     setEnvironmentOverride(selected);
     resetTest();
     setEnvironmentSaving(true);
+    setEnvironmentSaveError(null);
     try { await saveDraft(connection, false, undefined, selected); }
-    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save the environment."); }
+    catch (cause) { setEnvironmentSaveError(cause instanceof Error ? cause.message : "Could not save the environment."); }
     finally { setEnvironmentSaving(false); }
   }
 
@@ -695,7 +699,7 @@ function Setup({
         agentId: created?.id,
         adapterType: requestAdapterType,
         providerAdapter: brandType,
-        ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && runner !== "auto" ? { runner } : {}),
+        ...(["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType) && (qualified || runner !== "auto") ? { runner: qualified?.runner ?? runner } : {}),
         adapterConfig: config,
         testCredentials: pendingCredentials(nextConnection),
         aiConnection: runtimeAiBinding ?? nextConnection?.aiConnection,
@@ -766,6 +770,7 @@ function Setup({
       });
       setApiKey("");
       setConnection(null);
+      await cache.cancelQueries({ queryKey: queryKeys.agents.detail(response.agent.id) });
       setCreated(response.agent);
       appearanceDraft.clear();
       setScreen("saved");
@@ -902,7 +907,8 @@ function Setup({
           <p role="alert" className="text-sm text-destructive">{created.lifecycleError}</p>
           <Button disabled={busy} onClick={() => {
             setEnvironmentSaving(true);
-            void agentsApi.retryLifecycle(created.id, companyId).then(agent => {
+            void agentsApi.retryLifecycle(created.id, companyId).then(async agent => {
+              await cache.cancelQueries({ queryKey: queryKeys.agents.detail(agent.id) });
               setCreated(agent);
               cache.setQueryData(queryKeys.agents.detail(agent.id), agent);
             }).catch(cause => setError(cause instanceof Error ? cause.message : "Could not retry computer preparation."))
@@ -1432,7 +1438,8 @@ function Setup({
                         {error}
                       </p>
                     )}
-                    {error && !environmentSelectionSaved && <Button disabled={busy} onClick={() => void changeEnvironment()}>Retry saving environment</Button>}
+                    {environmentSaveError && <p role="alert" className="text-sm text-destructive">{environmentSaveError}</p>}
+                    {environmentSaveError && !environmentSelectionSaved && <Button disabled={busy} onClick={() => void changeEnvironment()}>Retry saving environment</Button>}
                     <div className="flex justify-between border-t border-border py-5">
                       <div className="flex items-center gap-3">
                         <Button type="button" variant="ghost" disabled={busy} onClick={() => void saveAndExit()}>Save & exit</Button>

@@ -99,7 +99,7 @@ For an agent-owned plugin environment, verify preparation before connecting,
 same-agent probes, account preservation after an environment change, failed
 selection-save retry, and switching back while the computer stops. Confirm the
 setup hold still blocks ordinary work and API key creation before finishing.
-The [lifecycle tests](../../server/src/modules/agent-lifecycle/__tests__/lifecycle.test.ts)
+The [setup lifecycle tests](../../server/src/modules/agent-lifecycle/__tests__/setup.test.ts)
 exercise durable transitions with synthetic plugin resources; they do not prove
 live VM provisioning.
 
