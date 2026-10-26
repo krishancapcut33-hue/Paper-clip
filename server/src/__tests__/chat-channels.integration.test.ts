@@ -60730,11 +60730,26 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     },
   );
 
-  it.each(["legacy_receipt", "concurrent_clicks", "lost_dispatch_reply", "restart", "retry_failed_successor", "http", "handoff_rollback", "board_permission_wait", "peer_conversation", "backlog_51"] as const)(
+  it.each(["legacy_receipt", "concurrent_clicks", "lost_dispatch_reply", "restart", "retry_failed_successor", "http", "handoff_rollback", "board_permission_wait", "peer_conversation", "backlog_51", "consumed_backlog_52"] as const)(
     "preserves one current GitHub Retry across %s", async mode => {
-      const f = await currentGitHubTaskRetryFixture(true, mode === "backlog_51" ? 51 : 1);
+      const f = await currentGitHubTaskRetryFixture(true, mode.includes("backlog") ? 51 : mode === "peer_conversation" ? 2 : 1);
       try {
         const companyId = f.fixture.companyId, issueId = f.issue.id;
+        if (mode === "consumed_backlog_52") {
+          const sources = await db.select().from(chatActions).where(and(eq(chatActions.conversationId, f.conversation.id),
+            eq(chatActions.kind, "inbound_wakeup"))).orderBy(asc(chatActions.createdAt), asc(chatActions.id));
+          expect(sources).toHaveLength(52);
+          const commentIds = sources.map(source => source.payload.commentId);
+          await db.update(heartbeatRuns).set({ finishedAt: new Date(), contextSnapshot: {
+            ...(await readHeartbeatRunsById(f.runId))[0].contextSnapshot,
+            wakeCommentIds: commentIds, wakeCommentId: commentIds.at(-1),
+          } }).where(eq(heartbeatRuns.id, f.runId));
+          await db.update(agentWakeupRequests).set({ runId: f.runId, status: "coalesced",
+            payload: sql`${agentWakeupRequests.payload} || ${JSON.stringify({ coalescedIntoWakeupRequestId: f.action.id })}::jsonb`,
+          }).where(and(inArray(agentWakeupRequests.id, sources.map(source => source.id)),
+            sql`${agentWakeupRequests.id} <> ${f.action.id}::uuid`));
+        }
+        let peerInput: typeof chatActions.$inferSelect | undefined;
         if (mode === "peer_conversation") {
           const originId = randomUUID();
           await db.insert(chatConversations).values({ ...f.conversation, id: originId, sessionGeneration: 2 });
@@ -60742,9 +60757,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             payload: sql`jsonb_set(${chatActions.payload}, '{sessionGeneration}', '2'::jsonb)`,
           }).where(inArray(chatActions.id, [f.action.id, f.pending!.id]));
           await db.update(chatDeliveries).set({ conversationId: originId })
-            .where(eq(chatDeliveries.conversationId, f.conversation.id));
+            .where(inArray(chatDeliveries.id, [f.action.deliveryId!, f.pending!.deliveryId!]));
           await db.update(chatMessageLinks).set({ conversationId: originId })
-            .where(eq(chatMessageLinks.conversationId, f.conversation.id));
+            .where(inArray(chatMessageLinks.deliveryId, [f.action.deliveryId!, f.pending!.deliveryId!]));
+          [peerInput] = await db.select().from(chatActions).where(and(eq(chatActions.conversationId, f.conversation.id),
+            eq(chatActions.kind, "inbound_wakeup")));
+          expect(peerInput).toBeDefined();
         }
         if (mode === "legacy_receipt") {
           const [originalEndpoint] = await readChatEndpointsById(f.endpoint.id);
@@ -60766,6 +60784,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: input.actorId,
             status: "active", membershipRole: "operator" });
         }
+        const queryEvents: Record<string, unknown>[] = [];
+        const capture = mode === "backlog_51" ? createDatabaseResponseCapture({ start: Date.now() - 1,
+          end: Date.now() + 59_000 }, event => queryEvents.push(event)) : undefined;
+        if (capture) installDatabaseResponseCapture(db, { chatActions, chatDeliveries, chatMessageLinks, issueComments,
+          agentWakeupRequests, chatEndpoints, chatConversations }, capture);
         let one: Awaited<ReturnType<typeof requestTaskRetry>>, two: typeof one;
         if (mode === "http") {
           const app = express();
@@ -60780,6 +60803,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           [one, two] = replies.map(response => response.body);
         } else [one, two] = await Promise.all([requestTaskRetry(input), requestTaskRetry({ ...input,
           idempotencyKey: mode === "concurrent_clicks" ? randomUUID() : input.idempotencyKey })]);
+        if (capture) {
+          capture.flush();
+          expect(Number(queryEvents.find(event => event.event === "paperclip.db_response_capture.summary.v1")?.startedQueries))
+            .toBeLessThan(180);
+        }
         expect(two.requestId).toBe(one.requestId);
         expect(one).toMatchObject({ accepted: true, chatActionId: expect.any(String) });
         let service = f.service;
@@ -60821,8 +60849,10 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         const [parent] = await readAgentWakeupRequestsById(one.chatActionId!);
         expect(parent.runId).toBeTruthy();
         expect((await readAgentWakeupRequestsById(f.pending!.id))[0]).toMatchObject({
-          status: "coalesced", runId: parent.runId,
+          status: "coalesced", runId: mode === "consumed_backlog_52" ? f.runId : parent.runId,
         });
+        if (peerInput) expect((await readAgentWakeupRequestsById(peerInput.id))[0])
+          .toMatchObject({ status: "deferred_issue_execution", runId: null });
         if (mode === "backlog_51") {
           const saved = await db.select({ id: chatActions.id, payload: chatActions.payload,
             status: agentWakeupRequests.status, runId: agentWakeupRequests.runId }).from(chatActions)
@@ -60904,15 +60934,23 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   });
 
   it.each(["changed_bot", "disabled_repository", "retargeted_repository", "revoked_sender", "paused_endpoint",
-    "edited_source", "deleted_source", "reassigned_task", "second_reconnect"] as const)(
+    "edited_source", "deleted_source", "reassigned_task", "second_reconnect", "later_message_wrong_bot", "later_message_deleted"] as const)(
     "keeps current GitHub task Retry authority gated: %s", async gate => {
-      const f = await currentGitHubTaskRetryFixture(true);
+      const f = await currentGitHubTaskRetryFixture(true, gate.startsWith("later_message") ? 2 : 1);
       try {
         const companyId = f.fixture.companyId, issueId = f.issue.id;
         await f.service.configure(f.endpoint.id, { action: "reconnect" }, "owner-user");
         const input = { db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
           observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry };
         const accepted = await requestTaskRetry(input);
+        if (gate.startsWith("later_message")) {
+          const [later] = await db.select().from(chatActions).where(and(eq(chatActions.conversationId, f.conversation.id),
+            eq(chatActions.kind, "inbound_wakeup"), sql`${chatActions.id} not in (${f.action.id}::uuid, ${f.pending!.id}::uuid)`));
+          if (gate === "later_message_wrong_bot") await db.update(chatDeliveries).set({
+            normalizedEvent: sql`jsonb_set(${chatDeliveries.normalizedEvent}, '{githubAuthority,botExternalId}', ${JSON.stringify(randomUUID())}::jsonb)`,
+          }).where(eq(chatDeliveries.id, later.deliveryId!));
+          else await db.update(issueComments).set({ deletedAt: new Date() }).where(eq(issueComments.id, String(later.payload.commentId)));
+        }
         if (gate === "changed_bot") await db.update(chatEndpoints).set({ botExternalId: randomUUID() })
           .where(eq(chatEndpoints.id, f.endpoint.id));
         if (gate === "disabled_repository") await db.update(chatEndpointResources).set({ enabled: false })

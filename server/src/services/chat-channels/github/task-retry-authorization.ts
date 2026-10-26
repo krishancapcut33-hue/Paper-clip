@@ -11,6 +11,13 @@ export type TaskRetryWakeAuthority = {
   runtimeFence?: LifecycleRuntimeFence;
 };
 
+export function githubTaskRetryAppMatches(endpoint: EndpointRow, delivery: typeof chatDeliveries.$inferSelect,
+  response: { payload: Record<string, unknown> } | undefined) {
+  const original = delivery.normalizedEvent.githubAuthority as { botExternalId?: unknown } | undefined;
+  return original?.botExternalId !== undefined ? original.botExternalId === endpoint.botExternalId
+    : response?.payload.botExternalId === endpoint.botExternalId && response.payload.agentId === endpoint.assignedAgentId;
+}
+
 export function githubTaskRetryDestinationMatches(delivery: typeof chatDeliveries.$inferSelect,
   conversation: typeof chatConversations.$inferSelect, resource: typeof chatEndpointResources.$inferSelect | null) {
   const originalResource = delivery.normalizedEvent.resource as { providerResourceId?: unknown } | undefined;
@@ -39,11 +46,7 @@ export async function githubTaskRetryRuntimeFence(tx: DbOrTransaction, endpoint:
     eq(chatActions.conversationId, action.conversationId!), eq(chatActions.deliveryId, delivery.id),
     eq(chatActions.kind, "github_response_comment"),
   ));
-  const original = delivery.normalizedEvent.githubAuthority as { botExternalId?: unknown } | undefined;
-  const sameBot = original?.botExternalId !== undefined
-    ? original.botExternalId === endpoint.botExternalId
-    : response?.payload.botExternalId === endpoint.botExternalId && response.payload.agentId === endpoint.assignedAgentId;
-  if (!sameBot) throw deny();
+  if (!githubTaskRetryAppMatches(endpoint, delivery, response)) throw deny();
   const [connection] = await tx.select({ refs: toolConnections.credentialSecretRefs,
     enabled: toolConnections.enabled, status: toolConnections.status }).from(toolConnections).where(and(
     eq(toolConnections.companyId, endpoint.companyId), eq(toolConnections.id, endpoint.connectionId),

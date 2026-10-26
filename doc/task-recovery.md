@@ -29,6 +29,13 @@ access. The retry records the current runtime generation and credential-referenc
 fingerprint. Another reconnect invalidates that admission. Historical deliveries,
 stale webhook callbacks and the exact-run retry contract retain their fences.
 
+Task Retry keeps the complete saved-input batch, including batches larger than
+the exact-run endpoint's limit. Source rows, receipts and invalidations are read
+in batches. Within one transaction, messages with the same principal and automatic
+policy context share a current-access check; every message still proves its App,
+destination, comment link and immutable source. Different automatic policy contexts
+receive separate access checks. Input in another conversation remains queued.
+
 A connected-conversation Retry can save its exact request while the matching
 system recovery generation verifies the old executor. Saving that wait grants
 no execution authority. The chat owner rechecks the same board intent, external

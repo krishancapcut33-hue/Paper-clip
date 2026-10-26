@@ -95,6 +95,7 @@ type RetryRuntimeFence = { credentialFingerprint: string; generation: number };
 export type ChatFailedRetrySource = Awaited<ReturnType<ReturnType<typeof createChatFailedRunRetry>["failedChatRetrySource"]>>;
 
 type ChatFailedRunRetryOptions = {
+  authorizeGitHubTaskRetryBatch: ReturnType<typeof import("./inbound/wakeup-authorization.js").createInboundWakeAuthority>["authorizeGitHubTaskRetryBatch"];
   authorizeInboundWakeup: (
     database: DbOrTransaction,
     action: typeof chatActions.$inferSelect,
@@ -115,6 +116,7 @@ type ChatFailedRunRetryOptions = {
 export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOptions) {
   const {
     authorizeInboundWakeup,
+    authorizeGitHubTaskRetryBatch,
     isExternalActionAuthorizationChange,
     inboundWakeScope,
     lifecycleRuntimeFence,
@@ -988,7 +990,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
       where receipt.company_id = ${input.companyId}::uuid and receipt.agent_id = ${input.agentId}::uuid
         and (receipt.run_id = ${failedRun.id}::uuid or receipt.id = ${failedRun.wakeupRequestId}::uuid
           or receipt.payload->>'coalescedIntoWakeupRequestId' = ${failedRun.wakeupRequestId})
-        and source.company_id = ${input.companyId}::uuid and source.kind = 'inbound_wakeup' limit 51`);
+        and source.company_id = ${input.companyId}::uuid and source.kind = 'inbound_wakeup'
+        ${selectedInput ? sql`` : sql`limit 51`}`);
     if (
       !pendingSources && (admittedBatch.length !== commentIds.length ||
       admittedBatch.some(
@@ -1037,11 +1040,41 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
     );
     if (!identity[0]?.locked)
       throw new NativeChatReviewPresentationContentionError();
+    const actionIds = ordered.map(action => action.id);
+    const currentActions = await tx.select().from(chatActions).where(and(eq(chatActions.companyId, input.companyId),
+      inArray(chatActions.id, actionIds))).orderBy(asc(chatActions.id)).for("update", { noWait: true });
+    const deliveries = await tx.select().from(chatDeliveries).where(and(eq(chatDeliveries.companyId, input.companyId),
+      inArray(chatDeliveries.id, ordered.map(action => action.deliveryId!))))
+      .orderBy(asc(chatDeliveries.id)).for("update", { noWait: true });
+    const comments = await tx.select().from(issueComments).where(and(eq(issueComments.companyId, input.companyId),
+      eq(issueComments.issueId, issue.id), inArray(issueComments.id, commentIds)))
+      .orderBy(asc(issueComments.id)).for("share", { noWait: true });
+    const receipts = await tx.select().from(agentWakeupRequests).where(and(eq(agentWakeupRequests.companyId, input.companyId),
+      inArray(agentWakeupRequests.id, [...actionIds, failedRun.wakeupRequestId!, ...(input.retryActionId ? [input.retryActionId] : [])])))
+      .orderBy(asc(agentWakeupRequests.id)).for("share", { noWait: true });
+    const actionsById = new Map(currentActions.map(action => [action.id, action]));
+    const deliveriesById = new Map(deliveries.map(delivery => [delivery.id, delivery]));
+    const commentsById = new Map(comments.map(comment => [comment.id, comment]));
+    const receiptsById = new Map(receipts.map(receipt => [receipt.id, receipt]));
+    const lifecycleRows = await tx.select({
+      target: sql<string>`${chatDeliveries.normalizedEvent}->'message'->>'targetProviderEventId'`,
+      context: sql<Record<string, unknown>>`${chatDeliveries.normalizedEvent}->'runtimeContext'`,
+    }).from(chatDeliveries).where(and(eq(chatDeliveries.companyId, input.companyId),
+      eq(chatDeliveries.endpointId, first.endpointId),
+      or(isNull(chatDeliveries.conversationId), eq(chatDeliveries.conversationId, first.conversationId)),
+      ne(chatDeliveries.state, "filtered"), inArray(chatDeliveries.eventKind, ["message_updated", "message_deleted", "message_restored"]),
+      inArray(sql<string>`${chatDeliveries.normalizedEvent}->'message'->>'targetProviderEventId'`, deliveries.map(delivery => delivery.providerEventId))));
+    const lifecycleKey = (target: string, context: Record<string, unknown> | null) =>
+      JSON.stringify([target, Object.entries(context ?? {}).sort(([left], [right]) => left.localeCompare(right))]);
+    const invalidated = new Set(lifecycleRows.map(row => lifecycleKey(row.target, row.context)));
+    const batch = reauthorization ? await authorizeGitHubTaskRetryBatch(tx, ordered, {
+      nonblocking: true, terminal: input.publication === true, taskRetry: reauthorization,
+    }).catch(error => { if (isExternalActionAuthorizationChange(error)) throw failedChatRetryDenied(); throw error; }) : null;
     const canonicalSources: Array<Record<string, unknown>> = [];
     let destination: Awaited<ReturnType<typeof authorizeInboundWakeup>> | null =
       null;
     for (const action of ordered) {
-      destination = await authorizeInboundWakeup(tx, action, {
+      destination = batch?.get(action.id) ?? await authorizeInboundWakeup(tx, action, {
         nonblocking: true,
         terminal: input.publication === true,
         ...(reauthorization ? { taskRetry: reauthorization } : {}),
@@ -1051,27 +1084,9 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         throw error;
       });
       if (reauthorization && !reauthorization.runtimeFence) reauthorization.runtimeFence = destination.retryRuntimeFence;
-      const [delivery] = await tx
-        .select()
-        .from(chatDeliveries)
-        .where(eq(chatDeliveries.id, action.deliveryId!))
-        .for("update", { noWait: true });
-      const [current] = await tx
-        .select()
-        .from(chatActions)
-        .where(eq(chatActions.id, action.id))
-        .for("update", { noWait: true });
-      const [comment] = await tx
-        .select()
-        .from(issueComments)
-        .where(
-          and(
-            eq(issueComments.id, String(action.payload.commentId)),
-            eq(issueComments.companyId, input.companyId),
-            eq(issueComments.issueId, issue.id),
-          ),
-        )
-        .for("share", { noWait: true });
+      const delivery = deliveriesById.get(action.deliveryId!);
+      const current = actionsById.get(action.id);
+      const comment = commentsById.get(String(action.payload.commentId));
       if (
         !current ||
         current.status !== "processed" ||
@@ -1090,34 +1105,8 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           JSON.stringify(lifecycleRuntimeFence(destination.delivery))
       )
         throw failedChatRetryDenied();
-      const [lifecycle] = await tx
-        .select({ id: chatDeliveries.id })
-        .from(chatDeliveries)
-        .where(
-          and(
-            eq(chatDeliveries.companyId, input.companyId),
-            eq(chatDeliveries.endpointId, first.endpointId),
-            or(
-              isNull(chatDeliveries.conversationId),
-              eq(chatDeliveries.conversationId, first.conversationId),
-            ),
-            ne(chatDeliveries.state, "filtered"),
-            sql`${chatDeliveries.normalizedEvent}->'runtimeContext' = ${JSON.stringify(lifecycleRuntimeFence(delivery))}::jsonb`,
-            inArray(chatDeliveries.eventKind, [
-              "message_updated",
-              "message_deleted",
-              "message_restored",
-            ]),
-            sql`${chatDeliveries.normalizedEvent}->'message'->>'targetProviderEventId' = ${delivery.providerEventId}`,
-          ),
-        )
-        .limit(1);
-      if (lifecycle) throw failedChatRetryDenied();
-      const [receipt] = await tx
-        .select()
-        .from(agentWakeupRequests)
-        .where(eq(agentWakeupRequests.id, action.id))
-        .for("share", { noWait: true });
+      if (invalidated.has(lifecycleKey(delivery.providerEventId, lifecycleRuntimeFence(delivery)))) throw failedChatRetryDenied();
+      const receipt = receiptsById.get(action.id);
       if (!receipt) throw failedChatRetryDenied();
       assertFailedRetryReceipt(
         createDurableChatWakeupRequest({
@@ -1142,9 +1131,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
           && receipt.payload?.coalescedIntoWakeupRequestId === input.retryActionId;
         if (!direct && !owned) throw failedChatRetryDenied();
         if (owned && receipt.runId) {
-          const [owner] = await tx.select({ runId: agentWakeupRequests.runId }).from(agentWakeupRequests).where(and(
-            eq(agentWakeupRequests.companyId, input.companyId), eq(agentWakeupRequests.id, input.retryActionId!),
-          ));
+          const owner = receiptsById.get(input.retryActionId!);
           if (owner?.runId !== receipt.runId) throw failedChatRetryDenied();
         }
       }
@@ -1167,16 +1154,7 @@ export function createChatFailedRunRetry(db: Db, options: ChatFailedRunRetryOpti
         )
           throw failedChatRetryDenied();
         seen.add(ownerId);
-        const [next] = await tx
-          .select()
-          .from(agentWakeupRequests)
-          .where(
-            and(
-              eq(agentWakeupRequests.id, ownerId),
-              eq(agentWakeupRequests.companyId, input.companyId),
-            ),
-          )
-          .for("share", { noWait: true });
+        const next = receiptsById.get(ownerId);
         if (!next) throw failedChatRetryDenied();
         owner = next;
       }
