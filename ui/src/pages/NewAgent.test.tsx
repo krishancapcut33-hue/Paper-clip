@@ -10,6 +10,32 @@ import {
 } from "./NewAgent.test-support";
 
 describe("New agent setup", () => {
+  it("keeps the account on an environment save failure and blocks probes until the selection is saved", async () => {
+    envApi.list.mockResolvedValue([
+      { id: "local-1", name: "Local", status: "active", driver: "local", config: {} },
+      { id: "computer", name: "Agent computer", status: "active", driver: "plugin", config: {} },
+    ]);
+    await render("codex_local");
+    await click("OpenAIAPI key");
+    await fill("API key", "setup-test-key");
+    await click("Connect");
+    const originalBinding = api.testEnvironment.mock.calls[0][2].aiConnection;
+    const probes = api.testEnvironment.mock.calls.length;
+    api.update.mockRejectedValueOnce(new Error("Environment save unavailable"));
+    const select = container.querySelector<HTMLSelectElement>('[aria-label="Environment"]')!;
+    await act(async () => { select.value = "computer"; select.dispatchEvent(new Event("change", { bubbles: true })); });
+    await settle();
+    expect(container.textContent).toContain("Configure your agent");
+    expect(container.textContent).toContain("Environment save unavailable");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenCalledTimes(probes);
+    await click("Retry saving environment");
+    await click("Run test");
+    expect(api.testEnvironment).toHaveBeenLastCalledWith("company-1", expect.any(String), expect.objectContaining({
+      environmentId: "computer", aiConnection: originalBinding,
+    }));
+  });
+
   it("waits for background preparation and tests the same saved computer after it completes", async () => {
     const id = "00000000-0000-4000-8000-000000000092";
     const draft = { id, companyId: "company-1", name: "Atlas", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },

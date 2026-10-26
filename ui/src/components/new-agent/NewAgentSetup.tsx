@@ -413,7 +413,9 @@ function Setup({
   );
   const needsCurrentSetup = ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType);
   const preparingComputer = created?.pauseReason === "setup" && ["preparing", "pausing"].includes(created.lifecycleState ?? "");
-  const ready = Boolean(created) && !environmentSaving && !preparingComputer && connectionSettingsReady && (!needsCurrentSetup || (
+  const environmentSelectionSaved = (created?.defaultEnvironmentId ?? null)
+    === (environmentOverride || (forced.forced || managedOnly ? environmentId : null));
+  const ready = Boolean(created) && environmentSelectionSaved && !environmentSaving && !preparingComputer && connectionSettingsReady && (!needsCurrentSetup || (
     envs.isSuccess && !envs.isFetching
     && settings.isSuccess && !settings.isFetching
     && experimental.isSuccess && !experimental.isFetching
@@ -655,6 +657,15 @@ function Setup({
     try { await saveDraft(connection, true); }
     catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save agent setup."); }
     finally { savingRef.current = false; setSaving(false); }
+  }
+
+  async function changeEnvironment(selected = environmentOverride) {
+    setEnvironmentOverride(selected);
+    resetTest();
+    setEnvironmentSaving(true);
+    try { await saveDraft(connection, false, undefined, selected); }
+    catch (cause) { setError(cause instanceof Error ? cause.message : "Could not save the environment."); }
+    finally { setEnvironmentSaving(false); }
   }
 
   async function runTest(nextConnection = connection): Promise<Record<string, unknown> | null> {
@@ -1004,7 +1015,7 @@ function Setup({
                           ) ??
                           result?.checks.find(
                             (check) =>
-                              check.code.includes("hello_probe") &&
+                              (check.code.includes("hello_probe") || check.code.startsWith("environment_agent_")) &&
                               check.level === "warn",
                           )
                         )?.message
@@ -1390,13 +1401,7 @@ function Setup({
                             value={environmentOverride}
                             disabled={forced.forced}
                             onChange={(event) => {
-                              const selected = event.target.value;
-                              setEnvironmentOverride(selected);
-                              resetTest();
-                              setEnvironmentSaving(true);
-                              void saveDraft(connection, false, undefined, selected)
-                                .catch(cause => setError(cause instanceof Error ? cause.message : "Could not save the environment."))
-                                .finally(() => setEnvironmentSaving(false));
+                              void changeEnvironment(event.target.value);
                             }}
                           >
                             <option value="">
@@ -1427,6 +1432,7 @@ function Setup({
                         {error}
                       </p>
                     )}
+                    {error && !environmentSelectionSaved && <Button disabled={busy} onClick={() => void changeEnvironment()}>Retry saving environment</Button>}
                     <div className="flex justify-between border-t border-border py-5">
                       <div className="flex items-center gap-3">
                         <Button type="button" variant="ghost" disabled={busy} onClick={() => void saveAndExit()}>Save & exit</Button>
