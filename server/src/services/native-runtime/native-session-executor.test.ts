@@ -61,7 +61,7 @@ import { createHash, generateKeyPairSync, randomUUID } from "node:crypto";
 import { DatabaseSync } from "node:sqlite";
 import { nativeSha256 } from "./canonical.js";
 import { resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
-import { RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
+import { REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT, RemoteRunnerRecoveryError, readRemoteRunnerRecoveryError } from "./remote-runner-recovery-diagnostics.js";
 import { agentDirectoryWorkingCopyService } from "../agent-directory-working-copies.js";
 import { probeAgentDirectory } from "../agent-directory-probe.js";
 import { AGENT_FILES_CONTRACT } from "../agent-file-store.js";
@@ -784,6 +784,46 @@ describe("remote controller restart adoption", () => {
 
 
 describe("remote runner launch fingerprint compatibility", () => {
+  it("verifies the generation emitted by the actual launch writer", async () => {
+    const root = await mkdtemp(join(tmpdir(), "runner-generation-roundtrip-"));
+    const marker = join(root, "identity");
+    const statPath = join(root, "stat");
+    const bootPath = join(root, "boot_id");
+    const commandPath = join(root, "cmdline");
+    const stat = (pid: number) => `${pid} (runner (child)) ${["S", ...Array(18).fill("0"), 100].join(" ")}\n`;
+    await writeFile(statPath, stat(1));
+    await writeFile(bootPath, "abcd-1234\n");
+    await writeFile(commandPath, "runner\0--runner-id\0writer-verifier\0");
+    const writer = REMOTE_RUNNER_CHILD_LAUNCH_SCRIPT
+      .replaceAll('"/proc/"+process.argv[1]+"/stat"', JSON.stringify(statPath))
+      .replaceAll("/proc/sys/kernel/random/boot_id", bootPath);
+    const child = spawn("/bin/sh", ["-c", writer, "writer", marker, "nonce", "writer-verifier", join(root, "diagnostics"),
+      process.execPath, "-e", 'process.stdout.write("ready");setInterval(() => {}, 1000)', "--", "--runner-id", "writer-verifier"], { stdio: ["ignore", "pipe", "pipe"] });
+    const exited = new Promise<void>(resolve => child.once("exit", () => resolve()));
+    try {
+      await new Promise<void>((resolve, reject) => {
+        child.stdout.once("data", () => resolve());
+        child.once("error", reject);
+        child.once("exit", code => reject(new Error(`launch writer exited before readiness: ${code}`)));
+      });
+      await writeFile(statPath, stat(child.pid!));
+      const generation = (await readFile(marker, "utf8")).split("\n")[4]!;
+      expect(generation).not.toBe("");
+      const verifier = REMOTE_RECOVERY_PROCESS_CHECK_SCRIPT
+        .replaceAll('"/proc/" + pid + "/cmdline"', JSON.stringify(commandPath))
+        .replaceAll('"/proc/" + pid + "/stat"', JSON.stringify(statPath))
+        .replaceAll('"/proc/sys/kernel/random/boot_id"', JSON.stringify(bootPath));
+      expect(execFileSync("sh", ["-c", verifier, "verifier", marker, "nonce", "writer-verifier", String(child.pid), generation], { encoding: "utf8" })).toBe("");
+      expect(() => execFileSync("sh", ["-c", verifier, "verifier", marker, "nonce", "writer-verifier", String(child.pid), `${generation}-changed`], { stdio: "pipe" }))
+        .toThrow();
+      expect(() => process.kill(child.pid!, 0)).not.toThrow();
+    } finally {
+      child.kill("SIGKILL");
+      await exited;
+      await rm(root, { recursive: true, force: true });
+    }
+  });
+
   it.each(["missing", "broken", "working"] as const)("checks the Node probe before creating launch state (%s)", async runtime => {
     const root = await mkdtemp(join(tmpdir(), "runner-launch-probe-"));
     const bin = join(root, "bin");
