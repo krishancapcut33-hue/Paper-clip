@@ -1088,7 +1088,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
     if (updated) {
       if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearRememberedResponsibleUserDenialForRun(updated.id);
+        clearRememberedResponsibleUserDenialForRun(updated);
       }
       publishLiveEvent({
         companyId: updated.companyId,
@@ -1215,7 +1215,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
 
     if (updated) {
       if (isHeartbeatRunTerminalStatus(updated.status)) {
-        clearRememberedResponsibleUserDenialForRun(updated.id);
+        clearRememberedResponsibleUserDenialForRun(updated);
       }
       publishLiveEvent({
         companyId: updated.companyId,
@@ -1234,7 +1234,7 @@ export function createHeartbeatLifecycle(db: Db, dependencies: HeartbeatLifecycl
       .then((rows) => rows[0] ?? null);
 
     if (current && isHeartbeatRunTerminalStatus(current.status)) {
-      clearRememberedResponsibleUserDenialForRun(current.id);
+      clearRememberedResponsibleUserDenialForRun(current);
     }
 
     return { run: current, updated: false as const };
