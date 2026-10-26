@@ -315,21 +315,19 @@ export function useLiveRunTranscripts({
       }
       inFlightRunIds.add(run.id);
       let alignStartToRecord = !logOffsetByRunRef.current.has(run.id);
+      let offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
+      let rewinding = false;
       const previousReadLimit = logReadLimitByRunRef.current.get(run.id);
       if (previousReadLimit !== undefined && logReadLimitBytes > previousReadLimit) {
         // Expanding a compact tail must reread the earlier range. Retain the
         // visible chunks; merging by sequence deduplicates the overlapping tail.
         const expandedOffset = resolveInitialLogOffset(run, logReadLimitBytes);
-        const previousOffset = logOffsetByRunRef.current.get(run.id);
-        if (previousOffset !== undefined && expandedOffset < previousOffset) {
+        if (expandedOffset < offset) {
           alignStartToRecord = true;
-          logOffsetByRunRef.current.set(run.id, expandedOffset);
-          pendingLogRowsByRunRef.current.delete(run.id);
-          pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
+          offset = expandedOffset;
+          rewinding = true;
         }
       }
-      logReadLimitByRunRef.current.set(run.id, logReadLimitBytes);
-      const offset = logOffsetByRunRef.current.get(run.id) ?? resolveInitialLogOffset(run, logReadLimitBytes);
       try {
         const result = await readTranscriptRequest(
           (signal) => heartbeatsApi.log(run.id, offset, logReadLimitBytes, {
@@ -340,6 +338,13 @@ export function useLiveRunTranscripts({
         );
         if (cancelled) return;
 
+        // Commit the expanded window only after success so retries still align
+        // its first record and failed reads leave the previous parser intact.
+        logReadLimitByRunRef.current.set(run.id, logReadLimitBytes);
+        if (rewinding) {
+          pendingLogRowsByRunRef.current.delete(run.id);
+          pendingLogRowsByRunRef.current.delete(`${run.id}:records`);
+        }
         setErrorsByRun((previous) => {
           if (!previous.has(run.id)) return previous;
           const next = new Map(previous);
