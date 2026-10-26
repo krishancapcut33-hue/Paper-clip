@@ -1,5 +1,5 @@
 import { constants } from 'node:fs';
-import { open } from 'node:fs/promises';
+import { open, rename } from 'node:fs/promises';
 
 const MiB = 1_048_576;
 export const FILE_LIMITS = new Map([
@@ -26,4 +26,12 @@ export async function readRegularFile(path, maximum) {
     if (length !== stat.size) throw new Error('Controller evidence changed while being read');
     return bytes.subarray(0, length);
   } finally { await handle.close(); }
+}
+
+export async function replaceEvidenceFile(path, bytes) {
+  const temporary = `${path}.tmp`;
+  const handle = await open(temporary, 'wx', 0o600);
+  try { await handle.writeFile(bytes); await handle.sync(); }
+  finally { await handle.close(); }
+  await rename(temporary, path);
 }

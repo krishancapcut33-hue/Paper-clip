@@ -125,23 +125,22 @@ export async function readAttemptControlledEvidence(directory, options) {
   if (reportBytes) {
     let report, provider;
     try { report = JSON.parse(reportBytes.toString('utf8')); provider = providerBytes ? JSON.parse(providerBytes.toString('utf8')) : undefined; }
-    catch { return bundle; }
-    if (providerBytes || report?.providerArtifactSha256 === null) {
-      const expected = controlledResultArtifact(provider, report, allocation), actual = { ...artifact };
-      delete expected.provenance; delete actual.provenance;
-      if (actual.controllerEvidenceError !== undefined) {
-        if (typeof actual.controllerEvidenceError !== 'string' || !actual.controllerEvidenceError.trim()
-            || typeof actual.accountingError !== 'string' || !actual.accountingError.trim()
-            || canonical(actual.accountingFailure) !== canonical({ class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false })) {
-          throw new Error('Invalid immutable controller retention failure');
-        }
-        delete actual.controllerEvidenceError;
-        if (expected.accountingFailure) { actual.accountingFailure = expected.accountingFailure; actual.accountingError = expected.accountingError; }
-        else { delete actual.accountingFailure; delete actual.accountingError; }
+    catch { throw new Error('Malformed immutable controller result proof'); }
+    const expected = controlledResultArtifact(provider, report, allocation), actual = { ...artifact };
+    delete expected.provenance; delete actual.provenance;
+    if (actual.controllerEvidenceError !== undefined) {
+      if (typeof actual.controllerEvidenceError !== 'string' || !actual.controllerEvidenceError.trim()
+          || typeof actual.accountingError !== 'string' || !actual.accountingError.trim()
+          || canonical(actual.accountingFailure) !== canonical({ class: 'provider_budget_coverage_unknown', category: 'provider_budget', retryable: false })) {
+        throw new Error('Invalid immutable controller retention failure');
       }
-      if (canonical(actual) !== canonical(expected)) throw new Error('Immutable result disagrees with its controller proof');
+      delete actual.controllerEvidenceError;
+      if (expected.accountingFailure) { actual.accountingFailure = expected.accountingFailure; actual.accountingError = expected.accountingError; }
+      else { delete actual.accountingFailure; delete actual.accountingError; }
     }
+    if (canonical(actual) !== canonical(expected)) throw new Error('Immutable result disagrees with its controller proof');
   }
+
   return bundle;
 }
 
