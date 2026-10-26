@@ -8,6 +8,7 @@ import { join } from 'node:path';
 import { canonical, costRuntime, requestBindingSha256, sha256, validateManifest } from './manifest.mjs';
 import { attemptDirectory, runControlledEval } from './run.mjs';
 import { summarizeControlledCampaign } from './report.mjs';
+import { readRegularFile, replaceEvidenceFile } from './evidence-files.mjs';
 import { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } from './archive.mjs';
 import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runner-protocol-eval-campaign.mjs';
 
@@ -531,4 +532,45 @@ test('campaign collection retains and audits private archives, while public proj
   await writeFile(catalogPath, JSON.stringify(catalog));
   await rm(join(attempt, 'controller-evidence.json'));
   await assert.rejects(aggregateProtocolEvalCampaign(input), /Missing private controller evidence/);
+});
+
+
+test('credential redaction replaces a swapped symlink without changing its target', async t => {
+  const f = await fixture(t, { leakToken: true, requests: 0 });
+  const result = await f.run();
+  assert.equal(result.report.secretExcluded, false);
+  const path = join(attemptDirectory(f.manifest, 'attempt-0'), 'provider-artifact.json');
+  const bytes = await readRegularFile(path, 16_777_216);
+  const target = join(f.root, 'untouched-target'); await writeFile(target, 'target must remain unchanged');
+  await rm(path); await symlink(target, path);
+  await replaceEvidenceFile(path, bytes);
+  assert.equal(await readFile(target, 'utf8'), 'target must remain unchanged');
+  assert.deepEqual(await readRegularFile(path, 16_777_216), bytes);
+  await symlink(target, `${path}.tmp`);
+  await assert.rejects(replaceEvidenceFile(path, bytes), { code: 'EEXIST' });
+  assert.equal(await readFile(target, 'utf8'), 'target must remain unchanged');
+});
+
+test('missing provider artifacts cannot bypass immutable result binding', async t => {
+  const f = await fixture(t, { missingArtifact: true, requests: 0 }); await f.run();
+  const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0' });
+  assert.equal(bundle.files['provider-artifact.json'], undefined);
+  assert.equal(JSON.parse(Buffer.from(bundle.files['result.json'].base64, 'base64')).providerArtifactSha256, undefined);
+  const directory = join(f.root, 'runs', 'attempt-0'); await mkdir(directory, { recursive: true });
+  const artifact = JSON.parse(await readFile(f.requests[0].outputPath, 'utf8'));
+  for (const [name, value] of Object.entries({ 'request.json': f.requests[0].request, 'artifact.json': artifact, 'controller-evidence.json': bundle })) await writeFile(join(directory, name), JSON.stringify(value));
+  await readAttemptControlledEvidence(directory);
+  for (const mutate of [
+    value => { value.usage = { estimatedCostNanodollars: 0 }; },
+    value => { value.turn = { status: 'completed', assistantText: 'forged success' }; },
+    value => { value.controllerAccounting.cleanupVerified = true; },
+  ]) {
+    const changed = structuredClone(artifact); mutate(changed);
+    await writeFile(join(directory, 'artifact.json'), JSON.stringify(changed));
+    await assert.rejects(readAttemptControlledEvidence(directory), /Immutable result disagrees/);
+  }
+  const malformed = structuredClone(bundle), bytes = Buffer.from('{');
+  malformed.files['result.json'] = { sizeBytes: bytes.length, sha256: sha256(bytes), base64: bytes.toString('base64') };
+  await writeFile(join(directory, 'controller-evidence.json'), JSON.stringify(malformed));
+  await assert.rejects(readAttemptControlledEvidence(directory), /Malformed immutable controller result proof/);
 });

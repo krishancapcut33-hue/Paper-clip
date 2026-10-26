@@ -4,7 +4,7 @@ import { lstat, mkdir, open, readFile, realpath, rename, rm, writeFile } from 'n
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { parseArgs } from 'node:util';
-import { limitFor, readRegularFile } from './evidence-files.mjs';
+import { limitFor, readRegularFile, replaceEvidenceFile } from './evidence-files.mjs';
 import { bindRequest, canonical, costRuntime, readJson, sha256, validateManifest } from './manifest.mjs';
 
 async function atomicJson(file, value) {
@@ -140,7 +140,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     for (const stream of ['stdout', 'stderr']) await writeFile(join(root, `${stream}.log`), redact(child[stream]), { flag: 'wx', mode: 0o600 });
     const raw = (await readRegularFile(artifactPath, limitFor('provider-artifact.json'))).toString('utf8');
     secretExcluded = secrets.every(secret => !raw.includes(secret));
-    if (!secretExcluded) await writeFile(artifactPath, redact(raw), { mode: 0o600 });
+    if (!secretExcluded) await replaceEvidenceFile(artifactPath, redact(raw));
     providerArtifactSha256 = sha256(redact(raw));
     artifact = JSON.parse(redact(raw));
     const expected = { mode: 'controller_gateway', provider, declaredUpstreamRoute: manifest.route, campaignId: manifest.campaignId,
