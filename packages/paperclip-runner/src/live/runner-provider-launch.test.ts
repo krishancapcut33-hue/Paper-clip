@@ -66,6 +66,17 @@ describe("built-in provider launch preparation", () => {
     expect(requirements).toEqual(before);
   });
 
+  it("preserves exact Copilot requirements and launch descriptors when Codex search disabling is absent or false", () => {
+    const selected = { provider: "acpx" as const, acpxAgent: "copilot" as const, acpxPermissionMode: "deny-all" as const };
+    const params = { model: "gpt-5.6-luna", approvalPolicy: "never", permissions: "paperclip-runner-workspace-read-only" };
+    const baseline = runnerProviderLaunchRequirements(selected, requirements.identity, params, null, "Copilot policy");
+    const scopedProbe = runnerProviderLaunchRequirements({ ...selected, disableCodexWebSearch: false },
+      requirements.identity, params, null, "Copilot policy");
+    expect(scopedProbe).toEqual(baseline);
+    expect(runnerLaunchRequirementsDigest(scopedProbe)).toBe(runnerLaunchRequirementsDigest(baseline));
+    expect(createRunnerProviderLaunch(scopedProbe, environment)).toEqual(createRunnerProviderLaunch(baseline, environment));
+  });
+
   it("preserves the ACPX profile, run identity, and permission policy", () => {
     const launch = createRunnerProviderLaunch({ ...requirements, provider: "acpx",
       model: "claude-selected", settings: { acpxAgent: "claude", acpxPermissionMode: "deny-all" } }, environment);

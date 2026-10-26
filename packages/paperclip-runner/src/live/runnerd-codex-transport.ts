@@ -7290,7 +7290,7 @@ export async function probeNativeRunnerEnvironment(options: {
     environment,
     externallySandboxed: options.transportOptions?.externallySandboxed === true,
     disableCodexProjectInstructions: true,
-    disableCodexWebSearch: true,
+    disableCodexWebSearch: options.provider === "codex",
     closeGraceMs: 10_000,
     lifecyclePolicy: { mode: "per_turn", idleTimeoutMs: null },
   });
