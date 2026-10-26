@@ -6238,8 +6238,8 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     files: Record<string, string>,
     options?: {
       onConflict?: PackageSkillConflictStrategy;
-      /** Preserve a declared identity when only the slug conflicts. */
-      preserveKeyOnRename?: boolean;
+      /** Managed plugin namespaces may share a slug while retaining separate canonical records. */
+      allowSlugCollision?: boolean;
     },
   ): Promise<ImportPackageSkillResult[]> {
     await ensureSkillInventoryCurrent(companyId);
@@ -6288,7 +6288,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const normalizedSlug = normalizeSkillSlug(importedSkill.slug) ?? importedSkill.slug;
       const existingByIncomingKey = existingByKey.get(importedSkill.key) ?? null;
       const existingByIncomingSlug = existingBySlug.get(normalizedSlug) ?? null;
-      const conflict = existingByIncomingKey ?? existingByIncomingSlug;
+      const conflict = existingByIncomingKey ?? (options?.allowSlugCollision ? null : existingByIncomingSlug);
 
       if (!conflict || conflictStrategy === "replace") {
         const skillToPersist = conflict && conflict.key !== importedSkill.key
@@ -6330,8 +6330,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       }
 
       const renamedSlug = uniqueSkillSlug(normalizedSlug || "skill", usedSlugs);
-      const renamedKey = options?.preserveKeyOnRename && !existingByIncomingKey
-        ? originalKey : uniqueImportedSkillKey(companyId, renamedSlug, usedKeys);
+      const renamedKey = uniqueImportedSkillKey(companyId, renamedSlug, usedKeys);
       const renamedSkill: ImportedSkill = {
         ...importedSkill,
         slug: renamedSlug,

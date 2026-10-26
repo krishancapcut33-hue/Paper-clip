@@ -7,7 +7,7 @@ import { pluginManagedSkillService } from "./plugin-managed-skills.js";
 /** Environment capabilities join the normal authorized, versioned skill selection. */
 export async function environmentSkillConfig(db: Db, companyId: string,
   environment: { driver: string; config: Record<string, unknown> | null } | null | undefined,
-  config: Record<string, unknown>, installMissing = true): Promise<{ config: Record<string, unknown>; skillKeys: string[] }> {
+  config: Record<string, unknown>, installMissing = true): Promise<{ config: Record<string, unknown>; skillKeys: string[]; shadowedSkills?: Array<{ key: string; shadowedBy: string }> }> {
   if (environment?.driver !== "plugin") return { config, skillKeys: [] };
   const { pluginKey, driverKey } = environment.config ?? {};
   if (typeof pluginKey !== "string" || typeof driverKey !== "string") return { config, skillKeys: [] };
@@ -39,6 +39,19 @@ export async function environmentSkillConfig(db: Db, companyId: string,
   const preference = readPaperclipSkillSyncPreference(config);
   const explicit = new Set(preference.desiredSkillEntries.map(entry => entry.key));
   const skillKeys = keys.flatMap(key => selected.has(key) ? [selected.get(key)!] : []);
-  return { config: writePaperclipSkillSyncPreference(config, [...preference.desiredSkillEntries,
-    ...skillKeys.filter(key => !explicit.has(key))]), skillKeys };
+  const candidates = await db.select({ key: companySkills.key, slug: companySkills.slug, name: companySkills.name })
+    .from(companySkills).where(and(eq(companySkills.companyId, companyId),
+      inArray(companySkills.key, [...new Set([...explicit, ...skillKeys])])));
+  const required = candidates.filter(skill => skillKeys.includes(skill.key));
+  const shadowedSkills = candidates.flatMap(skill => {
+    if (skillKeys.includes(skill.key)) return [];
+    const winner = required.find(candidate => candidate.slug === skill.slug || candidate.name === skill.name);
+    return winner ? [{ key: skill.key, shadowedBy: winner.key }] : [];
+  });
+  const shadowed = new Set(shadowedSkills.map(skill => skill.key));
+  return { config: writePaperclipSkillSyncPreference(config, [
+    ...preference.desiredSkillEntries.filter(entry => !shadowed.has(entry.key)),
+    ...skillKeys.filter(key => !explicit.has(key))]), skillKeys,
+    ...(shadowedSkills.length ? { shadowedSkills } : {}),
+  };
 }

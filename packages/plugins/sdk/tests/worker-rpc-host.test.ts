@@ -1198,7 +1198,7 @@ describe("Durable lifecycle inbox RPC", () => {
       ctx.data.register("drain", async ({ companyId }) => {
         const events = await ctx.events.listLifecycle(companyId!, 10, "6");
         await ctx.events.acknowledgeLifecycle(companyId!, events[0].id);
-        await ctx.agents.getRuntime("agent-a", companyId!, "environment-a");
+        await ctx.agents.getRuntime("agent-a", companyId!, "environment-a", true);
         return events;
       });
     } });
@@ -1226,7 +1226,7 @@ describe("Durable lifecycle inbox RPC", () => {
       expect(calls).toEqual([
         { method: "events.listLifecycle", params: { companyId: "company-a", limit: 10, afterId: "6" } },
         { method: "events.acknowledgeLifecycle", params: { companyId: "company-a", eventId: "7" } },
-        { method: "agents.getRuntime", params: { companyId: "company-a", agentId: "agent-a", environmentId: "environment-a" } },
+        { method: "agents.getRuntime", params: { companyId: "company-a", agentId: "agent-a", environmentId: "environment-a", installEnvironmentSkills: true } },
       ]);
     } finally { worker.stop(); reader.close(); input.destroy(); output.destroy(); }
   });

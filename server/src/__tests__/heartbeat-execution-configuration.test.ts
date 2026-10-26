@@ -224,7 +224,8 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     const [agent] = await db.update(agents).set({ adapterType: type, adapterConfig: config }).where(eq(agents.id, f.agentId)).returning();
     const [run] = await db.insert(heartbeatRuns).values({ companyId: f.companyId, agentId: f.agentId, issueId: f.issueId, scopeKind: "issue", status: "running", contextSnapshot: snapshot }).returning();
     const resolvedInstanceSettings = await instanceSettingsService(db).get();
-    return { run, prepare: () => prepareHeartbeatExecutionConfiguration(db, {
+    const appendRunEvent = vi.fn();
+    return { run, appendRunEvent, prepare: () => prepareHeartbeatExecutionConfiguration(db, {
       run, agent,
       task: { issueId: f.issueId, context: { ...snapshot, issueId: f.issueId }, responsibleUserId: null,
         acceptedPlanContinuationWake: false, acceptedPlanWakeRoutingDecision: null,
@@ -233,7 +234,7 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
       policy: { trustPreset: { kind: "standard", preset: "standard", boundary: null, sourcePresets: {} }, useIsolatedTaskDirectory: false, explicitTaskDirectory, requestedExecutionWorkspaceMode },
       environment: { selectedEnvironmentId: selectedEnvironmentForConfig?.id ?? null, selectedEnvironmentForConfig,
         resolvedInstanceSettings, persistedNativeExecutionInput: null },
-      services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent: vi.fn(), finalizeAiConnectionBusyDeferral: vi.fn() },
+      services: { secretsSvc: secretService(db), companySkills: companySkillService(db), appendRunEvent, finalizeAiConnectionBusyDeferral: vi.fn() },
       onFailureSecretsResolved: () => {}, onManagedAiRuntimeAcquired: () => {}, onIdentityRedactorPrepared: () => {},
     }) };
   }
@@ -254,6 +255,28 @@ describePostgres("heartbeat execution configuration through adapter dispatch", (
     expect(rejected).toBe(true);
   });
 
+  it("reports a shadowed assignment and captures only the required plugin skill", async () => {
+    const f = await seed(), pluginId = randomUUID(), pluginKey = `fixture.${randomUUID()}`;
+    const name = `plugin-${pluginKey.split(".").at(-1)}-desktop`;
+    const existing = await companySkillService(db).createLocalSkill(f.companyId, { name, markdown: `---\nname: ${name}\n---\nCompany skill.` });
+    await db.insert(plugins).values({ id: pluginId, pluginKey, packageName: "fixture", version: "1.0.0", status: "ready",
+      manifestJson: { id: pluginKey, apiVersion: 1, version: "1.0.0", displayName: "Fixture", description: "Fixture", author: "Tests", categories: ["automation"],
+        capabilities: ["environment.drivers.register", "skills.managed"], entrypoints: { worker: "worker.js" },
+        environmentDrivers: [{ driverKey: "tasks", displayName: "Tasks", configSchema: {}, skillKeys: ["desktop"] }],
+        skills: [{ skillKey: "desktop", displayName: "Desktop" }] } });
+    const [environment] = await db.insert(environments).values({ name: randomUUID(), driver: "plugin", config: { pluginKey, driverKey: "tasks" } }).returning();
+    const run = await configuration(f, { paperclipSkillSync: { desiredSkills: [existing.key] } }, {}, "paperclip_runner", false, "shared_workspace", environment);
+    const result = await run.prepare();
+    expect(result.prepared).toBe(true);
+    if (!result.prepared) throw new Error("Configuration did not finish");
+    const key = `plugin/${pluginKey.replaceAll(".", "-")}/desktop`;
+    expect(result.runtimeSkillEntries.map(skill => skill.key)).toEqual([key]);
+    expect(run.appendRunEvent).toHaveBeenCalledWith(expect.anything(), expect.objectContaining({ eventType: "skills.shadowed", level: "warn",
+      message: expect.stringContaining(existing.key), payload: { shadowedSkills: [{ key: existing.key, shadowedBy: key }] } }));
+    const [saved] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, run.run.id));
+    expect(saved.contextSnapshot!.shadowedSkills).toEqual([{ key: existing.key, shadowedBy: key }]);
+    expect(Object.keys(saved.contextSnapshot!.skillVersions as object)).toEqual([key]);
+  });
   it("keeps default task-directory configuration stable when the directory is reused", async () => {
     const f = await seed();
     const initial = await (await configuration(f, {}, {}, "paperclip_runner", true)).prepare();

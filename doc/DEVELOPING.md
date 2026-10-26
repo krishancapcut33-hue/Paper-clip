@@ -2356,10 +2356,18 @@ Plugin environment drivers can declare `skillKeys` that reference their own
 manifest-managed skills. Selecting that environment adds those skills to the
 normal authorized skill selection, including an explicitly empty optional
 selection. Core installs a missing managed skill in the current company's
-library at new-run admission and preserves existing skill edits and explicit
-version pins. Slug collisions create a separate skill while retaining its declared
-plugin key. Lifecycle runtime reads do not install newly declared skills; recovery
-also skips installation and keeps its saved selection. Run
+library during lifecycle reconciliation or new-run admission and preserves existing
+skill edits and explicit version pins. New managed skills use
+`plugin-<short-plugin-id>-<skill-slug>` for both the library slug and SKILL.md name.
+The short ID is the final dot-separated plugin ID component, without a leading
+`plugin-`. An unrelated skill can keep the same slug in a separate canonical
+record. The required environment skill wins during delivery: a selected company
+skill with the same slug or name is omitted and reported as shadowed. Stored agent
+assignments and both library records remain unchanged. Run warnings and snapshots,
+and the plugin runtime response, identify the omitted key and the winning key. Existing company copies keep their edits and names
+until reset. Lifecycle callers request installation with
+`agents.getRuntime(agentId, companyId, undefined, true)`; ordinary runtime reads and
+recovery do not install newly declared skills. Run
 preparation captures the same immutable versions as ordinary assignments;
 recovery uses the saved selection. The lifecycle runtime reader includes the
 effective default environment's skills before synchronizing the persistent home.
@@ -2367,7 +2375,10 @@ A task provider can pass its selected environment ID to `agents.getRuntime` when
 a task overrides that default. This
 contract currently applies to `driver: "plugin"` environments. Other drivers
 and plugin drivers without `skillKeys` keep their existing behavior. No agent
-configuration is rewritten, and no background scan is added.
+configuration is rewritten, and no background scan is added. Changes to implicitly
+selected skills, the effective default environment, or plugin requirements enqueue
+normal durable runtime events, so an idle ready computer receives updates without
+a new run. Failed synchronization retains the event for the existing retry path.
 
 The Paperclip app ships a curated catalog of company skills out of the box. The
 catalog is a workspace package at `packages/skills-catalog`:

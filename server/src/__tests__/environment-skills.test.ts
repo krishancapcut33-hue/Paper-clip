@@ -3,7 +3,7 @@ import fs from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { and, eq } from "drizzle-orm";
-import { agents, companies, companySkills, createDb, environments, pluginCompanySettings, plugins, type Db } from "@paperclipai/db";
+import { agents, companies, companySkills, createDb, environments, pluginCompanySettings, plugins, resourceLifecycleEvents, type Db } from "@paperclipai/db";
 import type { PaperclipPluginManifestV1 } from "@paperclipai/shared";
 import { afterAll, afterEach, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
@@ -55,14 +55,14 @@ describeDatabase("environment managed skills", () => {
     const [selection, concurrent] = await Promise.all([environmentSkillConfig(db, companyId, environment, config), environmentSkillConfig(db, companyId, environment, config)]);
     expect(concurrent).toEqual(selection);
     const selected = selection.config;
-    const [skill] = await db.select().from(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.slug, "computer-use")));
+    const [skill] = await db.select().from(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, `plugin/fixture-${pluginId}/computer-use`)));
     expect(selected).toMatchObject({ paperclipSkillSync: { desiredSkills: [skill.key] } });
     expect(config.paperclipSkillSync.desiredSkills).toEqual([]);
     const [env] = await db.insert(environments).values({ name: "Desktop", ...environment }).returning();
     const [agent] = await db.insert(agents).values({ companyId, name: "Worker", adapterType: "paperclip_runner", defaultEnvironmentId: env.id,
       lifecycleRequiredPluginIds: [pluginId], adapterConfig: config }).returning();
     const state = await pluginAgentRuntimeState(db, pluginId, companyId, agent.id);
-    expect(state!.skills).toEqual([expect.objectContaining({ key: skill.key, runtimeName: expect.stringMatching(/^computer-use--/), versionId: expect.any(String) })]);
+    expect(state!.skills).toEqual([expect.objectContaining({ key: skill.key, runtimeName: expect.stringMatching(/^plugin-.*-computer-use--/), versionId: expect.any(String) })]);
     await withSkillActor({ type: "agent", agentId: agent.id, companyId, source: "agent_key" }, async () => {
       await companySkillService(db).withRuntimeSkillEntries(companyId, { selectionConfig: selected, snapshotLatest: true }, async entries => {
         const context = await buildNativeRuntimeContext({ db, agent, runId: randomUUID(), runtimeConfig: selected, runtimeSkillEntries: entries });
@@ -89,14 +89,87 @@ describeDatabase("environment managed skills", () => {
     await environmentSkillConfig(db, companyId, environment, config);
     expect((await db.select().from(companySkills).where(eq(companySkills.id, skill.id)))[0].markdown).toBe("Agent customization");
   });
+  it("installs and refreshes environment skills through lifecycle reconciliation before any run", async () => {
+    const [env] = await db.insert(environments).values({ name: randomUUID(), ...environment }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Background worker", adapterType: "paperclip_runner", defaultEnvironmentId: env.id,
+      lifecycleRequiredPluginIds: [pluginId], adapterConfig: { paperclipSkillSync: { desiredSkills: [] } } }).returning();
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id))!.skills).toEqual([]);
+    const states = await Promise.all([1, 2].map(() => pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true)));
+    expect(states[0]!.skills).toEqual(states[1]!.skills);
+    const [skill] = await db.select().from(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, `plugin/fixture-${pluginId}/computer-use`)));
+    expect(skill.slug).toMatch(/^plugin-.*-computer-use$/);
+    const runtime = states[0]!.skills[0];
+    expect(await fs.readFile(path.join(runtime.source, "SKILL.md"), "utf8")).toContain(`name: ${skill.slug}`);
+    const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime")));
+    const before = (await events()).length;
+    const edited = skill.markdown + "\nCompany edit.";
+    await fs.chmod(path.join(skill.sourceLocator!, "SKILL.md"), 0o600);
+    await fs.writeFile(path.join(skill.sourceLocator!, "SKILL.md"), edited);
+    await db.update(companySkills).set({ markdown: edited }).where(eq(companySkills.id, skill.id));
+    expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id]);
+    const refreshed = (await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true))!.skills[0];
+    expect(refreshed.versionId).not.toBe(runtime.versionId);
+    expect(await fs.readFile(path.join(refreshed.source, "SKILL.md"), "utf8")).toContain("Company edit.");
+    const settled = (await events()).length;
+    await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true);
+    expect(await events()).toHaveLength(settled);
+    const changedManifest = { ...manifest, skills: [...manifest.skills!, { skillKey: "extra", displayName: "Extra" }],
+      environmentDrivers: manifest.environmentDrivers!.map(driver => ({ ...driver, skillKeys: [...driver.skillKeys!, "extra"] })) };
+    await db.update(plugins).set({ manifestJson: changedManifest }).where(eq(plugins.id, pluginId));
+    expect((await events()).slice(settled).map(event => event.resourceId)).toEqual([agent.id]);
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true))!.skills).toHaveLength(2);
+    const saved = await db.select().from(agents).where(eq(agents.id, agent.id));
+    expect(saved[0].adapterConfig).toEqual(agent.adapterConfig);
+    await db.delete(companySkills).where(eq(companySkills.id, skill.id));
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true))!.skills).toHaveLength(2);
+  });
+  it("queues background delivery for inherited defaults and changed environment requirements", async () => {
+    const [env] = await db.insert(environments).values({ name: randomUUID(), ...environment }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Inherited worker", adapterType: "paperclip_runner", lifecycleRequiredPluginIds: [pluginId] }).returning();
+    const events = () => db.select().from(resourceLifecycleEvents).where(and(eq(resourceLifecycleEvents.companyId, companyId), eq(resourceLifecycleEvents.resourceType, "agent_runtime")));
+    let before = (await events()).length;
+    await instanceSettingsService(db).update({ defaultEnvironmentId: env.id });
+    expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id]);
+    await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true);
+    before = (await events()).length;
+    await expect(db.transaction(async tx => {
+      await tx.update(environments).set({ config: { ...environment.config, driverKey: "unrelated" } }).where(eq(environments.id, env.id));
+      throw new Error("rollback");
+    })).rejects.toThrow("rollback");
+    expect(await events()).toHaveLength(before);
+    await db.update(environments).set({ config: { ...environment.config, driverKey: "unrelated" } }).where(eq(environments.id, env.id));
+    expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id]);
+    expect((await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true))!.skills).toEqual([]);
+    before = (await events()).length;
+    await instanceSettingsService(db).update({ defaultEnvironmentId: null });
+    expect((await events()).slice(before).map(event => event.resourceId)).toEqual([agent.id]);
+  });
+  it("delivers the required plugin skill and reports a same-name company assignment as shadowed", async () => {
+    const name = `plugin-${pluginId}-computer-use`;
+    const original = await companySkillService(db).createLocalSkill(companyId, { name, markdown: `---\nname: ${name}\n---\nCompany instructions.\n` });
+    const config = { paperclipSkillSync: { desiredSkills: [original.key] } };
+    const [env] = await db.insert(environments).values({ name: randomUUID(), ...environment }).returning();
+    const [agent] = await db.insert(agents).values({ companyId, name: "Conflicting worker", adapterType: "paperclip_runner", defaultEnvironmentId: env.id,
+      lifecycleRequiredPluginIds: [pluginId], adapterConfig: config }).returning();
+    const state = await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true);
+    const key = `plugin/fixture-${pluginId}/computer-use`;
+    expect(state!.skills.map(skill => skill.key)).toEqual([key]);
+    expect(state!.shadowedSkills).toEqual([{ key: original.key, shadowedBy: key }]);
+    expect((await db.select().from(companySkills).where(eq(companySkills.id, original.id)))[0]).toMatchObject({ markdown: original.markdown, slug: original.slug });
+    expect((await db.select().from(agents).where(eq(agents.id, agent.id)))[0].adapterConfig).toEqual(config);
+    await db.update(agents).set({ defaultEnvironmentId: null }).where(eq(agents.id, agent.id));
+    const restored = await pluginAgentRuntimeState(db, pluginId, companyId, agent.id, undefined, true);
+    expect(restored!.skills.map(skill => skill.key)).toEqual([original.key]);
+    expect(restored!.shadowedSkills).toBeUndefined();
+  });
   it("keeps installations company-scoped and rejects disabled providers", async () => {
     const peerId = randomUUID();
     await db.insert(companies).values({ id: peerId, name: "Peer", issuePrefix: `P${peerId.slice(0, 6)}` });
     await environmentSkillConfig(db, companyId, environment, {});
     await environmentSkillConfig(db, peerId, environment, {});
-    const peerSkills = await db.select().from(companySkills).where(and(eq(companySkills.companyId, peerId), eq(companySkills.slug, "computer-use")));
+    const peerSkills = await db.select().from(companySkills).where(and(eq(companySkills.companyId, peerId), eq(companySkills.key, `plugin/fixture-${pluginId}/computer-use`)));
     expect(peerSkills).toHaveLength(1);
-    const skills = await db.select().from(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.slug, "computer-use")));
+    const skills = await db.select().from(companySkills).where(and(eq(companySkills.companyId, companyId), eq(companySkills.key, `plugin/fixture-${pluginId}/computer-use`)));
     expect(peerSkills[0].id).not.toBe(skills[0].id);
     await db.insert(pluginCompanySettings).values({ companyId, pluginId, enabled: false });
     await expect(environmentSkillConfig(db, companyId, environment, {})).rejects.toMatchObject({ status: 422 });

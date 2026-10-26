@@ -51,7 +51,7 @@ export async function pluginAgentRuntimeIdentity(db: Db, pluginId: string, compa
   return readState(db, pluginId, companyId, agentId, true);
 }
 
-export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyId: string, agentId: string, environmentId?: string): Promise<PluginAgentRuntimeState | null> {
+export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyId: string, agentId: string, environmentId?: string, installEnvironmentSkills = false): Promise<PluginAgentRuntimeState | null> {
   for (let attempt = 0; attempt < 3; attempt++) {
     const state = await readState(db, pluginId, companyId, agentId);
     if (!state) return null;
@@ -60,7 +60,7 @@ export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyI
     const [environment] = effectiveEnvironmentId
       ? await db.select().from(environments).where(eq(environments.id, effectiveEnvironmentId)) : [];
     if (environmentId && !environment) throw unprocessable("The selected environment is unavailable");
-    const { config: selectionConfig, skillKeys: environmentSkills } = await environmentSkillConfig(db, companyId, environment, state.agent.adapterConfig, false);
+    const { config: selectionConfig, skillKeys: environmentSkills, shadowedSkills } = await environmentSkillConfig(db, companyId, environment, state.agent.adapterConfig, installEnvironmentSkills);
     const preference = readPaperclipSkillSyncPreference(selectionConfig);
     const settings = instance.experimental;
     const skills = await withSkillActor({ type: "agent", agentId, companyId, source: "agent_key" }, () =>
@@ -77,7 +77,7 @@ export async function pluginAgentRuntimeState(db: Db, pluginId: string, companyI
     const entryContent = fallback?.files[entryFile];
     const current = await readState(db, pluginId, companyId, agentId);
     if (!current) return null;
-    if (current.revision === state.revision) return { ...current, instructionsEntryFile: entryFile, ...(entryContent === undefined ? {} : { instructionsEntryContent: entryContent }), skills, connectionAssignments };
+    if (current.revision === state.revision) return { ...current, instructionsEntryFile: entryFile, ...(entryContent === undefined ? {} : { instructionsEntryContent: entryContent }), skills, connectionAssignments, ...(shadowedSkills?.length ? { shadowedSkills } : {}) };
   }
   throw conflict("Agent runtime changed while resolving synchronization inputs; retry");
 }

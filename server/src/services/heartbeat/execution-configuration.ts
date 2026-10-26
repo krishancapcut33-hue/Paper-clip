@@ -235,9 +235,15 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
   const storedVersions = parseObject(run.contextSnapshot?.skillVersions);
   const hasStoredVersions = Object.prototype.hasOwnProperty.call(run.contextSnapshot ?? {}, "skillVersions");
   const selectedConfig = applyRunScopedMentionedSkillKeys(resolvedConfig, runScopedSkillKeys);
-  const { config: effectiveResolvedConfig, skillKeys: environmentSkills } = hasStoredVersions
+  const { config: effectiveResolvedConfig, skillKeys: environmentSkills, shadowedSkills } = hasStoredVersions
     ? { config: selectedConfig, skillKeys: [] }
     : await environmentSkillConfig(db, agent.companyId, selectedEnvironmentForConfig, selectedConfig);
+  if (shadowedSkills?.length) {
+    context.shadowedSkills = shadowedSkills;
+    await appendRunEvent(run, { eventType: "skills.shadowed", stream: "system", level: "warn",
+      message: shadowedSkills.map(({ key, shadowedBy }) => `Skill "${key}" was skipped because required plugin skill "${shadowedBy}" uses the same name.`).join("\n"),
+      payload: { shadowedSkills } });
+  }
   const runtimeSkillPreference = readPaperclipSkillSyncPreference(
     effectiveResolvedConfig,
   );
@@ -271,7 +277,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
         // assignments from delivery; explicit task mentions remain errors below.
         skillDeliveryConfig = writePaperclipSkillSyncPreference(effectiveResolvedConfig,
           resolved.map(entry => ({ key: entry.key, versionId: entry.versionId ?? null })));
-        for (const key of [...runScopedMentionedSkillKeys, ...(hasStoredVersions ? [] : environmentSkills)]) {
+        for (const key of [...runScopedMentionedSkillKeys.filter(key => !shadowedSkills?.some(skill => skill.key === key)), ...(hasStoredVersions ? [] : environmentSkills)]) {
           const entry = resolved.find(candidate => candidate.key === key);
           if (!entry || entry.sourceStatus === "missing") {
             throw new ConfigurationIncompleteFailure("A referenced skill is unavailable. Restore its installed version or update the task's skill reference.", {
@@ -283,7 +289,7 @@ export async function prepareHeartbeatExecutionConfiguration(db: Db, input: Hear
           const skillVersions = Object.fromEntries(resolved.map(entry => [entry.key, entry.versionId ?? entry.currentVersionId ?? null]));
           context.skillVersions = skillVersions;
           context.skillSelectionSnapshot = true;
-          await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ skillVersions, skillSelectionSnapshot: true })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
+          await db.update(heartbeatRuns).set({ contextSnapshot: sql`coalesce(${heartbeatRuns.contextSnapshot}, '{}'::jsonb) || ${JSON.stringify({ skillVersions, skillSelectionSnapshot: true, ...(shadowedSkills?.length ? { shadowedSkills } : {}) })}::jsonb` }).where(eq(heartbeatRuns.id, run.id));
         }
         return resolved;
       }));
