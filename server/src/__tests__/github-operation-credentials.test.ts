@@ -14,6 +14,7 @@ import {
   companyMemberships,
   companySecrets,
   connectionGrants,
+  connectionGrantMembers,
   createDb,
   heartbeatRuns,
   issueComments,
@@ -660,6 +661,99 @@ const support = await getEmbeddedPostgresTestSupport();
         status: "unavailable",
         source: "dedicated",
         env: {},
+      });
+    });
+    it("uses an installed default organization grant when the responsible user's grant is revoked", async () => {
+      const input = await seed();
+      const personal = await grant(input, "A");
+      const shared = await grant(input, "robot", true);
+      await db.update(connectionGrants).set({
+        kind: "organization",
+        subjectAgentId: null,
+        isDefault: true,
+      }).where(eq(connectionGrants.id, shared.id));
+      await db.update(toolConnections).set({ credentialPolicy: "shared" })
+        .where(eq(toolConnections.id, shared.connectionId));
+      await db.update(toolConnectionInstalls).set({
+        targetType: "company",
+        targetId: input.companyId,
+      }).where(eq(toolConnectionInstalls.connectionId, shared.connectionId));
+
+      // An active responsible-user grant still takes precedence over sharing.
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available", source: "personal", login: "A",
+      });
+      await db.update(connectionGrants).set({ status: "expired" })
+        .where(eq(connectionGrants.id, personal.id));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
+      });
+      await db.update(connectionGrants).set({ status: "revoked" })
+        .where(eq(connectionGrants.id, personal.id));
+      // Revocation alone does not consent to a new actor.
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
+      });
+      await db.update(toolConnections).set({
+        config: {
+          sourceTemplateKey: "github",
+          managedGitHubOrganizationFallbackOnRevokedPersonal: true,
+        },
+      }).where(eq(toolConnections.id, shared.connectionId));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available", source: "organization", login: "robot",
+      });
+      expect((await resolveManagedGitHubIdentitySelection(db, input.companyId, input)).grant?.id).toBe(shared.id);
+      await db.update(toolConnections).set({ credentialPolicy: "per_user" })
+        .where(eq(toolConnections.id, shared.connectionId));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
+      });
+      await db.update(toolConnections).set({ credentialPolicy: "per_agent" })
+        .where(eq(toolConnections.id, shared.connectionId));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
+      });
+      await db.update(toolConnections).set({ credentialPolicy: "per_user_with_fallback" })
+        .where(eq(toolConnections.id, shared.connectionId));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available", source: "organization", login: "robot",
+      });
+      await db.update(toolConnections).set({ credentialPolicy: "shared" })
+        .where(eq(toolConnections.id, shared.connectionId));
+
+      await db.insert(connectionGrantMembers).values({
+        companyId: input.companyId,
+        grantId: shared.id,
+        subjectType: "user",
+        subjectId: "B",
+      });
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
+      });
+      await db.update(connectionGrantMembers).set({ subjectId: "A" })
+        .where(eq(connectionGrantMembers.grantId, shared.id));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "available", source: "organization", login: "robot",
+      });
+      await db.update(companyMemberships).set({ status: "inactive" })
+        .where(eq(companyMemberships.companyId, input.companyId));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
+      });
+      await db.update(companyMemberships).set({ status: "active" })
+        .where(eq(companyMemberships.companyId, input.companyId));
+
+      // Revoking or removing the shared default must not resurrect the personal grant.
+      await db.update(connectionGrants).set({ isDefault: false })
+        .where(eq(connectionGrants.id, shared.id));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
+      });
+      await db.update(connectionGrants).set({ isDefault: true, status: "revoked" })
+        .where(eq(connectionGrants.id, shared.id));
+      expect(await resolveGitHubOperationCredentials(db, input)).toMatchObject({
+        status: "unavailable", env: {},
       });
     });
     it("does not resolve the company default person's GitHub", async () => {

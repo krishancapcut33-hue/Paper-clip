@@ -4,6 +4,7 @@ import {
   issues,
   companyMemberships,
   connectionGrantDelegations,
+  connectionGrantMembers,
   connectionGrants,
   toolConnectionInstalls,
   toolConnections,
@@ -51,7 +52,7 @@ export type GitCredential = {
   /** The company-secret name the token came from; null for a server-environment token. */
   secretName: string | null;
   githubIdentity?: { userId: string; login: string };
-  identitySource?: "personal" | "dedicated";
+  identitySource?: "personal" | "dedicated" | "organization";
   connectionId?: string;
   grantId?: string;
 };
@@ -318,7 +319,7 @@ export async function resolveManagedGitHubIdentitySelection(
   },
 ): Promise<{
   configured: boolean;
-  identitySource?: "personal" | "dedicated";
+  identitySource?: "personal" | "dedicated" | "organization";
   grant?: typeof connectionGrants.$inferSelect;
   error?: string;
 }> {
@@ -357,7 +358,7 @@ export async function resolveManagedGitHubIdentitySelection(
   const grants = await db.select().from(connectionGrants).where(and(
     eq(connectionGrants.companyId, companyId),
     inArray(connectionGrants.connectionId, [...eligibleConnectionIds]),
-    or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user")),
+    or(eq(connectionGrants.kind, "agent"), eq(connectionGrants.kind, "user"), eq(connectionGrants.kind, "organization")),
   ));
   const dedicated = context.agentId
     ? grants.filter((grant) => grant.kind === "agent" && grant.subjectAgentId === context.agentId)
@@ -378,8 +379,51 @@ export async function resolveManagedGitHubIdentitySelection(
         return grants.filter((grant) => grant.kind === "user" && delegatedIds.has(grant.id));
       })
     : [];
-  const candidates = dedicated.length > 0 ? dedicated : personal.length > 0 ? personal : delegated;
-  const identitySource = dedicated.length > 0 ? "dedicated" as const : "personal" as const;
+  // Organization grants are eligible only inside their own company and audience.
+  // The connection install alone does not authorize a restricted grant audience.
+  const organizationGrants = grants.filter((grant) => {
+    const connection = githubConnections.find((candidate) => candidate.id === grant.connectionId);
+    return grant.kind === "organization" && grant.isDefault && grant.status === "active"
+      && (connection?.credentialPolicy === "shared" || connection?.credentialPolicy === "per_user_with_fallback");
+  });
+  const audienceRows = organizationGrants.length > 0
+    ? await db.select({ grantId: connectionGrantMembers.grantId, subjectId: connectionGrantMembers.subjectId })
+        .from(connectionGrantMembers).where(and(
+          eq(connectionGrantMembers.companyId, companyId),
+          inArray(connectionGrantMembers.grantId, organizationGrants.map((grant) => grant.id)),
+          eq(connectionGrantMembers.subjectType, "user"),
+        ))
+    : [];
+  const [responsibleMember] = context.responsibleUserId && organizationGrants.length > 0
+    ? await db.select({ role: companyMemberships.membershipRole }).from(companyMemberships).where(and(
+        eq(companyMemberships.companyId, companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, context.responsibleUserId),
+        eq(companyMemberships.status, "active"),
+      )).limit(1)
+    : [];
+  const organization = organizationGrants.filter((grant) => {
+    const audience = audienceRows.filter((row) => row.grantId === grant.id);
+    if (context.responsibleUserId && (!responsibleMember || responsibleMember.role === "viewer")) return false;
+    return audience.length === 0 || Boolean(context.responsibleUserId && audience.some((row) => row.subjectId === context.responsibleUserId));
+  });
+  const activePersonal = personal.filter((grant) => grant.status === "active");
+  const revokedPersonal = personal.length > 0 && personal.every((grant) => grant.status === "revoked");
+  // Revocation does not switch the actor by default. An owner must explicitly
+  // enable this exception on the shared connection; other failures stay closed.
+  const optedInOrganization = revokedPersonal ? organization.filter((grant) => {
+    const connection = githubConnections.find((candidate) => candidate.id === grant.connectionId);
+    const config = connection?.config && typeof connection.config === "object" ? connection.config as Record<string, unknown> : {};
+    return config.managedGitHubOrganizationFallbackOnRevokedPersonal === true;
+  }) : organization;
+  const candidates = dedicated.length > 0 ? dedicated
+    : activePersonal.length > 0 ? activePersonal
+    : personal.length > 0 && !revokedPersonal ? personal
+    : personal.length > 0 ? optedInOrganization.length > 0 ? optedInOrganization : personal
+    : delegated.length > 0 ? delegated : organization;
+  const identitySource = dedicated.length > 0 ? "dedicated" as const
+    : candidates.some((grant) => grant.kind === "organization") ? "organization" as const
+    : personal.length > 0 || delegated.length > 0 ? "personal" as const : "organization" as const;
   // Reconnecting can create another connection/grant for the same GitHub
   // account. Ambiguity is about provider identities, not the number of rows.
   // Only trust GitHub's stable account ID; equal logins or missing metadata
@@ -490,7 +534,7 @@ export async function resolveManagedGitHubCredential(
     agentId?: string | null;
     allowStandingDelegation?: boolean;
   },
-): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated"; credential?: GitCredential; error?: string }> {
+): Promise<{ configured: boolean; identitySource?: "personal" | "dedicated" | "organization"; credential?: GitCredential; error?: string }> {
   const selection = await resolveManagedGitHubIdentitySelection(db, companyId, context);
   if (!selection.configured) return { configured: false };
   if (!selection.grant) return { configured: true, identitySource: selection.identitySource, error: selection.error };
@@ -569,13 +613,13 @@ export async function resolveManagedGitHubCredential(
         source: "managed_connection" as const,
         secretName: null,
         githubIdentity: { userId: github.userId, login: github.login },
-        identitySource: grant.kind === "agent" ? "dedicated" as const : "personal" as const,
+        identitySource: grant.kind === "agent" ? "dedicated" as const : grant.kind === "organization" ? "organization" as const : "personal" as const,
         connectionId: grant.connectionId,
         grantId: grant.id,
       },
     };
   };
-  let failure: { configured: boolean; identitySource?: "personal" | "dedicated"; error?: string };
+  let failure: { configured: boolean; identitySource?: "personal" | "dedicated" | "organization"; error?: string };
   try {
     const result = await acquire(selection);
     if (result.credential) return result;
