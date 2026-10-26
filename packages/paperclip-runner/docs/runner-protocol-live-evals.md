@@ -366,6 +366,12 @@ hashes. These detect corruption; they are not signatures or proof against a
 host that can rewrite all evidence. Known configured credential values are
 checked before encoding and after decoding. Keep bundles private.
 
+Controller post-child reads, archive creation, and durable reports use the same
+nonblocking, no-follow, byte-capped regular-file reader. Configured private/provider
+keys and credentials inside JSON configuration contents are checked in both raw
+and JSON-escaped form. Attempt IDs contain only letters, digits, `_`, `.`, and `-`
+so each retained attempt has one directory name.
+
 The reader accepts only bounded regular files and fixed evidence paths. A
 bundle is limited to 64 MiB of decoded content plus encoding overhead; this
 storage-format limit does not qualify a vendor charge or operating-cost bound.

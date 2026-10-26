@@ -1,8 +1,8 @@
-import { readFile } from 'node:fs/promises';
 import { join, resolve } from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { canonical, costRuntime, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
 import { attemptDirectory } from './run.mjs';
+import { limitFor, readRegularFile } from './evidence-files.mjs';
 
 export async function summarizeControlledCampaign(value, { filesByAttempt } = {}) {
   const { manifest, manifestSha256, allocatedUsd, overheadUsd } = validateManifest(value, Date.now(), { admission: false });
@@ -11,9 +11,11 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
   for (const allocation of manifest.attempts) {
     const root = attemptDirectory(manifest, allocation.attemptId);
     const readEvidence = async name => {
-      if (filesByAttempt === undefined) return readFile(join(root, name));
+      const limit = limitFor(name);
+      if (!limit) throw new Error('Unexpected controller evidence path');
+      if (filesByAttempt === undefined) return readRegularFile(join(root, name), limit);
       const bytes = filesByAttempt.get(allocation.attemptId)?.get(name);
-      if (!Buffer.isBuffer(bytes)) throw new Error('Missing archived controller evidence');
+      if (!Buffer.isBuffer(bytes) || bytes.length > limit) throw new Error('Missing archived controller evidence');
       return bytes;
     };
     const readDocument = async (name, maximum = 1_048_576) => {
