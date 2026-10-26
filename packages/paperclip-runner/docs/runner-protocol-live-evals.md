@@ -104,6 +104,178 @@ Claude Managed uses its Agent version, while AgentCore uses its qualification
 revision. Transport API or beta versions remain separate protocol metadata and
 must not replace that runtime identity in a report.
 
+## Controller-assigned gateway route
+
+The Runner eval CLI accepts `--gateway-config /absolute/path/gateway.json` for
+native Codex and ACPX Claude. This is an explicit route for a controller
+that owns a local budget proxy. Normal invocations keep the direct path.
+ACPX Codex is rejected before service creation because its runtime prohibits
+preconfigured homes to protect Runner state.
+The descriptor must bind the exact model and attempt ID from `request.json`:
+
+```json
+{
+  "schema": "paperclip.runner-eval.gateway/v1",
+  "provider": "openai",
+  "model": "gpt-5.4-mini",
+  "baseUrl": "http://127.0.0.1:4567",
+  "campaignId": "campaign-id",
+  "executionId": "cell-id",
+  "attemptId": "attempt-id",
+  "upstreamRoute": "direct"
+}
+```
+
+Use `anthropic` for ACPX Claude. `upstreamRoute` is the controller's declaration:
+`direct` or `braintrust`. It is not an independent verification of the upstream.
+The base URL must be the proxy's explicit IPv4 loopback address and port, with
+no path, query, fragment, or embedded credential. The controller supplies its
+32-byte hexadecimal token through `PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN`.
+Do not put provider or Braintrust credentials in this child environment or file.
+
+```sh
+node /path/to/runner/dist/cli/eval-session.js \
+  --request /path/to/request.json --output /path/to/artifact.json \
+  --gateway-config /path/to/gateway.json
+```
+
+The CLI validates the descriptor before creating a provider service. It creates
+an owned temporary home, pins Codex's Responses endpoint or Claude's Messages
+endpoint and exact model, and passes only the assigned proxy credential.
+It does not copy ambient provider keys, subscription logins, proxy settings,
+startup hooks, or user homes into this route. Unsupported harnesses and
+mismatched descriptor identities fail before provider creation. The temporary
+home is removed on success and failure.
+
+Success and failure artifacts retain `requestRouting`: controller gateway mode,
+provider, declared upstream route, campaign/execution/attempt IDs, and the
+SHA-256 of the descriptor bytes. The token and endpoint are excluded from this
+metadata. Existing artifact usage and provider outcomes remain authoritative
+for their respective fields; the route declaration is not a billing receipt.
+The controller must retain its request ledger and link these identities to it.
+
+This entry point does not itself allocate a campaign budget, run the proxy, or
+change the hosted matrix. The controller must enforce request admission,
+deadlines, and limits before forwarding traffic. A local fake-API probe only
+proves routing; it does not qualify live provider or Braintrust behavior.
+
+
+## Controlled request budgets
+
+The source-checkout controller is
+`packages/paperclip-runner/scripts/controlled-evals/run.mjs`. Runner/evals owns
+this orchestration. It reuses the existing eval request proxy and ledger from
+`tests/runner-e2e` through one import graph; it does not copy their reservation
+or provider-usage rules. It requires the workspace's installed `tsx` runtime.
+It is not a published Runner package entry point.
+
+The controller accepts the existing `--request` and `--output` contract. Set
+`PAPERCLIP_RUNNER_EVAL_CONTROL_MANIFEST` to an explicit reviewed manifest and
+supply the selected upstream credential only to this trusted controller. For
+Runner Evals, pass this controller path as `eval_program.py run --runner-cli`;
+the manifest identifies the actual built `eval-session.js`. The provider child
+receives only its temporary proxy credential and private home.
+
+The manifest schema is `paperclip.runner-eval.controller/v1`. It contains:
+
+- `campaignId`, `maxUsd`, `deadlineAt`, `pricingVerifiedAt`, and
+  `pricingExpiresAt`; admission must fit a current four-hour window.
+- `sourceRevision` and `definitionsRevision`, each an exact commit ID.
+  These are the trusted preparer's provenance declarations.
+- `runnerCli`, `runnerPackage`, and `runnerd`, each an absolute `path` and
+  content `sha256`. The controller checks the three files before launch.
+- An absolute durable `outputDirectory`, outside the disposable case workspace.
+- `route` (`direct` or `braintrust`), plus `projectId` for Braintrust.
+- `models`, using the existing exact-model price, request-limit, and reviewed
+  full-lifecycle `provisionalBound` contract.
+- `overhead`, using the existing four-component operating allowance with a
+  current full-lifecycle bound for every component. This is reserved once.
+- `attempts`, each with a unique `executionId` and `attemptId`,
+  `requestSha256`, `provider`, optional `acpxAgent`, exact `model`, `maxUsd`,
+  `maxRequests`, `maxConcurrent`, and `timeoutMs`. Native Codex and ACPX
+  Claude are supported. Each execution has one explicit attempt and no retry.
+
+Use `requestBindingSha256` from `controlled-evals/manifest.mjs` to bind the
+complete compiled request. It excludes only the temporary working directory
+and native executable path; the executable digest remains bound and its path
+is checked separately. The controller gives the child a retained copy of the
+validated request. Changing prompts, fixtures, models, limits, or attempts
+requires a new reviewed binding.
+
+The sum of every cell's allocation and the once-only operating allowance must
+fit `maxUsd` before any cell starts. A request reserves against its cell's
+ledger before forwarding. Cells cannot borrow unused allocations. Unknown
+requests keep their reservations, and failed or missing cell evidence keeps
+that cell's full allocation in the campaign report. An existing cell directory
+or output is never reset for a retry. Cancellation closes admission, drains
+upstream receipts within the proxy limit, and stops the owned CLI process
+group. Unverified provider cleanup remains explicit and retains the allocation.
+
+Each result retains `controllerAccounting` alongside the original provider
+outcome and usage. Retain the durable controller directory as private evidence:
+its admission, request, gateway descriptor, request receipts, ledger, original
+provider artifact, and final result are required for reconciliation. The
+private program's existing immutable attempt copy includes the result metadata;
+its current default history publisher does not archive this separate directory.
+Do not infer receipt retention from that metadata alone.
+
+```sh
+node packages/paperclip-runner/scripts/controlled-evals/report.mjs \
+  /private/path/controller-manifest.json > /private/path/controller-report.json
+```
+
+The report recomputes ledger costs, checks their attempt/manifest bindings, and
+preserves known partial charges. It reports operating costs as held and total
+costs as provisional when evidence is intact, or incomplete otherwise. It does
+not release historical holds or claim invoice
+settlement. Existing provider usage is retained separately; do not add the
+provider and controller cost observations as if they were separate charges.
+
+This local controller is not yet wired into the hosted matrix. Its durable
+attempt-directory guard applies to one shared filesystem, not independent
+GitHub workers. Hosted integration must bind unique cells to the prepared
+allocation, reject workflow/job reruns, and preserve the controller evidence
+before enabling paid work. Native OTLP routing, report integration, vendor
+metering bounds, and actual paid qualification remain separate gates.
+## Controller-assigned native observability
+
+The same CLI accepts `--observability-config /absolute/path/observability.json`
+only with `--gateway-config`. This opt-in route supports native Codex and ACPX
+Claude. Without that argument, the gateway route exports no native traces.
+
+The descriptor uses schema `paperclip.runner-eval.observability/v1`. It contains
+`campaignId`, `executionId`, and `attemptId` matching the gateway and request;
+`projectId` (UUID), `traceId` (32 lowercase hex characters), and `spanId` (16
+lowercase hex characters); `baseUrl` in the form
+`http://127.0.0.1:PORT/otel`; and `launch`, the secret-free result from the existing
+`buildProviderObservabilityLaunch` in `packages/adapter-utils`. The CLI accepts
+only its known Codex/Claude exporter settings and the mock session's exact
+company and agent attributes. Bind `revision` to `compatibilityKey`. Use a
+compatibility key of at most 128 letters, digits, underscores, or hyphens.
+
+Build the launch with `/v1/logs` and `/v1/traces` under that base URL, a timeout
+of at most 3 seconds, and only the `x-bt-parent` header from
+`exportBraintrustAttemptParent` for those project/trace/span IDs. Do not include
+upstream authorization in the file. Supply the attempt's separate 32-byte
+hexadecimal relay credential through `PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN`. The CLI
+adds authorization to the provider environment and redacts it from diagnostics
+and artifacts. Codex configuration is written only into the disposable gateway
+home; the existing model route is preserved. The descriptor must be a regular
+file, not a symlink, and fit within 128 KiB.
+
+Success and failure artifacts record `nativeObservability` with the declared
+project/trace/span IDs, descriptor SHA-256, `configured: true`, and
+`verification: "unverified"`. Configuration does not prove export, ingestion,
+indexing, complete capture, or billing coverage. Relay receipts and destination
+readback must establish those separate facts. Provider errors keep their
+original outcome even when traces arrive.
+
+The controller owns the relay, credentials, ingestion quotas, deadline, drain,
+and private receipt retention. This CLI option does not start a relay, set an
+operating allowance, or enable a paid campaign. The existing Product E2E relay
+and launch generator remain the integration owners; the hosted Runner workflow
+still needs its own qualified controller integration.
+
 ## Hosted campaign
 
 Use the `Runner Direct Live Protocol Evals` workflow. Dispatch the workflow
@@ -361,3 +533,23 @@ checksum-verified Grok binary before packaging the portable runtime. Targets
 without the Grok package keep their existing build behavior. This protocol
 workflow uses the explicitly selected API key; subscription credentials are
 not delivered by it.
+
+The controlled Codex profile disables web search. The shared proxy accepts local
+function/custom tool namespaces and still rejects hosted tools, including any
+hidden inside a namespace. These routes do not qualify web-search charges.
+
+The controller stages the exact verified CLI and daemon bytes in its private
+attempt directory. A Node module-resolution hook keeps the CLI's relative
+imports pointed at the trusted source checkout; it does not reload the original
+entry file. Installed dependencies still belong to that trusted checkout. The
+staged copies are removed after verified process cleanup and kept if cleanup is
+incomplete. This path requires the repository's Node 24.11+ runtime.
+
+Campaign reports verify the retained request binding and the digest of every
+request receipt before reducing a cell's allocation. Missing admission, request,
+or receipt evidence preserves known ledger charges and holds the rest of the
+full allocation.
+
+On cancellation, the controller keeps the scheduled process-group SIGKILL until
+any remaining owned descendants receive it, even if the CLI exits first. A
+forced stop still leaves cleanup unverified and retains the full allocation.

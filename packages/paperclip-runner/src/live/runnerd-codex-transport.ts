@@ -1,7 +1,7 @@
 import { PRP_COMPLETION_TOOL_NAME, PRP_COMPLETION_RESULT_BRIDGE_INPUT_SCHEMA } from "../contracts/completion-result.js";
 import { RunnerLaunchPreparationStore } from "./runner-launch-preparation-store.js";
 import type { PreparedRunnerProviderLaunch, RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
-import { validatePreparedRunnerLaunch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
+import { preparedRunnerLaunchWorkingDirectory, validatePreparedRunnerLaunch, runnerProviderLaunchRequirements, createRunnerProviderLaunch, createRunnerdCodexAppServerArgs, trustedRuntimeReadOnlyRoots } from "./runner-provider-launch.js";
 export { createRunnerdCodexAppServerArgs, resolveRunnerdAcpxPermissionMode, trustedRuntimeReadOnlyRoots, withCodexCollaborationRuntimeInstructions } from "./runner-provider-launch.js";
 import { applyProviderObservabilityEnvironment, redactObservabilityDiagnostic } from "../drivers/agent-observability.js";
 import type { RunnerExecutionDriver } from "../control-plane/runner-execution-driver.js";
@@ -855,6 +855,11 @@ function runnerCloseGraceMs(options: Pick<CapabilityRunnerdCodexTransportOptions
   // Explicit caller deadlines remain authoritative; all settlement proofs stay
   // mandatory even when the provider already completed its task.
   return options.closeGraceMs ?? (options.provider === "acpx" && options.acpxAgent === "pi" ? 45_000 : 10_000);
+}
+
+function runnerProcessReconnectGraceMs(options: CapabilityRunnerdCodexTransportOptions): number | undefined {
+  if (options.runnerProcessReconnectGraceMs === null) return undefined;
+  return options.runnerProcessReconnectGraceMs ?? options.runnerReconnectGraceMs;
 }
 
 function runnerCloseDeadlines(
@@ -3494,6 +3499,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       },
     ],
   });
+  #handlerInstalled = false;
+  readonly #handlerReady: Promise<void>;
+  #resolveHandlerReady!: () => void;
   #core: DurablePrpControlPlane | null = null;
   #handle: RunnerProcessHandle | null = null;
   #adoptedRunnerMonitor: NodeJS.Timeout | null = null;
@@ -3554,6 +3562,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
   #durableTurnId = "";
   #authorizedTools: Record<string, unknown> | null = null;
   #runAttachTemplate: Record<string, unknown> | null = null;
+  #preparedWorkingDirectory: string | null = null;
   #closed = false;
   readonly #closedSignal: Promise<void>;
   #resolveClosedSignal!: () => void;
@@ -3620,6 +3629,9 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     }
     this.#failureSignal = new Promise<never>((_resolve, reject) => {
       this.#rejectFailureSignal = reject;
+    });
+    this.#handlerReady = new Promise<void>(resolve => {
+      this.#resolveHandlerReady = resolve;
     });
     this.#closedSignal = new Promise<void>(resolve => {
       this.#resolveClosedSignal = resolve;
@@ -3901,6 +3913,11 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       recoveredTurns.unshift(...priorTerminals.values());
       this.#recoveryTurnBindingPending = false;
       this.#pumpEvents();
+      const prepared = this.#preparedThreadWorkingDirectory();
+      if (prepared.cwd !== undefined && typeof snapshot.cwd === "string"
+        && snapshot.cwd.length > 0 && snapshot.cwd !== prepared.cwd) {
+        throw new Error("runner_prepared_launch_working_directory_mismatch");
+      }
       return {
         thread: {
           id: this.#threadId,
@@ -3908,12 +3925,14 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           ...(this.#providerIdentity === null
             ? {}
             : { providerIdentity: structuredClone(this.#providerIdentity) }),
-          cwd:
+          // Some providers omit cwd from their snapshot. A prepared launch
+          // supplies it; never fall back to a controller-local directory.
+          cwd: prepared.cwd ?? (
             typeof snapshot.cwd === "string" && snapshot.cwd.length > 0
               ? snapshot.cwd
               : (this.options.environment?.PAPERCLIP_WORKSPACE_CWD ??
                 this.options.runnerFilesystemRoot ??
-                tmpdir()),
+                tmpdir())),
           turns: recoveredTurns,
         },
       };
@@ -3958,6 +3977,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         );
       }
       return {
+        ...this.#preparedThreadWorkingDirectory(),
         thread: {
           id: this.#threadId,
           sessionId: this.#sessionId,
@@ -3988,6 +4008,8 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
 
   setServerRequestHandler(handler: CodexServerRequestHandler): void {
     this.#handler = handler;
+    this.#handlerInstalled = true;
+    this.#resolveHandlerReady();
   }
 
   async #awaitWarmRunAttachmentReady(): Promise<void> {
@@ -4752,10 +4774,32 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     this.#assertStartupOpen();
     const prepared = await this.options.prepareLaunch!(requirements, recovery);
     validatePreparedRunnerLaunch(requirements, prepared);
+    this.#recordPreparedWorkingDirectory(prepared);
     this.#assertStartupOpen();
     template.provider = prepared.provider;
     new RunnerLaunchPreparationStore(this.#root).save(requirements, prepared, this.#core!.store.state.identity);
     return prepared;
+  }
+
+  // The prepared launch is the only source of the provider directory. Core
+  // records it in session metadata; the session cannot move to another one.
+  #recordPreparedWorkingDirectory(prepared: PreparedRunnerProviderLaunch): void {
+    const workingDirectory = preparedRunnerLaunchWorkingDirectory(prepared);
+    if (workingDirectory === null) {
+      throw new Error("runner_prepared_launch_working_directory_unavailable");
+    }
+    if (this.#preparedWorkingDirectory !== null && this.#preparedWorkingDirectory !== workingDirectory) {
+      throw new Error("runner_prepared_launch_working_directory_changed");
+    }
+    this.#preparedWorkingDirectory = workingDirectory;
+  }
+
+  #preparedThreadWorkingDirectory(): { cwd?: string } {
+    if (!this.options.prepareLaunch) return {};
+    if (this.#preparedWorkingDirectory === null) {
+      throw new Error("runner_prepared_launch_working_directory_unavailable");
+    }
+    return { cwd: this.#preparedWorkingDirectory };
   }
 
   async #prepareLaunch(
@@ -4770,6 +4814,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         String(params.developerInstructions ?? params.baseInstructions ?? "You are a Paperclip agent."));
       const prepared = await this.options.prepareLaunch(requirements);
       validatePreparedRunnerLaunch(requirements, prepared);
+      this.#recordPreparedWorkingDirectory(prepared);
       this.#assertStartupOpen();
       new RunnerLaunchPreparationStore(this.#root).save(requirements, prepared, this.#core!.store.state.identity);
       const completionContract = record(params.completionContract);
@@ -5042,7 +5087,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
       p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
       maxRuntimeMs: 0,
-      reconnectGraceMs: this.options.runnerReconnectGraceMs,
+      reconnectGraceMs: runnerProcessReconnectGraceMs(this.options),
       lifecyclePolicy: this.options.lifecyclePolicy,
       runnerBinaryPath,
       runnerVersion: runnerArtifact.version,
@@ -5085,6 +5130,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
     const acpxAgent = this.options.acpxAgent ?? "codex";
     return {
       model: this.#observedProviderModel,
+      ...this.#preparedThreadWorkingDirectory(),
       thread: {
         id: this.#threadId,
         sessionId: this.#sessionId,
@@ -5726,7 +5772,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
           maxOutboxBytes: RUNNERD_MAX_OUTBOX_BYTES,
           p0ReserveBytes: RUNNERD_P0_RESERVE_BYTES,
           maxRuntimeMs: 0,
-          reconnectGraceMs: this.options.runnerReconnectGraceMs,
+          reconnectGraceMs: runnerProcessReconnectGraceMs(this.options),
           lifecyclePolicy: this.options.lifecyclePolicy,
           runnerBinaryPath,
           runnerVersion: runnerArtifact.version,
@@ -5882,6 +5928,18 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         : await Promise.race([admission.settled, this.#failureSignal]).catch(() => {
             throw new SemanticToolNotDispatchedError();
           });
+    // An adopted Runner can authenticate and deliver queued tools before the
+    // driver has finished reconstructing its session. Handler publication is
+    // the dispatch barrier; the default RPC diagnostic is not a tool outcome.
+    // The owning startup/transport lifetime bounds this wait, and the original
+    // authority/epoch checks below still apply after it becomes ready.
+    if (!this.#handlerInstalled) {
+      await Promise.race([
+        this.#handlerReady,
+        this.#failureSignal,
+        this.#closedSignal.then(() => { throw new SemanticToolNotDispatchedError(); }),
+      ]).catch(() => { throw new SemanticToolNotDispatchedError(); });
+    }
     try {
       this.#throwIfFailed();
     } catch {
@@ -7194,7 +7252,8 @@ export async function probeNativeRunnerEnvironment(options: {
     environment.HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "probe-home");
     environment.CODEX_HOME = resolve(remoteFilesystemRoot ?? options.runtimeDirectory, "codex-home");
   }
-  environment.PAPERCLIP_WORKSPACE_CWD = workingDirectory;
+  // A prepared launch reports its own directory; Core does not assign one.
+  if (!ownsPreparation) environment.PAPERCLIP_WORKSPACE_CWD = workingDirectory;
   const bundle = createRunnerdCodexTransport({
     ...options.transportOptions,
     ...(options.transportOptions?.controlPlaneRegistration ? { controlPlaneRegistration: (authority, identity) => {
@@ -7247,7 +7306,8 @@ export async function probeNativeRunnerEnvironment(options: {
     environment,
     transportFactory: () => bundle.transport,
     requireProviderSessionIdentity: true,
-    ...(remoteFilesystemRoot || ownsPreparation ? { workingDirectoryAuthority: "remote_runner" as const } : {}),
+    ...(ownsPreparation ? { workingDirectoryAuthority: "runner_prepared_launch" as const }
+      : remoteFilesystemRoot ? { workingDirectoryAuthority: "remote_runner" as const } : {}),
   });
   let rejectAborted!: (error: unknown) => void;
   const aborted = new Promise<never>((_resolve, reject) => { rejectAborted = reject; });
