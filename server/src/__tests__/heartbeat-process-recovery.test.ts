@@ -12135,6 +12135,7 @@ describeEmbeddedPostgres("heartbeat orphaned process recovery", () => {
     const { agentId, issueId, runId } = await seedStrandedIssueFixture({
       status: "in_progress",
       runStatus: "cancelled",
+      retryReason: "issue_continuation_needed",
       runErrorCode: "agent_not_invokable",
       runError: "Agent lifecycle state is pausing",
       executionStage: "settled",

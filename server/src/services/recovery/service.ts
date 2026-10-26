@@ -744,6 +744,17 @@ export function classifyContinuationFailure(
   latestRun: LatestIssueRun,
 ): ContinuationRetryClassification {
   const errorCode = readNonEmptyString(latestRun?.errorCode);
+  if (
+    errorCode === "agent_not_invokable" &&
+    latestRun?.executionStage === "settled"
+  ) {
+    return {
+      kind: "transient_infra",
+      maxAttempts: CONTINUATION_RECOVERY_TRANSIENT_MAX_ATTEMPTS,
+      baseBackoffMs: CONTINUATION_RECOVERY_TRANSIENT_BASE_BACKOFF_MS,
+      errorCode,
+    };
+  }
   if (errorCode === CONTINUATION_WAITING_ON_REVIEW_ERROR_CODE) {
     return {
       kind: "deliberate_wait_without_target",
@@ -5646,13 +5657,7 @@ export function recoveryService(
           continue;
         }
 
-        const rejectedBeforeInvocation =
-          latestRun.errorCode === "agent_not_invokable" &&
-          latestRun.executionStage === "settled";
-        if (
-          classification.kind === "non_retryable" &&
-          !rejectedBeforeInvocation
-        ) {
+        if (classification.kind === "non_retryable") {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_progress",
