@@ -133,7 +133,6 @@ type BackendFactoryOptions = {
 };
 
 type RunnerTransportOptions = {
-  prepareProviderArtifacts?: () => Promise<unknown>;
   acpxRuntimeDirectory?: string;
   adoptExistingRunner?: { pid: number; isAlive: () => Promise<boolean> | boolean };
   stateDirectory?: string;
@@ -1451,6 +1450,11 @@ describe("remote provider pack manifest", () => {
       distDigest: digest, artifacts,
       bridgeDigest: "sha256:" + createHash("sha256").update(digest + "\n" + digest + "\n" + digest).digest("hex"),
     };
+    if (provider === "cursor") Object.assign(payload, { providers: { cursor: {
+      version: QUALIFIED_ACPX_PROFILES.cursor.agentServerVersion, profileDigest: QUALIFIED_ACPX_PROFILES.cursor.commandDigest,
+      closureDigest: `sha256:${CURSOR_DISTRIBUTION_PINS["linux-x64"].closureSha256}`, qualification: "qualified",
+      path: "provider-assets/cursor/linux-x64", sha256: digest,
+    } } });
     const manifest = { schema: "paperclip-runner/remote-provider-pack/v1", payload,
       digest: "sha256:" + createHash("sha256").update(canonical(payload)).digest("hex") };
     state.bundledPackManifestPath = join(root, "provider-pack.json");
@@ -1466,10 +1470,21 @@ describe("remote provider pack manifest", () => {
       session: { ...execution.session, normalizedSessionId: `bundled-${provider}-${randomUUID()}`, driverKind: provider === "opencode" ? "opencode_server" : "acpx_runtime" },
     } as unknown as NativeExecutionInputV1;
     const syncIn = vi.fn(async (_operations: { files: { kind: string }[] }[]) => undefined);
-    const execute = vi.fn(async (command: { command: string; args?: string[] }) => {
-      if (command.args?.[0] === "--build-metadata") throw new Error("reached-staged-Linux-daemon-verification");
-      return { exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "" };
-    });
+    const installed = structuredClone(manifest);
+    if (provider === "opencode") {
+      installed.payload.runnerSourceRevision = "c".repeat(40);
+      installed.payload.artifacts.nodeCommand.sha256 = "sha256:" + "d".repeat(64);
+      installed.digest = "sha256:" + createHash("sha256").update(canonical(installed.payload)).digest("hex");
+    }
+    const execute = vi.fn(async (command: { command: string; args?: string[] }) => ({
+      exitCode: 0, signal: null, timedOut: false, stderr: "",
+      stdout: command.args?.[0] === "--build-metadata" ? JSON.stringify({
+        schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
+        packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
+        durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+        providerPacks: [{ root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true }],
+      }) : "",
+    }));
     try {
       await createRunnerdBackend({ db: leaseDb(remoteExecution), execution: remoteExecution,
         runnerInstanceId: "bundled-image-runner", runnerIngressAuthorized: true,
@@ -1493,33 +1508,17 @@ describe("remote provider pack manifest", () => {
         const { bundledRemoteProviderPackManifestPath } = await import("../../vendor/paperclip-runner/index.js");
         expect(bundledRemoteProviderPackManifestPath).toHaveBeenCalledWith(undefined, `linux-${architecture}`);
       }
-      await expect(transport.controlPlaneRegistration({})).rejects.toThrow("reached-staged-Linux-daemon-verification");
       expect(syncIn).toHaveBeenCalledWith([expect.objectContaining({ files: [expect.objectContaining({
         sourcePath: state.bundledRunnerBinary, targetPath: "/workspace/.paperclip-runtime/paperclip-runner/bin/paperclip-runnerd",
       })] })]);
       expect(execute.mock.calls.some(([call]) => call.args?.[1] === "uname -s; uname -m")).toBe(false);
       expect(existsSync(join(transport.stateDirectory!, "provider-pack-authority.json"))).toBe(false);
-      if (provider === "opencode") {
-        const installed = structuredClone(manifest);
-        installed.payload.runnerSourceRevision = "c".repeat(40);
-        installed.payload.artifacts.nodeCommand.sha256 = "sha256:" + "d".repeat(64);
-        installed.digest = "sha256:" + createHash("sha256").update(canonical(installed.payload)).digest("hex");
-        execute.mockImplementation(async command => ({ exitCode: 0, signal: null, timedOut: false, stderr: "",
-          stdout: command.args?.[0] === "--build-metadata" ? JSON.stringify({
-            schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
-            packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
-            durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
-            providerPacks: [{ root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true }],
-          }) : "" }));
-        execute.mockClear();
-        const selected = await transport.prepareProviderArtifacts!();
-        expect(selected).toMatchObject({ providerPackAuthorityDigest: installed.digest,
-          providerNodeCommand: "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node",
-          providerNodeCommandSha256: installed.payload.artifacts.nodeCommand.sha256 });
-        expect(execute.mock.calls.filter(([call]) => call.args?.[0] === "--build-metadata")).toHaveLength(1);
-        expect(execute.mock.calls.some(([call]) => call.args?.[0] === "-e" || call.args?.[0] === "--version")).toBe(false);
-        expect(syncIn.mock.calls.every(([operations]) => operations.every(operation => operation.files.every(file => file.kind === "file")))).toBe(true);
-      }
+      expect(transport).toMatchObject({ providerPackAuthorityDigest: installed.digest,
+        providerNodeCommand: "/opt/paperclip-runner/provider-pack/node_modules/node/bin/node",
+        providerNodeCommandSha256: installed.payload.artifacts.nodeCommand.sha256 });
+      expect(execute.mock.calls.filter(([call]) => call.args?.[0] === "--build-metadata")).toHaveLength(1);
+      expect(execute.mock.calls.some(([call]) => call.args?.[0] === "-e" || call.args?.[0] === "--version")).toBe(false);
+      expect(syncIn.mock.calls.every(([operations]) => operations.every(operation => operation.files.every(file => file.kind === "file")))).toBe(true);
       if (provider === "claude-x64") {
         const identity = transport.prpIdentity!;
         const artifact = { version: "0.0.0", digest: "sha256:" + createHash("sha256").update(daemon).digest("hex") };
@@ -1541,6 +1540,7 @@ describe("remote provider pack manifest", () => {
             schema: "paperclip-runner/runnerd-build-metadata/v1", binaryName: "paperclip-runnerd",
             packageName: "@paperclipai/paperclip-runner", binaryContractVersion: 2,
             durableSessionCapabilities: ["unlimited_runtime", "connection_lease_renewal"], prpTransportModes: ["listen_ws"],
+            providerPacks: [{ root: "/opt/paperclip-runner/provider-pack", manifest, immutable: true }],
           }) };
           if (request.args[0] === "-e" || request.args[0] === "--version") return { exitCode: 0, timedOut: false, stderr: "", stdout: request.args[0] === "--version" ? "1.18.34" : "" };
           const script = request.args[1];
@@ -1559,8 +1559,7 @@ describe("remote provider pack manifest", () => {
         });
         state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
         const recovered = state.createTransport.mock.calls.at(-1)![0];
-        expect(recovered).toMatchObject({ runnerArtifact: artifact, adoptExistingRunner: { pid: 123 } });
-        expect(await recovered.prepareProviderArtifacts!()).toMatchObject({ providerPackAuthorityDigest: manifest.digest });
+        expect(recovered).toMatchObject({ providerPackAuthorityDigest: manifest.digest, runnerArtifact: artifact, adoptExistingRunner: { pid: 123 } });
       }
     } finally {
       state.bundledPackManifestPath = null; state.bundledRunnerBinary = null;

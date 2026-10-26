@@ -1224,14 +1224,7 @@ export interface CapabilityRunnerdProcessEvidence {
   diagnostics: string[];
 }
 
-export type RunnerProviderArtifacts = Pick<CapabilityRunnerdCodexTransportOptions,
-  "providerNodeCommand" | "providerNodeCommandSha256" | "providerPackAuthorityDigest" |
-  "opencodeCommand" | "opencodeCommandSha256" | "opencodeProxyPath" | "opencodeProxySha256" |
-  "acpxSidecarPath" | "acpxSidecarSha256">;
-
 export interface CapabilityRunnerdCodexTransportOptions extends RunnerExecutionDriver {
-  /** Resolve environment-owned artifacts before binding a provider launch profile. */
-  prepareProviderArtifacts?: () => Promise<RunnerProviderArtifacts>;
   observability?: import("../drivers/agent-observability.js").ProviderObservabilityLaunch;
   homeMode?: "isolated" | "preconfigured";
   provider?: "codex" | "opencode" | "claude_managed" | "aws_agentcore" | "acpx";
@@ -5025,10 +5018,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       turnId: `turn_lab_${token}`,
       itemId: `item_lab_${token}`,
     };
-    if (this.options.prepareProviderArtifacts) {
-      Object.assign(this.options, await this.options.prepareProviderArtifacts());
-      this.#assertStartupOpen();
-    }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());
     const runnerArtifact = this.options.runnerArtifact ?? approvedRunnerArtifact(runnerBinaryPath);
@@ -5391,10 +5380,6 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
         this.#root,
         new Error("PRP provider resume state is unavailable"),
       );
-    }
-    if (this.options.prepareProviderArtifacts) {
-      Object.assign(this.options, await this.options.prepareProviderArtifacts());
-      this.#assertStartupOpen();
     }
     const runnerBinaryPath =
       this.options.runnerBinary ?? (this.options.prepareLaunch ? "paperclip-runnerd" : defaultCapabilityRunnerdBinary());

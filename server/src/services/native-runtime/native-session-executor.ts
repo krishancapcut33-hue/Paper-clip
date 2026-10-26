@@ -13409,6 +13409,11 @@ async function createRunnerdBackendWithinSessionClaim(
     if (!current) throw new Error("native_session_tool_authority_unavailable");
     return current.execute(call);
   };
+  if (requiresRemoteProviderPack) {
+    await prepareNativeRemoteRunner({ target, runnerIngressAuthorized: input.runnerIngressAuthorized === true,
+      runnerPublicUrl: input.runnerPublicUrl, runnerCaBundlePath: input.runnerCaBundlePath,
+      runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });
+  }
   const backend = createNativeSessionBackend(runnerExecution, {
     runnerInstanceId:
       retainedTransition?.runnerInstanceId ?? input.runnerInstanceId,
@@ -13520,11 +13525,7 @@ async function createRunnerdBackendWithinSessionClaim(
               },
             }
           : {}),
-        ...(requiresRemoteProviderPack ? { prepareProviderArtifacts: async () => {
-          await prepareNativeRemoteRunner({ target, runnerIngressAuthorized: input.runnerIngressAuthorized === true,
-            runnerPublicUrl: input.runnerPublicUrl, runnerCaBundlePath: input.runnerCaBundlePath,
-            runId: input.execution.binding.runId, prepareRemote: prepareRemoteRunner });
-          return expectedProviderPackManifest && activeRemoteProviderPackRoot
+        ...(expectedProviderPackManifest && activeRemoteProviderPackRoot
           ? {
               providerNodeCommand: posix.join(
                 activeRemoteProviderPackRoot,
@@ -13558,8 +13559,7 @@ async function createRunnerdBackendWithinSessionClaim(
                 expectedProviderPackManifest.payload.artifacts.acpxSidecar
                   .sha256,
             }
-          : {};
-        } } : {}),
+          : {}),
         stateDirectory: root,
         runnerBinary: controllerRunnerBinary,
         ...(providerPackAuthority ? { runnerArtifact: providerPackAuthority.runnerArtifact } : {}),
