@@ -59,7 +59,7 @@ Normal agent-authored hiring keeps its existing approval policy.
 An agent-owned plugin may prepare the draft and leave its lifecycle in
 `verifying` while that setup hold remains. Only bounded Core-issued setup probes
 can run there. The creator's company creation permission also covers configuring
-and retrying their draft during preparation; other actors still require the
+and retrying their draft during preparation or stopping; other actors still require the
 ordinary configuration permission. This is a board wizard path, not new agent
 execution or probe authority. Lifecycle and component regressions cover these
 transitions; no permitted-agent or live-provider journey is claimed here.

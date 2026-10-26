@@ -26,7 +26,7 @@ export function agentRecords(db: Db, effects: LifecycleEffects) {
           if (!existing) throw notFound("Agent setup not found");
           return existing;
         }
-        if (setup && (!isAgentSetupDraft(setup) || !setup.lifecycleHolds.includes("setup"))) {
+        if (setup && (!isAgentSetupDraft(setup) || setup.lifecycleState === "pausing" || !setup.lifecycleHolds.includes("setup"))) {
           throw conflict("Agent setup is no longer available");
         }
         if (options?.setupAgentId && !setup) throw notFound("Agent setup not found");

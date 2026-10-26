@@ -233,6 +233,30 @@ const support = await getEmbeddedPostgresTestSupport();
     expect((await current(setup.id)).lifecycleHolds).toEqual(["setup"]);
   });
 
+  it("lets only the setup creator configure and retry a stopping draft with creation permission", async () => {
+    await db.insert(companyMemberships).values(["setup-owner", "setup-other"].map(principalId => ({ companyId,
+      principalType: "user", principalId, membershipRole: "member" })));
+    await db.insert(principalPermissionGrants).values(["setup-owner", "setup-other"].map(principalId => ({ companyId,
+      principalType: "user", principalId, permissionKey: "agents:create" })));
+    const lifecycle = createAgentLifecycle(db);
+    const draft = await lifecycle.requestHire(companyId, { name: "Stopping setup", adapterType: "process" },
+      { setupOnly: true, createdByUserId: "setup-owner" });
+    await db.update(agents).set({ lifecycleState: "pausing" }).where(eq(agents.id, draft.id));
+    function app(userId: string) {
+      const value = express(); value.use(express.json());
+      value.use((req, _res, next) => { req.actor = { type: "board", source: "session", userId,
+        companyIds: [companyId], memberships: [{ companyId, membershipRole: "member", status: "active" }] }; next(); });
+      value.use("/api", agentRoutes(db)); value.use(errorHandler); return value;
+    }
+    const updated = await request(app("setup-owner")).patch(`/api/agents/${draft.id}`).send({ runtimeConfig: { heartbeat: { enabled: false } } });
+    expect(updated.status, JSON.stringify(updated.body)).toBe(200);
+    await request(app("setup-owner")).post(`/api/agents/${draft.id}/lifecycle/retry`).send({}).expect(200);
+    await request(app("setup-other")).patch(`/api/agents/${draft.id}`).send({ runtimeConfig: { heartbeat: { enabled: true } } }).expect(403);
+    await request(app("setup-other")).post(`/api/agents/${draft.id}/lifecycle/retry`).send({}).expect(403);
+    await expect(lifecycle.requestHire(companyId, { name: draft.name }, { setupAgentId: draft.id })).rejects.toThrow("no longer available");
+    expect((await current(draft.id)).lifecycleState).toBe("pausing");
+  });
+
   it("creates a board-owned setup before requesting approval for its final configuration", async () => {
     await db.update(companies).set({ requireBoardApprovalForNewAgents: true }).where(eq(companies.id, companyId));
     await db.insert(companyMemberships).values(["board", "other-creator"].map(principalId => ({ companyId, principalType: "user", principalId, membershipRole: "member" })));

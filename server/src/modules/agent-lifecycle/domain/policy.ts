@@ -6,7 +6,7 @@ export class AgentLifecycleConflict extends Error {
 }
 
 export function isAgentSetupDraft(agent: { lifecycleState?: string; pauseReason?: string | null }) {
-  return agent.pauseReason === "setup" && ["paused", "preparing", "verifying"].includes(agent.lifecycleState ?? "");
+  return agent.pauseReason === "setup" && ["paused", "preparing", "verifying", "pausing"].includes(agent.lifecycleState ?? "");
 }
 
 export function canConfigureAgentConnection(agent: { lifecycleState: string; status: string }): boolean {
