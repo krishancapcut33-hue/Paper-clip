@@ -47,13 +47,22 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.replaceAdapterConfig = true;
   }
 
+  // Pull runtimeConfig out of overlay.runtime so it merges into nextRuntimeConfig
+  // rather than clobbering it — Object.assign(patch, overlay.runtime) would replace
+  // the whole runtimeConfig key, silently dropping heartbeat/debug edits made in the
+  // same session.
+  const { runtimeConfig: overlayRc, ...overlayRuntimeRest } = overlay.runtime;
+
   if (
     Object.keys(overlay.heartbeat).length > 0
     || Object.keys(overlay.debug).length > 0
+    || overlayRc !== undefined
   ) {
     const existingRc = (agent.runtimeConfig ?? {}) as Record<string, unknown>;
-    const nextRuntimeConfig: Record<string, unknown> = (patch.runtimeConfig as Record<string, unknown> | undefined)
-      ?? { ...existingRc };
+    const nextRuntimeConfig: Record<string, unknown> = { ...existingRc };
+    if (overlayRc !== undefined) {
+      Object.assign(nextRuntimeConfig, overlayRc as Record<string, unknown>);
+    }
 
     if (Object.keys(overlay.heartbeat).length > 0) {
       const existingHb = (existingRc.heartbeat ?? {}) as Record<string, unknown>;
@@ -73,8 +82,8 @@ export function buildAgentUpdatePatch(agent: Agent, overlay: AgentConfigOverlay)
     patch.runtimeConfig = nextRuntimeConfig;
   }
 
-  if (Object.keys(overlay.runtime).length > 0) {
-    Object.assign(patch, overlay.runtime);
+  if (Object.keys(overlayRuntimeRest).length > 0) {
+    Object.assign(patch, overlayRuntimeRest);
   }
 
   return patch;

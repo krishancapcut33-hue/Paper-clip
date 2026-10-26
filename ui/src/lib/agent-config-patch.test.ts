@@ -150,6 +150,31 @@ describe("buildAgentUpdatePatch", () => {
     });
   });
 
+  it("heartbeat overlay survives when overlay.runtime also contains runtimeConfig", () => {
+    const agent = makeAgent();
+    // runtimeConfig already has heartbeat from makeAgent(); runtimeConfig also carries
+    // an aiConnection entry that LOC-646 writes via overlay.runtime.runtimeConfig.
+    (agent.runtimeConfig as Record<string, unknown>).aiConnection = { provider: "openrouter" };
+
+    const patch = buildAgentUpdatePatch(
+      agent,
+      makeOverlay({
+        heartbeat: { intervalSec: 60 },
+        runtime: {
+          runtimeConfig: { aiConnection: { provider: "opencode_local" } },
+        },
+      }),
+    );
+
+    expect(patch.runtimeConfig).toMatchObject({
+      heartbeat: {
+        enabled: true,
+        intervalSec: 60,
+      },
+      aiConnection: { provider: "opencode_local" },
+    });
+  });
+
   it("preserves paperclip skill-sync selections when changing adapter types", () => {
     // Desired skills are adapter-agnostic (company-level selections) but are
     // persisted inside the per-adapter config under `paperclipSkillSync`. A
