@@ -16,15 +16,26 @@ const everydayOracleImage =
 
 describe("public repository paid workflow security", () => {
   it("exposes Copilot only to selected cells in the protected, reauthorized paid jobs", async () => {
-    for (const [filename, stepName] of [["runner-full-stack-e2e.yml", "Run paid cell"], ["runner-protocol-live-evals.yml", "Run one immutable direct protocol cell"]]) {
-      const workflow = await readFile(path.join(repositoryRoot, ".github/workflows", filename!), "utf8");
+    for (const [filename, jobName, nextJobName, stepName] of [
+      ["runner-full-stack-e2e.yml", "test", "report", "Run paid cell"],
+      ["runner-protocol-live-evals.yml", "eval_shard_0", "eval_shard_1", "Run one immutable direct protocol cell"],
+    ] as const) {
+      const workflow = await readFile(path.join(repositoryRoot, ".github/workflows", filename), "utf8");
       const credentialSteps = workflow.split(/\n(?= {6}- )/u).filter(step => step.includes("secrets.COPILOT_GITHUB_TOKEN"));
       expect(credentialSteps, filename).toHaveLength(1);
-      expect(credentialSteps[0], filename).toContain(`name: ${stepName}`);
-      expect(credentialSteps[0], filename).toContain("COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}");
-      const paidJob = workflow.slice(workflow.indexOf(filename === "runner-full-stack-e2e.yml" ? "  test:" : "  eval_shard_0:"));
+      const credentialStep = credentialSteps[0]!;
+      expect(credentialStep, filename).toContain(`name: ${stepName}`);
+      expect(credentialStep, filename).toContain("COPILOT_GITHUB_TOKEN: ${{ matrix.credentialName == 'COPILOT_GITHUB_TOKEN' && secrets.COPILOT_GITHUB_TOKEN || '' }}");
+      const jobStart = workflow.indexOf(`\n  ${jobName}:`);
+      const jobEnd = workflow.indexOf(`\n  ${nextJobName}:`, jobStart + 1);
+      expect(jobStart, filename).toBeGreaterThanOrEqual(0);
+      expect(jobEnd, filename).toBeGreaterThan(jobStart);
+      const paidJob = workflow.slice(jobStart, jobEnd);
       expect(paidJob, filename).toContain("name: runner-e2e-paid");
-      expect(paidJob.indexOf("Reauthorize paid execution before provider access"), filename).toBeLessThan(paidJob.indexOf("secrets.COPILOT_GITHUB_TOKEN"));
+      expect(paidJob, filename).toContain(credentialStep);
+      const reauthorizationIndex = paidJob.indexOf("Reauthorize paid execution before provider access");
+      expect(reauthorizationIndex, filename).toBeGreaterThanOrEqual(0);
+      expect(reauthorizationIndex, filename).toBeLessThan(paidJob.indexOf("secrets.COPILOT_GITHUB_TOKEN"));
     }
   });
 
