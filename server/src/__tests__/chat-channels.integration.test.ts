@@ -131,6 +131,7 @@ import { deliverReconciledExecutions } from "../services/execution-recovery-reso
 import {
   unadmittedChatWakeupCondition,
   authorizeFailedChatRunRetryWake,
+  createDurableChatWakeupRequest,
 } from "../services/durable-chat-wakeup.js";
 import {
   createChatWebhookDiagnostics,
@@ -60660,6 +60661,219 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .where(eq(issues.id, issue.id));
     return { ...context, issue, action, receipt, runId };
   }
+
+  async function currentGitHubTaskRetryFixture(withPending = false) {
+    const f = await failedChatRetryFixture("github", "42", true);
+    const companyId = f.fixture.companyId, issueId = f.issue.id;
+    await githubResponseCommentService(db, f.providerFetch).tryAcknowledge(f.action.deliveryId!);
+    await db.update(heartbeatRuns).set({ runtimeMode: "native", nativeIssueId: issueId,
+      nativePhase: "terminal_failure", runnerProfileJson: {} }).where(eq(heartbeatRuns.id, f.runId));
+    await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: f.runId, phase: "terminal_failure" });
+    await db.insert(heartbeatRunEvents).values({ companyId, agentId: f.fixture.assignedAgentId, runId: f.runId,
+      seq: 1, eventType: "native.local_process_stopped", payload: { processPid: 999999999, processGroupId: null } });
+    let pending: typeof chatActions.$inferSelect | undefined;
+    if (withPending) {
+      await deliverMessage({ callbacks: f.runtime.configurations.get(f.endpoint.id)!.callbacks,
+        endpointId: f.endpoint.id, provider: "github", thread: f.thread.thread,
+        message: makeMessage({ id: "990092", text: "@maya continue this saved follow-up", userId: "42", mentioned: true }),
+        trigger: "mention" });
+      [pending] = await db.select().from(chatActions).where(and(eq(chatActions.conversationId, f.conversation.id),
+        eq(chatActions.kind, "inbound_wakeup"), sql`${chatActions.id} <> ${f.action.id}::uuid`));
+      await db.update(agentWakeupRequests).set({ status: "deferred_issue_execution", runId: null })
+        .where(eq(agentWakeupRequests.id, pending.id));
+      await githubResponseCommentService(db, f.providerFetch).tryAcknowledge(pending.deliveryId!);
+    }
+    const [originalDelivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, f.action.deliveryId!));
+
+    await db.update(agents).set({ adapterType: "paperclip_runner", status: "running",
+      runtimeConfig: { heartbeat: { wakeOnDemand: true, maxConcurrentRuns: 1 } } })
+      .where(eq(agents.id, f.fixture.assignedAgentId));
+    await db.insert(heartbeatRuns).values({ companyId, agentId: f.fixture.assignedAgentId,
+      status: "running", startedAt: new Date() });
+    f.wakeup.mockImplementation(heartbeatService(db).wakeup);
+    return { ...f, pending, originalDelivery };
+  }
+
+  it.each(["reconnected", "newer_input", "reconnected_newer_input"] as const)(
+    "admits current GitHub task Retry without replaying obsolete input: %s", async kind => {
+      const f = await currentGitHubTaskRetryFixture(kind.includes("newer_input"));
+      const { pending, originalDelivery } = f;
+      try {
+        const companyId = f.fixture.companyId, issueId = f.issue.id;
+        if (kind.includes("reconnected")) await f.service.configure(f.endpoint.id, { action: "reconnect" }, "owner-user");
+        const input = { db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+          observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry };
+        const request = await requestTaskRetry(input);
+        expect(request.accepted).toBe(true);
+        expect((await requestTaskRetry(input)).requestId).toBe(request.requestId);
+        expect(await f.service.processFailedChatRunRetry(request.chatActionId!)).toMatchObject({ status: "queued" });
+        const [wake] = await readAgentWakeupRequestsById(request.chatActionId!);
+        expect(wake.runId).toBeTruthy();
+        const expectedComment = pending?.payload.commentId ?? f.action.payload.commentId;
+        const [run] = await readHeartbeatRunsById(wake.runId!);
+        expect(run).toMatchObject({ status: "queued", retryOfRunId: f.runId,
+          contextSnapshot: { wakeCommentIds: [expectedComment], taskRetryRequestId: request.requestId } });
+        if (pending) expect((await readAgentWakeupRequestsById(pending.id))[0])
+          .toMatchObject({ status: "coalesced", runId: wake.runId });
+        await f.service.processFailedChatRunRetry(request.chatActionId!);
+        await heartbeatService(db).resumeQueuedRuns();
+        expect((await readHeartbeatRunsByCompanyId(companyId)).filter(r => r.contextSnapshot?.taskRetryRequestId === request.requestId))
+          .toHaveLength(1);
+        expect((await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, originalDelivery.id)))[0].normalizedEvent)
+          .toEqual(originalDelivery.normalizedEvent);
+      } finally { await f.service.shutdown(); }
+    },
+  );
+
+  it.each(["legacy_receipt", "concurrent_clicks", "lost_dispatch_reply", "restart", "retry_failed_successor", "http", "handoff_rollback", "board_permission_wait"] as const)(
+    "preserves one current GitHub Retry across %s", async mode => {
+      const f = await currentGitHubTaskRetryFixture(true);
+      try {
+        const companyId = f.fixture.companyId, issueId = f.issue.id;
+        if (mode === "legacy_receipt") {
+          const [originalEndpoint] = await readChatEndpointsById(f.endpoint.id);
+          await db.insert(chatActions).values({ companyId, endpointId: f.endpoint.id,
+            conversationId: f.conversation.id, deliveryId: f.pending!.deliveryId,
+            kind: "github_response_comment", providerActionId: `github_response:${f.pending!.deliveryId}`,
+            payload: { botExternalId: originalEndpoint.botExternalId, agentId: f.fixture.assignedAgentId },
+            status: "processed" }).onConflictDoNothing();
+          await db.update(chatDeliveries).set({
+            normalizedEvent: sql`jsonb_set(${chatDeliveries.normalizedEvent}, '{githubAuthority}',
+              (${chatDeliveries.normalizedEvent}->'githubAuthority') - 'botExternalId')`,
+          }).where(eq(chatDeliveries.id, f.pending!.deliveryId!));
+        }
+        await f.service.configure(f.endpoint.id, { action: "reconnect" }, "owner-user");
+        const input = { db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+          observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry };
+        if (mode === "board_permission_wait") {
+          input.actorId = `retry-operator-${companyId}`;
+          await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: input.actorId,
+            status: "active", membershipRole: "operator" });
+        }
+        let one: Awaited<ReturnType<typeof requestTaskRetry>>, two: typeof one;
+        if (mode === "http") {
+          const app = express();
+          app.use(express.json());
+          app.use((req, _res, next) => { req.actor = boardActor(companyId); next(); });
+          app.use("/api", issueRoutes(db, createStorageService().storage, { chatRunRetries: f.service }));
+          app.use(errorHandler);
+          const send = () => request(app).post(`/api/issues/${issueId}/retry`).send({
+            idempotencyKey: input.idempotencyKey, observedRunId: input.observedRunId,
+          }).expect(202);
+          const replies = await Promise.all([send(), send()]);
+          [one, two] = replies.map(response => response.body);
+        } else [one, two] = await Promise.all([requestTaskRetry(input), requestTaskRetry({ ...input,
+          idempotencyKey: mode === "concurrent_clicks" ? randomUUID() : input.idempotencyKey })]);
+        expect(two.requestId).toBe(one.requestId);
+        expect(one).toMatchObject({ accepted: true, chatActionId: expect.any(String) });
+        let service = f.service;
+        if (mode === "restart") {
+          await service.shutdown();
+          service = createService(f.runtime, f.providerFetch, { wakeup: heartbeatService(db).wakeup }).service;
+        }
+        if (mode === "lost_dispatch_reply") f.wakeup.mockImplementationOnce(async (...args) => {
+          await heartbeatService(db).wakeup(...args);
+          throw new Error("Simulated response loss after dispatch commit");
+        });
+        if (mode === "handoff_rollback") f.wakeup.mockImplementationOnce(async (agentId, options) => {
+          const original = options!.durableChatRequest!;
+          return heartbeatService(db).wakeup(agentId, { ...options, durableChatRequest: createDurableChatWakeupRequest({
+            ...original, onAdmitted: async (tx, receipt) => {
+              await original.onAdmitted!(tx, receipt);
+              throw new Error("Simulated interruption before admission commit");
+            },
+          }) });
+        });
+        if (mode === "board_permission_wait") await db.update(companyMemberships).set({ membershipRole: "viewer" })
+          .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, input.actorId)));
+        await Promise.all([service.processFailedChatRunRetry(one.chatActionId!),
+          service.processFailedChatRunRetry(one.chatActionId!)]);
+        if (mode === "handoff_rollback" || mode === "board_permission_wait") {
+          expect(await readAgentWakeupRequestsById(one.chatActionId!)).toHaveLength(0);
+          expect((await readAgentWakeupRequestsById(f.pending!.id))[0])
+            .toMatchObject({ status: "deferred_issue_execution", runId: null });
+          expect((await readHeartbeatRunsByCompanyId(companyId))
+            .filter(run => run.contextSnapshot?.taskRetryRequestId === one.requestId)).toHaveLength(0);
+        }
+        if (mode === "board_permission_wait") await db.update(companyMemberships).set({ membershipRole: "operator" })
+          .where(and(eq(companyMemberships.companyId, companyId), eq(companyMemberships.principalId, input.actorId)));
+        await vi.waitFor(async () => {
+          await service.processFailedChatRunRetry(one.chatActionId!);
+          expect((await readAgentWakeupRequestsById(one.chatActionId!))[0]?.runId,
+            JSON.stringify((await db.select().from(chatActions).where(eq(chatActions.id, one.chatActionId!)))[0]?.result)).toBeTruthy();
+        }, { timeout: 10_000, interval: 100 });
+        const [parent] = await readAgentWakeupRequestsById(one.chatActionId!);
+        expect(parent.runId).toBeTruthy();
+        expect((await readAgentWakeupRequestsById(f.pending!.id))[0]).toMatchObject({
+          status: "coalesced", runId: parent.runId,
+        });
+        await service.processFailedChatRunRetry(one.chatActionId!);
+        expect((await readHeartbeatRunsByCompanyId(companyId))
+          .filter(run => run.contextSnapshot?.taskRetryRequestId === one.requestId)).toHaveLength(1);
+        expect(await db.select().from(chatActions).where(and(eq(chatActions.companyId, companyId),
+          eq(chatActions.kind, "failed_run_retry")))).toHaveLength(1);
+        if (mode === "retry_failed_successor") {
+          await db.update(heartbeatRuns).set({ status: "failed", finishedAt: new Date(),
+            errorCode: "adapter_failed", runtimeMode: "native", nativeIssueId: issueId, nativePhase: "terminal_failure",
+          }).where(eq(heartbeatRuns.id, parent.runId!));
+          await db.update(agentWakeupRequests).set({ status: "failed" }).where(eq(agentWakeupRequests.id, one.chatActionId!));
+          await db.update(issues).set({ executionRunId: null, status: "blocked" }).where(eq(issues.id, issueId));
+          await db.insert(nativeRunFinalizations).values({ companyId, issueId, runId: parent.runId!, phase: "terminal_failure" });
+          await db.insert(heartbeatRunEvents).values({ companyId, agentId: f.fixture.assignedAgentId, runId: parent.runId!,
+            seq: 1, eventType: "native.local_process_stopped", payload: { processPid: 999999998, processGroupId: null } });
+          await service.configure(f.endpoint.id, { action: "reconnect" }, "owner-user");
+          const next = await requestTaskRetry({ ...input, observedRunId: parent.runId!, idempotencyKey: randomUUID(),
+            prepareChatRetry: service.prepareFailedChatRunRetry });
+          expect(next.requestId).not.toBe(one.requestId);
+          expect(await service.processFailedChatRunRetry(next.chatActionId!)).toMatchObject({ status: "queued" });
+          const [second] = await readAgentWakeupRequestsById(next.chatActionId!);
+          expect((await readHeartbeatRunsById(second.runId!))[0]).toMatchObject({
+            retryOfRunId: parent.runId, contextSnapshot: { wakeCommentIds: [f.pending!.payload.commentId] },
+          });
+        }
+      } finally { await f.service.shutdown(); }
+    },
+  );
+
+  it.each(["changed_bot", "disabled_repository", "retargeted_repository", "revoked_sender", "paused_endpoint",
+    "edited_source", "deleted_source", "reassigned_task", "second_reconnect"] as const)(
+    "keeps current GitHub task Retry authority gated: %s", async gate => {
+      const f = await currentGitHubTaskRetryFixture(true);
+      try {
+        const companyId = f.fixture.companyId, issueId = f.issue.id;
+        await f.service.configure(f.endpoint.id, { action: "reconnect" }, "owner-user");
+        const input = { db, companyId, issueId, actorId: "owner-user", actorSource: "cloud_tenant",
+          observedRunId: f.runId, idempotencyKey: randomUUID(), prepareChatRetry: f.service.prepareFailedChatRunRetry };
+        const accepted = await requestTaskRetry(input);
+        if (gate === "changed_bot") await db.update(chatEndpoints).set({ botExternalId: randomUUID() })
+          .where(eq(chatEndpoints.id, f.endpoint.id));
+        if (gate === "disabled_repository") await db.update(chatEndpointResources).set({ enabled: false })
+          .where(eq(chatEndpointResources.id, f.conversation.resourceId!));
+        if (gate === "retargeted_repository") await db.update(chatEndpointResources).set({ providerResourceId: "another/repository" })
+          .where(eq(chatEndpointResources.id, f.conversation.resourceId!));
+        if (gate === "revoked_sender") await db.update(chatIdentityLinks).set({ status: "revoked" })
+          .where(and(eq(chatIdentityLinks.endpointId, f.endpoint.id), eq(chatIdentityLinks.principalId, f.pending!.principalId!)));
+        if (gate === "paused_endpoint") await db.update(chatEndpoints).set({ status: "paused" })
+          .where(eq(chatEndpoints.id, f.endpoint.id));
+        if (gate === "edited_source") await db.update(issueComments).set({ body: "Changed after Retry", updatedAt: new Date() })
+          .where(eq(issueComments.id, String(f.pending!.payload.commentId)));
+        if (gate === "deleted_source") await db.update(issueComments).set({ deletedAt: new Date() })
+          .where(eq(issueComments.id, String(f.pending!.payload.commentId)));
+        if (gate === "reassigned_task") await db.update(issues).set({ assigneeAgentId: f.fixture.replacementAgentId })
+          .where(eq(issues.id, issueId));
+        if (gate === "second_reconnect") await f.service.configure(f.endpoint.id, { action: "reconnect" }, "owner-user");
+        expect(await f.service.processFailedChatRunRetry(accepted.chatActionId!)).toMatchObject({ status: "failed" });
+        expect((await readAgentWakeupRequestsById(f.pending!.id))[0]).toMatchObject({ status: "deferred_issue_execution", runId: null });
+        expect((await readHeartbeatRunsByCompanyId(companyId))
+          .filter(run => run.contextSnapshot?.taskRetryRequestId === accepted.requestId)).toHaveLength(0);
+        if (gate === "second_reconnect") {
+          const next = await requestTaskRetry({ ...input, idempotencyKey: randomUUID() });
+          expect(next.requestId).not.toBe(accepted.requestId);
+          expect(await f.service.processFailedChatRunRetry(next.chatActionId!)).toMatchObject({ status: "queued" });
+        }
+      } finally { await f.service.shutdown(); }
+    },
+  );
 
   it.each([
     "settled",

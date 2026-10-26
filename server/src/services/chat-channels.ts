@@ -1,3 +1,4 @@
+import { credentialFingerprint } from "./chat-channels/credential-fingerprint.js";
 import { createChatSdkMessageReceiver } from "./chat-channels/runtime/sdk-messages.js";
 import { admitDiscordSdkMessage } from "./chat-channels/discord/messages.js";
 import { resolveInboundConversationBinding } from "./chat-channels/inbound/conversation-binding.js";
@@ -312,20 +313,6 @@ function runtimeGeneration(setup: ChatEndpointSetupState): number {
   return Number.isSafeInteger(value) && value >= 0 ? value : 0;
 }
 
-function credentialFingerprint(refs: ToolCredentialSecretRef[]): string {
-  const stable = refs
-    .map((ref) => ({
-      configPath: ref.configPath,
-      secretId: ref.secretId,
-      versionSelector: ref.versionSelector ?? "latest",
-    }))
-    .sort((left, right) =>
-      `${left.configPath}:${left.secretId}:${left.versionSelector}`.localeCompare(
-        `${right.configPath}:${right.secretId}:${right.versionSelector}`,
-      ),
-    );
-  return createHash("sha256").update(JSON.stringify(stable)).digest("hex");
-}
 type ConversationRow = typeof chatConversations.$inferSelect;
 type DeliveryRow = typeof chatDeliveries.$inferSelect;
 

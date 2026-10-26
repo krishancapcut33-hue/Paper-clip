@@ -89,6 +89,14 @@ The connected-chat database regression in
 exercises admission and queue continuation. It does not establish hosted
 provider recovery or successful delivery.
 
+For GitHub, save a follow-up behind a failed run, then reconnect the same App.
+Click ordinary Retry and verify that one successor receives the saved follow-up
+instead of replaying the older request. Reload and repeat the same request key;
+there must be one successor and no duplicate publication. A second reconnect
+after admission, changed App, revoked sender or changed repository must prevent
+dispatch. An unadmitted rejection keeps the follow-up available for another
+deliberate Retry. Historical deliveries must remain unchanged.
+
 ### `post-stop-message`
 
 After a stop, send a new instruction on the same task or inspect one already

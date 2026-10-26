@@ -8,6 +8,20 @@ import { createSystemRecovery, readSystemRecovery } from "./system-recovery-stat
 import { updateSystemRecovery } from "./system-recovery.js";
 import { instanceSettingsService } from "./instance-settings.js";
 import { notifyChatActionWork } from "./chat-work-notifications.js";
+import { authorizationService } from "./authorization.js";
+
+export async function taskRetryMutationAllowed(db: Db, input: {
+  companyId: string; issueId: string; actorId: string; actorSource: TaskRetryIntent["actorSource"];
+}) {
+  const [issue] = await db.select({ status: issues.status, assigneeAgentId: issues.assigneeAgentId,
+    assigneeUserId: issues.assigneeUserId }).from(issues).where(and(eq(issues.companyId, input.companyId), eq(issues.id, input.issueId)));
+  if (!issue) return false;
+  const permission = await authorizationService(db).decide({
+    actor: { type: "board", userId: input.actorId, source: input.actorSource }, action: "issue:mutate",
+    resource: { type: "issue", companyId: input.companyId, issueId: input.issueId, ...issue },
+  });
+  return permission.allowed;
+}
 
 export async function assertTaskRetryConversationAllowed(
   db: Db,
@@ -115,6 +129,7 @@ export async function requestTaskRetry(input: {
     const intent: TaskRetryIntent = { schema: "paperclip.task-retry.v1", generationId: active?.id ?? id,
       sourceRunId: latest.id, actorId: input.actorId,
       actorSource: taskRetryIntentSchema.shape.actorSource.parse(input.actorSource ?? "session"), strategy: "evaluate",
+      ...(active && activeIntent?.chatActionId ? { chatActionId: activeIntent.chatActionId } : {}),
       ...(active ? { canonicalIntentId: active.id } : {}) };
     // Preserve external chat authority through its existing admission owner.
     // Generic board Retry must never manufacture a chat-inbound request.
