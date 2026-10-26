@@ -121,11 +121,13 @@ registerHooks({ resolve(specifier, context, nextResolve) {
   const ledgerPath = join(root, 'ledger.jsonl');
   const ledger = await costRuntime.openEvalCostLedger(ledgerPath, limits);
   let gateway, observability, observabilityEvidence, child, artifact, failure = null, cleanupVerified = false, secretExcluded = true;
-  let providerArtifactSha256;
+  let providerArtifactSha256, failureStage = 'controlled_attempt_incomplete';
   const secrets = [...new Set([key, observabilityKey].filter(Boolean))];
   const redact = raw => secrets.reduce((text, secret) => text.split(secret).join('[redacted]'), raw);
   try {
+    failureStage = 'request_admission_failed';
     await ledger.admitAttempt(attempt.executionId, attempt.attemptId);
+    failureStage = 'gateway_start_failed';
     gateway = await costRuntime.startEvalGateway({ ledger, identity: { executionId: attempt.executionId, attemptId: attempt.attemptId, phase: 'agent' },
       route: { ...model, mode: manifest.route, projectId: manifest.projectId, endpointName: provider === 'openai' ? 'OPENAI_API_KEY' : 'ANTHROPIC_API_KEY', apiKey: key },
       deadlineAt, transport, persist: receipt => atomicJson(join(root, 'receipts', `${receipt.requestId}.json`), receipt),
@@ -134,20 +136,25 @@ registerHooks({ resolve(specifier, context, nextResolve) {
     const descriptor = { schema: 'paperclip.runner-eval.gateway/v1', provider, model: attempt.model, baseUrl: gateway.baseUrl,
       campaignId: manifest.campaignId, executionId: attempt.executionId, attemptId: attempt.attemptId, upstreamRoute: manifest.route };
     const descriptorPath = join(root, 'gateway.json'), descriptorRaw = JSON.stringify(descriptor) + '\n';
+    failureStage = 'gateway_descriptor_failed';
     await writeFile(descriptorPath, descriptorRaw, { flag: 'wx', mode: 0o600 });
     const childEnvironment = Object.fromEntries(['PATH', 'LANG', 'LANGUAGE', 'LC_ALL', 'TZ'].flatMap(name => environment[name] === undefined ? [] : [[name, environment[name]]]));
     Object.assign(childEnvironment, { HOME: join(root, 'home'), TMPDIR: join(root, 'tmp'), TMP: join(root, 'tmp'), TEMP: join(root, 'tmp'), PAPERCLIP_RUNNER_EVAL_GATEWAY_TOKEN: gateway.token });
     if (manifest.observability) {
+      failureStage = 'observability_start_failed';
       observability = await startControlledObservability({ manifest, attempt, request, root, apiKey: observabilityKey, deadlineAt, startedAt, transport: otlpTransport, signal });
       secrets.push(...observability.secrets);
       childEnvironment.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN = observability.token;
     }
     const artifactPath = join(root, 'provider-artifact.json');
+    failureStage = 'child_failed';
     signal?.throwIfAborted();
     if (Date.now() >= deadlineAt) throw new Error('Controlled attempt deadline reached before spawn');
     child = await runChild({ cli: stagedCli, loader, requestPath: retainedRequestPath, artifactPath, descriptorPath, observabilityPath: observability?.descriptorPath,
       cwd: request.session.workingDirectory ?? root, environment: childEnvironment, deadlineAt, signal, closeGateway: () => Promise.all([gateway.close(), observability?.close()]) });
+    failureStage = 'output_retention_failed';
     for (const stream of ['stdout', 'stderr']) await writeFile(join(root, `${stream}.log`), redact(child[stream]), { flag: 'wx', mode: 0o600 });
+    failureStage = child.code === 0 ? 'artifact_invalid' : 'child_failed';
     const raw = (await readRegularFile(artifactPath, limitFor('provider-artifact.json'))).toString('utf8');
     secretExcluded = secrets.every(secret => !raw.includes(secret));
     if (!secretExcluded) await replaceEvidenceFile(artifactPath, redact(raw));
@@ -157,6 +164,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       executionId: attempt.executionId, attemptId: attempt.attemptId, descriptorSha256: sha256(descriptorRaw) };
     if (canonical(artifact.requestRouting) !== canonical(expected) || artifact.attemptId !== attempt.attemptId || artifact.requestedModel !== attempt.model) throw new Error('Provider did not retain the assigned route');
     if (observability && canonical(artifact.nativeObservability) !== canonical(observability.expectedEvidence)) throw new Error('Provider did not retain the assigned observability route');
+    failureStage = 'provider_cleanup_or_credential_unverified';
     const processInfo = artifact.snapshot?.process;
     const pids = [...new Set([child.pid, processInfo?.runnerPid, processInfo?.providerPid, processInfo?.sidecarPid, processInfo?.agentPid].filter(pid => Number.isSafeInteger(pid) && pid > 0))];
     cleanupVerified = !child.stopped && artifact.snapshot?.status === 'closed' && processInfo?.runnerExited === true
@@ -164,7 +172,7 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       && Number.isSafeInteger(processInfo.providerPid) && processInfo.providerPid > 0 && pids.every(absent);
     if (!cleanupVerified || !secretExcluded) throw new Error('Controlled provider cleanup or credential exclusion is unverified');
   } catch {
-    failure = 'controlled_attempt_incomplete';
+    failure = failureStage;
   } finally {
     try { await gateway?.close(); } catch { failure = 'gateway_cleanup_unverified'; }
     try { await ledger.close(); } catch { failure = 'ledger_close_failed'; }

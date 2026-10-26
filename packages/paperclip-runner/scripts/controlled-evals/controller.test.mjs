@@ -5,7 +5,7 @@ import { mkdtemp, mkdir, open, readFile, readdir, rm, stat, symlink, truncate, w
 import { writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { fileURLToPath, pathToFileURL } from 'node:url';
 const runtime = process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME
   ? pathToFileURL(resolve(process.env.PAPERCLIP_CONTROLLER_TEST_RUNTIME) + '/') : import.meta.url;
 const { canonical, costRuntime, observabilityBoundConfiguration, requestBindingSha256, sha256, validateManifest } = await import(new URL('./manifest.mjs', runtime));
@@ -13,6 +13,7 @@ const { attemptDirectory, runControlledEval } = await import(new URL('./run.mjs'
 const { summarizeControlledCampaign } = await import(new URL('./report.mjs', runtime));
 const { decodeControlledEvidence, packControlledAttempt, readControlledEvidence, readAttemptControlledEvidence, summarizeControlledEvidence } = await import(new URL('./archive.mjs', runtime));
 const { readRegularFile, replaceEvidenceFile } = await import(new URL('./evidence-files.mjs', runtime));
+
 import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runner-protocol-eval-campaign.mjs';
 
 const childScript = options => `
@@ -20,11 +21,12 @@ import assert from 'node:assert/strict';
 import {createHash} from 'node:crypto';
 import {spawn} from 'node:child_process';
 import {once} from 'node:events';
-import {readFile,writeFile,rm,readdir,symlink,truncate} from 'node:fs/promises';
+import {readFile,writeFile,rm,readdir,symlink,truncate,mkdir} from 'node:fs/promises';
 import {dirname,join} from 'node:path';
 import {execFileSync} from 'node:child_process';
 const args=new Map();for(let i=2;i<process.argv.length;i+=2)args.set(process.argv[i],process.argv[i+1]);
 const request=JSON.parse(await readFile(args.get('--request'),'utf8'));
+if(${Boolean(options.failChild)})process.exit(3);
 if(${Boolean(options.resistantDescendant)}) {
  const orphan=${Boolean(options.orphanExit)};
  const descendant=spawn(process.execPath,['-e',"process.on('SIGTERM',()=>{});"+(orphan?"process.send('ready');":"process.stdout.write('ready');")+"setInterval(()=>{},1000)"],{stdio:orphan?['ignore','inherit','inherit','ipc']:['ignore','pipe','ignore']});
@@ -49,6 +51,19 @@ if(args.has('--observability-config')) {
   await response.arrayBuffer();
  }
  nativeObservability={mode:'controller_otlp',configured:true,verification:'unverified',projectId:config.projectId,traceId:config.traceId,spanId:config.spanId,descriptorSha256:createHash('sha256').update(raw).digest('hex')};
+ if(${Boolean(options.realObservabilityValidator)}) {
+  const {createRequire}=await import('node:module');
+  const require=createRequire(${JSON.stringify(fileURLToPath(new URL('../../../../server/package.json', import.meta.url)))});
+  const {tsImport}=await import(require.resolve('tsx/esm/api'));
+  const {prepareEvalObservabilityRuntime}=await tsImport(${JSON.stringify(fileURLToPath(new URL('../../src/cli/eval-observability-runtime.ts', import.meta.url)))},import.meta.url);
+  await mkdir(process.env.HOME+'/codex',{recursive:true});
+  const prepared=await prepareEvalObservabilityRuntime(args.get('--observability-config'),request,
+   {evidence:{campaignId:descriptor.campaignId,executionId:descriptor.executionId},transportOptions:{environment:{CODEX_HOME:process.env.HOME+'/codex'}}},process.env);
+  assert.deepEqual(prepared.evidence,nativeObservability);
+  for(const signal of ['LOGS','TRACES'])assert(prepared.transportOptions.environment['OTEL_EXPORTER_OTLP_'+signal+'_HEADERS'].includes(encodeURIComponent('Bearer '+process.env.PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN)));
+  nativeObservability=prepared.evidence;
+ }
+
 }
 if(${Boolean(options.waitForever)})await new Promise(()=>setInterval(()=>{},1000));
 if(!${Boolean(options.missingArtifact)})await writeFile(args.get('--output'),JSON.stringify({schema:'paperclip-runner/eval-session-artifact/v1',attemptId:request.attemptId,requestedModel:request.model,
@@ -767,4 +782,39 @@ test('failed final OTLP receipt write returns its saved incomplete report', asyn
   assert.equal(controller.at(-1).type, 'closed');
   const descriptor = JSON.parse(await readFile(join(root, 'observability.json'), 'utf8'));
   await assert.rejects(fetch(descriptor.baseUrl + '/v1/logs'));
+});
+
+
+for (const providerProfile of ['codex', 'claude']) test(`controller descriptor round trips through the real ${providerProfile} CLI validator`, async t => {
+  const f = await fixture(t, { providerProfile, observability: true, realObservabilityValidator: true, requests: 0 });
+  const result = await f.run();
+  assert.equal(result.code, 0, JSON.stringify(result.report) + '\n' + await readFile(join(attemptDirectory(f.manifest, 'attempt-0'), 'stderr.log'), 'utf8'));
+  assert.equal(result.report.observability.status, 'accepted');
+  const bundle = await packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0' });
+  assert.equal((await summarizeControlledEvidence([bundle])).incompleteAttempts, 0);
+});
+
+test('retained failure codes distinguish native startup, child exit and invalid artifacts', async t => {
+  const startup = await fixture(t, { observability: true, requests: 0 });
+  const root = attemptDirectory(startup.manifest, 'attempt-0');
+  const probe = await open(join(startup.root, 'startup-probe'), 'wx');
+  const prototype = Object.getPrototypeOf(probe), original = prototype.sync; await probe.close();
+  let failed = false;
+  prototype.sync = async function (...args) {
+    const native = await stat(join(root, 'otlp-native.jsonl')).catch(() => null);
+    if (native && (await this.stat()).ino === native.ino) {
+      failed = true; throw Object.assign(new Error('synthetic native startup persistence failure'), { code: 'ENOSPC' });
+    }
+    return original.call(this, ...args);
+  };
+  t.after(() => { prototype.sync = original; });
+  const result = await startup.run();
+  prototype.sync = original;
+  assert.equal(failed, true); assert.equal(result.code, 2);
+  assert.equal(result.report.failure, 'observability_start_failed');
+  assert.equal((await summarizeControlledCampaign(startup.manifest)).committedUsd, '0.014000000');
+  const child = await fixture(t, { failChild: true, requests: 0 });
+  assert.equal((await child.run()).report.failure, 'child_failed');
+  const artifact = await fixture(t, { missingRoute: true, requests: 0 });
+  assert.equal((await artifact.run()).report.failure, 'artifact_invalid');
 });
