@@ -1,3 +1,4 @@
+import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
@@ -41,6 +42,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   beforeAll(async () => {
     tempDb = await startEmbeddedPostgresTestDatabase("paperclip-cleanup-removal-");
     db = createDb(tempDb.connectionString);
+    configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
   }, 20_000);
 
   afterEach(async () => {
@@ -146,6 +148,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
       createdByRunId: runId,
     });
 
+    await db.update(agents).set({ status: "terminated", lifecycleState: "terminated" }).where(eq(agents.id, agentId));
     const removed = await agentService(db).remove(agentId);
 
     expect(removed?.id).toBe(agentId);
@@ -329,6 +332,41 @@ describeEmbeddedPostgres("cleanup removal services", () => {
 
     expect(removeManagedFiles).not.toHaveBeenCalled();
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(1);
+  });
+
+  it("preserves company and agent state when draining fails", async () => {
+    const { companyId, agentId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    const before = await db.select().from(agents).where(eq(agents.id, agentId));
+    const removeManagedFiles = vi.fn();
+    const drainActiveRunExecutions = vi.fn().mockRejectedValue(new Error("drain timeout"));
+
+    await expect(
+      companyService(db, { removeManagedFiles, drainActiveRunExecutions })
+        .remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("drain timeout");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(1);
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toEqual(before);
+  });
+
+  it("rechecks archive status after draining before terminating agents", async () => {
+    const { companyId, agentId } = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    const before = await db.select().from(agents).where(eq(agents.id, agentId));
+    const removeManagedFiles = vi.fn();
+    const drainActiveRunExecutions = vi.fn(async () => {
+      await db.update(companies).set({ status: "active" }).where(eq(companies.id, companyId));
+    });
+
+    await expect(
+      companyService(db, { removeManagedFiles, drainActiveRunExecutions })
+        .remove(companyId, { deleteFiles: true }),
+    ).rejects.toThrow("Archive the company");
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toEqual(before);
   });
 
   it("rejects managed-file deletion while archived company runs are active", async () => {
