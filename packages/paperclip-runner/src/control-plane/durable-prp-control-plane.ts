@@ -1306,6 +1306,9 @@ class DurableCoreStore {
   /** Persist a complete candidate before publishing any new authority in memory. */
   commit(candidate: StoredCoreState): void {
     this.assertWritable();
+    // An explicit authority transaction owns its complete snapshot. Later
+    // command writes must not absorb an event admitted before that boundary.
+    this.#pendingEvent = null;
     ++this.#revision;
     try {
       atomicPrivateWrite(this.path, `${JSON.stringify(candidate)}\n`);

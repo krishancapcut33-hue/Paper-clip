@@ -49,7 +49,7 @@ const identity: DurableRecoveryIdentity = {
 const expectedRunnerVersion = "0.3.0";
 const expectedRunnerDigest = `sha256:${"a".repeat(64)}`;
 
-it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "credentials", "newer_command", "command_burst", "command_failure", "replacement", "write_failure", "usage_write_failure", "drain", "usage_drain", "semantic_replacement"] as const)(
+it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "credentials", "newer_command", "command_burst", "command_failure", "authority_conflict", "replacement", "write_failure", "usage_write_failure", "drain", "usage_drain", "semantic_replacement"] as const)(
   "keeps HTTP responsive during a durable event write and preserves %s", async (mode) => {
     if (mode === "command_failure" && process.platform === "win32") return;
     const root = mkdtempSync(resolve(tmpdir(), "runner-event-io-"));
@@ -164,6 +164,12 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
         expect(core.store.state.ackedSourceSeq).toBe(0);
         expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
       }
+      if (mode === "authority_conflict") {
+        core.store.commit(structuredClone(core.store.state));
+        core.queueCommand("session.snapshot", {}, "command_after_authority");
+        expect(JSON.parse(readFileSync(core.store.path, "utf8")).ackedSourceSeq).toBe(0);
+        expect(core.store.state.ackedSourceSeq).toBe(0);
+      }
       let drained = false;
       const retirement = mode === "drain" || mode === "usage_drain" ? (async () => {
         await core.stop();
@@ -191,6 +197,9 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
         expect(await receiveSecure(client)).toBeNull();
         await retirement;
         expect(drained).toBe(true);
+      } else if (mode === "authority_conflict") {
+        expect(await receiveSecure(client)).toBeNull();
+        expect(stagedWrites).toBe(1);
       } else if (mode === "write_failure" || mode === "usage_write_failure" || mode === "command_failure") {
         expect(await receiveSecure(client)).toBeNull();
         expect(() => core.queueCommand("session.snapshot")).toThrow("indeterminate");
@@ -201,7 +210,7 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
       await core.drainPendingConnectionProcessing();
       const restored = new DurablePrpControlPlane({ stateDirectory: root, identity,
         expectedRunnerVersion, expectedRunnerDigest, onCommittedEvent: commit });
-      const expectedEvents = mode === "replacement" ? 2 : mode === "write_failure" || mode === "usage_write_failure" ? 0 : 1;
+      const expectedEvents = mode === "replacement" ? 2 : mode === "write_failure" || mode === "usage_write_failure" || mode === "authority_conflict" ? 0 : 1;
       expect(restored.store.state.ackedSourceSeq).toBe(expectedEvents);
       expect(restored.store.state.committedEvents).toHaveLength(expectedEvents);
       if (mode === "newer_command" || mode === "command_burst") {
@@ -221,7 +230,7 @@ it.each(["event", "progress", "lifecycle", "lifecycle_priority_one", "usage", "c
         expect(restored.store.state.commands.some(command => command.commandId === "failed_command_during_event")).toBe(true);
         expect(stagedWrites).toBe(1);
       }
-      if (mode === "drain" || mode === "usage_drain") {
+      if (mode === "drain" || mode === "usage_drain" || mode === "authority_conflict") {
         await restored.start();
         try {
           replacement = (await authenticate(restored, client.leaseToken!))!;
