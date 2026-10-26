@@ -4,7 +4,7 @@ import { savedGitWorkspaceRestoration, ensureSavedGitCommit, GitCacheRestoration
 import { applyGitRestorePointToWorktree, ensureGitRestorePointCommit } from "./git-restore-point-storage.js";
 import { getStorageService } from "../storage/index.js";
 import type { StorageService } from "../storage/types.js";
-import { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
+import { sanitizeRuntimeServiceBaseEnv, sanitizeRuntimeServiceChildEnv } from "./runtime-service-env.js";
 import { verifiedRecordedIsolatedRemoteSource } from "./isolated-remote-workspace-source.js";
 export { sanitizeRuntimeServiceBaseEnv } from "./runtime-service-env.js";
 import { execFile, spawn, type ChildProcess } from "node:child_process";
@@ -5237,14 +5237,14 @@ function resolveWorkspaceCommandExecution(input: {
     renderTemplate(asString(input.command.cwd, "."), templateData),
     input.workspace.cwd,
   );
-  const env = {
+  const env = sanitizeRuntimeServiceChildEnv({
     ...sanitizeRuntimeServiceBaseEnv(process.env),
     ...input.adapterEnv,
     ...renderRuntimeServiceEnv({
       envConfig: parseObject(input.command.env),
       templateData,
     }),
-  } as Record<string, string>;
+  }) as Record<string, string>;
 
   return {
     name,
@@ -6397,10 +6397,10 @@ async function spawnLocalRuntimeService(input: StartLocalRuntimeServiceInput): P
   for (const [key, value] of Object.entries(renderRuntimeServiceEnv({ envConfig, templateData }))) {
     runtimeEnvOverrides[key] = value;
   }
-  const env: Record<string, string> = {
+  const env: Record<string, string> = sanitizeRuntimeServiceChildEnv({
     ...sanitizeRuntimeServiceBaseEnv(process.env),
     ...runtimeEnvOverrides,
-  } as Record<string, string>;
+  }) as Record<string, string>;
   // Managed Paperclip worktrees are development environments, so their UI
   // should track source edits without each project repeating this setting.
   // An HTTPS profile must publish the companion HMR listener before it can use

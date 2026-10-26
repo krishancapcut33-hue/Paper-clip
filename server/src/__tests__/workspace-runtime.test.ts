@@ -469,6 +469,9 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     const sanitized = sanitizeRuntimeServiceBaseEnv({
       PATH: process.env.PATH,
       DATABASE_URL: "postgres://example.test/paperclip",
+      DATABASE_MIGRATION_URL: "postgres://migration.example.test/paperclip",
+      PGPASSWORD: "synthetic",
+      PAPERCLIP_DATABASE_URL_FILE: "/private/database-url",
       PAPERCLIP_HOME: "/tmp/paperclip-home",
       PAPERCLIP_INSTANCE_ID: "runtime-instance",
       BETTER_AUTH_URL: "https://parent.example.test",
@@ -483,6 +486,9 @@ describe("sanitizeRuntimeServiceBaseEnv", () => {
     expect(sanitized.BETTER_AUTH_URL).toBeUndefined();
     expect(sanitized.BETTER_AUTH_BASE_URL).toBeUndefined();
     expect(sanitized.DATABASE_URL).toBeUndefined();
+    expect(sanitized.DATABASE_MIGRATION_URL).toBeUndefined();
+    expect(sanitized.PGPASSWORD).toBeUndefined();
+    expect(sanitized.PAPERCLIP_DATABASE_URL_FILE).toBeUndefined();
     expect(sanitized.npm_config_tailscale_auth).toBeUndefined();
     expect(sanitized.npm_config_authenticated_private).toBeUndefined();
     expect(sanitized.HOST).toBe("0.0.0.0");
@@ -10196,6 +10202,34 @@ describe("realizeExecutionWorkspace with an exact existing branch", () => {
 
 describe("runWorkspaceJobForControl", () => {
   const actor = { id: null, name: "Board", companyId: "company-1" };
+
+  it("keeps service DB credentials out of the final host command environment", async () => {
+    const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-job-db-env-"));
+    const previous = process.env.PAPERCLIP_DATABASE_URL_FILE;
+    process.env.PAPERCLIP_DATABASE_URL_FILE = "/synthetic/service/database-url";
+    const { recorder, operations } = createWorkspaceOperationRecorderDouble();
+    const check = "if (['PAPERCLIP_DATABASE_URL_FILE', 'DATABASE_URL', 'DATABASE_MIGRATION_URL', 'PGPASSWORD', 'PAPERCLIP_AGENT_JWT_SECRET'].some(key => process.env[key])) process.exit(24)";
+    try {
+      await runWorkspaceJobForControl({
+        actor,
+        issue: null,
+        workspace: buildWorkspace(workspaceRoot),
+        adapterEnv: { DATABASE_URL: "synthetic-db-url", PGPASSWORD: "synthetic-password" },
+        command: {
+          name: "Credential isolation probe",
+          command: `${JSON.stringify(process.execPath)} -e ${JSON.stringify(check)}`,
+          env: { PAPERCLIP_DATABASE_URL_FILE: "/synthetic/override", DATABASE_MIGRATION_URL: "synthetic-migration-url", PAPERCLIP_AGENT_JWT_SECRET: "synthetic-jwt-secret" },
+        },
+        recorder,
+      });
+      expect(operations).toHaveLength(1);
+      expect(operations[0]?.result).toMatchObject({ status: "succeeded", exitCode: 0 });
+    } finally {
+      if (previous === undefined) delete process.env.PAPERCLIP_DATABASE_URL_FILE;
+      else process.env.PAPERCLIP_DATABASE_URL_FILE = previous;
+      await fs.rm(workspaceRoot, { recursive: true, force: true });
+    }
+  });
 
   it("reports a failing operator job as an unprocessable job result, not a server error", async () => {
     const workspaceRoot = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-workspace-job-failure-"));

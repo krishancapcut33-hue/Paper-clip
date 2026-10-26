@@ -76,6 +76,8 @@ import {
   isCodexUnknownSessionError,
 } from "./parse.js";
 import {
+  assertTrustedConnectorAuthSourceHome,
+  readBoundAuthSource,
   codexHomeHasUsableAuth,
   evaluateCodexCredentialReadiness,
   isManagedCodexHomePath,
@@ -89,6 +91,7 @@ import {
   writeManagedCodexMcpConfig,
   type ManagedCodexMcpGateway,
 } from "./codex-home.js";
+import { readRegularFileNoFollow } from "./safe-home-files.js";
 import {
   CODEX_SANDBOX_AUTH_EXISTS_COMMAND,
   CODEX_SANDBOX_AUTH_PRECEDENCE_WARNING,
@@ -390,6 +393,7 @@ export async function assertCodexCredentialsLaunchable(input: {
   companyId: string;
   configuredCodexHome: string | null;
   configuredApiKey: string | null;
+  authSourcePaths?: readonly string[];
   effectiveCodexHome: string;
   target: MaybeResolvedExecutionTarget;
   cwd: string;
@@ -401,6 +405,7 @@ export async function assertCodexCredentialsLaunchable(input: {
     companyId: input.companyId,
     configuredCodexHome: input.configuredCodexHome,
     configuredApiKey: input.configuredApiKey,
+    authSourcePaths: input.authSourcePaths,
   });
   if (!credentialReadiness.managed || credentialReadiness.ready) return;
 
@@ -648,11 +653,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     typeof envConfig.CODEX_HOME === "string" && envConfig.CODEX_HOME.trim().length > 0
       ? path.resolve(envConfig.CODEX_HOME.trim())
       : null;
+
   const configuredOpenAiApiKey =
     typeof envConfig.OPENAI_API_KEY === "string" && envConfig.OPENAI_API_KEY.trim().length > 0
       ? envConfig.OPENAI_API_KEY.trim()
       : null;
   const skillSourceHome = configuredCodexHome;
+  // A configured source can be selected by an agent. Reject it before any
+  // credential/config read or generated-home seed in file-backed DB mode.
+  await assertTrustedConnectorAuthSourceHome({
+    env: process.env,
+    companyId: agent.companyId,
+    agentId: agent.id,
+    sourceHome: skillSourceHome,
+    managedAiConnection: Boolean(config.managedAiConnection),
+  });
   const connectorSkillDigest = typeof config.paperclipConnectorSkillDigest === "string"
     && /^[a-f0-9]{64}$/.test(config.paperclipConnectorSkillDigest) ? config.paperclipConnectorSkillDigest : null;
   const codexSkillEntries = (await readPaperclipRuntimeSkillEntries(config, __moduleDir))
@@ -672,8 +687,21 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     : null;
   if (runtimeSkillDigest) {
     const credentialHome = runtimeCredentialHome!;
-    const credentialBytes = await fs.readFile(path.join(credentialHome, "auth.json")).catch(() => null);
-    const selectedConfig = await fs.readFile(path.join(credentialHome, "config.toml")).catch(() => null);
+    await assertTrustedConnectorAuthSourceHome({
+      env: process.env,
+      companyId: agent.companyId,
+      agentId: agent.id,
+      sourceHome: credentialHome,
+      managedAiConnection: Boolean(config.managedAiConnection),
+    });
+    const fileBackedDb = Boolean(process.env.PAPERCLIP_DATABASE_URL_FILE?.trim());
+    const sharedAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+    const credentialBytes = fileBackedDb
+      ? await readBoundAuthSource([path.join(credentialHome, "auth.json"), sharedAuthPath])
+      : await fs.readFile(path.join(credentialHome, "auth.json")).catch(() => null);
+    const selectedConfig = fileBackedDb
+      ? await readRegularFileNoFollow(path.join(credentialHome, "config.toml"))
+      : await fs.readFile(path.join(credentialHome, "config.toml")).catch(() => null);
     // Keep selected-home provider/MCP edits (and removals) in the launched home.
     const selectedConfigDigest = selectedConfig ? createHash("sha256").update(selectedConfig).digest("hex") : null;
     // Copy-back may retain a refreshed regular credential in a generated home.
@@ -758,6 +786,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
     companyId: agent.companyId,
     configuredCodexHome,
     configuredApiKey: configuredOpenAiApiKey,
+    authSourcePaths: [
+      path.join(effectiveCodexHome, "auth.json"),
+      ...(runtimeCredentialHome ? [path.join(runtimeCredentialHome, "auth.json")] : []),
+      path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+    ],
     effectiveCodexHome,
     target: executionTarget,
     cwd,
@@ -851,11 +884,26 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // ship THAT as the `home` asset, instead of the whole managed
           // CODEX_HOME + a name denylist. Staged AFTER the config.toml rewrites
           // (provider merge + MCP block splice above) and skills injection, so the
-          // staged config.toml/skills reflect their final state. Symlinks (incl.
-          // the single-use `auth.json`) are dereferenced to bytes. This drops the
+          // staged config.toml/skills reflect their final state. Only the known
+          // shared auth source and selected skill sources may be dereferenced.
+          // This drops the
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
-          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          const authSeedHome = runtimeCredentialHome ?? resolveSharedCodexHomeDir(process.env);
+          const sharedAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
+          const selectedSkills = new Set(desiredSkillNames);
+          stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, {
+            runId,
+            additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [],
+            authSourcePaths: [
+              path.join(authSeedHome, "auth.json"),
+              ...(authSeedHome === resolveSharedCodexHomeDir(process.env) ? [] : [sharedAuthPath]),
+            ],
+            skillSources: codexSkillEntries
+              .filter((entry) => selectedSkills.has(entry.key))
+              .map((entry) => ({ name: entry.runtimeName, source: entry.source })),
+          });
+
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -932,7 +980,11 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       target: runtimeExecutionTarget,
       cwd: effectiveExecutionCwd,
       configuredApiKey: Boolean(configuredOpenAiApiKey),
-      hostAuthJson: await codexHomeHasUsableAuth(effectiveCodexHome),
+      hostAuthJson: await codexHomeHasUsableAuth(effectiveCodexHome, [
+        path.join(effectiveCodexHome, "auth.json"),
+        ...(runtimeCredentialHome ? [path.join(runtimeCredentialHome, "auth.json")] : []),
+        path.join(resolveSharedCodexHomeDir(process.env), "auth.json"),
+      ]),
       onLog,
       onEvent,
     });
