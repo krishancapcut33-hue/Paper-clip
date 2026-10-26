@@ -237,6 +237,45 @@ GitHub workers. Hosted integration must bind unique cells to the prepared
 allocation, reject workflow/job reruns, and preserve the controller evidence
 before enabling paid work. Native OTLP routing, report integration, vendor
 metering bounds, and actual paid qualification remain separate gates.
+## Controller-assigned native observability
+
+The same CLI accepts `--observability-config /absolute/path/observability.json`
+only with `--gateway-config`. This opt-in route supports native Codex and ACPX
+Claude. Without that argument, the gateway route exports no native traces.
+
+The descriptor uses schema `paperclip.runner-eval.observability/v1`. It contains
+`campaignId`, `executionId`, and `attemptId` matching the gateway and request;
+`projectId` (UUID), `traceId` (32 lowercase hex characters), and `spanId` (16
+lowercase hex characters); `baseUrl` in the form
+`http://127.0.0.1:PORT/otel`; and `launch`, the secret-free result from the existing
+`buildProviderObservabilityLaunch` in `packages/adapter-utils`. The CLI accepts
+only its known Codex/Claude exporter settings and the mock session's exact
+company and agent attributes. Bind `revision` to `compatibilityKey`. Use a
+compatibility key of at most 128 letters, digits, underscores, or hyphens.
+
+Build the launch with `/v1/logs` and `/v1/traces` under that base URL, a timeout
+of at most 3 seconds, and only the `x-bt-parent` header from
+`exportBraintrustAttemptParent` for those project/trace/span IDs. Do not include
+upstream authorization in the file. Supply the attempt's separate 32-byte
+hexadecimal relay credential through `PAPERCLIP_RUNNER_EVAL_OTLP_TOKEN`. The CLI
+adds authorization to the provider environment and redacts it from diagnostics
+and artifacts. Codex configuration is written only into the disposable gateway
+home; the existing model route is preserved. The descriptor must be a regular
+file, not a symlink, and fit within 128 KiB.
+
+Success and failure artifacts record `nativeObservability` with the declared
+project/trace/span IDs, descriptor SHA-256, `configured: true`, and
+`verification: "unverified"`. Configuration does not prove export, ingestion,
+indexing, complete capture, or billing coverage. Relay receipts and destination
+readback must establish those separate facts. Provider errors keep their
+original outcome even when traces arrive.
+
+The controller owns the relay, credentials, ingestion quotas, deadline, drain,
+and private receipt retention. This CLI option does not start a relay, set an
+operating allowance, or enable a paid campaign. The existing Product E2E relay
+and launch generator remain the integration owners; the hosted Runner workflow
+still needs its own qualified controller integration.
+
 ## Hosted campaign
 
 Use the `Runner Direct Live Protocol Evals` workflow. Dispatch the workflow

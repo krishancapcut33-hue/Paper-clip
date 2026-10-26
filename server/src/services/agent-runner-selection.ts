@@ -290,28 +290,7 @@ export async function resolveNewAgentRunnerForCompany(db: Db, companyId: string,
 
 export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null): Promise<RunnerTarget> {
   await waitForExternalAdapters();
-  const { instanceSettingsService } = await import("./instance-settings.js");
-  const { environmentService } = await import("./environments.js");
-  const settings = await instanceSettingsService(db).get();
-  const envs = environmentService(db);
-  const environmentId = defaultEnvironmentId ?? settings.defaultEnvironmentId;
-  let environment = environmentId ? await envs.getById(environmentId) : null;
-  if (settings.experimental?.enableManagedSandboxOnly && (!environment || environment.driver === "local")) {
-    environment = await envs.findManagedSandboxEnvironment(companyId);
-    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", { code: "managed_sandbox_unavailable" });
-  }
-  if (settings.general?.executionMode === "kubernetes") {
-    environment = await envs.findKubernetesEnvironment(companyId);
-    if (!environment) return { driver: "sandbox" };
-  }
-  if (environmentId && !environment) throw unprocessable("Environment not found.");
-  if (environment) {
-    const boundCompanyIds = await envs.listBoundCompanyIds(environment.id);
-    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) throw forbidden("The selected environment belongs to another company.", { code: "environment_company_mismatch" });
-    if (environment.status === "archived") throw unprocessable("Environment is archived.");
-    if (environment.driver === "sandbox" && environment.config?.provider === "fake") throw unprocessable("The fake sandbox provider cannot execute runs.");
-  }
-  const driver = environment?.driver ?? "local";
+  const { environment, driver } = await resolveAgentRunnerEnvironmentForCompany(db, companyId, defaultEnvironmentId);
   let target: RunnerTarget = driver === "local" ? localAgentRunnerTarget()
     : { driver };
   if (driver === "plugin" && environment && await pluginEnvironmentRunsRunnerTasks(db, environment)) target = { driver, runnerTasks: true };
@@ -330,6 +309,31 @@ export async function resolveAgentRunnerTargetForCompany(db: Db, companyId: stri
     target = { driver, platform: os === "Linux" ? "linux" : os === "Darwin" ? "darwin" : "unknown", architecture: arch === "x86_64" ? "x64" : ["aarch64", "arm64"].includes(arch) ? "arm64" : arch, ...(os === "Linux" && libc !== undefined ? { libc: libc === "glibc" || libc === "musl" ? libc : "unknown", ...(libc === "glibc" && glibcVersion !== undefined ? { glibcVersion } : {}) } : {}) };
   }
   return target;
+}
+
+export async function resolveAgentRunnerEnvironmentForCompany(db: Db, companyId: string, defaultEnvironmentId?: string | null) {
+  const { instanceSettingsService } = await import("./instance-settings.js");
+  const { environmentService } = await import("./environments.js");
+  const settings = await instanceSettingsService(db).get();
+  const envs = environmentService(db);
+  const environmentId = defaultEnvironmentId ?? settings.defaultEnvironmentId;
+  let environment = environmentId ? await envs.getById(environmentId) : null;
+  if (settings.experimental?.enableManagedSandboxOnly && (!environment || environment.driver === "local")) {
+    environment = await envs.findManagedSandboxEnvironment(companyId);
+    if (!environment) throw unprocessable("The managed sandbox is unavailable. Restore Paperclip Computer and retry.", { code: "managed_sandbox_unavailable" });
+  }
+  if (settings.general?.executionMode === "kubernetes") {
+    environment = await envs.findKubernetesEnvironment(companyId);
+    if (!environment) return { environment: null, driver: "sandbox" };
+  }
+  if (environmentId && !environment) throw unprocessable("Environment not found.");
+  if (environment) {
+    const boundCompanyIds = await envs.listBoundCompanyIds(environment.id);
+    if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) throw forbidden("The selected environment belongs to another company.", { code: "environment_company_mismatch" });
+    if (environment.status === "archived") throw unprocessable("Environment is archived.");
+    if (environment.driver === "sandbox" && environment.config?.provider === "fake") throw unprocessable("The fake sandbox provider cannot execute runs.");
+  }
+  return { environment, driver: environment?.driver ?? "local" };
 }
 
 // The plugin's manifest declaration decides whether its environment runs

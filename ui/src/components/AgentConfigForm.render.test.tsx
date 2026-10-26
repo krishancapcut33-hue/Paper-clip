@@ -27,6 +27,7 @@ const mockAgentsApi = vi.hoisted(() => ({
   detectModel: vi.fn(),
   list: vi.fn(),
   testEnvironment: vi.fn(),
+  qualifyRunner: vi.fn(),
   startAdapterAuthLogin: vi.fn(),
   getAdapterAuthLoginStatus: vi.fn(),
   getActiveAdapterAuthLoginSession: vi.fn(),
@@ -817,7 +818,7 @@ describe("AgentConfigForm environment selector", () => {
       { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" },
     ];
     mockAdaptersApi.list.mockResolvedValue(inventory(false));
-    mockEnvironmentsApi.probe.mockImplementation(async () => {
+    mockAgentsApi.qualifyRunner.mockImplementation(async () => {
       mockAdaptersApi.list.mockResolvedValue(inventory(true));
       return { ok: true, driver: "sandbox", details: { platformQualificationRecorded: true, leaseId: "probe-lease" } };
     });
@@ -829,7 +830,7 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
     expect(result.container.textContent).toContain("Upgrade to Paperclip Runner");
     expect(result.container.textContent).toContain("Max turns per run");
-    expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
     if (mode === "env-draft") {
       await clickByText(result.container, "Add variable");
       await act(async () => {
@@ -839,11 +840,32 @@ describe("AgentConfigForm environment selector", () => {
       await flushReact();
     }
     await clickByText(result.container, "Upgrade runner");
-    expect(mockEnvironmentsApi.probe).toHaveBeenCalledWith(environment.id, "company-1");
+    expect(mockAgentsApi.qualifyRunner).toHaveBeenCalledWith("agent-1", environment.id, "company-1");
     expect(result.onSave).toHaveBeenCalledWith(mode === "env-draft" ? expect.objectContaining({
       runner: "paperclip", replaceAdapterConfig: true,
       adapterConfig: expect.objectContaining({ env: { MIGRATION_MARKER: { type: "plain", value: "kept" } } }),
     }) : { runner: "paperclip" });
+  });
+
+  it.each([false, true])("requires saving a changed computer before upgrading (qualified: %s)", async qualified => {
+    const environments = ["saved-computer", "draft-computer"].map(id => makeEnvironment({ id, driver: "sandbox", status: "active",
+      config: { provider: "daytona", snapshot: "managed-snapshot" } }));
+    mockAdaptersApi.list.mockResolvedValue([
+      { type: "claude_local", supportedRunners: qualified ? ["paperclip", "legacy"] : ["legacy"], defaultRunner: qualified ? "paperclip" : "legacy" },
+      { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" },
+    ]);
+    const result = await renderForm(environments, { adapterType: "claude_local", defaultEnvironmentId: "saved-computer" });
+    roots.push(result.root);
+    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(false);
+    await selectEnvironment(result.container, "draft-computer");
+    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(true);
+    expect(result.container.textContent).toContain("Save your computer change before upgrading the runner.");
+    await clickByText(result.container, "Upgrade runner");
+    expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
+    expect(result.onSave).not.toHaveBeenCalled();
+    await selectEnvironment(result.container, "saved-computer");
+    expect(findButton(result.container, "Upgrade runner")?.disabled).toBe(false);
+    expect(result.container.textContent).not.toContain("Save your computer change before upgrading the runner.");
   });
 
   it.each(["probe", "unsupported", "settings-changed"])("does not save after Daytona %s", async failure => {
@@ -851,7 +873,7 @@ describe("AgentConfigForm environment selector", () => {
       config: { provider: "daytona", snapshot: "managed-snapshot" } });
     mockAdaptersApi.list.mockResolvedValue([{ type: "claude_local", supportedRunners: ["legacy"], defaultRunner: "legacy" }, { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" }]);
     let finish!: () => void;
-    mockEnvironmentsApi.probe.mockImplementation(() => new Promise(resolve => { finish = () => resolve({ ok: failure !== "probe",
+    mockAgentsApi.qualifyRunner.mockImplementation(() => new Promise(resolve => { finish = () => resolve({ ok: failure !== "probe",
       summary: "Could not verify this computer", details: { platformQualificationRecorded: failure !== "probe", leaseId: "lease" } }); }));
     const result = await renderForm([environment], { adapterType: "claude_local", defaultEnvironmentId: environment.id });
     roots.push(result.root);
@@ -874,7 +896,7 @@ describe("AgentConfigForm environment selector", () => {
       { type: "paperclip_runner", supportedRunners: ["legacy"], defaultRunner: "legacy" },
     ];
     mockAdaptersApi.list.mockResolvedValue(inventory(false));
-    mockEnvironmentsApi.probe.mockImplementation(async () => {
+    mockAgentsApi.qualifyRunner.mockImplementation(async () => {
       mockAdaptersApi.list.mockResolvedValue(inventory(true));
       return { ok: true, details: { platformQualificationRecorded: true, leaseId: "kubernetes-probe" } };
     });
@@ -884,12 +906,12 @@ describe("AgentConfigForm environment selector", () => {
     roots.push(result.root);
     if (available) {
       await clickByText(result.container, "Upgrade runner");
-      expect(mockEnvironmentsApi.probe).toHaveBeenCalledWith(kubernetes.id, "company-1");
+      expect(mockAgentsApi.qualifyRunner).toHaveBeenCalledWith("agent-1", kubernetes.id, "company-1");
       expect(mockAdaptersApi.list).toHaveBeenLastCalledWith({ companyId: "company-1", environmentId: kubernetes.id });
       expect(result.onSave).toHaveBeenCalledWith({ runner: "paperclip" });
     } else {
       expect(findButton(result.container, "Upgrade runner")).toBeUndefined();
-      expect(mockEnvironmentsApi.probe).not.toHaveBeenCalled();
+      expect(mockAgentsApi.qualifyRunner).not.toHaveBeenCalled();
     }
   });
 
@@ -1023,6 +1045,7 @@ describe("AgentConfigForm environment selector", () => {
 
   beforeEach(() => {
     mockEnvironmentsApi.probe.mockReset();
+    mockAgentsApi.qualifyRunner.mockReset();
     mockAdaptersApi.list.mockReset().mockResolvedValue([{ type: "codex_local", supportedRunners: ["legacy", "paperclip"], defaultRunner: "legacy" }]);
     mockAgentsApi.adapterModels.mockResolvedValue([]);
     mockAgentsApi.detectModel.mockResolvedValue(null);

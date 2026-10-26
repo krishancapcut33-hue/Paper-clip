@@ -41,6 +41,12 @@ existing preparation and verification lifecycle.
 
 Open `/agents/:agentId` and the configuration/instruction surfaces it exposes.
 
+For a low-trust agent, open **Permissions / Trust → Allowed projects**. An operator
+with agent-management permission can select additional projects and explicitly
+save them. Existing projects and other containment restrictions remain intact.
+Cancel discards the draft; a failed save retains it. Reload to verify persistence.
+This does not start or retry a task.
+
 In `/agents/all`, select roster checkboxes and choose **Edit connection & model**.
 A mixed selection offers one action per harness. Each field is opt-in. The editor
 previews each changed value and excludes agents already at the target value.
@@ -138,8 +144,10 @@ recorded execution. Keep runner choice in Advanced and verify the next eligible
 run separately from historical transcripts.
 
 Existing legacy Claude and Codex agents on qualified default environments, or
-probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Exercise that action with
-pending edits and an environment-variable draft; reopen the page and compare the
+probe-capable Daytona snapshots / immutable sandbox images, show **Upgrade runner** above their configuration. Verify a company owner with `agents:configure` and no instance-admin role can qualify the saved computer and upgrade. A caller without configuration permission must be denied before a probe starts. Exercise that action with
+pending edits and an environment-variable draft. An unsaved change to a different
+effective computer must disable the action and explain that the computer change
+must be saved first; restoring the saved target must re-enable it. Reopen the page and compare the
 saved harness, model, account bindings, instructions, and run policy. Check a
 saved `maxTurnsPerRun: 1000`: upgrade must warn and remove it. Test an initially
 unqualified Daytona Paperclip Computer: click must probe, record qualification,
