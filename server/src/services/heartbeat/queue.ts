@@ -3305,7 +3305,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 payload: sql`jsonb_set(coalesce(${agentWakeupRequests.payload}, '{}'::jsonb), '{executionWait}', ${JSON.stringify(condition)}::jsonb)`,
                 updatedAt: new Date(),
               }).where(eq(agentWakeupRequests.id, executionWaitRequestId));
-              return { kind: "deferred" as const };
+              return { kind: "deferred" as const, admitted: true };
             }
             if (durableRequest || wakeCommentId ||
                 hasInteractionContinuationWakeContext(enrichedContextSnapshot) ||
@@ -3342,7 +3342,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 },
               });
             }
-            return { kind: "deferred" as const };
+            return { kind: "deferred" as const, admitted: true };
           };
           const explicitContinuationRunId = randomUUID();
           const executionBlocker = await getExecutionBlocker(
@@ -3968,7 +3968,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               };
             }
             if (admission.kind === "deferred") {
-              return { kind: "deferred" as const };
+              return { kind: "deferred" as const, admitted: true };
             }
             // admission.kind === "proceed": no active run absorbed this wake,
             // so fall through to the ordinary queue path below.

@@ -291,11 +291,13 @@ export function assertDurableChatWakeupReceipt(
   }
 }
 
-export function withDurableChatAdmission<T>(request: DurableChatWakeupRequest | undefined,
+export function withDurableChatAdmission<T extends { kind: string; admitted?: boolean }>(request: DurableChatWakeupRequest | undefined,
   admit: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<T>) {
   return async (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => {
     const outcome = await admit(tx);
-    if (request?.onAdmitted) {
+    // An existing deferred receipt is not proof this transaction passed its
+    // gates. Only dispatch or an explicitly persisted wait admits the input.
+    if (request?.onAdmitted && (outcome.admitted === true || ["queued", "durable", "coalesced"].includes(outcome.kind))) {
       const [receipt] = await tx.select().from(agentWakeupRequests).where(and(
         eq(agentWakeupRequests.companyId, request.companyId), eq(agentWakeupRequests.id, request.id),
         inArray(agentWakeupRequests.status, ["queued", "claimed", "deferred_issue_execution", "coalesced"]),
