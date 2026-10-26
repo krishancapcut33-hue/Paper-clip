@@ -35,6 +35,8 @@ Agent access: [companion](../agent-access-map/recovery.md).
   hosted provider recovery remains separate acceptance.
   Native finalization deadline failures also retain the exact prepared source
   for the same stop-and-save workflow before Retry admits another executor.
+  Retry reconstructs missing preservation for historical failures only from an
+  exact prepared source without a live finalization owner.
 - `unknown-outcome`: `recovery/unknown-outcome` — uncertain external side effects require inspection and
   an explicit decision, not automatic replay.
 - `user-continuation`: `recovery/user-continuation` — saved user messages after a stop are reconsidered once
@@ -269,6 +271,10 @@ completed obligations followed by quiet paused input.
 The physical export regression holds one export while another completes, then
 verifies a third Retry can use the free slot and shutdown joins the held work.
 These local checks do not prove recovery of a deployed allocation.
+The historical deadline case starts without preservation bookkeeping, holds the
+provider stop reply, and verifies that HTTP Retry cannot admit a successor until
+the real temporary files are restored. Duplicate requests then admit one queued
+turn. GitHub and Telegram admission also retain the exact pending recovery.
 
 Automated: [disposition notices](../../ui/src/components/DispositionRecoveryNotice.test.tsx)
 tests pending/error/gated states and waiting for the real retry acknowledgement.

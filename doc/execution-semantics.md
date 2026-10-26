@@ -1343,6 +1343,14 @@ ordinary Retry can continue. Finalized workspaces, mismatched sources and
 accepted results keep their existing settlement paths. Reassignment does not
 discard the stopped run's files or grant authority over the new assignee.
 
+For older failed native runs that lack this bookkeeping, a deliberate Retry
+registers preservation from the exact prepared workspace descriptor and assigns
+the existing bounded maintenance owner. A live finalization owner or mismatched
+source cannot be adopted. Registration does not prove termination or authorize
+replay: the provider stop receipt, saved-file receipt, current execution authority
+and effect fences still control successor admission. Repeated clicks retain the
+same recovery generation and request.
+
 Every continuation carries the triggering request, ordered user direction, interaction outcomes, completed work, and explicit history coverage. A delivered message remains part of the task's request after its connection or approval resolves. The original title is background; a completed Notion read does not satisfy a later Gmail request. Author and source-trust boundaries survive rendering into both native and legacy prompts. Missing required history must be fetched before dispatch rather than described as complete.
 
 ### Interrupted conversation continuation

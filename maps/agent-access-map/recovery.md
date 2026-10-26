@@ -243,6 +243,13 @@ replace the owner's generation or revision. Resolved files-only recovery retains
 its no-replay restriction. The local PostgreSQL regression checks the producer,
 worker, and physical source receipt; it is not deployed provider acceptance.
 
+An authorized deliberate Retry also registers missing historical native
+preservation from an exact prepared descriptor and an unowned terminal
+finalization. It adopts only the existing bounded maintenance capability. A live
+owner or mismatched allocation cannot supply this proof. No termination receipt
+or execution authority is created by registration; connected Retry still waits
+behind recovery and rechecks its existing external identity.
+
 The internal preservation resume path grants no board or agent execution API.
 It requires the exact source action, company, run, lease and environment, a
 held physical workspace owner, and its current stop-only cleanup claim. The
