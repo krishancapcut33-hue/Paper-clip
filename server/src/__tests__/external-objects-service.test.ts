@@ -568,6 +568,73 @@ describe("GitHub external object provider", () => {
       expect.objectContaining({ ok: false, liveness: "rate_limited", errorCode: "github_rate_limited" }),
     );
   });
+
+  it("limits a server-environment token to public repositories and never fetches a private object", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: true, full_name: "acme/app" });
+      return response({ state: "open", draft: false, merged: false, title: "Private PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result).toEqual(
+      expect.objectContaining({
+        ok: false,
+        liveness: "auth_required",
+        errorCode: "github_repo_requires_company_token",
+      }),
+    );
+    expect(fetch).not.toHaveBeenCalledWith(expect.stringContaining("/pulls/42"), expect.anything());
+    expect(JSON.stringify(result)).not.toContain("env-token");
+  });
+
+  it("uses a server-environment token to resolve a public repository", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: false });
+      return response({ state: "open", draft: false, merged: false, title: "Public PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "env-token", source: "server_env", secretName: null }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
+  });
+
+  it("lets a company-scoped token resolve a private repository", async () => {
+    const fetch = vi.fn(async (url: string) => {
+      if (url.endsWith("/repos/acme/app")) return response({ private: true });
+      return response({ state: "open", draft: false, merged: false, title: "Private PR" });
+    });
+    const provider = createGitHubExternalObjectProvider({} as any, {
+      fetch,
+      credentialProvider: async () => ({ token: "company-token", source: "company_secret", secretName: "GITHUB_TOKEN" }),
+    });
+    const resolver = provider.resolvers.find((entry) => entry.objectType === "pull_request")!;
+
+    const result = await resolver.resolve({
+      companyId: "company-1",
+      object: githubObject("pull/42", "pull_request"),
+    });
+
+    expect(result.ok).toBe(true);
+    expect(fetch).toHaveBeenCalledWith("https://api.github.com/repos/acme/app/pulls/42", expect.anything());
+  });
 });
 
 describeEmbeddedPostgres("externalObjectService", () => {

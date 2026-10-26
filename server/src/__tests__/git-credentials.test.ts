@@ -12,7 +12,7 @@ import {
   createIssueGitRemoteAuthProvider,
   describeGitAuthFailure,
   isGitHubHttpsRemoteUrl,
-  resolveGitHubApiToken,
+  resolveGitHubApiCredential,
   scrubGitCredentialText,
 } from "../services/git-credentials.ts";
 
@@ -49,29 +49,29 @@ describe("isGitHubHttpsRemoteUrl", () => {
   });
 });
 
-describe("resolveGitHubApiToken", () => {
-  it("prefers a company secret over the server environment", async () => {
+describe("resolveGitHubApiCredential", () => {
+  it("prefers a company secret over the server environment and marks it company-scoped", async () => {
     const secrets = buildSecretsFake({ GH_TOKEN: "gh-token" });
-    const token = await resolveGitHubApiToken(fakeDb, "company-1", {
+    const credential = await resolveGitHubApiCredential(fakeDb, "company-1", {
       secrets,
       env: { GITHUB_TOKEN: "env-token" },
     });
-    expect(token).toBe("gh-token");
+    expect(credential).toEqual({ token: "gh-token", source: "company_secret", secretName: "GH_TOKEN" });
   });
 
-  it("falls back to the server environment so the resolver is never silently anonymous", async () => {
+  it("falls back to the server environment and marks it server_env so callers can restrict it", async () => {
     const secrets = buildSecretsFake({});
-    const token = await resolveGitHubApiToken(fakeDb, "company-1", {
+    const credential = await resolveGitHubApiCredential(fakeDb, "company-1", {
       secrets,
       env: { GITHUB_TOKEN: "env-token" },
     });
-    expect(token).toBe("env-token");
+    expect(credential).toEqual({ token: "env-token", source: "server_env", secretName: null });
   });
 
   it("returns null when neither a secret nor the environment provides a token", async () => {
     const secrets = buildSecretsFake({});
-    const token = await resolveGitHubApiToken(fakeDb, "company-1", { secrets, env: {} });
-    expect(token).toBeNull();
+    const credential = await resolveGitHubApiCredential(fakeDb, "company-1", { secrets, env: {} });
+    expect(credential).toBeNull();
   });
 });
 

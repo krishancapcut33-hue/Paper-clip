@@ -200,8 +200,17 @@ type GitCredentialSecretsDeps = {
   resolveUserSecretValue?: SecretServiceLike["resolveUserSecretValue"];
 };
 
+export type GitHubApiCredentialSource = "company_secret" | "server_env";
+
+export type GitHubApiCredential = {
+  token: string;
+  source: GitHubApiCredentialSource;
+  /** The company-secret name the token came from; null for a server-environment token. */
+  secretName: string | null;
+};
+
 /**
- * Resolve a plain GitHub API token for company-scoped, non-run work (for example the
+ * Resolve a GitHub API credential for company-scoped, non-run work (for example the
  * external-object refresh sweep, which has no agent or responsible-user context).
  *
  * This is the background-safe subset of the git credential order: it reads a company
@@ -212,15 +221,18 @@ type GitCredentialSecretsDeps = {
  * `createGitRemoteAuthProvider`/`resolveManagedGitHubCredential` instead so the managed
  * identity and its consent boundary are honored.
  *
- * The server-environment fallback matters: without it a resolver silently runs anonymous,
- * and anonymous GitHub requests are capped at 60/hour, so a busy company is rate-limited
- * into misleading failures.
+ * The `source` matters to callers that show company data. A server-environment token is
+ * instance-wide, so it can see repositories the company cannot. A caller must treat a
+ * `server_env` token differently from a `company_secret` token and keep it away from
+ * private repositories. Without any credential a caller runs anonymous, and anonymous
+ * GitHub requests are capped at 60/hour, so a busy company is rate-limited into
+ * misleading failures.
  */
-export async function resolveGitHubApiToken(
+export async function resolveGitHubApiCredential(
   db: Db,
   companyId: string,
   opts: { secretNames?: readonly string[]; env?: NodeJS.ProcessEnv; secrets?: GitCredentialSecretsDeps } = {},
-): Promise<string | null> {
+): Promise<GitHubApiCredential | null> {
   const secrets = opts.secrets ?? secretService(db);
   for (const secretName of opts.secretNames ?? DEFAULT_GITHUB_TOKEN_SECRET_NAMES) {
     const secret = await Promise.resolve(secrets.getByName(companyId, secretName)).catch(() => null);
@@ -229,11 +241,11 @@ export async function resolveGitHubApiToken(
       .resolveSecretValue(companyId, secret.id, "latest")
       .then((value) => value.trim())
       .catch(() => "");
-    if (token) return token;
+    if (token) return { token, source: "company_secret", secretName };
   }
   const env = opts.env ?? process.env;
   const envToken = env.GITHUB_TOKEN?.trim() || env.GH_TOKEN?.trim() || "";
-  return envToken || null;
+  return envToken ? { token: envToken, source: "server_env", secretName: null } : null;
 }
 
 /**
