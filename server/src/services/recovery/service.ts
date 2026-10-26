@@ -196,6 +196,14 @@ const STRANDED_BOARD_ESCALATION_POLICY = "board_escalation_no_takeover_v1";
 const DISPOSITION_REPAIR_IDEMPOTENCY_INDEX =
   "agent_wakeup_requests_disposition_repair_idempotency_uq";
 const RESOLVED_DEPENDENCY_WAKE_BACKSTOP_CANDIDATE_LIMIT = 500;
+const TRANSITIONAL_AGENT_LIFECYCLE_STATES = new Set([
+  "preparing",
+  "verifying",
+  "pausing",
+  "resuming",
+  "terminating",
+  "cleaning_up",
+]);
 
 // GGU-809: when a stranded `in_progress` issue would otherwise hit the
 // `isRepeatedProductiveContinuationRecovery` escalation path, exempt the
@@ -254,6 +262,7 @@ type LatestIssueRun =
       | "errorCode"
       | "contextSnapshot"
       | "livenessState"
+      | "executionStage"
       | "startedAt"
       | "createdAt"
     > & {
@@ -898,12 +907,14 @@ function isOperatorCancelledRun(
   );
 }
 
-function isUnsuccessfulTerminalIssueRun(latestRun: LatestIssueRun) {
-  return Boolean(
-    latestRun &&
+function isUnsuccessfulTerminalIssueRun(
+  latestRun: LatestIssueRun,
+): latestRun is NonNullable<LatestIssueRun> {
+  return (
+    latestRun !== null &&
     UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES.includes(
       latestRun.status as (typeof UNSUCCESSFUL_HEARTBEAT_RUN_TERMINAL_STATUSES)[number],
-    ),
+    )
   );
 }
 
@@ -997,6 +1008,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
+        executionStage: heartbeatRuns.executionStage,
         resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -1028,6 +1040,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
+        executionStage: heartbeatRuns.executionStage,
         resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -1929,6 +1942,7 @@ export function recoveryService(
         contextSnapshot: recoveryRunContextColumn,
         rowVersion: recoveryRunVersionColumn,
         livenessState: heartbeatRuns.livenessState,
+        executionStage: heartbeatRuns.executionStage,
         resultJson: recoveryRunResultColumn,
         startedAt: heartbeatRuns.startedAt,
         createdAt: heartbeatRuns.createdAt,
@@ -4689,6 +4703,18 @@ export function recoveryService(
         agent && agent.companyId === issue.companyId
           ? await isAgentInvokable(agent)
           : false;
+      const lifecycleTransitionInProgress = Boolean(
+        agent &&
+          TRANSITIONAL_AGENT_LIFECYCLE_STATES.has(agent.lifecycleState),
+      );
+      if (
+        issue.status !== "in_review" &&
+        !agentInvokable &&
+        lifecycleTransitionInProgress
+      ) {
+        result.skipped += 1;
+        continue;
+      }
       if (
         agent?.status === "paused" &&
         agent.companyId === issue.companyId &&
@@ -5620,7 +5646,13 @@ export function recoveryService(
           continue;
         }
 
-        if (classification.kind === "non_retryable") {
+        const rejectedBeforeInvocation =
+          latestRun.errorCode === "agent_not_invokable" &&
+          latestRun.executionStage === "settled";
+        if (
+          classification.kind === "non_retryable" &&
+          !rejectedBeforeInvocation
+        ) {
           const updated = await escalateStrandedAssignedIssue({
             issue,
             previousStatus: "in_progress",
