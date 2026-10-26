@@ -12307,6 +12307,10 @@ async function createRunnerdBackendWithinSessionClaim(
   };
   const verifyRemoteCodex = async () => { await remoteNativeArtifacts?.verifyRemoteCodex(); };
 
+  // A custom operator-selected pack is an explicit runtime selection. The
+  // standard app-image path is the default transport source, not an upgrade request.
+  const explicitProviderPackSelection = Boolean(input.runnerRemoteProviderPackPath?.trim()
+    && input.runnerRemoteProviderPackPath.trim() !== "/opt/paperclip-runner/provider-pack");
   const useInstalledProviderPack = async () => {
     const expected = expectedProviderPackManifest;
     if (!expected || !remoteTarget || !remoteCommandRunner) return false;
@@ -12316,7 +12320,7 @@ async function createRunnerdBackendWithinSessionClaim(
           runner: remoteCommandRunner, cwd: remoteTarget.remoteCwd, packRoot: installation.root,
           manifest: expected, installation,
           provider: input.execution.provider as { kind: "opencode" } | { kind: "acpx"; agent: string },
-          requireExactIdentity: reattachProviderPack,
+          requireExactIdentity: reattachProviderPack || explicitProviderPackSelection,
         }));
         if (!reattachProviderPack) providerPackAuthority!.select(manifest);
         expectedProviderPackManifest = manifest;

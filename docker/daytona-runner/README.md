@@ -10,8 +10,8 @@ This image is the Paperclip Cloud fleet sandbox image plus a source-built
 `paperclip-runnerd` and immutable provider pack. The pack contains Node 24.11,
 OpenCode 1.18.34, the compiled OpenCode proxy, ACPX 0.13.1 sidecar, qualified ACP
 agents, and the production lockfile. Its manifest digests each executable bridge
-and binds the pack to the runner source revision, avoiding artifact upload and
-npm installation on every fresh lease.
+and records the runner source revision as provenance. Its interface declaration
+allows compatible app releases to reuse it without uploading or installing a pack.
 
 The fleet pins are intentionally copied from
 [`paperclip-cloud/fleet-sandbox-image/Dockerfile`](https://github.com/paperclipai/paperclip-cloud/blob/master/fleet-sandbox-image/Dockerfile).
@@ -107,7 +107,7 @@ runner/pack boundary change, and qualify the new pack before publishing it.
 Dependency versions and Git SHAs remain build provenance. ACPX retains its
 selected agent's qualified profile checks.
 
-The image build seals the pack as root-owned and non-writable. Fast admission
+The image build makes the pack root-owned and non-writable to the execution user. Fast admission
 requires protected ancestors and manifest, with no writable path alias. Task-owned
 packs and older packs without an interface declaration keep full content
 verification. An attached session retains the exact pack and daemon identity

@@ -49,7 +49,7 @@ RUN export PNPM_WORKERS="$(node -p 'require("node:os").availableParallelism()')"
     && PAPERCLIP_RUNNER_SOURCE_REVISION="${PAPERCLIP_RUNNER_SOURCE_REVISION}" \
       node packages/paperclip-runner/scripts/build-provider-pack.mjs /provider-pack \
         "--candidate-providers=${PAPERCLIP_RUNNER_CANDIDATE_PROVIDERS}" \
-    && chmod -R a+rX,a-w /provider-pack
+    && chmod -R a+rX /provider-pack
 
 # Fleet sandbox base image. Keep this section aligned with
 # paperclipai/paperclip-cloud/fleet-sandbox-image/Dockerfile. The only Paperclip
