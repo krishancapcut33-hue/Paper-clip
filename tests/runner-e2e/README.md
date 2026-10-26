@@ -1,5 +1,13 @@
 # Paid runner full-stack E2E
 
+The [chat scenario catalog](chat-scenarios/README.md) plans conversational
+coverage across the product using human requests, assumed context and expected
+outcomes. It shares feature-map capability IDs and belongs to this Product E2E
+family. Two entries have explicit [chat feature evals](CHAT-FEATURES.md): save a
+task without starting it, and delegate an announcement with delivery back to
+chat. Other YAML entries remain planning inventory; registration is not live
+qualification.
+
 The explicit-only `daytona-restart-continuity` suite runs the existing
 `recover-controller` journey with the recorded Codex and Claude staging models
 on fresh Daytona fixtures. After a completed task tool in an active revision
