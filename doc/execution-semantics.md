@@ -730,7 +730,16 @@ recovery path with the specific scan cause and an operator action. Generic
 stranded-work recovery must not grant another budget for these errors. This
 does not automatically replay historical generic `setup_failed` runs.
 
-### ACP startup handshake bound
+### Runner authentication and ACP startup handshake bounds
+
+The native Runner waits up to the ten-second connection setup budget for the
+authenticated welcome. The current execution or reconnect deadline can shorten
+that wait. Controller admission and durable lease persistence happen before the
+welcome, so a short internal response limit must not discard an otherwise valid
+bootstrap ticket during that work. A failed welcome still makes the one-use
+ticket unsafe to replay. Authentication proofs, credential expiry, and identity
+checks remain required. Steady-state reads return to their 250 ms polling bound
+after the welcome.
 
 An adapter-backed live path also requires that the ACP startup handshake itself cannot hang forever. The engine bounds the handshake with a fixed startup deadline and a poll of the duplex control-channel disposition. Either condition ends the handshake and reports a closed, typed code, so the issue can reach a settled disposition instead of staying `in_progress` with no observable next action.
 

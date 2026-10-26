@@ -175,6 +175,13 @@ provider restart. For that journey, interrupt a disposable deployment after
 workspace preparation and before its first executor claim, then confirm one
 provider turn starts on the original run through the normal admission gates.
 
+The [Runner transport regressions](../../packages/paperclip-runner/runner/crates/runner-core/src/durable/transport.rs)
+exercise a real WebSocket welcome delayed beyond two seconds. Authentication
+uses the ten-second connection setup budget, clipped by the current lifecycle
+deadline. The cases also retain failed-welcome ticket fencing, identity checks,
+and reconnect replay without repeated provider effects. These transport cases
+do not establish hosted provider acceptance.
+
 Active remote process supervision distinguishes a failed health read from a
 confirmed exit. The [executor tests](../../server/src/services/native-runtime/native-session-executor.test.ts)
 exercise timeout recovery with a real listening process, unchanged ownership,
