@@ -742,6 +742,28 @@ describe("AgentConfigForm environment selector", () => {
     expect(edited.onSave).toHaveBeenCalledWith({ name: "Renamed agent" });
   });
 
+  it.each([
+    { adapterType: "process", label: "Process", adapterConfig: { command: "node", args: ["worker.js"] } },
+    { adapterType: "http", label: "HTTP", adapterConfig: { url: "https://example.com/agent" } },
+  ])("omits coming-soon options but preserves a saved $label agent", async ({ adapterType, label, adapterConfig }) => {
+    const result = await renderForm([], { adapterType, adapterConfig }, { showAdapterTypeField: true });
+    roots.push(result.root);
+    expect(result.container.querySelector('[aria-label="Harness"]')?.textContent).toContain(label);
+    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+    const options = document.querySelector('[role="listbox"][aria-label="Harness"]');
+    expect(options).not.toBeNull();
+    const values = Array.from(options!.querySelectorAll('[role="option"]'), option => option.getAttribute("data-value"));
+    expect(values).toEqual(expect.arrayContaining(["claude_local", "codex_local", "opencode_local", "pi_local"]));
+    expect(values).not.toContain("process");
+    expect(values).not.toContain("http");
+    expect(options!.textContent).not.toContain("Coming soon");
+    await clickElement(result.container.querySelector('[aria-label="Harness"]'));
+    await act(async () => setInputValue(result.container.querySelector<HTMLInputElement>('[placeholder="Agent name"]')!, "Renamed saved agent"));
+    await flushReact();
+    await clickByText(result.container, "Save");
+    expect(result.onSave).toHaveBeenCalledWith({ name: "Renamed saved agent" });
+  });
+
   it.each(["codex_local", "claude_local"])("upgrades a saved %s in one click with pending edits", async adapterType => {
     mockAdaptersApi.list.mockResolvedValueOnce([{ type: adapterType, supportedRunners: ["legacy", "paperclip"], defaultRunner: "paperclip" }]);
     const result = await renderForm([], { adapterType, adapterConfig: { model: "existing-model", effort: "high" } });
