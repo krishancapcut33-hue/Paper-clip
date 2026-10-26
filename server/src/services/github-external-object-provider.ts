@@ -531,12 +531,19 @@ export function createGitHubExternalObjectProvider(
               retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
             };
           }
-          if (probe.isPrivate === true) {
+          // Require positive proof that the repository is public before reading
+          // with the instance-wide server token. A private verdict and a probe
+          // response that does not confirm public visibility both fail closed, so
+          // the server token can never fetch private details for a company that
+          // did not authorize it.
+          if (probe.isPrivate !== false) {
             return {
               ok: false,
               liveness: "auth_required",
               errorCode: "github_repo_requires_company_token",
-              errorMessage: `The ${identity.owner}/${identity.repo} repository is private. Add a GitHub token for this company to refresh this object.`,
+              errorMessage: probe.isPrivate === true
+                ? `The ${identity.owner}/${identity.repo} repository is private. Add a GitHub token for this company to refresh this object.`
+                : `The ${identity.owner}/${identity.repo} repository visibility could not be confirmed as public. Add a GitHub token for this company to refresh this object.`,
               retryAfterSeconds: GITHUB_OBJECT_TTL_SECONDS,
             };
           }
