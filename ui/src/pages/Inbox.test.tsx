@@ -21,6 +21,8 @@ const companyState = vi.hoisted(() => ({ selectedCompanyId: "company-1" as strin
 
 const externalObjectMocks = vi.hoisted(() => ({
   summaries: new Map(),
+  error: null as Error | null,
+  retry: vi.fn(),
 }));
 
 const apiMocks = vi.hoisted(() => ({
@@ -137,7 +139,9 @@ vi.mock("../hooks/useIssueExternalObjects", () => ({
   useIssueExternalObjectSummaries: () => ({
     summaries: externalObjectMocks.summaries,
     isLoading: false,
-    isReady: true,
+    isReady: !externalObjectMocks.error,
+    error: externalObjectMocks.error,
+    refetch: externalObjectMocks.retry,
   }),
 }));
 
@@ -342,6 +346,8 @@ function resetInboxApiMocks() {
   companyState.selectedCompanyId = "company-1";
   for (const mock of Object.values(apiMocks)) mock.mockReset();
   externalObjectMocks.summaries.clear();
+  externalObjectMocks.error = null;
+  externalObjectMocks.retry.mockReset();
   routerMock.location.pathname = "/";
   routerMock.location.search = "";
   routerMock.location.hash = "";
@@ -968,6 +974,66 @@ describe("Inbox toolbar", () => {
     await act(() => Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === "Retry details")!.click());
     await vi.waitFor(() => expect(document.body.textContent).not.toContain("Some task details couldn’t load."));
     expect(container.textContent).toContain("Readable task");
+    act(() => root.unmount());
+  });
+
+  it("refreshes diagnostics when a visible index row changes without changing its ID", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    const row = createIssue({ title: "Live task", listProjection: "index" });
+    apiMocks.issuesList.mockResolvedValue([row]);
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    const detailsReads = () => apiMocks.issuesList.mock.calls.filter(([, filters]) => filters.projection === "rows").length;
+    await vi.waitFor(() => expect(detailsReads()).toBe(1));
+    const updated = { ...row, updatedAt: new Date(new Date(row.updatedAt).getTime() + 1000) };
+    apiMocks.issuesList.mockResolvedValue([updated]);
+    await act(() => {
+      queryClient.setQueriesData({ predicate: (query) => query.queryKey.includes("index") }, [updated]);
+    });
+    await vi.waitFor(() => expect(detailsReads()).toBe(2));
+    expect(container.textContent).toContain("Live task");
+    act(() => root.unmount());
+  });
+
+  it.each(["approvalsList", "joinRequestsList", "heartbeatRunsList"] as const)(
+    "keeps available tasks visible when %s fails and during retry", async (source) => {
+      routerMock.location.pathname = "/inbox/mine";
+      apiMocks.issuesList.mockResolvedValue([createIssue({ title: "Available task" })]);
+      apiMocks[source].mockRejectedValue(new Error("Optional source unavailable"));
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+      const root = createRoot(container);
+      await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+      await vi.waitFor(() => expect(container.textContent).toContain("Available task"));
+      expect(document.body.textContent).toContain("Some inbox items couldn’t load.");
+      let resolveRetry: (rows: []) => void = () => undefined;
+      apiMocks[source].mockImplementation(() => new Promise((resolve) => { resolveRetry = resolve; }));
+      await act(() => Array.from(document.body.querySelectorAll('button')).find((button) => button.textContent === "Retry missing items")!.click());
+      await vi.waitFor(() => expect(apiMocks[source]).toHaveBeenCalledTimes(2));
+      expect(container.textContent).toContain("Available task");
+      expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+      await act(() => resolveRetry([]));
+      await vi.waitFor(() => expect(document.body.textContent).not.toContain("Some inbox items couldn’t load."));
+      act(() => root.unmount());
+    },
+  );
+
+  it("shows an error and retry instead of an endless skeleton when a required external status filter fails", async () => {
+    routerMock.location.pathname = "/inbox/mine";
+    localStorage.setItem(taskCollectionPreferencesStorageKey({ companyId: "company-1", collectionKey: "inbox" }), JSON.stringify({
+      version: 1, companyId: "company-1", collectionKey: "inbox", columns: [],
+      viewState: { issueFilters: { externalObjectStatuses: ["failed"] } },
+    }));
+    apiMocks.experimentalSettings.mockResolvedValue({ enableStreamlinedUi: true, enableExternalObjects: true });
+    apiMocks.issuesList.mockResolvedValue([createIssue()]);
+    externalObjectMocks.error = new Error("External statuses unavailable");
+    const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false, gcTime: 0 } } });
+    const root = createRoot(container);
+    await act(() => root.render(<QueryClientProvider client={queryClient}><Inbox /></QueryClientProvider>));
+    await vi.waitFor(() => expect(container.textContent).toContain("External statuses unavailable"));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    await act(() => Array.from(container.querySelectorAll('button')).find((button) => button.textContent === "Retry")!.click());
+    expect(externalObjectMocks.retry).toHaveBeenCalledOnce();
     act(() => root.unmount());
   });
 

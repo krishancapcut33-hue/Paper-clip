@@ -1310,6 +1310,8 @@ function StreamlinedIssuesList({
     hierarchyEnabled,
     hierarchyRowBudget,
   );
+  // Resolve the initial tree before reveal: inserting ancestors/children later would move rows.
+  // Hierarchy queries retain existing context during subsequent reads.
   const collectionLoading = Boolean(isLoading || externalObjectFilterLoading || (hierarchyEnabled && hierarchy.isLoading));
   const baseGroupedContent = useMemo(() => {
     if (viewState.groupBy === "none") {
@@ -1457,6 +1459,7 @@ function StreamlinedIssuesList({
     selectedCompanyId, rootRef,
     flatNavEntries.filter((entry) => entry.type === "issue").map((entry) => entry.type === "issue" ? entry.issue.id : "").join(",") + ":" + renderedIssueRowLimit,
     enableAgentCreatedVisibilityFilter && viewState.viewMode === "list" && !collectionLoading,
+    [...issues, ...hierarchy.issues],
   );
 
   const listNavStateRef = useRef({

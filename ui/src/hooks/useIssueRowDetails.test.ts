@@ -30,4 +30,14 @@ describe("visible task row enrichment", () => {
       expect(mergeIssueRowDetails(index, { ...index, ...overrides })).toBe(index);
     }
   });
+
+  it("accepts newer diagnostics without replacing the index's order or content", () => {
+    const merged = mergeIssueRowDetails(index, {
+      ...index, updatedAt: new Date("2026-10-26T10:00:01Z"), title: "Changed during loading",
+      activeRecoveryAction: { id: "new-recovery" },
+    } as Issue);
+    expect(merged.title).toBe(index.title);
+    expect(merged.updatedAt).toBe(index.updatedAt);
+    expect(merged.activeRecoveryAction?.id).toBe("new-recovery");
+  });
 });

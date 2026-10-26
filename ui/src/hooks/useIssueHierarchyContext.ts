@@ -6,10 +6,11 @@ import { queryKeys } from "../lib/queryKeys";
 
 export function useIssueHierarchyContext(companyId: string | null, matches: Issue[], collapsedParents: string[], enabled: boolean, rowBudget: number) {
   const parents = [...new Set(matches.map((issue) => issue.parentId).filter((id): id is string => Boolean(id)))].sort();
-  const ancestors = useQuery({
+  const ancestors = useQuery<Issue[]>({
     queryKey: [...queryKeys.issues.list(companyId ?? "__unscoped__"), "hierarchy-index-ancestors", parents],
     enabled: enabled && Boolean(companyId) && parents.length > 0,
     staleTime: 30_000,
+    placeholderData: (previous) => previous?.filter((issue) => issue.companyId === companyId),
     queryFn: async ({ signal }) => {
       const rows: Issue[] = [];
       const visited = new Set<string>();

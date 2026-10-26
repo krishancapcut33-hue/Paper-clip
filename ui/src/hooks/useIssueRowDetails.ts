@@ -7,7 +7,7 @@ import { queryKeys } from "../lib/queryKeys";
 /** Enrich visible rows without replacing the index that owns membership and order. */
 export function mergeIssueRowDetails(issue: Issue, details: Issue | undefined): Issue {
   if (!details || details.id !== issue.id || details.companyId !== issue.companyId
-    || new Date(details.updatedAt).getTime() !== new Date(issue.updatedAt).getTime()) return issue;
+    || new Date(details.updatedAt).getTime() < new Date(issue.updatedAt).getTime()) return issue;
   return {
     ...issue,
     blockerAttention: details.blockerAttention,
@@ -24,6 +24,7 @@ export function useIssueRowDetails(
   root: RefObject<HTMLElement | null>,
   rowIdentity: string,
   enabled: boolean,
+  issues: readonly Issue[],
 ) {
   const [visibleIds, setVisibleIds] = useState<string[]>([]);
   const [saved, setSaved] = useState<{ companyId: string; rows: Map<string, Issue> } | null>(null);
@@ -56,8 +57,13 @@ export function useIssueRowDetails(
     return () => observer.disconnect();
   }, [companyId, root, rowIdentity, enabled]);
 
+  const versions = new Map<string, number>();
+  for (const issue of issues) {
+    versions.set(issue.id, Math.max(versions.get(issue.id) ?? 0, new Date(issue.updatedAt).getTime()));
+  }
+  const visibleVersions = visibleIds.map((id) => [id, versions.get(id)]);
   const { data, error, refetch } = useQuery({
-    queryKey: [...queryKeys.issues.list(companyId ?? "__disabled__"), "visible-row-details", visibleIds],
+    queryKey: [...queryKeys.issues.list(companyId ?? "__disabled__"), "visible-row-details", visibleVersions],
     queryFn: ({ signal }) => issuesApi.listCompact(companyId!, {
       ids: visibleIds, projection: "rows", includeRoutineExecutions: true, limit: 50,
     }, { signal }),
@@ -68,7 +74,12 @@ export function useIssueRowDetails(
     if (!companyId || !data) return;
     setSaved((previous) => {
       const rows = new Map(previous?.companyId === companyId ? previous.rows : []);
-      for (const issue of data) rows.set(issue.id, issue as Issue);
+      for (const issue of data) {
+        const previousRow = rows.get(issue.id);
+        if (!previousRow || new Date(issue.updatedAt).getTime() >= new Date(previousRow.updatedAt).getTime()) {
+          rows.set(issue.id, issue as Issue);
+        }
+      }
       return { companyId, rows };
     });
   }, [companyId, data]);

@@ -379,6 +379,33 @@ describe("IssuesList", () => {
     container.remove();
   });
 
+  it("waits for the initial tree but keeps loaded rows visible while new ancestors load", async () => {
+    const first = createIssue({ id: "child-one", parentId: "parent-one", title: "First nested task" });
+    const second = createIssue({ id: "child-two", parentId: "parent-two", title: "Second nested task" });
+    let resolveAncestors: (rows: Issue[]) => void = () => undefined;
+    mockIssuesApi.list.mockImplementation((_company, filters) => filters.ids && filters.projection === "index"
+      ? new Promise<Issue[]>((resolve) => { resolveAncestors = resolve; }) : Promise.resolve([]));
+    const view = (rows: Issue[]) => <IssuesList issues={rows} agents={[]} projects={[]}
+      viewStateKey="paperclip:test-issues" enableAgentCreatedVisibilityFilter rowPresentation="task"
+      onUpdateIssue={() => undefined} />;
+    const { root, queryClient } = renderWithQueryClient(view([first]), container);
+    await waitForAssertion(() => expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1",
+      expect.objectContaining({ ids: ["parent-one"], projection: "index" }), expect.anything()));
+    expect(container.querySelector('[aria-label="Loading tasks"]')).not.toBeNull();
+    const parent = createIssue({ id: "parent-one", title: "First parent" });
+    await act(() => resolveAncestors([parent]));
+    await waitForAssertion(() => expect(container.textContent).toContain("First nested task"));
+    await act(() => root.render(<QueryClientProvider client={queryClient}><TooltipProvider>{view([first, second])}</TooltipProvider></QueryClientProvider>));
+    await waitForAssertion(() => expect(mockIssuesApi.list).toHaveBeenCalledWith("company-1",
+      expect.objectContaining({ ids: ["parent-one", "parent-two"], projection: "index" }), expect.anything()));
+    expect(container.textContent).toContain("First parent");
+    expect(container.querySelector('[aria-label="Loading tasks"]')).toBeNull();
+    await act(() => resolveAncestors([parent, createIssue({ id: "parent-two", title: "Second parent" })]));
+    await waitForAssertion(() => expect(container.textContent).toContain("Second nested task"));
+    act(() => root.unmount());
+    queryClient.clear();
+  });
+
   it("uses the master list and legacy persistence when Streamlined UI is off", async () => {
     mockInstanceSettingsApi.getExperimental.mockResolvedValue({
       enableIsolatedWorkspaces: false,

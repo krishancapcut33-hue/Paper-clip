@@ -1188,6 +1188,8 @@ function StreamlinedInbox({
     summaries: externalObjectSummaryByIssueId,
     isLoading: externalObjectSummariesLoading,
     isReady: externalObjectSummariesReady,
+    error: externalObjectSummariesError,
+    refetch: retryExternalObjectSummaries,
   } = useIssueExternalObjectSummaries(
     selectedCompanyId,
     inboxIssueIdsForExternalObjectSummaries,
@@ -2452,7 +2454,7 @@ function StreamlinedInbox({
     showWorkItemsSection ? "work_items" : null,
   ].filter((key): key is SectionKey => key !== null);
 
-  const allLoaded =
+  const initialSourcesSettled =
     !isSourceSearchLoading && !isSessionLoading && !isSettingsLoading && !isDismissalsLoading && !isAgentsLoading && !isProjectsLoading && !isMembersLoading && !isWorkspacesLoading &&
     !isJoinRequestsLoading &&
     !isApprovalsLoading &&
@@ -2462,9 +2464,22 @@ function StreamlinedInbox({
     !isTouchedIssuesLoading &&
     !isRunsLoading
     && (!issueFilters.liveOnly || !isLiveRunsLoading)
-    && (issueFilters.externalObjectStatuses.length === 0 || externalObjectSummariesReady);
-  const listError = sourceSearchError ?? dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError
-    ?? (tab === "mine" ? mineIssuesError : touchedIssuesError);
+    && (issueFilters.externalObjectStatuses.length === 0 || externalObjectSummariesReady || !!externalObjectSummariesError);
+  const listError = sourceSearchError ?? (tab === "mine" ? mineIssuesError : touchedIssuesError)
+    ?? (issueFilters.externalObjectStatuses.length > 0 ? externalObjectSummariesError : null);
+  const optionalSourceError = dismissalsError ?? approvalsError ?? joinRequestsError ?? runsError ?? contextIssuesError;
+  const retryFailedSources = () => {
+    // Retry only failed reads for this company; settled rows stay visible.
+    void queryClient.refetchQueries({ predicate: (query) => query.state.status === "error"
+      && query.queryKey.includes(selectedCompanyId), type: "active" });
+  };
+
+  const revealScope = JSON.stringify([selectedCompanyId, tab, normalizedSearchQuery, issueFilters]);
+  const [revealedScope, setRevealedScope] = useState<string | null>(null);
+  useEffect(() => {
+    if (initialSourcesSettled && !listError) setRevealedScope(revealScope);
+  }, [initialSourcesSettled, listError, revealScope]);
+  const allLoaded = initialSourcesSettled || revealedScope === revealScope;
 
   const showSeparatorBefore = (key: SectionKey) => visibleSections.indexOf(key) > 0;
   const { enrichIssueRow, error: rowDetailsError, retry: retryRowDetails } = useIssueRowDetails(
@@ -2472,6 +2487,7 @@ function StreamlinedInbox({
     groupedSections.map((group) => group.key + ":" + group.displayItems.map(getInboxWorkItemKey).join(",") + ":" + [...group.childrenByIssueId.values()].flat().map((issue) => issue.id).join(",")).join("|")
       + ":" + [...collapsedInboxParents].join(",") + ":" + [...collapsedGroupKeys].join(","),
     allLoaded && !listError && tab !== "blocked",
+    issues,
   );
 
   if (!selectedCompanyId) {
@@ -2502,7 +2518,12 @@ function StreamlinedInbox({
       : null;
   return (
     <div className="space-y-6">
-      <IssueRowDetailsNotice error={rowDetailsError} onRetry={() => void retryRowDetails()} />
+      <IssueRowDetailsNotice
+        error={optionalSourceError ?? rowDetailsError}
+        message={optionalSourceError ? "Some inbox items couldn’t load. Showing available items." : undefined}
+        retryLabel={optionalSourceError ? "Retry missing items" : undefined}
+        onRetry={optionalSourceError ? retryFailedSources : () => void retryRowDetails()}
+      />
       <InboxCollectionToolbar
         streamlined={streamlinedUiEnabled}
         ariaLabel={`${surfaceLabel} controls`}
@@ -2791,7 +2812,7 @@ function StreamlinedInbox({
       {listError && (
         <div role="alert" className="flex items-center gap-2 text-sm text-destructive">
           <p>Unable to load the inbox: {listError.message}</p>
-          <Button variant="outline" size="sm" onClick={() => window.location.reload()}>Retry</Button>
+          <Button variant="outline" size="sm" onClick={() => { retryFailedSources(); if (externalObjectSummariesError) retryExternalObjectSummaries(); }}>Retry</Button>
         </div>
       )}
       {actionError && <p className="text-sm text-destructive">{actionError}</p>}
@@ -2819,11 +2840,11 @@ function StreamlinedInbox({
         </div>
       ) : null}
 
-      {tab !== "blocked" && !allLoaded && (
+      {tab !== "blocked" && !allLoaded && !listError && (
         <PageSkeleton variant="inbox" collectionHeading={groupBy !== "none" ? "group" : filterPreferences.showDateGroupSeparators ? "date" : null} />
       )}
 
-      {tab !== "blocked" && allLoaded && !listError && visibleSections.length === 0 && (
+      {tab !== "blocked" && allLoaded && !listError && !optionalSourceError && visibleSections.length === 0 && (
         <EmptyState
           icon={searchQuery.trim() ? Search : InboxIcon}
           message={

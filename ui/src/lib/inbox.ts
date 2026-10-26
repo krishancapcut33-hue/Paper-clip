@@ -1,7 +1,5 @@
-import { isHeartbeatRunVisibleInMine, latestFailedRunsByAgent as getLatestFailedRunsByAgent } from "@paperclipai/shared";
 import type {
   Approval,
-  DashboardSummary,
   HeartbeatRun,
   InboxDismissal,
   Issue,
@@ -17,7 +15,6 @@ import {
 import { formatAssigneeUserLabel } from "./assignees";
 
 export const RECENT_ISSUES_LIMIT = 100;
-export const FAILED_RUN_STATUSES = new Set(["failed", "timed_out"]);
 export const ACTIONABLE_APPROVAL_STATUSES = new Set(["pending", "revision_requested"]);
 export const DISMISSED_KEY = "paperclip:inbox:dismissed";
 export const READ_ITEMS_KEY = "paperclip:inbox:read-items";
@@ -77,15 +74,6 @@ export type InboxWorkItem =
       timestamp: number;
       joinRequest: JoinRequest;
     };
-
-export interface InboxBadgeData {
-  inbox: number;
-  approvals: number;
-  failedRuns: number;
-  joinRequests: number;
-  mineIssues: number;
-  alerts: number;
-}
 
 export interface InboxWorkItemGroup {
   key: string;
@@ -1249,61 +1237,4 @@ export function shouldShowInboxSection({
   if (tab === "recent") return showOnRecent;
   if (tab === "unread") return showOnUnread;
   return showOnAll;
-}
-
-export function computeInboxBadgeData({
-  approvals,
-  joinRequests,
-  dashboard,
-  heartbeatRuns,
-  mineIssues,
-  dismissedAlerts,
-  dismissedAtByKey,
-  currentUserId,
-}: {
-  approvals: Approval[];
-  joinRequests: JoinRequest[];
-  dashboard: DashboardSummary | undefined;
-  heartbeatRuns: HeartbeatRun[];
-  mineIssues: Issue[];
-  dismissedAlerts: Set<string>;
-  dismissedAtByKey: ReadonlyMap<string, number>;
-  currentUserId?: string | null;
-}): InboxBadgeData {
-  const actionableApprovals = approvals.filter(
-    (approval) =>
-      isApprovalVisibleInMine(approval, currentUserId) &&
-      ACTIONABLE_APPROVAL_STATUSES.has(approval.status) &&
-      !isInboxEntityDismissed(dismissedAtByKey, `approval:${approval.id}`, approval.updatedAt),
-  ).length;
-  const visibleFailedRuns = getLatestFailedRunsByAgent(heartbeatRuns).filter(
-    (run) => !isInboxEntityDismissed(dismissedAtByKey, `run:${run.id}`, run.createdAt),
-  );
-  const failedRuns = visibleFailedRuns.filter((run) => isHeartbeatRunVisibleInMine(run, currentUserId)).length;
-  const visibleJoinRequests = joinRequests.filter(
-    (jr) => !isInboxEntityDismissed(dismissedAtByKey, `join:${jr.id}`, jr.updatedAt ?? jr.createdAt),
-  ).length;
-  const visibleMineIssues = mineIssues.filter((issue) => issue.isUnreadForMe).length;
-  const agentErrorCount = dashboard?.agents.error ?? 0;
-  const monthBudgetCents = dashboard?.costs.monthBudgetCents ?? 0;
-  const monthUtilizationPercent = dashboard?.costs.monthUtilizationPercent ?? 0;
-  const showAggregateAgentError =
-    agentErrorCount > 0 &&
-    visibleFailedRuns.length === 0 &&
-    !dismissedAlerts.has("alert:agent-errors");
-  const showBudgetAlert =
-    monthBudgetCents > 0 &&
-    monthUtilizationPercent >= 80 &&
-    !dismissedAlerts.has("alert:budget");
-  const alerts = Number(showAggregateAgentError) + Number(showBudgetAlert);
-
-  return {
-    // The inbox badge reflects personal/actionable work, not company-wide health alerts.
-    inbox: actionableApprovals + visibleJoinRequests + failedRuns + visibleMineIssues,
-    approvals: actionableApprovals,
-    failedRuns,
-    joinRequests: visibleJoinRequests,
-    mineIssues: visibleMineIssues,
-    alerts,
-  };
 }

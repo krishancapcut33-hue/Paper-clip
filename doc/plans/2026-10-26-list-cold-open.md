@@ -85,3 +85,15 @@ PR: https://github.com/paperclipai/paperclip/pull/17756.
 Browser evidence is retained in the chat's `list-cold-open-test-drive` artifact
 directory. Existing task-detail PR #17593 is already merged and verified on
 staging; its paused hourly monitor is not part of this change.
+
+The final review pass accepts newer diagnostic snapshots while retaining index
+ordering, and refreshes visible diagnostics when a task version changes. Optional
+inbox source failures keep available rows and expose retry outside document flow;
+required external-status filter failures show an error rather than an endless
+skeleton. A browser-injected failed run source retained 12 rows at the same
+positions and heights before, during, and after retry. The initial hierarchy
+barrier remains intentional to avoid inserting ancestors or children above rows
+already being read; subsequent hierarchy requests retain the previous context.
+Server route coverage now verifies latest-failure filtering, bounded windows,
+agent filters, and private-run redaction. The unused client badge implementation
+and its obsolete tests were removed; the production server badge tests remain.
