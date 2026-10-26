@@ -171,8 +171,9 @@ describe("useLiveRunTranscripts", () => {
   it("does not report omitted output when a run grows beyond the window after reading from the start", async () => {
     let truncatedRunIds: ReadonlySet<string> = new Set();
     const row = (seq: number) => `${JSON.stringify({ seq, chunk: `Output ${seq}`, stream: "stdout", ts: "2026-10-24T00:00:00Z" })}\n`;
-    logMock.mockResolvedValueOnce({ content: row(1), nextOffset: 100 });
-    logMock.mockResolvedValueOnce({ content: row(2), nextOffset: 100_000 });
+    const response = { runId: "run-1", store: "memory", logRef: "log-1" };
+    logMock.mockResolvedValueOnce({ ...response, content: row(1), nextOffset: 100 });
+    logMock.mockResolvedValueOnce({ ...response, content: row(2), nextOffset: 100_000 });
     function Harness({ bytes }: { bytes: number }) {
       ({ truncatedRunIds } = useLiveRunTranscripts({
         runs: [{ id: "run-1", status: "succeeded", adapterType: "codex_local", logBytes: bytes }],
