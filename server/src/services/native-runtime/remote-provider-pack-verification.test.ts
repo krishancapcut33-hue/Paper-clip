@@ -1,4 +1,10 @@
 import { createHash } from "node:crypto";
+import { execFile } from "node:child_process";
+import { mkdir, mkdtemp, rm, symlink, writeFile } from "node:fs/promises";
+import { tmpdir } from "node:os";
+import { dirname, join } from "node:path";
+import { promisify } from "node:util";
+import type { CommandManagedRuntimeRunner } from "@paperclipai/adapter-utils/command-managed-runtime";
 import { describe, expect, it, vi } from "vitest";
 import { canonicalProviderPackJson, verifyRemoteProviderPack, type ProviderPackIdentity } from "./remote-provider-pack-verification.js";
 
@@ -21,12 +27,38 @@ const manifest = (revision: string): ProviderPackIdentity => {
 
 describe("installed provider pack compatibility", () => {
   it("reuses a protected pack across app revisions without executing verification commands", async () => {
-    const installed = manifest("a"), current = manifest("b");
-    const execute = vi.fn().mockResolvedValue({ exitCode: 1, timedOut: false, stdout: "", stderr: "manifest mismatch" });
-    const selected = await verifyRemoteProviderPack({ runner: { execute }, cwd: "/workspace", packRoot: "/opt/paperclip-runner/provider-pack",
-      manifest: current, installation: { root: "/opt/paperclip-runner/provider-pack", manifest: installed, immutable: true }, provider: { kind: "opencode" } });
-    expect(selected).toEqual(installed);
-    expect(execute).not.toHaveBeenCalled();
+    const installed = manifest("a");
+    const current = structuredClone(installed);
+    current.payload.runnerSourceRevision = "b".repeat(40);
+    current.digest = sha(canonicalProviderPackJson(current.payload));
+    const root = await mkdtemp(join(tmpdir(), "installed-pack-compatibility-"));
+    await mkdir(dirname(join(root, installed.payload.artifacts.nodeCommand.path)), { recursive: true });
+    await symlink(process.execPath, join(root, installed.payload.artifacts.nodeCommand.path));
+    await writeFile(join(root, "provider-pack.json"), JSON.stringify(installed));
+    const execute = vi.fn(async (request: Parameters<CommandManagedRuntimeRunner["execute"]>[0]) => {
+      try {
+        const result = await promisify(execFile)(request.command, request.args ?? [], { cwd: root, timeout: 2_000 });
+        return { ...result, exitCode: 0, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString() };
+      } catch (error) {
+        const failed = error as Error & { code: number; stdout: string; stderr: string };
+        if (typeof failed.code !== "number") throw error;
+        return { stdout: failed.stdout, stderr: failed.stderr, exitCode: failed.code, signal: null, timedOut: false, pid: null, startedAt: new Date().toISOString() };
+      }
+    });
+    const input = { runner: { execute }, cwd: root, packRoot: root, manifest: current };
+    try {
+      // Exercise the old complete-manifest comparison in a real Node process.
+      // Only provenance changed; provider bytes and interface are identical.
+      await expect(verifyRemoteProviderPack(input)).rejects.toThrow("manifest mismatch");
+      expect(execute).toHaveBeenCalledOnce();
+      execute.mockClear();
+      const selected = await verifyRemoteProviderPack({ ...input,
+        installation: { root, manifest: installed, immutable: true }, provider: { kind: "opencode" } });
+      expect(selected).toEqual(installed);
+      expect(execute).not.toHaveBeenCalled();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
   const reseal = (pack: ProviderPackIdentity) => ({ ...pack, digest: sha(canonicalProviderPackJson(pack.payload)) });
   const check = (installed: ProviderPackIdentity, options: { immutable?: boolean; requireExactIdentity?: boolean } = {}) => {
