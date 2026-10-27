@@ -125,13 +125,13 @@ rl.on("line", (line) => {
       id: message.id,
       result: {
         ok: true,
-        supportedMethods: ["getData", "performAction"],
+        supportedMethods: ["getData", "performAction", "resourceLifecycle", "workspaceOperation"],
       },
     });
     return;
   }
 
-  if (method === "getData" || method === "performAction") {
+  if (["getData", "performAction", "resourceLifecycle", "workspaceOperation"].includes(method)) {
     if (message.params?.params?.mode === "rememberInvocation") {
       expiredInvocationId = message.paperclipInvocation?.id;
       send({ jsonrpc: "2.0", id: message.id, result: expiredInvocationId });
