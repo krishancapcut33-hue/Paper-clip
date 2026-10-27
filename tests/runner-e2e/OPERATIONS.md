@@ -909,3 +909,27 @@ reservations and model-readiness status separately. It does not release any
 historical hold or certify a full-lifecycle vendor cost bound. Missing model
 receipts, conflicts, active requests, excess commitments, and the existing
 product, cleanup, feedback and trace checks still fail qualification.
+
+
+### Explicit bounded Daytona gateway qualification
+
+A manual manifest can set `remoteGateway: "cloudflare"` for the native Codex
+or Claude marker/feedback Daytona cells. The parent starts its existing model
+gateway and native OTLP relay, then exposes only their authenticated endpoints
+through one owned HTTPS quick tunnel. It verifies a fresh health nonce before
+fixture setup, waits up to 120 seconds for registration and 120 seconds for
+public readiness, and does not retry tunnel creation or provider work.
+
+Only attempt-scoped tokens leave the controller. Provider and Braintrust keys
+stay in the parent; the fixture/server retains the existing Daytona provisioning
+credential separately. The model gateway still enforces its campaign allowance,
+request count, concurrency, deadline and receipt journal. The bridge streams
+responses and preserves terminal-usage draining after a client disconnect.
+The tunnel receives no ambient provider credentials or Cloudflare config. Its
+exposure closes at the campaign deadline and on attempt cleanup. Owned gateway,
+relay and tunnel cleanup failures remain failures. A configured remote route
+is not live acceptance; retain the actual Daytona result, cleanup, feedback,
+native traces and complete model receipts.
+
+Daily and weekly selections remain local. This explicit remote option adds no
+scheduled coverage or public report publication.
