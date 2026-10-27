@@ -33,6 +33,8 @@ Delegated setup can save ordinary bot tokens and API keys. Provider verification
 
 Open `/apps/chat/:endpointId/settings` and the endpoint’s other available tabs; identity confirmation uses `/chat-identity/confirm`.
 
+For GitHub external contributors, open the connection's Access tab and look up a username. The lookup uses that endpoint's active GitHub App installation with a metadata-only token. Verify that a person or bot resolves to its numeric identity and that unavailable accounts, rate limits, and installation failures show distinct errors. [Lookup regressions](../../server/src/services/chat-github-management.test.ts) use provider fixtures; live installation lookup remains separate evidence.
+
 For delegated Slack test messages and identity invitations, apply a Block or Ask first rule to the calling agent while allowing the endpoint's assigned agent. Verify no message is sent. Exercise caller, target and shared rate limits: one shared quota admits one send and the next distinct request is denied. For a saved GitHub identity handoff on an otherwise healthy endpoint, verify the card stays pending before identity confirmation and after an OAuth callback alone. Confirm the addressed user's identity through their human session, then verify continuation becomes available. Revoked, expired, wrong-user and wrong-installation links must keep the handoff blocked. These cases pass through the assembled API with real key/JWT/session middleware and deterministic providers; live Slack/GitHub consent remains separate evidence.
 
 ### `outbound-agentmail`
