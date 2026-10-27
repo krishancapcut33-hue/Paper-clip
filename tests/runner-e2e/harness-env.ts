@@ -107,13 +107,13 @@ export function resolvePaperclipRemoteRunnerBinaryForHarness(
   runnerBinary: string | undefined,
   configuredPath = process.env.PAPERCLIP_RUNNER_REMOTE_BINARY_PATH,
   platform: NodeJS.Platform = process.platform,
+  architecture: NodeJS.Architecture = process.arch,
 ): string | undefined {
   if (configuredPath?.trim()) return configuredPath;
   if (!runnerBinary) return undefined;
-  // Daytona runs Linux. A default debug binary built by a macOS developer is
-  // Mach-O and cannot be staged into that sandbox. Leave the remote override
-  // unset so the pinned Daytona image's verified runnerd is discovered instead.
-  if (platform !== "linux") return undefined;
+  // The pinned Daytona runtime is Linux/x64. Other controller binaries cannot
+  // run there; discover its verified runnerd unless an explicit cross-build is set.
+  if (platform !== "linux" || architecture !== "x64") return undefined;
   return executions.some(
     (execution) =>
       execution.profile.generation === "native" &&

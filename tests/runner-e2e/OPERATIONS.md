@@ -934,6 +934,10 @@ relay and tunnel cleanup failures remain failures. A configured remote route
 is not live acceptance; retain the actual Daytona result, cleanup, feedback,
 native traces and complete model receipts.
 
+The Daytona image runs Linux/x64. ARM or macOS controllers use the image's
+verified daemon by default; only an explicit cross-compiled remote override
+replaces it.
+
 Daily and weekly selections remain local. This explicit remote option adds no
 scheduled coverage or public report publication.
 
