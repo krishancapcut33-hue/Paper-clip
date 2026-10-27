@@ -1,7 +1,7 @@
 import type { WorkspaceCheckpointMetrics } from "./workspace-checkpoint.js";
 import { workspaceSeedGeneration, readWorkspaceSeedGeneration, publishWorkspaceSeedGeneration } from "./workspace-seed-cache.js";
 import { writeCheckpointBaseline, workspaceCheckpointScript, readCheckpointSnapshot, validateCheckpointPayload } from "./workspace-checkpoint.js";
-import { execFile as execFileCallback } from "node:child_process";
+import { execFile as execFileCallback, spawn } from "node:child_process";
 import { createHash, randomUUID } from "node:crypto";
 import {
   constants as fsConstants,
@@ -20,6 +20,7 @@ import {
   deleteLocalGitRef,
   fetchGitBundleIntoLocalRef,
   GIT_ARCHIVE_EXCLUDES,
+  CONTROL_PLANE_WORKSPACE_EXCLUDES,
   type GitWorkspaceSnapshot,
   integrateImportedGitHead,
   readGitWorkspaceSnapshot,
@@ -51,6 +52,7 @@ import {
   type RuntimeStatusSink,
 } from "./runtime-progress.js";
 import { isRelativePathOrDescendant, shouldExcludePath } from "./exclude-patterns.js";
+import { assertIsolatedWorkspaceSyncAllowed } from "./isolated-workspace-guard.js";
 import {
   scheduleSyncOperations,
   SYNC_OPERATION_CONCURRENCY_LIMIT,
@@ -708,6 +710,21 @@ function buildWorkspaceTarExtractCommand(input: {
   );
 }
 
+// A resumed lease can contain control-plane files staged by an older version.
+// An adopt_remote run skips the inbound extract, so exclusions on new archives
+// cannot remove those files. Reject a workspace-root alias before searching;
+// find does not follow nested symlinks and rm removes named symlinks themselves.
+function buildRemoveControlPlaneWorkspaceCommand(remoteDir: string): string {
+  if (!path.posix.isAbsolute(remoteDir) || path.posix.normalize(remoteDir) === "/") {
+    throw new Error("sandbox_control_plane_workspace_cleanup_invalid_root");
+  }
+  const quotedDir = shellQuote(remoteDir);
+  return `[ ! -L ${quotedDir} ] && cd ${quotedDir} && ` +
+    "find . -mindepth 1 -name '.paperclip' -prune -exec rm -rf -- {} + && " +
+    "remaining=$(find . -mindepth 1 -name '.paperclip' -print -quit) && " +
+    '[ -z "$remaining" ]';
+}
+
 // Named builder (C3): remove paths deleted in the host git worktree from the
 // sandbox workspace. Every path is shell-quoted; the caller supplies only
 // already-confined relative paths from the git snapshot.
@@ -821,6 +838,41 @@ async function sha256File(filePath: string): Promise<string> {
   });
 }
 
+async function assertNoControlPlaneArchiveEntries(archivePath: string): Promise<void> {
+  // A durable seed may have been recorded by an older binary. Validate its
+  // members before copying the archive into the agent's runtime directory.
+  await new Promise<void>((resolve, reject) => {
+    const tar = spawn("tar", ["-tf", archivePath], { stdio: ["ignore", "pipe", "pipe"] });
+    let pending = "";
+    let failure: Error | null = null;
+    const fail = (message: string) => {
+      failure ??= new Error(message);
+      tar.kill();
+    };
+    tar.stdout.on("data", (chunk: Buffer) => {
+      if (failure) return;
+      pending += chunk.toString("utf8");
+      let end: number;
+      while ((end = pending.indexOf("\n")) !== -1) {
+        const member = pending.slice(0, end).replace(/^(\.\/)+/, "").replace(/\/+$/, "");
+        pending = pending.slice(end + 1);
+        if (shouldExcludePath(member, CONTROL_PLANE_WORKSPACE_EXCLUDES)) {
+          fail("workspace_durable_seed_contains_control_plane_files");
+          return;
+        }
+      }
+      if (pending.length > 1024 * 1024) fail("workspace_durable_seed_invalid");
+    });
+    tar.stderr.resume();
+    tar.on("error", reject);
+    tar.on("close", (code) => {
+      if (failure) reject(failure);
+      else if (code !== 0) reject(new Error("workspace_durable_seed_invalid"));
+      else resolve();
+    });
+  });
+}
+
 async function copyDurableSeedArchive(input: {
   sourcePath: string;
   targetPath: string;
@@ -836,6 +888,7 @@ async function copyDurableSeedArchive(input: {
   ) {
     throw new Error("workspace_durable_seed_digest_mismatch");
   }
+  await assertNoControlPlaneArchiveEntries(input.sourcePath);
   await fs.copyFile(input.sourcePath, input.targetPath, fsConstants.COPYFILE_FICLONE);
 }
 
@@ -985,34 +1038,108 @@ export async function restoreVerifiedSnapshotArchive(input: {
   await confineFullWorkspaceExport(input.localDir, true);
 }
 
-async function copyWorkspaceEntry(sourceRoot: string, targetRoot: string, relative: string): Promise<void> {
-  const sourcePath = path.join(sourceRoot, relative);
+async function copyWorkspaceEntry(
+  sourceRoot: string,
+  targetRoot: string,
+  relative: string,
+  options: { allowMissing?: boolean; rejectSymlinks?: boolean } = {},
+): Promise<void> {
+  // The isolated runtime itself requires Linux. Keep ordinary restore mirroring
+  // available on other hosts, but fail closed for a Git overlay that needs the
+  // descriptor-relative guarantee.
+  if (process.platform !== "linux") {
+    if (options.rejectSymlinks) {
+      throw new Error("Git workspace overlay copy requires Linux descriptor-relative paths.");
+    }
+    const sourcePath = path.join(sourceRoot, relative);
+    const targetPath = path.join(targetRoot, relative);
+    const stats = await fs.lstat(sourcePath);
+    if (stats.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      return;
+    }
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.rm(targetPath, { recursive: true, force: true });
+    if (stats.isSymbolicLink()) {
+      await fs.symlink(await fs.readlink(sourcePath), targetPath);
+      return;
+    }
+    const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
+    try {
+      await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(sourcePath, stagedTargetPath);
+      });
+      await fs.chmod(stagedTargetPath, stats.mode);
+      await fs.rename(stagedTargetPath, targetPath);
+    } finally {
+      await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+    }
+    return;
+  }
+  // The Git snapshot only supplies names. Agent-writable directories can change
+  // after that snapshot, so resolve every component relative to an already-open
+  // directory, refusing symlinks along the way. Opening the final file before
+  // copying also prevents a replacement between lstat and copyFile.
+  const parts = relative.split("/");
+  if (parts.length === 0 || parts.some((part) => !part || part === "." || part === ".." || part.includes("\0"))) {
+    throw new Error(`Unsafe workspace entry path: ${relative}`);
+  }
   const targetPath = path.join(targetRoot, relative);
-  const stats = await fs.lstat(sourcePath);
-
-  if (stats.isDirectory()) {
-    await fs.mkdir(targetPath, { recursive: true });
-    return;
-  }
-
-  await fs.mkdir(path.dirname(targetPath), { recursive: true });
-  await fs.rm(targetPath, { recursive: true, force: true }).catch(() => undefined);
-  if (stats.isSymbolicLink()) {
-    const linkTarget = await fs.readlink(sourcePath);
-    await fs.symlink(linkTarget, targetPath);
-    return;
-  }
-
-  const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
-  await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+  const directoryFlags = fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+  const entryFlags = fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK;
+  const handles: Awaited<ReturnType<typeof fs.open>>[] = [];
+  let sourceResolved = false;
   try {
-    await fs.copyFile(sourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
-      await fs.copyFile(sourcePath, stagedTargetPath);
-    });
-    await fs.chmod(stagedTargetPath, stats.mode);
-    await fs.rename(stagedTargetPath, targetPath);
+    let directory = await fs.open(sourceRoot, directoryFlags);
+    handles.push(directory);
+    for (const part of parts.slice(0, -1)) {
+      directory = await fs.open(`/proc/self/fd/${directory.fd}/${part}`, directoryFlags);
+      handles.push(directory);
+    }
+    const sourcePath = `/proc/self/fd/${directory.fd}/${parts.at(-1)!}`;
+    let source: Awaited<ReturnType<typeof fs.open>>;
+    try {
+      source = await fs.open(sourcePath, entryFlags);
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === "ENOENT" && options.allowMissing) return;
+      if ((error as NodeJS.ErrnoException).code !== "ELOOP" || options.rejectSymlinks) throw error;
+      // readlink never follows the link. A replacement can only change the link
+      // text copied to the destination; it cannot expose source file bytes.
+      const linkTarget = await fs.readlink(sourcePath);
+      await fs.mkdir(path.dirname(targetPath), { recursive: true });
+      await fs.rm(targetPath, { recursive: true, force: true });
+      await fs.symlink(linkTarget, targetPath);
+      return;
+    }
+    handles.push(source);
+    sourceResolved = true;
+    const stats = await source.stat();
+    if (stats.isDirectory()) {
+      await fs.mkdir(targetPath, { recursive: true });
+      return;
+    }
+    if (!stats.isFile()) {
+      throw new Error(`Unsafe workspace entry type: ${relative}`);
+    }
+
+    await fs.mkdir(path.dirname(targetPath), { recursive: true });
+    await fs.rm(targetPath, { recursive: true, force: true });
+    const stagedTargetPath = buildUniqueStagingPath({ targetPath, suffix: ".paperclip-copy" });
+    try {
+      const anchoredSourcePath = `/proc/self/fd/${source.fd}`;
+      await fs.copyFile(anchoredSourcePath, stagedTargetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(anchoredSourcePath, stagedTargetPath);
+      });
+      await fs.chmod(stagedTargetPath, stats.mode);
+      await fs.rename(stagedTargetPath, targetPath);
+    } finally {
+      await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+    }
+  } catch (error) {
+    if (!sourceResolved && (error as NodeJS.ErrnoException).code === "ENOENT" && options.allowMissing) return;
+    throw error;
   } finally {
-    await fs.rm(stagedTargetPath, { recursive: true, force: true }).catch(() => undefined);
+    await Promise.all(handles.map((handle) => handle.close()));
   }
 }
 
@@ -1101,7 +1228,10 @@ async function copySelectedWorkspaceEntries(input: {
       if ((error as NodeJS.ErrnoException).code === "ENOENT") continue;
       throw error;
     }
-    await copyWorkspaceEntry(sourceDir, input.targetDir, relative);
+    await copyWorkspaceEntry(sourceDir, input.targetDir, relative, {
+      allowMissing: true,
+      rejectSymlinks: process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true",
+    });
     // Do not upload the staged tree if an ancestor changed during the copy.
     await assertSourceRoot();
     await assertParentDirectory();
@@ -1281,6 +1411,9 @@ export async function prepareSandboxManagedRuntime(input: {
         throw error;
       },
     ));
+  const approvedWorkspaceLocalDir = syncWorkspace
+    ? await assertIsolatedWorkspaceSyncAllowed(input.workspaceLocalDir)
+    : input.workspaceLocalDir;
   const workspaceInboundMode = input.workspaceInboundMode ?? "host_current";
   const stageWorkspace =
     syncWorkspace && workspaceInboundMode !== "adopt_remote";
@@ -1318,8 +1451,9 @@ export async function prepareSandboxManagedRuntime(input: {
   // Resolve an existing workspace alias once, before reading its snapshot.
   // All subsequent work uses that root, so retargeting the alias cannot select
   // another repository. Staging also verifies the captured directory identity.
-  const workspaceRoot = syncWorkspace ? await runStepSpan("workspace.source_root", () => captureWorkspaceSourceRoot(input.workspaceLocalDir)) : null;
+  const workspaceRoot = syncWorkspace ? await runStepSpan("workspace.source_root", () => captureWorkspaceSourceRoot(approvedWorkspaceLocalDir)) : null;
   if (workspaceRoot) input = { ...input, workspaceLocalDir: workspaceRoot.sourceDir };
+  const workspaceLocalDir = input.workspaceLocalDir;
 
   // The git enumeration (`git status --ignored`, the HEAD diffs, `ls-files`).
   // It reads git's own bookkeeping to decide what to include/exclude, so it is
@@ -1360,6 +1494,18 @@ export async function prepareSandboxManagedRuntime(input: {
     if (filesystemDeleted) await fs.rm(path.dirname(filesystemDeleted.filePath), { recursive: true, force: true });
   };
   try {
+  if (workspaceInboundMode === "adopt_remote") {
+    // This must complete before the prepared runtime is returned to the agent
+    // launcher. A failed removal or verification aborts reuse of this lease.
+    try {
+      await runStepSpan("workspace.scrub_control_plane", () => input.client.run(
+        buildRemoveControlPlaneWorkspaceCommand(workspaceRemoteDir),
+        { timeoutMs: input.spec.timeoutMs },
+      ));
+    } catch {
+      throw new Error("sandbox_control_plane_workspace_cleanup_failed");
+    }
+  }
   // A selected subfolder has no cloneable Git snapshot, but its parent
   // repository's ignore rules still govern which files may leave the host.
   // Use the same bounded, path-relative resolver as referenced project trees.
@@ -1371,7 +1517,7 @@ export async function prepareSandboxManagedRuntime(input: {
   }
   const gitIgnoredExcludes = directoryIgnore?.kind === "git" ? directoryIgnore.ignoredPaths : undefined;
   const workspaceArchiveExclude = mergeExcludes(
-    [".paperclip-runtime"],
+    [".paperclip-runtime", ...CONTROL_PLANE_WORKSPACE_EXCLUDES],
     repositoryMetadataExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
@@ -1379,6 +1525,7 @@ export async function prepareSandboxManagedRuntime(input: {
     gitIgnoredExcludes,
   );
   const restoreExclude = mergeExcludes(
+    [...CONTROL_PLANE_WORKSPACE_EXCLUDES],
     repositoryMetadataExcludes,
     input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES,
     input.workspaceFileMode === "all" && !gitSnapshot ? [] : [...GIT_ARCHIVE_EXCLUDES],
@@ -1399,9 +1546,11 @@ export async function prepareSandboxManagedRuntime(input: {
         }),
       )))
     : null;
-  if (input.workspaceBaseline && repositoryMetadataExcludes.length) {
+  if (input.workspaceBaseline) {
     baselineSnapshot = await selectDirectorySnapshot(input.workspaceBaseline, {
-      omit: repositoryMetadataExcludes, exclude: mergeExcludes(input.workspaceBaseline.exclude, repositoryMetadataExcludes),
+      omit: repositoryMetadataExcludes,
+      omitPatterns: CONTROL_PLANE_WORKSPACE_EXCLUDES,
+      exclude: mergeExcludes(input.workspaceBaseline.exclude, repositoryMetadataExcludes, [...CONTROL_PLANE_WORKSPACE_EXCLUDES]),
       ignoredPaths: input.workspaceBaseline.ignoredPaths,
     });
   }
@@ -1457,7 +1606,7 @@ export async function prepareSandboxManagedRuntime(input: {
   // resolved Git-ignored paths (or keeps this fixed set as-is for a non-Git
   // source) — see `resolveReferencedSourceIgnore` and the per-project merge
   // below.
-  const additionalSourceBaseExclude = mergeExcludes(SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [".git"]);
+  const additionalSourceBaseExclude = mergeExcludes(SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [".git", ...CONTROL_PLANE_WORKSPACE_EXCLUDES]);
 
   // Every delegated post-upload command (extract/wipe/remove-deleted/asset merge)
   // must run under the run-specific timeout (`spec.timeoutMs`), not the provider
@@ -1573,6 +1722,9 @@ export async function prepareSandboxManagedRuntime(input: {
             //    which sits under `.paperclip-runtime`, survives to run its own extract.
             if (gitSnapshot || repositories.length) {
               await reportWorkspaceStatus("git_sync", "Syncing git history to environment");
+              if (!replaySeed && await assertIsolatedWorkspaceSyncAllowed(workspaceLocalDir) !== workspaceLocalDir) {
+                throw new Error("Isolated workspace source changed before archive staging.");
+              }
               const gitTarPath = path.join(tempDir, "git-workspace.tar");
               const remoteGitTar = path.posix.join(
                 runtimeRootDir,
@@ -1589,7 +1741,7 @@ export async function prepareSandboxManagedRuntime(input: {
                   expectedSha256: replaySeed.gitArchiveSha256,
                 }));
               } else {
-                const archive = async (cloneDir: string) => runStepSpan("workspace.git_archive", () => createTarballFromDirectory({ localDir: cloneDir, archivePath: gitTarPath, exclude: [".paperclip-runtime"] }));
+                const archive = async (cloneDir: string) => runStepSpan("workspace.git_archive", () => createTarballFromDirectory({ localDir: cloneDir, archivePath: gitTarPath, exclude: [".paperclip-runtime", ...CONTROL_PLANE_WORKSPACE_EXCLUDES] }));
                 if (gitSnapshot) await runStepSpan("workspace.git_clone", () => withShallowGitWorkspaceClone({ localDir: input.workspaceLocalDir, snapshot: gitSnapshot }, archive));
                 else await runStepSpan("workspace.git_clone", () => withTempDir("paperclip-managed-repositories-", async (cloneDir) => {
                   for (const repo of repositories) await withShallowGitWorkspaceClone({ localDir: path.join(input.workspaceLocalDir, repo.path), snapshot: repo.snapshot }, async (child) => copyCloneTree(child, path.join(cloneDir, repo.path)));
@@ -1624,6 +1776,9 @@ export async function prepareSandboxManagedRuntime(input: {
             //    extracted git tree (no wipe); a plain workspace wipes every child except
             //    the preserved names first. The extract runs AFTER the git extract.
             await reportWorkspaceStatus("config_sync", "Syncing workspace to environment");
+            if (!replaySeed && await assertIsolatedWorkspaceSyncAllowed(workspaceLocalDir) !== workspaceLocalDir) {
+              throw new Error("Isolated workspace source changed before archive staging.");
+            }
             const workspaceTarPath = path.join(tempDir, "workspace.tar");
             if (replaySeed) {
               await runStepSpan("workspace.seed_replay", () => copyDurableSeedArchive({
@@ -1825,6 +1980,7 @@ export async function prepareSandboxManagedRuntime(input: {
           const { localPath, projectId, ignoreResolution } = source;
           const label = `project-${projectId}`;
           try {
+            const approvedLocalPath = await assertIsolatedWorkspaceSyncAllowed(localPath);
             if (!path.posix.isAbsolute(localPath)) {
               throw new Error(`additional source localPath is not an absolute path: ${localPath}`);
             }
@@ -1848,15 +2004,18 @@ export async function prepareSandboxManagedRuntime(input: {
               referencedSourceIgnoreExcludeEntries(ignoreResolution),
             );
             await emitRuntimeStatus(input.onRuntimeProgress, "config_sync", "Syncing referenced project to environment");
+            if (await assertIsolatedWorkspaceSyncAllowed(approvedLocalPath) !== approvedLocalPath) {
+              throw new Error("Isolated referenced project source changed before upload.");
+            }
             await stageConfinedSyncIn({
               files: [{
-                sourcePath: localPath,
+                sourcePath: approvedLocalPath,
                 targetPath: remoteProjectDir,
                 kind: "directory",
                 exclude,
                 access: "ro",
               }],
-              sourceRoots: [localPath],
+              sourceRoots: [approvedLocalPath],
               targetRoots: [remoteProjectDir],
               progressLabel: label,
               statusPhase: "config_sync",
@@ -1909,7 +2068,7 @@ export async function prepareSandboxManagedRuntime(input: {
 
   return {
     spec: input.spec,
-    workspaceLocalDir: input.workspaceLocalDir,
+    workspaceLocalDir,
     workspaceRemoteDir,
     runtimeRootDir,
     assetDirs,
@@ -1975,7 +2134,7 @@ export async function prepareSandboxManagedRuntime(input: {
                 workspaceExclude: nestedExclude,
                 workspaceBaseline: await selectDirectorySnapshot(baselineSnapshot!, {
                   prefix,
-                  exclude: mergeExcludes(input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [...GIT_ARCHIVE_EXCLUDES], [".paperclip-runtime"], nestedExclude),
+                  exclude: mergeExcludes(input.workspaceFileMode === "all" ? [] : SANDBOX_WORKSPACE_HEAVY_DIR_EXCLUDES, [...GIT_ARCHIVE_EXCLUDES], [".paperclip-runtime", ...CONTROL_PLANE_WORKSPACE_EXCLUDES], nestedExclude),
                   ignoredPaths: input.workspaceFileMode === "all" ? undefined : repository.snapshot.ignoredPaths,
                 }),
                 onRuntimeProgress: input.onRuntimeProgress,

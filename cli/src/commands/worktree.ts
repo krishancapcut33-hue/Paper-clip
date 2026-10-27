@@ -1063,6 +1063,14 @@ export function copySeededSecretsKey(input: {
     return;
   }
 
+  const isolationEnabled = input.sourceConfig.secrets.localEncrypted.requireIsolatedAgentRuntime === true ||
+    input.sourceEnvEntries.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true" ||
+    (isCurrentSourceConfigPath(input.sourceConfigPath) &&
+      process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true");
+  if (isolationEnabled) {
+    throw new Error("An isolated local master key cannot be copied into a seeded worktree. Use --no-seed and synthetic secrets.");
+  }
+
   mkdirSync(path.dirname(input.targetKeyFilePath), { recursive: true });
 
   const allowProcessEnvFallback = isCurrentSourceConfigPath(input.sourceConfigPath);
@@ -1652,6 +1660,16 @@ async function seedWorktreeDatabase(input: {
   expectedCompanyId?: string;
   onPhase?: (phase: WorktreeSeedPhase, status: "started" | "succeeded", message?: string) => void;
 }): Promise<SeedWorktreeDatabaseResult> {
+  // Refuse before opening the source DB or creating a snapshot: a seeded DB
+  // contains encrypted versions that would require copying the protected key.
+  const sourceEnvEntriesForIsolation = readPaperclipEnvEntries(resolvePaperclipEnvFile(input.sourceConfigPath));
+  if (input.sourceConfig.secrets.provider === "local_encrypted" &&
+      (input.sourceConfig.secrets.localEncrypted.requireIsolatedAgentRuntime === true ||
+        sourceEnvEntriesForIsolation.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true" ||
+        (isCurrentSourceConfigPath(input.sourceConfigPath) &&
+          process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true"))) {
+    throw new Error("An isolated local secret store cannot seed a worktree. Use --no-seed and synthetic secrets.");
+  }
   const seedPlan = resolveWorktreeSeedPlan(input.seedMode);
   const sourceEnvFile = resolvePaperclipEnvFile(input.sourceConfigPath);
   const sourceEnvEntries = readPaperclipEnvEntries(sourceEnvFile);
@@ -2506,18 +2524,17 @@ async function runWorktreeInit(opts: WorktreeInitOptions): Promise<void> {
       seedMode,
     });
   }
-  const sourceEnvEntries = readPaperclipEnvEntries(resolvePaperclipEnvFile(sourceConfigPath));
-  const existingAgentJwtSecret =
-    opts.empty ? randomBytes(32).toString("base64url") : nonEmpty(sourceEnvEntries.PAPERCLIP_AGENT_JWT_SECRET) ??
-    nonEmpty(process.env.PAPERCLIP_AGENT_JWT_SECRET);
-  const existingToolActionSigningSecret =
-    opts.empty ? randomBytes(32).toString("base64url") : nonEmpty(sourceEnvEntries.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET) ??
-    nonEmpty(process.env.PAPERCLIP_TOOL_ACTION_SIGNING_SECRET);
+  // The source instance's signing keys must never be written inside an
+  // agent-accessible worktree, including a lean --no-seed worktree. Every new
+  // instance gets its own keys; seeding copies data, not signing authority.
+  const agentJwtSecret = randomBytes(32).toString("base64url");
+  const toolActionSigningSecret = randomBytes(32).toString("base64url");
   mergePaperclipEnvEntries(
     {
       ...buildWorktreeEnvEntries(paths, branding),
-      ...(existingAgentJwtSecret ? { PAPERCLIP_AGENT_JWT_SECRET: existingAgentJwtSecret } : {}),
-      ...(existingToolActionSigningSecret ? { PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: existingToolActionSigningSecret } : {}),
+      PAPERCLIP_SIGNING_KEYS_ISOLATED: "true",
+      PAPERCLIP_AGENT_JWT_SECRET: agentJwtSecret,
+      PAPERCLIP_TOOL_ACTION_SIGNING_SECRET: toolActionSigningSecret,
     },
     paths.envPath,
   );

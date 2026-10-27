@@ -5,7 +5,7 @@ import { constants as fsConstants, promises as fs, type Dirent } from "node:fs";
 import os from "node:os";
 import path from "node:path";
 import { CONNECTION_INTENT_AGENT_GUIDANCE } from "@paperclipai/shared";
-import { sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
+import { isControlPlaneSourceSecretEnvKey, sanitizeRemoteExecutionEnv } from "./remote-execution-env.js";
 import {
   buildLocalProcessSandboxSpawnTarget,
   type LocalProcessSandboxOptions,
@@ -3531,6 +3531,10 @@ export function sanitizeInheritedPaperclipEnv(
   const env: NodeJS.ProcessEnv = { ...baseEnv };
   delete env.PAPERCLIPAI_CMD;
   for (const key of Object.keys(env)) {
+    if (isControlPlaneSourceSecretEnvKey(key)) {
+      delete env[key];
+      continue;
+    }
     if (AGENT_IDENTITY_ENV_KEYS.includes(key.toUpperCase())) {
       delete env[key];
       continue;
@@ -4431,10 +4435,160 @@ async function hashSkillDirectory(root: string): Promise<string> {
   return hash.digest("hex");
 }
 
-async function materializedSkillFingerprintMatches(
-  targetRoot: string,
-  sourceFingerprint: string,
-): Promise<boolean> {
+type SkillDirectoryHandle = Awaited<ReturnType<typeof fs.open>>;
+
+const STRICT_SKILL_DIRECTORY_FLAGS =
+  fsConstants.O_RDONLY | fsConstants.O_DIRECTORY | fsConstants.O_NOFOLLOW;
+
+// Node has no openat API. On Linux, /proc/self/fd/<fd>/<name> resolves <name>
+// relative to the already-open directory, even if its old pathname is replaced.
+async function openStrictSkillDirectory(sourceRoot: string): Promise<SkillDirectoryHandle> {
+  if (process.platform !== "linux") {
+    throw new Error("Strict Paperclip skill staging requires Linux /proc/self/fd.");
+  }
+  const root = path.parse(sourceRoot).root;
+  let directory = await fs.open(root, STRICT_SKILL_DIRECTORY_FLAGS);
+  try {
+    for (const name of sourceRoot.slice(root.length).split(path.sep).filter(Boolean)) {
+      const child = await fs.open(`/proc/self/fd/${directory.fd}/${name}`, STRICT_SKILL_DIRECTORY_FLAGS);
+      const parent = directory;
+      directory = child;
+      await parent.close();
+    }
+    return directory;
+  } catch (error) {
+    await directory.close();
+    throw error;
+  }
+}
+
+async function walkStrictSkillDirectory(
+  directory: SkillDirectoryHandle,
+  relativePath: string,
+  visitor: {
+    directory: (relativePath: string) => Promise<void> | void;
+    file: (relativePath: string, mode: number, contents: Buffer) => Promise<void> | void;
+    other: (relativePath: string, mode: number) => Promise<void> | void;
+  },
+): Promise<void> {
+  await visitor.directory(relativePath);
+  const entries = await fs.readdir(`/proc/self/fd/${directory.fd}`);
+  entries.sort((left, right) => left.localeCompare(right));
+  for (const name of entries) {
+    const childRelativePath = relativePath ? `${relativePath}/${name}` : name;
+    const childPath = `/proc/self/fd/${directory.fd}/${name}`;
+    const stat = await fs.lstat(childPath);
+    if (stat.isSymbolicLink()) {
+      throw new Error(`Refusing to stage a skill containing a symbolic link: ${childRelativePath}`);
+    }
+    if (stat.isDirectory()) {
+      const child = await fs.open(childPath, STRICT_SKILL_DIRECTORY_FLAGS);
+      try {
+        await walkStrictSkillDirectory(child, childRelativePath, visitor);
+      } finally {
+        await child.close();
+      }
+    } else if (stat.isFile()) {
+      const child = await fs.open(childPath, fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK);
+      try {
+        const openedStat = await child.stat();
+        if (!openedStat.isFile()) throw new Error("Paperclip skill entry changed while staging.");
+        await visitor.file(childRelativePath, openedStat.mode, await child.readFile());
+      } finally {
+        await child.close();
+      }
+    } else {
+      await visitor.other(childRelativePath, stat.mode);
+    }
+  }
+}
+
+async function hashStrictSkillDirectory(source: SkillDirectoryHandle): Promise<string> {
+  const hash = createHash("sha256");
+  await walkStrictSkillDirectory(source, "", {
+    directory: (relativePath) => {
+      hash.update(`dir:${relativePath}\n`);
+    },
+    file: (relativePath, mode, contents) => {
+      hash.update(`file:${relativePath}:${mode}\n`);
+      hash.update(contents);
+      hash.update("\n");
+    },
+    other: (relativePath, mode) => {
+      hash.update(`other:${relativePath}:${mode}\n`);
+    },
+  });
+  return hash.digest("hex");
+}
+
+export async function fingerprintPaperclipSkillDirectory(source: string): Promise<string> {
+  if (process.platform !== "linux" && process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME !== "true") {
+    return hashSkillDirectory(path.resolve(source));
+  }
+  // Ordinary Linux installs may reach PAPERCLIP_HOME through an operator-owned
+  // directory alias. Resolve it before the pinned walk, but never do so when
+  // the agent runtime must be isolated from the secret source.
+  const sourceRoot = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true"
+    ? path.resolve(source)
+    : await fs.realpath(source);
+  const directory = await openStrictSkillDirectory(sourceRoot);
+  try {
+    return await hashStrictSkillDirectory(directory);
+  } finally {
+    await directory.close();
+  }
+}
+
+/** Validate the server-selected root itself without following any path component. */
+export async function assertStrictSkillDirectory(source: string): Promise<void> {
+  const directory = await openStrictSkillDirectory(path.resolve(source));
+  await directory.close();
+}
+
+/** Copy a skill from pinned directories; no source symlink can reach the staged asset. */
+export async function copyStrictSkillDirectory(source: string, target: string): Promise<void> {
+  const directory = await openStrictSkillDirectory(path.resolve(source));
+  try {
+    await walkStrictSkillDirectory(directory, "", {
+      directory: async (relativePath) => {
+        const destination = path.join(target, relativePath);
+        await fs.mkdir(destination, { recursive: true, mode: 0o700 });
+        await fs.chmod(destination, 0o700);
+      },
+      file: async (relativePath, mode, contents) => {
+        const destination = path.join(target, relativePath);
+        const privateMode = mode & 0o100 ? 0o700 : 0o600;
+        await fs.writeFile(destination, contents, { mode: privateMode });
+        await fs.chmod(destination, privateMode);
+      },
+      other: () => {},
+    });
+  } finally {
+    await directory.close();
+  }
+}
+
+/** Read one regular file through a pinned parent and reject a raced-in symlink. */
+export async function readStrictSkillFile(source: string): Promise<Buffer> {
+  const absolute = path.resolve(source);
+  const directory = await openStrictSkillDirectory(path.dirname(absolute));
+  try {
+    const file = await fs.open(
+      `/proc/self/fd/${directory.fd}/${path.basename(absolute)}`,
+      fsConstants.O_RDONLY | fsConstants.O_NOFOLLOW | fsConstants.O_NONBLOCK,
+    );
+    try {
+      if (!(await file.stat()).isFile()) throw new Error("Paperclip skill entry changed while staging.");
+      return await file.readFile();
+    } finally {
+      await file.close();
+    }
+  } finally {
+    await directory.close();
+  }
+}
+
+async function materializedSkillFingerprintMatches(targetRoot: string, sourceFingerprint: string): Promise<boolean> {
   try {
     const raw = JSON.parse(
       await fs.readFile(
@@ -4449,6 +4603,17 @@ async function materializedSkillFingerprintMatches(
   } catch {
     return false;
   }
+}
+
+async function skillTreeContainsOnlyRealFiles(root: string): Promise<boolean> {
+  const stat = await fs.lstat(root).catch(() => null);
+  if (!stat) return false;
+  if (stat.isFile()) return true;
+  if (!stat.isDirectory()) return false;
+  for (const entry of await fs.readdir(root)) {
+    if (!await skillTreeContainsOnlyRealFiles(path.join(root, entry))) return false;
+  }
+  return true;
 }
 
 async function acquireMaterializeLock(
@@ -4532,6 +4697,7 @@ async function removeStaleMaterializeLock(
 export async function materializePaperclipSkillCopy(
   source: string,
   target: string,
+  options: { rejectSymlinks?: boolean } = {},
 ): Promise<MaterializedPaperclipSkillCopyResult> {
   const sourceRoot = path.resolve(source);
   const targetRoot = path.resolve(target);
@@ -4554,6 +4720,9 @@ export async function materializePaperclipSkillCopy(
       "Refusing to materialize a skill root that is itself a symlink.",
     );
   }
+  if (options.rejectSymlinks && (await fs.realpath(sourceRoot)) !== sourceRoot) {
+    throw new Error("Refusing to stage a skill through a symbolic-link ancestor.");
+  }
   if (!rootStat.isDirectory()) {
     throw new Error("Paperclip skills must be directories.");
   }
@@ -4563,9 +4732,10 @@ export async function materializePaperclipSkillCopy(
     skippedSymlinks: [],
   };
 
-  const sourceFingerprint = await hashSkillDirectory(sourceRoot);
-  if (await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint))
-    return result;
+  // Ordinary copies can be reused even while another process owns the lock.
+  // Strict copies keep their target validation under the lock.
+  if (!options.rejectSymlinks &&
+      await materializedSkillFingerprintMatches(targetRoot, await hashSkillDirectory(sourceRoot))) return result;
 
   const lockDir = `${targetRoot}.lock`;
   const releaseLock = await acquireMaterializeLock(lockDir);
@@ -4601,22 +4771,38 @@ export async function materializePaperclipSkillCopy(
 
     if (stat.isFile()) {
       await fs.mkdir(path.dirname(targetPath), { recursive: true });
-      await fs
-        .copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE)
-        .catch(async () => {
-          await fs.copyFile(sourcePath, targetPath);
-        });
+      await fs.copyFile(sourcePath, targetPath, fsConstants.COPYFILE_FICLONE).catch(async () => {
+        await fs.copyFile(sourcePath, targetPath);
+      });
       await fs.chmod(targetPath, stat.mode).catch(() => {});
       result.copiedFiles += 1;
     }
   }
 
+  let strictSource: SkillDirectoryHandle | null = null;
   try {
-    if (
-      await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)
-    )
-      return result;
-    await copyEntry(sourceRoot, tempRoot, "");
+    if (options.rejectSymlinks) strictSource = await openStrictSkillDirectory(sourceRoot);
+    const sourceFingerprint = strictSource
+      ? await hashStrictSkillDirectory(strictSource)
+      : await hashSkillDirectory(sourceRoot);
+    const targetIsSafe = () => !options.rejectSymlinks || skillTreeContainsOnlyRealFiles(targetRoot);
+    if (await targetIsSafe() && await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)) return result;
+    if (strictSource) {
+      await walkStrictSkillDirectory(strictSource, "", {
+        directory: async (relativePath) => {
+          await fs.mkdir(path.join(tempRoot, relativePath), { recursive: true });
+        },
+        file: async (relativePath, mode, contents) => {
+          const destination = path.join(tempRoot, relativePath);
+          await fs.writeFile(destination, contents);
+          await fs.chmod(destination, mode);
+          result.copiedFiles += 1;
+        },
+        other: () => {},
+      });
+    } else {
+      await copyEntry(sourceRoot, tempRoot, "");
+    }
     await fs.writeFile(
       path.join(tempRoot, MATERIALIZED_SKILL_SENTINEL),
       `${JSON.stringify(
@@ -4631,16 +4817,50 @@ export async function materializePaperclipSkillCopy(
       )}\n`,
       "utf8",
     );
-    if (
-      await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint)
-    )
+    if (await targetIsSafe() && await materializedSkillFingerprintMatches(targetRoot, sourceFingerprint))
       return result;
     await fs.rm(targetRoot, { recursive: true, force: true });
     await fs.rename(tempRoot, targetRoot);
     return result;
   } finally {
-    await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
-    await releaseLock();
+    try {
+      await strictSource?.close();
+    } finally {
+      await fs.rm(tempRoot, { recursive: true, force: true }).catch(() => {});
+      await releaseLock();
+    }
+  }
+}
+
+/** Stage selected skills as real files before an SSH or sandbox asset is archived. */
+export async function buildPaperclipRuntimeSkillsAssetDir(
+  entries: Array<{ key: string; runtimeName: string; source: string; sourceStatus?: "available" | "missing" }>,
+  prefix: string,
+): Promise<string> {
+  const root = await fs.mkdtemp(path.join(os.tmpdir(), prefix));
+  const skillsDir = path.join(root, "skills");
+  try {
+    await fs.mkdir(skillsDir);
+    const names = new Set<string>();
+    const strictSkillStaging = process.platform === "linux" ||
+      process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true";
+    for (const entry of entries) {
+      if (entry.sourceStatus === "missing") continue;
+      const name = entry.runtimeName;
+      if (!name || name === "." || name === ".." || /[\\/]/.test(name) || names.has(name)) {
+        throw new Error(`Invalid or duplicate Paperclip skill runtime name: ${name}`);
+      }
+      names.add(name);
+      const source = strictSkillStaging &&
+        process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME !== "true"
+        ? await fs.realpath(entry.source)
+        : entry.source;
+      await materializePaperclipSkillCopy(source, path.join(skillsDir, name), { rejectSymlinks: strictSkillStaging });
+    }
+    return skillsDir;
+  } catch (error) {
+    await fs.rm(root, { recursive: true, force: true });
+    throw error;
   }
 }
 
@@ -4734,9 +4954,13 @@ export async function runChildProcess(
     opts.onLogError ??
     ((err, id, msg) => console.warn({ err, runId: id }, msg));
   return new Promise<RunProcessResult>((resolve, reject) => {
+    const runEnv = { ...opts.env };
+    for (const key of Object.keys(runEnv)) {
+      if (isControlPlaneSourceSecretEnvKey(key)) delete runEnv[key];
+    }
     const rawMerged: NodeJS.ProcessEnv = {
       ...sanitizeInheritedPaperclipEnv(process.env),
-      ...opts.env,
+      ...runEnv,
     };
 
     // Strip Claude Code nesting-guard env vars so spawned `claude` processes
@@ -4760,13 +4984,15 @@ export async function runChildProcess(
     }
     void resolveSpawnTarget(command, args, opts.cwd, mergedEnv, {
       remoteExecution: opts.remoteExecution ?? null,
-      remoteEnv: opts.remoteExecution ? opts.env : null,
+      remoteEnv: opts.remoteExecution ? runEnv : null,
       localProcessSandbox: opts.localProcessSandbox ?? null,
     })
       .then((target) => {
         const childEnv = { ...mergedEnv, ...target.env };
         for (const [key, value] of Object.entries(childEnv)) {
-          if (value === undefined) delete childEnv[key];
+          if (value === undefined || isControlPlaneSourceSecretEnvKey(key)) {
+            delete childEnv[key];
+          }
         }
         const child = spawn(target.command, target.args, {
           cwd: target.cwd ?? opts.cwd,

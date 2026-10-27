@@ -117,10 +117,14 @@ export async function setup(request: APIRequestContext) {
           const runs = await json(
             await request.get(`/api/companies/${company.id}/live-runs`),
           );
-          for (const run of runs)
-            await json(
-              await request.post(`/api/heartbeat-runs/${run.id}/cancel`),
-            );
+          for (const run of runs) {
+            // The run can finish while cleanup is trying to acquire its DB lock.
+            await expect(async () => {
+              await json(
+                await request.post(`/api/heartbeat-runs/${run.id}/cancel`),
+              );
+            }).toPass({ timeout: 10_000, intervals: [200, 500, 1_000] });
+          }
         } finally {
           await json(
             await request.patch("/api/instance/settings/experimental", {

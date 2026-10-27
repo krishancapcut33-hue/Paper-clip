@@ -3,6 +3,7 @@ import { execFile } from "node:child_process";
 import { promises as fs } from "node:fs";
 import os from "node:os";
 import path from "node:path";
+import { shouldExcludePath } from "./exclude-patterns.js";
 import { createWorkspaceManifest, workspacePaths, WorkspaceNulParser, type WorkspacePaths } from "./workspace-manifest.js";
 import { runWorkspaceGitProcess } from "./workspace-git-stream.js";
 import { preserveWorkspaceRestoreErrorDiagnostic, withWorkspaceRestoreGitCommand, type WorkspaceRestoreGitCommand } from "./workspace-restore-diagnostics.js";
@@ -73,6 +74,21 @@ export function setExpensiveWorkspaceGitExecutor(executor: ExpensiveWorkspaceGit
 }
 
 export const GIT_ARCHIVE_EXCLUDES = [".git", ".git/*"] as const;
+// This directory belongs to the Paperclip control plane, not the agent's
+// repository. Git ignore rules are user-controlled and cannot protect it.
+export const CONTROL_PLANE_WORKSPACE_EXCLUDES = [".paperclip", ".paperclip/*", "*/.paperclip", "*/.paperclip/*"] as const;
+
+/** Git packs can expose excluded files from earlier commits even when the checkout omits them. */
+export async function assertNoControlPlaneGitHistory(localDir: string, revision: string): Promise<void> {
+  const result = await runLocalGit(localDir, [
+    "log", "--full-history", "-1", "--format=%H", revision, "--", ":(glob)**/.paperclip/**",
+  ], { timeout: 60_000, maxBuffer: 1024 });
+  if (result.stdout.trim()) {
+    throw Object.assign(new Error("workspace_git_history_contains_control_plane_files"), {
+      code: "workspace_git_history_contains_control_plane_files",
+    });
+  }
+}
 
 /**
  * Identity flags for commits the sync machinery itself creates (the merge
@@ -95,6 +111,24 @@ function shellQuote(value: string) {
   return `'${value.replace(/'/g, `'\"'\"'`)}'`;
 }
 
+function localGitInvocation(localDir: string, args: readonly string[], env: NodeJS.ProcessEnv = process.env) {
+  // All host Git invocations, including streaming ref transactions, need the
+  // same hook and fsmonitor policy while the service owns the master key.
+  const isolated = process.env.PAPERCLIP_SECRETS_REQUIRE_ISOLATED_AGENT_RUNTIME === "true";
+  const gitEnv = isolated
+    ? Object.fromEntries(Object.entries(env).filter(([key]) => !key.startsWith("GIT_")))
+    : env;
+  if (isolated) {
+    gitEnv.GIT_CONFIG_NOSYSTEM = "1";
+    gitEnv.GIT_CONFIG_GLOBAL = "/dev/null";
+    gitEnv.GIT_TERMINAL_PROMPT = "0";
+  }
+  return {
+    args: ["-C", localDir, ...(isolated ? ["-c", `core.hooksPath=${os.devNull}`, "-c", "core.fsmonitor=false"] : []), ...args],
+    env: gitEnv,
+  };
+}
+
 export async function runLocalGit(
   localDir: string,
   args: string[],
@@ -104,14 +138,15 @@ export async function runLocalGit(
     env?: NodeJS.ProcessEnv;
   } = {},
 ): Promise<GitCommandResult> {
+  const invocation = localGitInvocation(localDir, args, options.env);
   return await new Promise<GitCommandResult>((resolve, reject) => {
     execFile(
       "git",
-      ["-C", localDir, ...args],
+      invocation.args,
       {
         timeout: options.timeout ?? 15_000,
         maxBuffer: options.maxBuffer ?? 1024 * 128,
-        env: options.env ?? process.env,
+        env: invocation.env,
       },
       (error, stdout, stderr) => {
         if (error) {
@@ -238,6 +273,7 @@ export async function readGitWorkspaceSnapshot(localDir: string, includeReposito
     const scan = async (args: string[], operation: string, category: string) => {
       const parser = new WorkspaceNulParser((record) => {
         const relative = category === "ignored" ? record.replace(/\/+$/, "") : record;
+        if (shouldExcludePath(relative, CONTROL_PLANE_WORKSPACE_EXCLUDES)) return;
         if (category === "ignored" && repositories.length && relative === PROJECT_REPOSITORIES_DIR) return;
         // Managed children have their own exact file selections. Never stage a
         // parent Git directory record that could admit files created later.
@@ -272,7 +308,10 @@ export async function readGitWorkspaceSnapshot(localDir: string, includeReposito
     if (controller.signal.aborted) throw Object.assign(new Error("Workspace snapshot cancelled"), { code: "workspace_git_scan_cancelled" });
     for (const repo of repositories) {
       for (const [category, paths] of [["overlay", repo.snapshot.overlayPaths], ["deleted", repo.snapshot.deletedPaths], ["ignored", repo.snapshot.ignoredPaths]] as const) {
-        for (const relative of workspacePaths(paths)) writer.add(category, `${repo.path}/${relative}`);
+        for (const relative of workspacePaths(paths)) {
+          const nestedPath = `${repo.path}/${relative}`;
+          if (!shouldExcludePath(nestedPath, CONTROL_PLANE_WORKSPACE_EXCLUDES)) writer.add(category, nestedPath);
+        }
       }
     }
     const head = (settled[0] as PromiseFulfilledResult<GitCommandResult>).value.stdout.trim();
@@ -607,6 +646,7 @@ export async function withShallowGitWorkspaceClone<T>(
   const cloneDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-git-workspace-"));
   const tempRef = `refs/paperclip/git-sync/import/${randomUUID()}`;
   try {
+    await assertNoControlPlaneGitHistory(input.localDir, input.snapshot.headCommit);
     const originUrl = input.snapshot.originUrl !== undefined ? input.snapshot.originUrl : await readSanitizedOriginRemoteUrl(input.localDir);
     await runLocalGit(input.localDir, ["update-ref", tempRef, input.snapshot.headCommit], {
       timeout: 10_000,
@@ -709,6 +749,7 @@ export async function fetchGitBundleIntoLocalRef(input: {
     timeout: 10_000,
     maxBuffer: 16 * 1024,
   });
+  await assertNoControlPlaneGitHistory(input.localDir, importedHead.stdout.trim());
   return importedHead.stdout.trim();
 }
 
@@ -890,9 +931,11 @@ async function updateLocalGitHead(input: {
     let identityError: unknown;
     let prepared = false;
     let output = "";
-    const child = execFile("git", ["-C", input.localDir, "update-ref", "--stdin"], {
+    const invocation = localGitInvocation(input.localDir, ["update-ref", "--stdin"]);
+    const child = execFile("git", invocation.args, {
       timeout: 15_000,
       maxBuffer: 64 * 1024,
+      env: invocation.env,
     }, (error, stdout, stderr) => {
       if (identityError) reject(identityError);
       else if (error) reject(Object.assign(error, { stdout, stderr }));
