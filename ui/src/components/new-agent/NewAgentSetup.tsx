@@ -414,7 +414,6 @@ function Setup({
   );
   const needsCurrentSetup = ["codex_local", "claude_local", "opencode_local", "pi_local"].includes(adapterType);
   const preparingComputer = created?.pauseReason === "setup" && ["preparing", "pausing"].includes(created.lifecycleState ?? "");
-  // Drafts from the name/adapter dialog can inherit the policy's environment.
   const environmentSelectionSaved = (!environmentOverride && created?.defaultEnvironmentId == null)
     || (created?.defaultEnvironmentId ?? null) === (environmentOverride || (forced.forced || managedOnly ? environmentId : null));
   const ready = Boolean(created) && environmentSelectionSaved && !environmentSaving && !preparingComputer && connectionSettingsReady && (!needsCurrentSetup || (
