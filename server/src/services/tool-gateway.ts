@@ -2185,7 +2185,7 @@ export function createToolGatewayService(
       companyId: session.companyId,
       agentId: session.agentId,
       runId: session.runId,
-    });
+    }, { readScope: "identity" });
     return {
       ...session,
       identityContextId: captured.context?.id,

@@ -1,19 +1,23 @@
 import { randomUUID } from "node:crypto";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { agentWakeupRequests, agents, companies, createDb, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
+import { agentWakeupRequests, agents, companies, applyPendingMigrations, createDb, closeRegisteredClients, heartbeatRuns, heartbeatRunEvents, issueComments, issueThreadInteractions, issues, secretAccessEvents } from "@paperclipai/db";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { acceptSteeredIdentity, captureRunIdentity, initializeRunIdentity, listRunIdentityContexts, rejectSteeredIdentity, reserveSteeredIdentity } from "../services/run-identity.js";
 
-const support = await getEmbeddedPostgresTestSupport();
+const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable execution identity", () => {
   let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
   let db: ReturnType<typeof createDb>;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
-    db = createDb(database.connectionString);
+    if (externalDatabaseUrl) { await applyPendingMigrations(externalDatabaseUrl); db = createDb(externalDatabaseUrl); }
+    else {
+      database = await startEmbeddedPostgresTestDatabase("paperclip-run-identity-");
+      db = createDb(database.connectionString);
+    }
   }, 30_000);
-  afterAll(async () => { await database?.cleanup(); }, 60_000);
+  afterAll(async () => { if (externalDatabaseUrl) await closeRegisteredClients(externalDatabaseUrl); await database?.cleanup(); }, 60_000);
 
   async function seed() {
     const companyId = randomUUID(), agentId = randomUUID(), issueId = randomUUID(), runId = randomUUID();
@@ -123,7 +127,7 @@ const support = await getEmbeddedPostgresTestSupport();
     },
   );
 
-  it.each([undefined, "github_credentials", "request_authentication"] as const)("holds acquisition during uncertain steering and never rewinds on replay with %s", async (readScope) => {
+  it.each([undefined, "github_credentials", "request_authentication", "identity", "task_authorization", "token_broker", "project_execution"] as const)("holds acquisition during uncertain steering and never rewinds on replay with %s", async (readScope) => {
     const options = readScope ? { readScope } : undefined;
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [input.messageIds[0]], responsibleUserId: "A", cause: "instruction" });
@@ -176,7 +180,7 @@ const support = await getEmbeddedPostgresTestSupport();
     expect(captured.run.responsibleUserId).toBeNull();
     expect(captured.context?.parentContextId).toBe(origin.id);
   });
-  it.each([undefined, "github_credentials", "request_authentication"] as const)("recovers an uncertain native acknowledgement with %s", async (readScope) => {
+  it.each([undefined, "github_credentials", "request_authentication", "identity", "task_authorization", "token_broker", "project_execution"] as const)("recovers an uncertain native acknowledgement with %s", async (readScope) => {
     const options = readScope ? { readScope } : undefined;
     const input = await seed();
     await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
@@ -270,7 +274,7 @@ const support = await getEmbeddedPostgresTestSupport();
       // A real append holds KEY SHARE on both parent rows until it commits.
       // Bound the other connection's wait so a conflicting lock fails this
       // regression instead of leaving both transactions waiting for each other.
-      const identityDb = createDb(`${database.connectionString}?options=-c%20lock_timeout%3D1000`, {
+      const identityDb = createDb(`${externalDatabaseUrl ?? database.connectionString}?options=-c%20lock_timeout%3D1000`, {
         maxConnections: 1,
       });
       const [settings] = await identityDb.execute(sql`show lock_timeout`);
