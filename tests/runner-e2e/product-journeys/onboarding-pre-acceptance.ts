@@ -18,7 +18,7 @@ export interface OnboardingPreAcceptanceEvidence {
   canonicalParentStatus: typeof statuses[number];
 }
 
-export function preAcceptanceTaskStatus(task: { status?: unknown } | undefined): OnboardingPreAcceptanceEvidence["firstTaskStatus"] {
+export function preAcceptanceTaskStatus(task: { status?: unknown; [key: string]: unknown } | undefined): OnboardingPreAcceptanceEvidence["firstTaskStatus"] {
   if (!task) return "missing";
   return ISSUE_STATUSES.find(status => status === task.status) ?? "unknown";
 }
