@@ -1,5 +1,5 @@
 import { TaskChatShimmerScope } from "@/components/task-chat/TaskChatShimmer";
-import { CommentSubmissionUnknownError } from "../lib/comment-submit-result";
+import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import {
   ISSUE_DETAIL_CONTENT_PAINT_MARK,
   ISSUE_DETAIL_CONTENT_MEASURE,
@@ -2647,52 +2647,36 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
   const runtimeComposerDisabledReason = composerDisabledReason ?? undefined;
   const hasAgentAssignee = Boolean(issueAssigneeAgentId);
-  const [runnerSubmissionPending, setRunnerSubmissionPending] = useState(false);
-  const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
-  const submissionRequestId = useRef<string | null>(null);
-  useEffect(() => {
-    const confirmed = submissionRequestId.current && comments.some(comment =>
-      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
-    // The previous intent's projection cannot acknowledge this submission.
-    if (tailRunId || confirmed) {
-      setRunnerSubmissionPending(false);
-      setSubmissionTakingLonger(false);
-    }
-  }, [tailRunId, comments, runnerSubmissionPending]);
-  useEffect(() => {
-    if (!runnerSubmissionPending || tailRunId) return;
-    const timeout = window.setTimeout(
-      () => {
-        setSubmissionTakingLonger(true);
-        void props.onRefreshLatestComments?.();
-      },
-      10_000,
-    );
-    return () => window.clearTimeout(timeout);
-  }, [runnerSubmissionPending, tailRunId]);
+  const {
+    pending: runnerSubmissionPending,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+  } = useRunnerSubmission({
+    issueId: issueId ?? null,
+    agentId: issueAssigneeAgentId,
+    issueStatus,
+    runId: liveRun?.id ?? null,
+    linkedRuns,
+    interruption: props.interruption,
+    onRefresh: props.onRefreshLatestComments,
+  });
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      if (hasAgentAssignee) {
-        submissionRequestId.current = args[4] ?? null;
-        setRunnerSubmissionPending(true);
-        setSubmissionTakingLonger(false);
-      }
+      const attempt = beginSubmission();
       try {
         await onAdd(...args);
-        setRunnerSubmissionPending(false);
-        setSubmissionTakingLonger(false);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
           dismissInput(selectedPendingInput.interaction.id);
           setSelectedPendingKey(null);
           setTakeoverMode("normal");
         }
       } catch (error) {
-        setRunnerSubmissionPending(error instanceof CommentSubmissionUnknownError);
-        setSubmissionTakingLonger(error instanceof CommentSubmissionUnknownError);
+        rejectSubmission(attempt, error);
         throw error;
       }
     },
-    [hasAgentAssignee, onAdd, selectedPendingInput, dismissInput],
+    [beginSubmission, rejectSubmission, onAdd, selectedPendingInput, dismissInput],
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&

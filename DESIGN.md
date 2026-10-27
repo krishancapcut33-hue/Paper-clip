@@ -89,6 +89,8 @@ that relayed a message from another channel.
 
 Keep the runner turn's avatar, name, Working header and current-activity slot
 in place from message submission through queued admission and native startup.
+Saving the human comment does not end startup feedback. Keep the identity mounted
+until its run appears or a newer execution outcome ends admission.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
 

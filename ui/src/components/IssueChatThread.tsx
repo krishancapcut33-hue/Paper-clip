@@ -4,6 +4,7 @@ import { WorkspaceBaseRefRecoveryNotice } from "./WorkspaceBaseRefRecoveryNotice
 import { DispositionRecoveryNotice, useDispositionRecoverySnapshot } from "./DispositionRecoveryNotice";
 import { AgentAvatar } from "@/components/AgentAvatar";
 import { TaskChatRunnerTurn } from "./task-chat/TaskChatRunnerTurn";
+import { useRunnerSubmission } from "@/hooks/useRunnerSubmission";
 import type { ComposerRunSettings } from "./task-chat/composer-run-settings";
 import { ComposerRunSettingsPicker } from "./task-chat/ComposerRunSettingsPicker";
 import { ComposerAddMenu, ComposerModeChip } from "./task-chat/ComposerAddMenu";
@@ -6097,47 +6098,34 @@ export function IssueChatThread({
     return true;
   }
 
-  const [submissionPending, setSubmissionPending] = useState(false);
-  const [submissionTakingLonger, setSubmissionTakingLonger] = useState(false);
-  const submissionRequestId = useRef<string | null>(null);
-  useEffect(() => {
-    const confirmed = submissionRequestId.current && comments.some(comment =>
-      comment.clientRequestId === submissionRequestId.current && !("clientStatus" in comment && comment.clientStatus));
-    // The previous intent's projection cannot acknowledge this submission.
-    if (isRunning || confirmed) {
-      setSubmissionPending(false);
-      setSubmissionTakingLonger(false);
-    }
-  }, [isRunning, comments, submissionPending]);
-  useEffect(() => {
-    if (!submissionPending) return;
-    const timer = window.setTimeout(() => {
-      setSubmissionTakingLonger(true);
-      void onRefreshLatestComments?.();
-    }, 10_000);
-    return () => window.clearTimeout(timer);
-  }, [submissionPending, onRefreshLatestComments]);
+  const {
+    pending: submissionPending,
+    takingLonger: submissionTakingLonger,
+    begin: beginSubmission,
+    reject: rejectSubmission,
+  } = useRunnerSubmission({
+    issueId,
+    agentId: issueAssigneeAgentId,
+    issueStatus,
+    runId: displayLiveRuns[0]?.id ?? null,
+    linkedRuns,
+    interruption,
+    onRefresh: onRefreshLatestComments,
+  });
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      if (issueAssigneeAgentId) {
-        submissionRequestId.current = clientRequestId ?? null;
-        setSubmissionPending(true);
-        setSubmissionTakingLonger(false);
-      }
+      const attempt = beginSubmission();
       try {
         await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
           : onAdd(body, reopen, reassignment, attachmentIds, clientRequestId));
-        setSubmissionPending(false);
-        setSubmissionTakingLonger(false);
       } catch (error) {
-        setSubmissionPending(error instanceof CommentSubmissionUnknownError);
-        setSubmissionTakingLonger(error instanceof CommentSubmissionUnknownError);
+        rejectSubmission(attempt, error);
         throw error;
       }
     },
-    [onAdd, issueAssigneeAgentId],
+    [onAdd, beginSubmission, rejectSubmission],
   );
   const runtime = usePaperclipIssueRuntime({
     messages,
