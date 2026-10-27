@@ -1,3 +1,4 @@
+import { notifyNativeStatusReassessment } from "../services/native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../services/unsafe-workspace-export-notifications.js";
 import { notifyChatInboundWakeNotices } from "../services/chat-inbound-wake-notice-notifications.js";
 import { taskInterruptionPresentation, taskInterruptionPresentations } from "../services/task-interruption-presentation.js";
@@ -11733,6 +11734,7 @@ export function issueRoutes(
         promotedAt,
       });
       const product = await db.transaction(async (tx) => {
+        await notifyNativeStatusReassessment(tx, { companyId: issue.companyId, issueId: issue.id });
         const markPromoted = {
           sourceTrust: promotionTrust,
           updatedAt: promotedAt,

@@ -2457,3 +2457,179 @@ between pages on drain. Fresh migration and interrupted/concurrent replay pass.
 The audit preserves the initial query, migration and test-clock failures. Full
 local tests are running; remote acceptance, older stack findings, master
 reconciliation and every remaining original duty are still open. Nothing merged.
+
+
+## Slice 49 publication; slice 50 owner audit
+
+Draft #17702 at `be6ca6151b` is open on #17696. Greptile reviewed that head
+at 5/5 with zero unresolved threads. CI remains in progress. The full local
+suite was stopped after repeated embedded PostgreSQL bootstrap failures and
+many skipped DB suites. One isolated native-session-executor failure reproduces
+in startEmbeddedPostgresTestDatabase before recovery behavior runs; logs are
+/tmp/sleep49-full-tests.log and /tmp/sleep49-full-failure-isolated.log. The
+255-case real-PostgreSQL owner/startup selection, workspace types/build and
+migration replay remain passing. This does not make full local acceptance green.
+
+Slice 50 audits native status reassessment: changed evidence, authoritative task
+state and retired automatic reviews all feed the existing append-only assessment
+and decision owner. Its producer/guard inventory is in the dated reassessment
+audit. No implementation or periodic removal is claimed for slice 50 yet. Earlier
+stack gates, master reconciliation and the full remaining scope remain open.
+
+
+Slice 49 remote acceptance: #17702 at
+`be6ca6151bb04e25f691a830734ddb5856701d27` now has all 53 checks passing,
+Greptile 5/5 at that exact head and zero unresolved review threads. It remains
+draft and unmerged. /tmp/sleep49-final-gates.json, /tmp/sleep49-comments.json
+and /tmp/sleep49-review-threads.json preserve the observations. The PR body
+records the passing remote gates and keeps the local embedded-database failure
+visible. Slice 50 and all other remaining original obligations are incomplete.
+
+
+Slice 50 extraction checkpoint: reassessment and its pure policy now have native
+runtime owners, with the original reconciler delegating to them. All 94 status
+corpus cases pass before and after extraction; all 187 governed-response cases
+and server types pass afterward. No polling duty has been removed. The audit
+records the critical transaction boundary: scheduled guards belong inside the
+status committer, which publishes after its own transaction. Producer coverage,
+worker selection, lifecycle/cost proof and a new PR remain outstanding.
+
+Slice 50 scheduled-commit checkpoint: nine competing source/lease/deadline/effect/
+ownership cases reproduce unsafe scheduled reassessment before the new guard.
+The final 103-case status corpus and server types pass. The audit preserves two
+initial invalid fixtures and the before-fix constraint rejection. The guard is
+opt-in at the existing committer transaction; no outer transaction or early
+publication is added. Worker discovery, producer/lifecycle/cost evidence and
+periodic removal remain outstanding. No new PR or merge is claimed; all original
+remaining duties and older stack gates remain open.
+
+Slice 50 scoped-worker checkpoint: discovery/check/register now use the shared
+scheduler, with distinct dormant and retryable outcomes and exact saved deadlines.
+A real retirement missed wake and a near-term deadline delay were reproduced and
+fixed. Final local verification passes 116 status/worker cases plus 187 governed
+response consumer cases; server types pass. Driver SQL capture proves quiet after
+settlement and during drain for the tested path. Initial history cost measurements
+and their synthetic-fixture limits are recorded in the owner audit. The worker is
+not registered in startup and periodic reassessment remains. Producer coverage,
+concurrent authority audit, selected-current/backlog cost and full acceptance are
+still pending; no slice 50 PR or merge, and the full original scope stays open.
+
+Slice 50 producer checkpoint: six real work-product/attachment transaction misses
+and three task mutation misses were reproduced and repaired. The real promotion
+HTTP route also wakes reassessment. All 13 owner lifecycle tests, 79 affected
+consumer cases across their documented runs, and server types pass. Initial
+embedded-PostgreSQL failures and the external-database test repairs are preserved
+in the owner audit. Approval/interaction/run evidence and workspace producers,
+concurrent authority, backlog cost, startup wiring and periodic removal remain.
+Master remains 1fbbef45a8; older stack gates and the full original scope stay open.
+
+Slice 50 authority checkpoint: two real commit-boundary regressions reproduced
+stale completion after the source run failed or another run took task execution.
+The scheduled retired-review path now rechecks both facts under existing locks.
+All 115 status-corpus cases pass. A retained-history startup assertion failed in
+the combined run; after waiting for bounded startup batches while enforcing the
+saved retry deadline, all 28 lifecycle cases and server types pass. The owner
+audit preserves failures and handoff/contract producer findings. Remaining
+business-fact races, producer coverage, cost, wiring, periodic removal and PR
+acceptance are still open. Nothing merged; the full stack goal is incomplete.
+
+Slice 50 contract checkpoint: a newer committed completion contract reproduced
+stale completion; a real uncommitted writer reproduced blocking on the task lock.
+The contract owner now exposes a nonblocking current-revision guard, acquired
+before status row locks and held through commit. All 145 corpus/lifecycle tests
+and server types pass. Failure logs and the lock-order rationale are recorded in
+the owner audit. Workspace/governance races, producer coverage, cost, startup
+integration, periodic removal, remote acceptance and the rest of the full stack
+remain open. Nothing merged.
+
+Slice 50 workspace-barrier checkpoint: three stale-completion regressions now
+pass after checking and share-locking the current barrier inside status commit.
+The check uses existing row/FK serialization and NOWAIT contention handling.
+All 148 status/lifecycle cases and server types pass. The owner audit preserves
+before-fix failures and distinguishes barrier receipts from physical workspace
+ownership, which still needs audit. Governance/dependencies, remaining producers,
+cost, wiring, periodic removal and PR acceptance remain open; nothing merged.
+
+Slice 50 physical-owner checkpoint: four unsafe-completion regressions and a
+subsequent release missed wake were reproduced and repaired. Scheduled retired-
+review reassessment respects the existing physical lock and durable owner receipt;
+normal/verified owner release wakes it through committed intent. All 217 status,
+lifecycle and workspace-owner consumer cases and server types pass. Existing
+orphan/stop-proof safeguards remain verified. Governance/dependencies, remaining
+producers, cost, integration and remote gates remain open, along with all other
+original duties and earlier stack findings. Nothing merged.
+
+Slice 50 governance checkpoint: seven stale-completion races reproduced changed
+execution policy, approvals, interactions and question history. The governance
+owner now supplies nonblocking source locks; status commit verifies the gate
+used by the selected decision. All 159 status/lifecycle cases pass, the valid
+question-history fixture passes on recheck, and server types pass. Dependency and
+remaining authority/producer audits, task-history/query costs, wiring, periodic
+removal and remote gates remain outstanding. The full stack remains incomplete;
+nothing merged.
+
+
+Slice 50 dependency checkpoint: seven stale-completion races are reproduced and
+fixed through the existing dependency-readiness owner. Scheduled status commit
+locks/rechecks prerequisite and workspace-finalization sources with nonblocking
+contention handling; ordinary readers retain their behavior. All 181 distinct
+status/lifecycle/dependency consumer cases and server types pass. The audit keeps
+the initial unordered assertion and misconfigured embedded-test invocation
+failures and their repairs. Remaining authority/producer coverage, cost, startup
+integration, periodic removal, remote gates, earlier stack findings and the full
+original scope remain open. Nothing merged.
+
+
+Slice 50 evidence checkpoint: seven races reproduced completion using revoked,
+removed or concurrently edited evidence. The assessment owner now reclassifies
+and locks referenced evidence inside scheduled status commit; changed facts and
+contention defer through existing retry handling. All 177 status/lifecycle/
+classifier consumer cases and server types pass. The audit preserves before-fix
+failures and the remaining identity/producer and cost limits. Startup wiring,
+periodic removal, remote gates, older stack findings and all remaining recurring
+work are still incomplete. Nothing merged.
+
+
+Slice 50 OAuth producer checkpoint: authorization-card creation/reopening now
+signals both native review workers from the same short transaction as its card
+and state link. Three missing-settlement-signal regressions were reproduced;
+all 472 tool-access and 30 worker lifecycle tests plus server typecheck pass.
+The audit retains before/after evidence and the remaining handoff/authority
+coverage limits. Master is freshly verified at 1fbbef45a8. Discovery/cost proof,
+startup wiring, periodic removal, remote acceptance, earlier stack findings and
+the full original recurring-work scope remain incomplete. Nothing merged.
+
+
+Slice 50 scale checkpoint: 10,000 separate selected completed task/run histories
+produce zero company candidates (~35 ms); 10,000 actual candidates reconstruct
+in 101 bounded queries (~1.56 seconds/2.05 MB), with verified drain/abort behavior.
+A retired-review task with large review/comment/approval/dependency/workspace
+history settles in ~126 ms and disappears from discovery. The audit preserves
+two invalid benchmark-fixture attempts and the corrected fresh-task evidence.
+A permanent 103-item backlog test proves real settlement and SQL quiet; all 31
+lifecycle cases and server types pass. Remaining producer/authority audit,
+startup integration, periodic removal, remote gates and the full original stack
+scope remain open. Nothing merged.
+
+
+Slice 50 startup checkpoint: enabled maintenance now registers the reassessment
+worker and periodic recovery skips its classification/decision path. The separate
+historical supersession guard is preserved before workspace recovery. Two missing
+integration regressions fail before the change; all 246 corpus/startup/lifecycle
+cases, 32 existing finalization/cleanup consumer cases, and server types pass after.
+The owner audit records the intentional separation of reassessment from independent
+workspace settlement and the retained failure evidence. Remaining producer/authority
+audit, full acceptance, publication, remote gates and all other original duties
+remain incomplete. Nothing merged; the goal remains active.
+
+
+Slice 50 is draft [#17709](https://github.com/paperclipai/paperclip/pull/17709),
+based on #17702. Initial head 91a6c14170 passed all 52 CI checks; Greptile 4/5
+found direct claim-release writers missing reassessment notifications. Six real
+regressions reproduced the gap. Task-scoped signals now cover their existing
+transactions; the repaired selection passes 978 cases and server types, with
+15 embedded-DB runtime cases excluded for the diagnosed host semaphore exhaustion.
+The owner audit preserves the wrong initial ordinary-release completion assertion
+and its authority-preserving correction. Fresh-head gates remain pending; nothing
+merged. Earlier E2E failures on #17490/#17572 and voice findings on #17576/#17580
+were revalidated and remain unresolved. All original remaining duties stay in scope.
