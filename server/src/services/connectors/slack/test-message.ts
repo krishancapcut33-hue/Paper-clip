@@ -51,8 +51,17 @@ export function slackTestMessageService(db: Db, options: Options) {
             toolName: "slack.send_message", upstreamToolName: "chat.postMessage", riskLevel: "write" as const,
             sideEffecting: true, arguments: { purpose: "setup_test", recipient: actor.userId } },
         };
-        const decision = await policy.decide(request);
-        await policy.writeAudit(request, decision);
+        const callerRequest = context.actor.agentId !== endpoint.assignedAgentId
+          ? { ...request, actor: { ...request.actor, agentId: context.actor.agentId! } } : null;
+        const callerDecision = callerRequest ? await policy.decide(callerRequest) : null;
+        const targetDecision = await policy.decide(request, { sharedRateDecision: callerDecision ?? undefined });
+        // Either principal's denial or Ask first decision prevents dispatch.
+        // The evaluator shares an admission only for the identical rate bucket.
+        const decision = callerDecision && !callerDecision.allowed && callerDecision.decision !== "require_approval" ? callerDecision
+          : !targetDecision.allowed ? targetDecision
+            : callerDecision?.decision === "require_approval" ? callerDecision : targetDecision;
+        if (callerRequest && callerDecision) await policy.writeAudit(callerRequest, callerDecision);
+        await policy.writeAudit(request, targetDecision);
         if (!decision.allowed) throw forbidden(decision.explanation, { reasonCode: decision.reasonCode,
           requiredUserAction: decision.decision === "require_approval" ? { kind: "approve", reason: "Request this message through the normal Slack tool approval flow." } : undefined });
       }

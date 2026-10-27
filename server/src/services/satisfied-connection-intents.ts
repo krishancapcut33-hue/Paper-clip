@@ -2,7 +2,7 @@ import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interact
 import { connectionManagementService } from "./connection-management.js";
 import { chatCredentialEntryGenerations } from "./chat-channels/credentials.js";
 import { and, asc, eq, gt, inArray, isNull, or } from "drizzle-orm";
-import { approvals, chatEndpoints, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
+import { approvals, chatEndpoints, chatExternalPrincipals, chatIdentityLinks, toolConnections, companyMemberships, connectionIntentDeliveries, issueApprovals, issueThreadInteractions, issues, type Db } from "@paperclipai/db";
 import { connectionIntentPayloadSchema } from "@paperclipai/shared";
 import { logActivity, publishActivity, type ActivityPublication } from "./activity-log.js";
 import { chatCredentialRotationId, connectionIntentService } from "./connection-intents.js";
@@ -30,6 +30,17 @@ async function findAvailableToolConnection(db: Db, task: Task, intent: Intent, p
     const [connection] = await db.select().from(toolConnections).where(and(eq(toolConnections.id, endpoint.connectionId),
       eq(toolConnections.companyId, task.companyId), eq(toolConnections.status, "active"), eq(toolConnections.enabled, true)));
     if (!connection || !["ok", "healthy"].includes(connection.healthStatus)) return null;
+    if (payload.savedSetup.action === "confirm_identity") {
+      if (!endpoint.providerAccountId) return null;
+      const [link] = await db.select({ id: chatIdentityLinks.id }).from(chatIdentityLinks)
+        .innerJoin(chatExternalPrincipals, and(eq(chatExternalPrincipals.id, chatIdentityLinks.principalId),
+          eq(chatExternalPrincipals.companyId, chatIdentityLinks.companyId)))
+        .where(and(eq(chatIdentityLinks.companyId, task.companyId), eq(chatIdentityLinks.endpointId, endpoint.id),
+          eq(chatIdentityLinks.paperclipUserId, intent.addresseeUserId), eq(chatIdentityLinks.status, "linked"),
+          eq(chatExternalPrincipals.provider, endpoint.provider), eq(chatExternalPrincipals.providerAccountId, endpoint.providerAccountId)))
+        .limit(1);
+      if (!link) return null;
+    }
     if (payload.savedSetup.action === "enter_credentials") {
       const proof = payload.savedSetup.credentialEntry;
       if (!proof) return null;
