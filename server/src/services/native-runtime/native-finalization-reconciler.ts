@@ -639,6 +639,7 @@ type NativeReconciliationOptions = {
   skipUnsafeWorkspaceExports?: boolean;
   skipNativePendingEffects?: boolean;
   skipNativeResponsePresentation?: boolean;
+  skipNativeReviewResponse?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -869,7 +870,8 @@ async function reconcileNativeFinalizationsPass(
         row.decisionId &&
         row.resultId &&
         row.assessmentId &&
-        currentDecisionJson.externalChatReviewPresentation
+        currentDecisionJson.externalChatReviewPresentation &&
+        !options.skipNativeReviewResponse
       ) {
         // A later chat turn may retain the same pending review. Recover the
         // earlier response independently before status reconciliation skips
@@ -1113,6 +1115,7 @@ async function reconcileNativeFinalizationsPass(
           workspaceFinalizeStatus,
           projectRunStatus: true,
           skipNativeResponsePresentation: options.skipNativeResponsePresentation,
+          skipNativeReviewResponse: options.skipNativeReviewResponse,
           preserveProviderAttempt: Boolean(
             readNativeWorkspaceSyncReference(
               row.nativeWorkspaceSync,
@@ -1172,6 +1175,7 @@ async function reconcileNativeFinalizationsPass(
         workspaceFinalizeStatus: barrier.status as "succeeded" | "failed",
         projectRunStatus: true,
         skipNativeResponsePresentation: options.skipNativeResponsePresentation,
+        skipNativeReviewResponse: options.skipNativeReviewResponse,
         preserveProviderAttempt: Boolean(
           readNativeWorkspaceSyncReference(
             row.nativeWorkspaceSync,

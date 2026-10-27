@@ -1,3 +1,4 @@
+import { notifyNativeReviewResponse } from "./native-review-response-notifications.js";
 import { notifyChatConfirmationResolution } from "./chat-confirmation-notifications.js";
 import { enqueueTerminalIssueInteractionChatPublications } from "./chat-interaction-publications.js";
 import { connectionManagementService } from "./connection-management.js";
@@ -155,6 +156,7 @@ export function satisfiedConnectionIntentService(db: Db) {
             }
             const connection = await findSatisfiedToolConnection(txDb, task, intent);
             if (!connection) return false;
+            await notifyNativeReviewResponse(tx, candidate);
             const now = new Date();
             // Retire the obsolete request without inventing a human approval.
             await notifyChatConfirmationResolution(tx, intent);

@@ -523,6 +523,7 @@ const MIGRATIONS_WITH_TOP_LEVEL_STATEMENTS = new Set([
   "0402_shocking_molecule_man.sql",
   "0403_jazzy_ben_grimm.sql",
   "0404_futuristic_earthquake.sql",
+  "0405_numerous_vulcan.sql",
   "0384_funny_adam_warlock.sql",
   "0383_tool_review_company_expiry.sql",
 ]);
