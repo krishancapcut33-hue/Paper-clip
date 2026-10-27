@@ -21,6 +21,7 @@ const treatmentSourceSha256 = sourceHash();
 const keepAlive = setInterval(() => {}, 1000);
 let db: Db | undefined, temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined, baselineDirectory: string | undefined;
 const companyIds: string[] = [];
+let benchmarkFailure: { error: unknown } | undefined;
 try {
   const externalUrl = resolveExternalTestDatabaseUrl("PAPERCLIP_CHAT_LINEAGE_BENCHMARK_DATABASE_URL");
   if (externalUrl) await applyPendingMigrations(externalUrl);
@@ -82,10 +83,28 @@ try {
     dependencyScope: "Only the pinned baseline issues.ts is loaded from history; imported helpers and synthetic fixtures are held identical.",
     postgres: await db.$client.unsafe("select version()"), settings: await db.$client.unsafe("select name,setting,unit from pg_settings where name in ('shared_buffers','work_mem','jit') order by name"),
     node: process.version, measurements }, null, 2));
+} catch (error) {
+  benchmarkFailure = { error };
+  throw error;
 } finally {
   try {
-    if (db) for (const companyId of companyIds) await cleanupChatReplyLineageFixture(db, companyId);
-    await db?.$client.end({ timeout: 0 }); await temporary?.cleanup();
-    if (baselineDirectory) await fs.rm(baselineDirectory, { recursive: true, force: true });
-  } finally { clearInterval(keepAlive); }
+    try {
+      if (db) for (const companyId of companyIds) await cleanupChatReplyLineageFixture(db, companyId);
+    } finally {
+      try {
+        await db?.$client.end({ timeout: 0 });
+      } finally {
+        try {
+          await temporary?.cleanup();
+        } finally {
+          try {
+            if (baselineDirectory) await fs.rm(baselineDirectory, { recursive: true, force: true });
+          } finally { clearInterval(keepAlive); }
+        }
+      }
+    }
+  } catch (error) {
+    if (benchmarkFailure) throw new AggregateError([benchmarkFailure.error, error], "Benchmark and cleanup failed");
+    throw error;
+  }
 }

@@ -20,8 +20,12 @@ describe.skipIf(!support.supported)("chat reply lineage context projection", () 
     db = createDb(externalUrl ?? temporary!.connectionString);
   }, 90_000);
   afterAll(async () => {
-    if (db) for (const companyId of companyIds) await cleanupChatReplyLineageFixture(db, companyId);
-    await db?.$client.end({ timeout: 0 }); await temporary?.cleanup();
+    try {
+      if (db) for (const companyId of companyIds) await cleanupChatReplyLineageFixture(db, companyId);
+    } finally {
+      try { await db?.$client.end({ timeout: 0 }); }
+      finally { await temporary?.cleanup(); }
+    }
   });
 
   it("projects the complete routing context before a wide body crosses PostgreSQL", async () => {
