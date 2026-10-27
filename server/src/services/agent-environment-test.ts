@@ -1,4 +1,9 @@
-import type { Db } from "@paperclipai/db";
+import { join } from "node:path";
+import { probePluginRunnerEnvironment } from "./native-runtime/plugin-runner-probe.js";
+import { registerPluginTaskCredentialHandoff } from "./plugin-task-credential-writeback.js";
+import { randomUUID } from "node:crypto";
+import { agents, companies, type Db } from "@paperclipai/db";
+import { and, eq } from "drizzle-orm";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
 import type { AdapterEnvironmentCheck } from "@paperclipai/adapter-utils";
 import { parseObject } from "@paperclipai/adapter-utils/server-utils";
@@ -15,6 +20,7 @@ import { validateAiApiKey } from "./ai-api-key-test.js";
 import { probeCopilotExecutionTarget } from "./copilot-connection-probe.js";
 import type { PluginWorkerManager } from "./plugin-worker-manager.js";
 import { assertEnvironmentSelectionForCompany } from "./environment-selection.js";
+import { pluginEnvironmentRequiresAgent } from "./plugin-environment-driver.js";
 const asRecord = (value: unknown): Record<string, unknown> | null => value && typeof value === "object" && !Array.isArray(value) ? value as Record<string, unknown> : null;
 export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: PluginWorkerManager) {
   const instanceSettings = instanceSettingsService(db);
@@ -208,6 +214,25 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // agent lease) and archive it on release instead of deleting it, so the
     // operator can inspect the exact sandbox from the provider dashboard while
     // provider-side expiry reaps it later.
+    if (environment.driver === "plugin" && await pluginEnvironmentRequiresAgent(db, environment)) {
+      const [agent] = input.agentId ? await db.select({ state: agents.lifecycleState, pauseReason: agents.pauseReason,
+        requiresApproval: companies.requireBoardApprovalForNewAgents }).from(agents)
+        .innerJoin(companies, eq(companies.id, agents.companyId))
+        .where(and(eq(agents.id, input.agentId), eq(agents.companyId, input.companyId))) : [];
+      if (agent?.state === "paused" && agent.pauseReason === "setup" && agent.requiresApproval) return {
+        executionTarget: null, environmentName: environment.name, fallbackChecks: [{
+          code: "environment_agent_approval_required", level: "warn",
+          message: "The selected account will be verified on the agent computer after hire approval.",
+        }], release: noopRelease,
+      };
+      if (!agent || ["paused", "preparing"].includes(agent.state)) return {
+        executionTarget: null, environmentName: environment.name, fallbackChecks: [{
+          code: !input.agentId ? "environment_agent_required" : "environment_agent_preparing", level: "warn",
+          message: !input.agentId ? "This environment needs a saved agent before its connection can be tested."
+            : "The agent computer is being prepared. Test the connection when preparation finishes.",
+        }], release: noopRelease,
+      };
+    }
     const testEnvironment = environment.driver === "sandbox"
       ? {
           ...environment,
@@ -223,7 +248,11 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       leaseRecord = await environmentRuntime.acquireRunLease({
         companyId: input.companyId,
         agentId: input.agentId,
+        adapterType: input.adapterType,
+        ...(environment.driver === "plugin" && input.adapterType === "paperclip_runner"
+          ? { requestedExpiresAt: new Date(Date.now() + 180_000) } : {}),
         environment: testEnvironment,
+        configuredEnvironment: environment,
         issueId: null,
         heartbeatRunId: null,
         persistedExecutionWorkspace: null,
@@ -278,18 +307,29 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
 
     let realizedCwd: string | null = null;
     try {
-      const realized = await environmentRuntime.realizeWorkspace({
-        environment: testEnvironment,
-        lease: leaseRecord.lease,
-        // No host workspace to copy for a Test invocation; sandbox/plugin
-        // realize implementations use the lease metadata's remoteCwd to
-        // create the working directory inside the box.
-        workspace: {},
-      });
-      realizedCwd =
-        typeof realized.cwd === "string" && realized.cwd.trim().length > 0
-          ? realized.cwd.trim()
-          : null;
+      if (environment.driver === "plugin" && input.adapterType === "paperclip_runner") {
+        if (!await environmentRuntime.supportsTasks({ lease: leaseRecord.lease })) throw new Error("Plugin environment does not provide native Runner task execution");
+        const updated = await environmentsSvc.updateLeaseMetadata(leaseRecord.lease.id, {
+          ...leaseRecord.lease.metadata, runnerTaskProbe: {
+            runId: randomUUID(), sessionId: randomUUID(), expiresAtMs: Date.now() + 120_000,
+          },
+        });
+        if (!updated) throw new Error("Plugin Runner setup lease disappeared");
+        leaseRecord.lease = updated;
+      } else {
+        const realized = await environmentRuntime.realizeWorkspace({
+          environment: testEnvironment,
+          lease: leaseRecord.lease,
+          // No host workspace to copy for a Test invocation; sandbox/plugin
+          // realize implementations use the lease metadata's remoteCwd to
+          // create the working directory inside the box.
+          workspace: {},
+        });
+        realizedCwd =
+          typeof realized.cwd === "string" && realized.cwd.trim().length > 0
+            ? realized.cwd.trim()
+            : null;
+      }
     } catch (err) {
       await releaseLease("failed");
       return {
@@ -452,27 +492,38 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   async function assertAdapterTestEnvironmentForCompany(
     companyId: string,
     environmentId: string,
+    adapterType?: string,
   ): Promise<void> {
+    if (!await assertAdapterTestEnvironmentBinding(companyId, environmentId)) return;
+    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
+      allowedDrivers: adapterType === "paperclip_runner" ? [...ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS, "plugin"] : ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
+    });
+  }
+
+  // The company-binding half of the guard. A route that must resolve the
+  // runner before it knows the adapter type runs this first, then runs the
+  // full guard with the resolved adapter type. Returns the environment, or
+  // null for a missing one, which leaks no tenant state; the execution-context
+  // resolver surfaces the existing environment_not_found check.
+  async function assertAdapterTestEnvironmentBinding(companyId: string, environmentId: string) {
     const environment = await environmentsSvc.getById(environmentId);
-    if (!environment) {
-      // A missing environment leaks no tenant state. The execution-context
-      // resolver surfaces the existing environment_not_found check.
-      return;
-    }
+    if (!environment) return null;
     const boundCompanyIds = await environmentsSvc.listBoundCompanyIds(environmentId);
     if (boundCompanyIds.length > 0 && !boundCompanyIds.includes(companyId)) {
       throw forbidden("The selected environment belongs to another company.", {
         code: "environment_company_mismatch",
       });
     }
-    await assertEnvironmentSelectionForCompany(environmentsSvc, companyId, environmentId, {
-      allowedDrivers: ADAPTER_TEST_ALLOWED_ENVIRONMENT_DRIVERS,
-    });
+    return environment;
   }
 
   async function testManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>, agentId?: string) {
     const startedAt = new Date();
-    const result = await probeManagedEnvironment(adapterType, context, binding);
+    const target = context.executionTarget;
+    if (managed.credentialWriteback && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask && target.leaseId) {
+      await registerPluginTaskCredentialHandoff(db, { companyId: context.companyId, leaseId: target.leaseId }, managed.sessionIdentity, managed.credentialWriteback);
+    }
+    const result = await probeManagedEnvironment(adapterType, context, binding, managed);
     // A provider rejection invalidates the tested credential generation. A
     // missing CLI, unavailable environment, or other runtime error does not.
     if (result.status === "fail" && result.checks.some(check =>
@@ -487,7 +538,7 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     return result;
   }
 
-  async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding) {
+  async function probeManagedEnvironment(adapterType: string, context: Parameters<ReturnType<typeof requireServerAdapter>["testEnvironment"]>[0], binding: AiConnectionBinding, managed: Awaited<ReturnType<typeof prepareManagedAiRuntime>>) {
     if (binding.provider === "github") {
       try {
         const token = parseObject(context.config.env).COPILOT_GITHUB_TOKEN;
@@ -501,10 +552,16 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
       }
     }
     await assertManagedAiProjectAuth(context.config, binding.provider, context.executionTarget);
-    const result = await requireServerAdapter(adapterType).testEnvironment(context);
+    const target = context.executionTarget;
+    const result = adapterType === "paperclip_runner" && target?.kind === "remote" && target.transport === "sandbox" && target.runnerTask
+      ? await probePluginRunnerEnvironment(context, { identity: managed.identity, accountIdentity: managed.sessionIdentity,
+          home: managed.home ? join(managed.home, "provider") : undefined })
+      : await requireServerAdapter(adapterType).testEnvironment(context);
     if (result.status === "fail") return result;
     // The resolved method, not binding.method — on a responsible_user binding
     // that field is wire-compat only and the default connection decides.
+    if (adapterType === "paperclip_runner" && context.executionTarget?.kind === "remote"
+      && context.executionTarget.transport === "sandbox" && context.executionTarget.runnerTask) return result;
     const resolvedMethod = (context.config as { managedAiConnection?: { method?: string } }).managedAiConnection?.method;
     // An api_key account does not take the CLI hello probe below: a key
     // travels as an env var any engine understands, and the engine's own test
@@ -519,7 +576,10 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
     // requirement stays for subscriptions: a stored login is a file layout
     // only a provider CLI reads, so proving the runtime lane can consume it
     // takes a real hello turn.
-    if (resolvedMethod === "api_key" && !context.config.managedAiRouting) {
+    const nativePiOpenRouter = adapterType === "paperclip_runner" && context.config.provider === "acpx"
+      && context.config.acpxAgent === "pi" && binding.provider === "openrouter"
+      && asRecord(context.config.managedAiRouting)?.kind === "openrouter";
+    if (resolvedMethod === "api_key" && (!context.config.managedAiRouting || nativePiOpenRouter)) {
       const envKey = AI_CONNECTION_CAPABILITIES[binding.provider].methods.api_key?.envKey;
       const key = envKey ? parseObject(context.config.env)[envKey] : undefined;
       try {
@@ -547,5 +607,5 @@ export function agentEnvironmentTestService(db: Db, pluginWorkerManager?: Plugin
   }
 
 
-  return { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, testManagedEnvironment };
+  return { resolveAdapterTestEnvironmentId, resolveAdapterTestExecutionContext, assertAdapterTestEnvironmentForCompany, assertAdapterTestEnvironmentBinding, testManagedEnvironment };
 }

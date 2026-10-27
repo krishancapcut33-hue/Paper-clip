@@ -47,7 +47,36 @@ column decoders, including the lossless payload codec. Callers still wait for
 the durable write before they publish or acknowledge the event. Native-source
 replay and retry-exhaustion deduplication retain their existing transaction path.
 
+## Legacy case handoff cleanup
+
+`legacy.case_handoff_cleanup_intent` records local cleanup ownership before
+dispatch, then binds it atomically to the observed process identity on spawn.
+It includes the host, controller/run generation, PID/group/start identity, and
+owned scratch descriptor or explicit `null`. It does not prove termination.
+`legacy.case_handoff_cleanup_verified` records the later stop proof before
+scratch removal. Restart recovery rechecks process, controller, workspace and
+ownership gates before completing cleanup and releasing the handoff.
+These controller receipts are cleanup bookkeeping, not evidence of agent task
+progress, and are excluded from run-liveness action counts.
+The controller authors both events on the system stream. Adapter ingestion
+rejects the reserved `legacy.case_handoff_` namespace. These events stay in the
+instance run log and add no first-party Telemetry or OpenTelemetry export.
+
 ## Provider-pack preparation timing
+
+`run.performance.span` also records `task.time_to_first_token` once per native
+dispatch at the first newly committed deliverable text: assistant or reasoning
+`item.delta`/`item.completed`, a redaction tail released at completion, or an
+accepted run-result summary. Its
+`durationMs` starts at the native run trace's historical start (accepted ingress,
+otherwise queued run creation, or dispatch when history is absent) and ends at Core
+commit callback. `startOffsetMs` is zero, and `eventKind` is `agentMessage` or
+`reasoning`. It includes preparation and startup, but excludes browser
+delivery/rendering. This measures text availability, not an exact model token.
+Empty text, item starts, tools, usage, result proposals, and duplicate replay do
+not qualify. No deliverable text means no timing sample. A recovered dispatch can
+record newly committed output from the original start; it does not reproduce
+earlier output timing. The event contains no text or provider identifiers.
 
 The existing `run.performance.span` event also records `provider_pack.select`,
 `provider_pack.discover`, `provider_pack.verify`, `provider_pack.verify_preinstalled`,

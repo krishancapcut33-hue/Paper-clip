@@ -6,17 +6,19 @@ navigation: {"section":"Projects and execution","sectionOrder":40,"order":30}
 
 A project or task can use a managed workspace with inspectable files, Git state, services, and runtime controls. Operators can follow its lifecycle through provisioning, use, and closure.
 
+Feature ID: `workspaces`.
+
 Implementation: [workspace list](../../ui/src/pages/Workspaces.tsx), [execution workspace](../../ui/src/pages/ExecutionWorkspaceDetail.tsx), [project workspace](../../ui/src/pages/ProjectWorkspaceDetail.tsx).
 
 Agent access: [companion](../agent-access-map/workspaces.md).
 
 ## Sub-features
 
-- `binding`: identify the workspace actually bound to a task/run.
-- `provisioning`: observe readiness and failures instead of inferring readiness from a created record.
-- `services`: start/stop supported services and inspect logs and exposed endpoints.
-- `files-git`: inspect workspace files and repository state used for the deliverable.
-- `closure`: close/reopen or reconcile through permitted controls without losing work.
+- `binding`: `workspaces/binding` — identify the workspace actually bound to a task/run.
+- `provisioning`: `workspaces/provisioning` — observe readiness and failures instead of inferring readiness from a created record.
+- `services`: `workspaces/services` — start/stop supported services and inspect logs and exposed endpoints.
+- `files-git`: `workspaces/files-git` — inspect workspace files and repository state used for the deliverable.
+- `closure`: `workspaces/closure` — close/reopen or reconcile through permitted controls without losing work.
 
 For a historical failed export whose exact sandbox was destroyed, the task recovery
 notice offers **Continue from saved sources** to an authorized board operator.
@@ -55,6 +57,15 @@ Automated: [workspace card](../../ui/src/components/IssueWorkspaceCard.test.tsx)
 
 Manual: Run a task that writes a small file, follow the bound workspace, and inspect the file and revision. Reload and verify links still refer to the same workspace, not another checkout or a stale run.
 
+For a repository-free isolated task, complete an explicitly fresh retry, save a
+marker, then send ordinary new input. It must retain the bound attempt directory
+and marker. A later explicitly fresh retry must use a separate clean sibling.
+The [production preparation regression](../../server/src/services/heartbeat/workspace-preparation.test.ts)
+uses PostgreSQL and real private directories; it also rejects changed bindings.
+The [directory boundary suite](../../server/src/services/isolated-task-directory.test.ts)
+checks namespace, missing-directory and symlink refusal. Neither suite proves a
+hosted provider turn.
+
 For slow source preparation, configure a short PostgreSQL idle-transaction
 timeout in a disposable instance. Hold preparation beyond that interval and
 verify it retains its source lock, rejects competing preparation, and leaves
@@ -92,6 +103,14 @@ preparation API to add an authorized repository beneath that workspace;
 repeat the request and verify that it reuses the checkout and pinned revision.
 See [task binding tests](../../server/src/__tests__/task-workspace-binding.test.ts)
 and [repository access tests](../../server/src/__tests__/task-workspace-repositories-trust.test.ts).
+
+For native unfinished work, yield after preparation is staged and verify that
+normal admission prepares the repository and continues the same task without
+a timer or user message. A staging-only task that finishes must not wake again.
+The saved continuation must disappear when the repository is ready or belongs
+to another task. Source regressions cover those eligibility checks; a live
+provider journey is required to qualify the complete automatic resume.
+
 An existing projectless folder alias of a sandbox-restricted project must be
 rejected for a standard local task before its adapter executes. Repeat after
 relocating the configured source; retained ownership must still enforce the
@@ -156,6 +175,8 @@ Manual: Provision a disposable workspace, wait for readiness, start an available
 ### Storybook verification
 
 #### `closure`
+
+Capability ID: `workspaces/closure`.
 
 Scope: ui
 Storybook: Close-readiness checks, pending changes/active runs, blocked/pending/error close, retry close and eligible reopening.

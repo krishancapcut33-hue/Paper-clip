@@ -125,6 +125,7 @@ import {
 import { issueReviewPolicyBadge } from "../../lib/review-policy";
 import { IssueCasesPanel } from "../IssueCasesPanel";
 import { ExpandRelationListButton, RemovableIssueReferencePill } from "./relation-controls";
+import { RoutineOriginRow } from "./routine-origin-row";
 import { Badge } from "@/components/ui/badge";
 import {
   TaskDetailReferencesPanel,
@@ -606,7 +607,7 @@ export function IssueProperties({
     () => isMainIssueWorkspace({ issue, project: issueProject }),
     [issue, issueProject],
   );
-  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId) && !issueUsesMainWorkspace
+  const showWorkspaceDetailLink = Boolean(issue.executionWorkspaceId && issue.currentExecutionWorkspace?.id === issue.executionWorkspaceId) && !issueUsesMainWorkspace
     && experimentalSettings?.enableIsolatedWorkspaces === true;
   const workspaceRuntimeConfig = issueUsesMainWorkspace
     ? null
@@ -2446,6 +2447,10 @@ export function IssueProperties({
         >
           {parentContent}
         </PropertyPicker>
+
+        {issue.originKind === "routine_execution" && issue.originId ? (
+          <RoutineOriginRow routineId={issue.originId} />
+        ) : null}
 
         {streamlinedPropertiesEnabled ? (
           <PropertyPicker

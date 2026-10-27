@@ -1,5 +1,17 @@
 # Runner E2E fixture authoring
 
+[Chat feature evals](CHAT-FEATURES.md) load two authored YAML requests and seed
+only company, agents and project context through public APIs. Both agents use
+production role instructions; evaluator outcomes are never injected. Real browser
+submission, task audits, worker document provenance, completion delivery and
+reload readback establish the outcome. The existing fixture registry, subscription
+credential staging and whole-company cleanup own setup and teardown.
+
+[Deployment-targeted journeys](PRODUCT-JOURNEYS.md) resolve only their requested
+fixture graph through `FixtureRegistry.setupAll(requested)`. Omitting the
+argument preserves the existing all-fixtures behavior. A verified onboarding
+context may seed the graph; independent setup is labeled as recipe provenance.
+
 ## Connection creation fixtures
 
 See [PROVIDER-CONNECTIONS.md](PROVIDER-CONNECTIONS.md) for the explicit-only
@@ -920,4 +932,116 @@ execution-workspace file reads and run-attributed artifact downloads verify byte
 Calibration rejects wrong roots, missing history, changed pins, duplicate receipts,
 extra wakes, incomplete persistence, tool bypass and missing remote leases. Partial
 observations remain in retained attempt evidence; missing evidence cannot pass.
+
 The Copilot `extended-harnesses` file case supplies a portable read-only validation command with hexadecimal expected bytes. The provider still creates and edits the file itself. The command must exit zero before registration and semantic completion; independent workspace and downloaded-artifact byte matchers remain authoritative. The explicit command avoids ambiguous shell operands and escaped-newline literals. Original prompt measurements retain their original grade and source; only the two Copilot file prompts change. Other providers, deadlines and matchers remain unchanged.
+
+## Same-task case handoffs
+
+The suite contains four local cells: `receipt-smoke` and `same-task-roundtrip`
+under both `runner-codex` (API key) and `runner-codex-subscription`.
+The API profile uses the same model and workflow
+definition with ordinary encrypted `OPENAI_API_KEY` secret references, including
+the provider's `CODEX_API_KEY` alias. It does not stage a subscription login.
+Receipt smoke has exactly four successful native task work runs, with triage,
+builder, verifier and a return to the builder. Ordinary case document writes save
+`receipt` as `{total:6}`, then `review` as
+`{totalCorrect:true,missing:["currency"]}`, then a second receipt revision as
+`{total:6,currency:"USD"}`. The independent oracle requires both receipt writes
+by the builder in distinct runs, the review by the verifier, observed reads of
+the prior documents, four delivered agent handoffs and fresh case/task context for
+each phase. The final builder requests `to: "done"` before normal task completion;
+the fifth handoff becomes `completed` and the case closes atomically with the task.
+This terminal destination does not create another run or bypass completion gates.
+
+Before kickoff, its isolated company and every agent have 100-cent budgets,
+90-second native Codex work-run timeouts and low reasoning effort. Daily task-run limits
+are triage one, builder two and verifier one. Setup applies the initial triage
+limits before creating that agent; the flow applies and reads back every role's
+limits before work begins. The attempt is five minutes and has no automatic
+retry. Pristine production-default instruction evidence is captured before
+adding the declared role routing prompt. These settings apply to receipt smoke;
+the original arithmetic cell retains its 1,000-cent budgets and four-to-six-run
+contract.
+
+Initial production lifecycle setup performs hello inference outside heartbeat
+counts and budget accounting. Up to three initial probes are expected, one for
+each agent; detailed setup tokens and cost are unavailable. The flow observes
+readiness serially, waits up to 45 seconds per agent and fails immediately on a
+reported lifecycle error, then pauses the agents to prevent routine 60-second
+setup retries. Timing out does not immediately cancel an in-flight hello probe.
+The four-run limit therefore covers task work, not every provider inference.
+The ordinary work-run usage report excludes setup probes, and unknown usage
+must not be reported as zero or free. Setup observations are retained separately
+in `receipt-setup.json`.
+
+Two passive cases are created through public APIs for browser list filtering.
+They remain unchanged and start no work. Public screenshots use the primary
+case detail route, document dialogs on that route and the primary task route.
+List navigation itself produces no screenshot.
+
+The receipt fixture supplies `workflow_document_text` through the handoff
+API; it becomes the ordinary task's `workflow` document before dispatch. Receipt
+role prompts tell each phase to read that document. Older recorded campaigns
+precede this new required field and remain evidence of their original version.
+API/tool authoring guidance recommends both a Mermaid `stateDiagram-v2` map and
+prose explaining transition conditions, evidence, ownership and wait/retry rules;
+the small fixture may use prose only because the recommendation is not validation.
+
+The original arithmetic `case-handoffs` fixture uses ordinary agent creation and the
+public case-handoff API for initial kickoff. Subsequent routing is performed by
+the agents through the production native tool. Four phase documents record
+fresh case/task/version observations; the oracle checks these against the
+public ledger and independently specified arithmetic result. Its company-wide run
+collection accounts for all three agents and fails above six turns. Only
+allowlisted state, the synthetic document contents and correlated tool-presence
+booleans enter the workflow snapshot; provider event bodies are not republished.
+Final UI screenshots cover the persistent case history and original task.
+
+The `runner-codex-subscription` profile consumes explicit `CODEX_AUTH_JSON` and
+never creates a fake API key. Login setup uses the production company Codex
+home, refuses nonisolated or redirected roots and occupied auth files, and
+registers cleanup before agent setup. It copies no operator config, sessions,
+plugins or unrelated files. The shared fixture registry owns that dependency;
+there is no private runtime injection.
+
+The `same-task-roundtrip` arithmetic cell now creates two reusable name-and-prompt
+workflows through production APIs and kicks off using `workflowId`. Its existing
+four-phase journey adopts A → B → A, then preserves A. Every phase reads the
+effective task document and persists its distinct procedure marker; the oracle
+requires the captured workflow identities and effective revision references.
+Case Work and expanded history show the names and arbitrary phases. This changes
+the definition/grader digest; historical passes do not qualify this extension.
+The receipt cells continue exercising inline kickoff compatibility. Provider-turn,
+timeout, credentials and cleanup bounds are unchanged.
+
+The arithmetic journey records four delivered agent handoffs and one completed
+terminal intent. The final case is `done` at handoff version 5, while the same
+four provider work runs and unchanged workflow document revision finish the task.
+The oracle rejects a missing or pending terminal intent.
+
+## Feedback persistence (explicit only)
+
+`--suite feedback-persistence` selects two local native Claude/Codex cells.
+Each creates one standard task through the browser, asks for two distinct
+synthetic feedback items, and requires the real `submit_complaint` and
+`submit_suggestion` tools. The five-minute case expects one task work run and
+disables automatic retries. Company and agent accounted-work budgets are $10.
+Setup probes and any background work must also pass through the separately
+budgeted gateway when using an operations manifest. Local compute is unmetered.
+Cost and duration forecasts remain unmeasured until a retained live attempt.
+The runner E2E maintainers own this manual case; `--all` excludes it.
+
+After collection and fixture teardown, the oracle reads the retained evidence
+file and requires exact nonce-bearing bodies, the original company/agent/task
+and observed run, plus one completed native receipt for each tool. Missing or
+partial collection, prose-only claims, foreign attribution, duplicate records,
+and failed submissions cannot pass. Full bodies stay in private evidence;
+public reports retain counts, fingerprints, and closed oracle checks. The usual
+result screenshot, trace, secret scanning and supervisor cleanup still apply.
+This case proves explicit submission and persistence, not spontaneous feedback
+quality or survival after an abrupt worker kill.
+
+```sh
+pnpm test:e2e:runner -- --list --suite feedback-persistence
+pnpm test:e2e:runner -- --id feedback-persistence.runner-acpx-claude.local.complaint-and-suggestion --max-automatic-retries 0 --max-parallel 1
+```

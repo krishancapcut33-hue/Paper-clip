@@ -2,6 +2,8 @@
 
 Product map: [Execution workspaces, services, and files](../feature-map/workspaces.md).
 
+Feature ID: `workspaces`.
+
 Lost-source reconstruction adds the board-only
 `POST /api/issues/{id}/recovery-actions/reconstruct-workspace` action. It requires
 `runtime:manage` and ordinary task visibility. Agents cannot authorize it. The
@@ -25,6 +27,8 @@ for format, permission checks, evidence and maintenance.
 
 ## `binding`
 
+Capability ID: `workspaces/binding`.
+
 Review: `baseline`.
 
 API: `present` — representative operation IDs:
@@ -44,6 +48,12 @@ those APIs with their admitted run token. These paths do not require a project.
 
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
+
+Ordinary input may reuse the exact currently bound private task directory after
+an explicitly fresh retry. Preparation rechecks company, source task, current
+binding and canonical path; missing directories, symlinks and foreign roots are
+rejected. This preserves files without granting new access or replaying the
+previous turn. An explicitly fresh retry still creates a clean sibling.
 
 Task workspace writes require `issue:mutate`, an active owned task/run for agents,
 and current source visibility. Shared physical roots also require source-project
@@ -124,6 +134,8 @@ a running service.
 
 ## `provisioning`
 
+Capability ID: `workspaces/provisioning`.
+
 Source preparation keeps its dedicated lock connection active during work on
 other connections. It preserves company/source exclusion and existing admission
 authority; it adds no agent API or permission. The
@@ -152,6 +164,14 @@ new controller-side Git acquisition. Evidence remains source-only here; focused
 [repository tests](../../server/src/__tests__/task-workspace-repositories-trust.test.ts)
 are separate from live agent qualification.
 
+An admitted native standard task can read a same-agent completion continuation
+for its own pending repository in its current workspace. An explicit yield may
+use that saved continuation; explicit completion remains completion. Existing
+status decisions and wake admission retain Stop and authorization gates. The
+[workspace API regression](../../server/src/__tests__/task-workspace-api.test.ts)
+and [driver regression](../../packages/paperclip-runner/src/drivers/completion-continuation.test.ts)
+cover this contract; live qualification remains separate.
+
 Policy: Company/project/workspace visibility and runtime authority; active run, trust
 preset and task ownership where required.
 
@@ -168,6 +188,8 @@ Gaps: Observing readiness exists. Creating host commands or arbitrary provision 
 is a separate protected operation.
 
 ## `services`
+
+Capability ID: `workspaces/services`.
 
 Review: `baseline`.
 
@@ -195,6 +217,8 @@ calls retain runtime trust and workspace/task scope checks. Optional MCP availab
 must be recorded.
 
 ## `files-git`
+
+Capability ID: `workspaces/files-git`.
 
 Review: `baseline`.
 
@@ -228,6 +252,8 @@ Root containment and symlink escape checks remain, and attachments, task records
 workspace metadata, and operation logs retain their app-data privacy.
 
 ## `closure`
+
+Capability ID: `workspaces/closure`.
 
 Review: `baseline`.
 

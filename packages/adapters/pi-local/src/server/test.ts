@@ -10,6 +10,7 @@ import {
   asString,
   parseObject,
   ensurePathInEnv,
+  sanitizeInheritedPaperclipEnv,
 } from "@paperclipai/adapter-utils/server-utils";
 import {
   asStringArray,
@@ -165,7 +166,7 @@ export async function testEnvironment(
       });
       preparedRuntimeConfig.env.PI_CODING_AGENT_DIR = preparedTarget.assetDirs.agentConfig;
     }
-    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...process.env, ...preparedRuntimeConfig.env }));
+    const runtimeEnv = normalizeEnv(ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...preparedRuntimeConfig.env }));
 
     const cwdInvalid = checks.some((check) => check.code === "pi_cwd_invalid");
     if (cwdInvalid) {
