@@ -1,7 +1,9 @@
+import { toolReviewProjectionService } from "./tool-review-projection.js";
+import { toolReviewInterruptionService } from "./tool-review-interruption.js";
 import { bindVerifiedToolApprovalArguments, claimToolTestApproval, releaseToolApproval, persistToolTestOutcome, startToolInvocation, type ToolApprovalClaim } from "./tool-approval-execution.js";
 import { approvedToolReviewCompanies, prepareApprovedToolReview, recoverApprovedToolReviews } from "./tool-review-recovery.js";
 import { toolReviewExpiryService } from "./tool-review-expiry.js";
-import { writeToolReviewChange } from "./tool-review-work-notifications.js";
+import { notifyToolReviewChange, writeToolReviewChange } from "./tool-review-work-notifications.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import type { runPromptInjectionProvider } from "./prompt-injection-provider.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
@@ -46,7 +48,6 @@ import {
   asc,
   desc,
   eq,
-  gt,
   inArray,
   isNull,
   lte,
@@ -2199,7 +2200,7 @@ export function createToolGatewayService(
       companyId: session.companyId,
       agentId: session.agentId,
       runId: session.runId,
-    });
+    }, { readScope: "identity" });
     return {
       ...session,
       identityContextId: captured.context?.id,
@@ -2398,6 +2399,11 @@ export function createToolGatewayService(
                 ? "stale_target"
                 : null;
       if (!outcome) return;
+      const projection = asRecord(currentResult?.toolAction);
+      if (projection?.status === (input.status === "cancelled" ? "expired" : input.status)
+        && projection.errorCode === (input.errorCode ?? null)
+        && projection.errorMessage === (input.errorMessage ?? null)
+        && projection.resultSummary === (input.resultSummary ?? null)) return false;
 
       const now = new Date();
       await tx
@@ -7987,6 +7993,7 @@ export function createToolGatewayService(
 
       const [actionRequest] = await tx
         .select({
+          companyId: toolActionRequests.companyId,
           status: toolActionRequests.status,
           updatedAt: toolActionRequests.updatedAt,
         })
@@ -8001,6 +8008,7 @@ export function createToolGatewayService(
         return false;
       }
 
+      await notifyToolReviewChange(tx, actionRequest.companyId);
       await tx
         .update(toolInvocations)
         .set({
@@ -8123,10 +8131,10 @@ export function createToolGatewayService(
       return { projectId: issue.projectId };
     }
     const expiredAt = new Date();
-    await db
+    await writeToolReviewChange(db, claimed.companyId, tx => tx
       .update(toolActionRequests)
       .set({ status: "expired", resolvedAt: expiredAt, updatedAt: expiredAt })
-      .where(eq(toolActionRequests.id, claimed.id));
+      .where(eq(toolActionRequests.id, claimed.id)));
     await reflectToolActionInteractionLifecycle({
       actionRequestId: claimed.id,
       status: "expired",
@@ -8476,10 +8484,10 @@ export function createToolGatewayService(
         })
         .where(eq(toolInvocations.id, invocation.id));
       void emitConnectionInvoked(db, invocation.id);
-      await db
+      await writeToolReviewChange(db, claimed.companyId, tx => tx
         .update(toolActionRequests)
         .set({ status: "executed", resolvedAt: now, updatedAt: now })
-        .where(eq(toolActionRequests.id, claimed.id));
+        .where(eq(toolActionRequests.id, claimed.id)));
       await reflectToolActionInteractionLifecycle({
         actionRequestId: claimed.id,
         status: "executed",
@@ -8817,6 +8825,12 @@ export function createToolGatewayService(
         : null,
     };
   }
+
+  const reviewProjection = toolReviewProjectionService(db, reflectToolActionInteractionLifecycle);
+  const reviewInterruption = toolReviewInterruptionService(db, async settled => {
+    void emitConnectionInvoked(db, settled.invocationId);
+    await reflectToolActionInteractionLifecycle(settled);
+  });
 
   const reviewExpiry = toolReviewExpiryService(db, async expired => {
     void emitConnectionInvoked(db, expired.invocationId);
@@ -9910,6 +9924,10 @@ export function createToolGatewayService(
       return buildTestCallStatus(actionRequest, invocation);
     },
 
+    repairActionReviewProjections: reviewProjection.sweep,
+    actionReviewProjectionCompanies: reviewProjection.companies,
+    settleInterruptedActionReviews: reviewInterruption.sweep,
+    nextActionReviewInterruptionAt: reviewInterruption.next,
     sweepExpiredActionReviews: reviewExpiry.sweep,
     nextActionReviewExpiryAt: reviewExpiry.next,
     actionReviewExpiryDeadlines: reviewExpiry.deadlines,
@@ -9941,97 +9959,11 @@ export function createToolGatewayService(
       }, companyId);
     },
 
-    async sweepActionReviews(input: { includeExpiry?: boolean; includeApproved?: boolean } = {}) {
-      // A process may stop between persisting a provider outcome and updating the
-      // feed projection. Reconcile from authoritative rows before delivering it.
-      const unreflected = await db
-        .select({ request: toolActionRequests, invocation: toolInvocations })
-        .from(toolActionRequests)
-        .innerJoin(
-          issueThreadInteractions,
-          eq(issueThreadInteractions.id, toolActionRequests.interactionId),
-        )
-        .innerJoin(
-          toolInvocations,
-          eq(toolInvocations.id, toolActionRequests.invocationId),
-        )
-        .where(
-          and(
-            inArray(toolActionRequests.status, [
-              "executed",
-              "failed",
-              "expired",
-              "cancelled",
-            ]),
-            sql`coalesce(${issueThreadInteractions.result}->'toolAction'->>'status', '') <> case when ${toolActionRequests.status} = 'cancelled' then 'expired' else ${toolActionRequests.status} end`,
-          ),
-        )
-        .limit(100);
-      for (const { request, invocation } of unreflected)
-        await reflectToolActionInteractionLifecycle({
-          actionRequestId: request.id,
-          status: request.status as
-            "executed" | "failed" | "expired" | "cancelled",
-          errorCode: invocation.errorCode,
-          errorMessage: invocation.errorMessage,
-          resultSummary: invocation.resultSummary?.summary,
-        });
-      const now = new Date();
-      const staleAt = new Date(now.getTime() - 10 * 60_000);
-      let cursor: string | undefined;
-      let scanned = input.includeExpiry === false ? 0 : (await reviewExpiry.sweep(now)).scanned;
+    async sweepActionReviews(input: { includeExpiry?: boolean; includeApproved?: boolean; includeInterrupted?: boolean } = {}) {
+      await reviewProjection.sweep();
+      let scanned = input.includeExpiry === false ? 0 : (await reviewExpiry.sweep()).scanned;
       if (input.includeApproved !== false) scanned += (await this.recoverApprovedActionReviews()).scanned;
-      for (;;) {
-        const rows = await db
-          .select()
-          .from(toolActionRequests)
-          .where(
-            and(
-              eq(toolActionRequests.status, "executing"),
-              lte(toolActionRequests.updatedAt, staleAt),
-              cursor ? gt(toolActionRequests.id, cursor) : undefined,
-            ),
-          )
-          .orderBy(asc(toolActionRequests.id))
-          .limit(100);
-        for (const row of rows) {
-          const status = "failed";
-          const errorCode = "tool_execution_outcome_unknown";
-          const errorMessage = "Execution was interrupted; the external outcome is unknown. Inspect the provider before retrying.";
-          const [changed] = await db
-            .update(toolActionRequests)
-            .set({ status, resolvedAt: now, updatedAt: now })
-            .where(
-              and(
-                eq(toolActionRequests.id, row.id),
-                eq(toolActionRequests.status, row.status),
-                eq(toolActionRequests.updatedAt, row.updatedAt),
-              ),
-            )
-            .returning();
-          if (!changed) continue;
-          await db
-            .update(toolInvocations)
-            .set({
-              status: "failed",
-              errorCode,
-              errorMessage,
-              completedAt: now,
-              updatedAt: now,
-            })
-            .where(eq(toolInvocations.id, row.invocationId));
-          void emitConnectionInvoked(db, row.invocationId);
-          await reflectToolActionInteractionLifecycle({
-            actionRequestId: row.id,
-            status,
-            errorCode,
-            errorMessage,
-          });
-        }
-        scanned += rows.length;
-        if (rows.length < 100) break;
-        cursor = rows[rows.length - 1].id;
-      }
+      if (input.includeInterrupted !== false) scanned += (await reviewInterruption.sweep()).scanned;
       return { scanned };
     },
 
@@ -11251,7 +11183,8 @@ export function createToolGatewayService(
           })
           .where(eq(toolInvocations.id, invocationId));
         if (input.approvedActionRequestId) {
-          const [executedRequest] = await db
+          const actionRequestId = input.approvedActionRequestId;
+          const [executedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "executed",
@@ -11260,11 +11193,11 @@ export function createToolGatewayService(
             })
             .where(
               and(
-                eq(toolActionRequests.id, input.approvedActionRequestId),
+                eq(toolActionRequests.id, actionRequestId),
                 eq(toolActionRequests.status, "executing"),
               ),
             )
-            .returning({ id: toolActionRequests.id });
+            .returning({ id: toolActionRequests.id }));
           if (executedRequest) {
             await reflectToolActionInteractionLifecycle({
               actionRequestId: executedRequest.id,
@@ -11384,7 +11317,8 @@ export function createToolGatewayService(
           .where(eq(toolInvocations.id, invocationId));
         void emitConnectionInvoked(db, invocationId);
         if (input.approvedActionRequestId) {
-          const [failedRequest] = await db
+          const actionRequestId = input.approvedActionRequestId;
+          const [failedRequest] = await writeToolReviewChange(db, session.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "failed",
@@ -11393,11 +11327,11 @@ export function createToolGatewayService(
             })
             .where(
               and(
-                eq(toolActionRequests.id, input.approvedActionRequestId),
+                eq(toolActionRequests.id, actionRequestId),
                 eq(toolActionRequests.status, "executing"),
               ),
             )
-            .returning({ id: toolActionRequests.id });
+            .returning({ id: toolActionRequests.id }));
           if (failedRequest) {
             await reflectToolActionInteractionLifecycle({
               actionRequestId: failedRequest.id,
