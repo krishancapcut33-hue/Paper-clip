@@ -116,9 +116,15 @@ describe.skipIf(!support.supported)("durable login cleanup", () => {
   });
   async function settle(ms = 30_000) {
     await vi.advanceTimersByTimeAsync(ms);
-    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5000 });
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
     await vi.advanceTimersByTimeAsync(1);
-    await vi.waitFor(() => expect(idleWorkSnapshot().active).toBe(0), { timeout: 5000 });
+    await vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
     expect(errors).toEqual([]);
   }
   async function quiet(c: ReturnType<typeof coordinator>) {
