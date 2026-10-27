@@ -87,6 +87,7 @@ export const LOGIN_LEASE_SESSION_TAG_KEY = "adapterLoginSessionId";
 export const DISPLAYED_CODE_ADAPTER_TYPES: readonly AgentAdapterType[] = [
   "codex_local",
   "grok_local",
+  "muse_local",
 ];
 
 /**

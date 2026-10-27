@@ -45,6 +45,8 @@ export const AI_AUTH_ENV_KEYS = [
   "OPENROUTER_API_KEY",
   "XAI_API_KEY",
   "GROK_API_KEY",
+  "META_API_KEY",
+  "MUSE_AUTH_PATH",
   "CODEX_HOME",
   "GROK_HOME",
   "CLAUDE_CONFIG_DIR",
@@ -353,6 +355,13 @@ export async function prepareManagedAiRuntime(
         provider: { openrouter: { options: { apiKey: value, headers: OPENROUTER_ATTRIBUTION_HEADERS } } },
       });
       env.OPENCODE_DISABLE_PROJECT_CONFIG = "true";
+    }
+    if (input.binding.provider === "muse") {
+      const museConfigDir = path.join(home, "config", "muse");
+      await mkdir(museConfigDir, { recursive: true, mode: 0o700 });
+      await writeFile(path.join(museConfigDir, "auth.json"), value, { mode: 0o600 });
+      env.MUSE_AUTH_PATH = authFile;
+      env.MUSE_NO_AUTO_UPDATE = "1";
     }
     if (!routing && input.binding.provider === "google" && harness === "gemini_local") {
       // Gemini headless CLI requires an explicit auth choice even with an API key.

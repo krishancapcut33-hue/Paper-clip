@@ -20,6 +20,11 @@ export const AI_PROVIDERS: Record<
     logo: "/brands/codex-color.svg",
   },
   openrouter: { name: "OpenRouter", logo: "/brands/apps/openrouter.svg" },
+  muse: {
+    name: "Muse Code",
+    subscriptionName: "Muse Code subscription",
+    logo: "/brands/apps/meta.svg",
+  },
   xai: {
     name: "Grok",
     subscriptionName: "Grok subscription",
