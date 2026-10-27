@@ -1148,7 +1148,10 @@ fn acpx_transport_failure_retains_its_error_without_reopening_the_provider() {
     assert_eq!(failure["providerTurnId"], "provider-turn-transport");
     assert_eq!(failure["providerTerminalObserved"], false);
     assert_eq!(failure["error"]["code"], "acpx_provider_transport_failed");
-    assert!(!failure["error"]["message"].as_str().unwrap().is_empty());
+    assert!(failure["error"]["message"]
+        .as_str()
+        .unwrap()
+        .contains("ACPX sidecar emitted invalid JSON"));
     assert_eq!(failure["error"]["recoverable"], false);
     let snapshot = executor
         .execute(&command(4, "session.snapshot", json!({})))
