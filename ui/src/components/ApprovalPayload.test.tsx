@@ -4,7 +4,7 @@ import { act } from "react";
 import { createRoot } from "react-dom/client";
 import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
+import { ApprovalPayloadRenderer, approvalLabel, isRowResolvableApprovalType } from "./ApprovalPayload";
 import { ThemeProvider } from "../context/ThemeContext";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -29,6 +29,17 @@ describe("approvalLabel", () => {
         title: "Delete the superseded gateway token",
       }),
     ).toBe("Secret Operation: Delete the superseded gateway token");
+  });
+});
+
+describe("isRowResolvableApprovalType", () => {
+  it("keeps secret operations and budget overrides out of one-click inbox rows", () => {
+    // An inbox row shows only the requester-chosen title, not the operation or
+    // target the server will execute on approval.
+    expect(isRowResolvableApprovalType("secret_operation")).toBe(false);
+    expect(isRowResolvableApprovalType("budget_override_required")).toBe(false);
+    expect(isRowResolvableApprovalType("hire_agent")).toBe(true);
+    expect(isRowResolvableApprovalType("request_board_approval")).toBe(true);
   });
 });
 

@@ -92,7 +92,7 @@ import { Inbox as LegacyInbox } from "./LegacyInbox";
 import { StatusIcon } from "../components/StatusIcon";
 import { cn } from "../lib/utils";
 import { StatusBadge } from "../components/StatusBadge";
-import { approvalLabel, defaultTypeIcon, typeIcon } from "../components/ApprovalPayload";
+import { approvalLabel, defaultTypeIcon, typeIcon, isRowResolvableApprovalType } from "../components/ApprovalPayload";
 import { timeAgo } from "../lib/timeAgo";
 import { Button } from "@/components/ui/button";
 import {
@@ -531,7 +531,7 @@ function ApprovalInboxRow({
   const Icon = typeIcon[approval.type] ?? defaultTypeIcon;
   const label = approvalLabel(approval.type, approval.payload as Record<string, unknown> | null);
   const showResolutionButtons =
-    approval.type !== "budget_override_required" &&
+    isRowResolvableApprovalType(approval.type) &&
     ACTIONABLE_APPROVAL_STATUSES.has(approval.status);
   const showUnreadSlot = unreadState !== null;
   const showUnreadDot = unreadState === "visible" || unreadState === "fading";

@@ -48,6 +48,14 @@ export const typeIcon: Record<string, typeof UserPlus> = {
 
 export const defaultTypeIcon = ShieldCheck;
 
+// Compact inbox rows show only the requester-chosen title, so types whose
+// approval has a server-side effect the row cannot show must open the full card.
+const ROW_UNRESOLVABLE_APPROVAL_TYPES = new Set(["budget_override_required", "secret_operation"]);
+
+export function isRowResolvableApprovalType(type: string): boolean {
+  return !ROW_UNRESOLVABLE_APPROVAL_TYPES.has(type);
+}
+
 function PayloadField({ label, value }: { label: string; value: unknown }) {
   if (!value) return null;
   return (
