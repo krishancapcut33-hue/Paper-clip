@@ -48,12 +48,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "copilot",
-    "agentProfileVersion": 66,
+    "agentProfileVersion": 67,
     "agentServerPackage": "@github/copilot",
     "agentServerVersion": "1.0.88",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:0cddc219af25b741b7138f38faa7514dd5ee3427b1d3168e8a4bfbe5180983e8",
+    "commandDigest": "sha256:eb446f9249471739540c11d16150ce9c27cfb2edd7605e64b959b17fe044b03a",
     "permissionPolicy": "interactive"
   },
   "claude": {
@@ -78,7 +78,7 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "agentServerPackage": "@agentclientprotocol/codex-acp",
     "agentServerVersion": "1.6.2",
     "agentRuntimePackage": "@openai/codex",
-    "agentRuntimeVersion": "0.160.0",
+    "agentRuntimeVersion": "0.163.0",
     "commandDigest": "sha256:443491f4e814501a5dc47347e4510e84faeec9c9382e2d4e53bfe69386d5aabc",
     "permissionPolicy": "interactive"
   }

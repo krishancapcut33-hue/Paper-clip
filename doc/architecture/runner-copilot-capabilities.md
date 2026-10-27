@@ -1,6 +1,14 @@
 # Copilot 1.0.88 rich ACP capability audit
 
-Current source declaration (2026-10-26): **Copilot profile v61** binds controller
+Current source declaration (2026-10-27): **Copilot profile v67** binds the
+refreshed Codex runtime admission guard and the historical profile decoder. Its
+digest is `sha256:eb446f9249471739540c11d16150ce9c27cfb2edd7605e64b959b17fe044b03a`.
+The v66 declaration remains unchanged and readable as history. No Copilot
+executable, arguments, permission policy, tool receipts, or qualification flags
+change. The new identity needs fresh live qualification before release; prior
+live outcomes retain their original identities.
+
+Prior source declaration (2026-10-26): **Copilot profile v61** binds controller
 journal retirement and the historical profile decoder. Its digest is
 `sha256:956276ebee59f880249fa6955adc224af9ca7b6a9da59bcc5da4a8667550c5b3`.
 The v60 declaration remains unchanged and readable as history. This source
