@@ -132,6 +132,7 @@ async function readAvailableEvalOperationsReport(file: string): Promise<EvalOper
     if (values.some(value => value.size > 1) || complete && candidates.some(observation => (observation.tokens!.reasoning ?? 0) > complete.tokens!.output!)) { tokenUsage.conflictingRequests++; continue; }
     if (!complete) continue;
     const tokens = Object.fromEntries(tokenFields.map(key => [key, complete.tokens![key] ?? 0])) as unknown as ModelTokenTotals;
+    tokens.reasoning = candidates.find(observation => observation.tokens!.reasoning !== undefined)?.tokens?.reasoning ?? 0;
     tokenUsage.requests++;
     if (request.identity.phase === "setup") tokenUsage.setup.requests++;
     for (const key of tokenFields) {

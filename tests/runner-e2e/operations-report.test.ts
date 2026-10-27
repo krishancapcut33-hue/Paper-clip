@@ -2,7 +2,7 @@ import { mkdtemp, readFile, rm, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
-import { openEvalCostLedger } from "./cost-ledger.js";
+import { openEvalCostLedger, type EvalCostObservation } from "./cost-ledger.js";
 import { readEvalOperationsReport, renderEvalOperationsReport, validateEvalOperationsReport } from "./operations-report.js";
 import { buildRunnerCampaign } from "./history.js";
 import { regenerateRunnerDashboard } from "./dashboard-regenerate.js";
@@ -132,5 +132,30 @@ it("reports final setup and canceled-request tokens once while exposing missing 
     expect(() => validateEvalOperationsReport(changed)).toThrow("Invalid retained");
     changed.modelAccounting!.tokenUsage!.setup.totals.input = Number.MAX_SAFE_INTEGER + 1;
     expect(() => validateEvalOperationsReport(changed)).toThrow("Invalid retained");
+  } finally { await ledger.close(); await rm(root, { recursive: true, force: true }); }
+});
+
+
+it("preserves agreed final usage across every partial-field subset and observation order", async () => {
+  const root = await mkdtemp(path.join(tmpdir(), "eval-token-subsets-")), file = path.join(root, "ledger.jsonl");
+  const ledger = await openEvalCostLedger(file, { campaignId: "subsets", maxUsd: "10", deadlineAt: "2099-01-01T00:00:00Z", maxRequests: 64, maxConcurrent: 1 });
+  const values = { input: 10, cachedRead: 20, cachedWrite: 30, output: 5, reasoning: 2 };
+  const keys = ["input", "cachedRead", "cachedWrite", "output", "reasoning"] as const;
+  try {
+    for (let mask = 0; mask < 32; mask++) for (const reverse of [false, true]) {
+      const requestId = `request-${mask}-${reverse}`, partial: EvalCostObservation["tokens"] = {};
+      keys.forEach((key, index) => { if (mask & 1 << index) partial[key] = values[key]; });
+      await ledger.reserve(requestId, { executionId: "cell", attemptId: "attempt", phase: "agent" }, "0.2");
+      const sources = [{ source: "gateway" as const, tokens: { input: 10, cachedRead: 20, cachedWrite: 30, output: 5 } }, { source: "provider" as const, tokens: partial }];
+      if (reverse) sources.reverse();
+      for (const observation of sources) await ledger.observe({ ...observation, observationId: requestId + observation.source, requestId,
+        provider: "fixture", currency: "USD", route: "direct", classification: "reported", costUsd: "0.05", final: true });
+      await ledger.finish(requestId, "cancelled");
+    }
+    const report = await readEvalOperationsReport(file);
+    if (report.status === "unavailable") throw new Error("Expected usable accounting for agreeing partial receipts");
+    expect(report.modelAccounting?.tokenUsage).toMatchObject({ requests: 64, conflictingRequests: 0,
+      totals: { input: 640, cachedRead: 1280, cachedWrite: 1920, output: 320, reasoning: 64 } });
+    expect(report.knownUsd).toBe("3.200000000");
   } finally { await ledger.close(); await rm(root, { recursive: true, force: true }); }
 });
