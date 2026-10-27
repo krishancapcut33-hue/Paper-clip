@@ -1403,3 +1403,34 @@ failures. Publication and fresh remote checks/review remain required.
 Parent #17586 Actions/security/Greptile pass at 250fca6cff; Paperclip Review is
 still running. The original full inventory, older E2E failure, deletion-policy
 finding and master reconciliation remain outstanding. No stack PR is merged.
+
+
+Slice 26 is published as [#17590](https://github.com/paperclipai/paperclip/pull/17590)
+at 5ddb4543ed, based on #17586. It is attached; remote gates remain required.
+Slice 27 begins the separate Teams abandoned transport-attempt audit. The full
+original inventory, older findings and final master reconciliation remain open.
+
+
+## Slice 27: Teams abandoned transport attempts
+
+Attempt recovery now follows committed claims and saved 90-second deadlines.
+It preserves unknown outcomes and performs no provider I/O. This removes the last
+Teams periodic maintenance callback; unused consent remains the separate parent
+owner. The [audit](2026-10-25-teams-attempt-recovery-sleep-audit.md) records 235
+unique selected passing cases and preserved initial test failures. Workspace
+typecheck and build pass; publication and remote acceptance remain open.
+#17590 has Greptile 5/5; CI is running. #17586 has new review findings for writer
+support and report-query indexing. Fix at that parent and propagate before
+acceptance. All original remaining work and previous unresolved findings remain.
+
+
+Teams attempts are published as [#17592](https://github.com/paperclipai/paperclip/pull/17592).
+Voice report review repair 94c60683b8 adds the bounded report-window index and
+precise keyset pagination, with the single-active-writer contract explicit. The
+20,001-old-row cost regression failed before repair, then all 14 report tests,
+138 full voice/wiring cases and workspace types/build passed. Both review threads
+are resolved. Consent #17590 incorporates it at e501d6c99d; both combined Teams
+children pass 30 report/startup tests after propagation. Fresh remote gates still
+apply. The next new reason is chat run-milestone projection, separate from wake
+notices, terminal confirmations, interaction continuations and GitHub recovery.
+The entire original inventory and older unresolved findings remain open.

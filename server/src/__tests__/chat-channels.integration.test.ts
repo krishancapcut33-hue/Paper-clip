@@ -38,6 +38,7 @@ import { secretService } from "../services/secrets.js";
 import { githubChatWizardService } from "../services/chat-github-wizard.js";
 import { dispatchGitHubBotCloudEvent, registerGitHubBotCloudSetupPoller } from "../services/chat-github-cloud-ingress.js";
 import { githubChatManagementService } from "../services/chat-github-management.js";
+import { GITHUB_INLINE_RETRY_WINDOW_MS } from "../services/chat-channels/github/retry.js";
 import { githubChatReviewService } from "../services/chat-github-reviews.js";
 import { resolveGitHubReviewInstructions } from "../services/chat-channels/github/review-instructions.js";
 import { githubResponseCommentService } from "../services/chat-github-response-comments.js";
@@ -1217,6 +1218,47 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
     return { companyId, assignedAgentId, replacementAgentId };
   }
+
+  it("tracks the actual Board Teams claim and retires recovery when its receipt commits", async () => {
+    const context = await teamsFileAuthorityFixture();
+    const errors: unknown[] = [];
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError: error => errors.push(error) });
+    let release!: () => void, entered!: () => void;
+    const hold = new Promise<void>(resolve => { release = resolve; }), ready = new Promise<void>(resolve => { entered = resolve; });
+    context.controls.beforeConsentReceipt = async () => { entered(); await hold; };
+    let send: ReturnType<typeof context.service.publishBoardMessage> | undefined;
+    try {
+      vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+      await context.service.registerTeamsAttemptRecoveryWork(coordinator, () => true).ready;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      const attachment = await context.createFile();
+      send = context.service.publishBoardMessage(context.endpoint.id, context.conversation.id,
+        "File with an active claim", `teams-attempt-${randomUUID()}`, "owner-user", [attachment.id]);
+      await ready;
+      const [claim] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.endpointId, context.endpoint.id));
+      expect(claim.phase).toBe("consent_sending"); expect(context.consentCards).toHaveLength(1);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000); expect(coordinator.nextWakeAt()).toBe(claim.attemptExpiresAt!.getTime());
+      }, { timeout: 5000 });
+      release(); await send;
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull();
+      }, { timeout: 5000 });
+      const [settled] = await db.select().from(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.id, claim.id));
+      expect(settled.phase).toBe("awaiting_consent"); expect(settled.attemptId).toBeNull();
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); writes.mockRestore(); }
+      expect(context.consentCards).toHaveLength(1); expect(context.fileCards).toEqual([]);
+      expect(context.uploadRequest).not.toHaveBeenCalled(); expect(errors).toEqual([]);
+    } finally {
+      release(); await send;
+      await coordinator.stop(); vi.useRealTimers();
+      await retirePublicationFixture(context.service, context.endpoint.id);
+      // This test intentionally leaves unused consent; do not feed the next global expiry fixture.
+      await db.delete(chatTeamsFileTransfers).where(eq(chatTeamsFileTransfers.endpointId, context.endpoint.id));
+    }
+  });
 
   it("expires Teams consent from the committed Board transfer without periodic maintenance", async () => {
     const context = await teamsFileAuthorityFixture();
@@ -3895,7 +3937,11 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       const retry = gateway.executeTool(input);
       release();
       expect(await retry).toMatchObject({ result: { data: { actionId: expect.any(String) } } });
-      await expect.poll(async () => (await f.action())?.status).toBe("processed");
+      // A replay may return the durable receipt while the timed-out request
+      // still publishes. Observe the owner's bounded retry window, not the
+      // assertion library's one-second default.
+      await expect.poll(async () => (await f.action())?.status,
+        { timeout: GITHUB_INLINE_RETRY_WINDOW_MS }).toBe("processed");
       expect(await gateway.executeTool(input)).toMatchObject({ result: { data: { status: "processed" } } });
       const actions = await db.select().from(chatActions).where(and(eq(chatActions.endpointId, f.endpoint.id),
         eq(chatActions.kind, "github_review_publication")));
@@ -3903,7 +3949,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       expect(actions[0].status).toBe("processed");
       expect(f.responseComments.size).toBe(1);
       expect(f.responseWrites.map(write => write.method)).toEqual(["POST", "PATCH"]);
-    });
+    }, 60_000);
     it("rejects changed requests and revoked access before repeating an unstaged review", async () => {
       const f = await publicationRetryFixture();
       let metadataReads = 0;
