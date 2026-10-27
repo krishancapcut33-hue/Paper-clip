@@ -111,7 +111,7 @@ export async function openEvalOperations(file: string, executions: readonly Matr
           campaignId: manifest.limits.campaignId, attemptId, deadlineAt: Math.min(Date.parse(manifest.limits.deadlineAt), Date.now() + 4 * 3_600_000),
           receiptPath: path.join(`${manifest.ledgerPath}.otlp`, `${createHash("sha256").update(attemptId).digest("hex")}.jsonl`) });
         if (execution.environment.id === "daytona") remote = await startEvalRemoteGateway({ gateway, observability: relay,
-          deadlineAt: Date.parse(manifest.limits.deadlineAt) }, env);
+          deadlineAt: Math.min(Date.parse(manifest.limits.deadlineAt), Date.now() + 4 * 3_600_000) }, env);
       } catch (error) { await Promise.allSettled([gateway.close(), relay?.close()]); throw error; }
       let closing: Promise<void> | undefined;
       const endpoint = { ...gateway, baseUrl: remote?.baseUrl ?? gateway.baseUrl, phasePath,

@@ -213,6 +213,7 @@ it("gives remote workers scoped gateway/relay URLs and closes both local listene
   const close = vi.fn(async () => {}), origin = "https://synthetic-owned.trycloudflare.com";
   const start = vi.spyOn(remoteGateway, "startEvalRemoteGateway").mockResolvedValue({ baseUrl: origin, close });
   const value = { ...manifest(), executionIds: [remote.id], remoteGateway: "cloudflare" as const, ledgerPath: path.join(root, "ledger.jsonl") };
+  value.limits.deadlineAt = new Date(Date.now() + 24 * 3_600_000).toISOString();
   const file = path.join(root, "manifest.json"), env = { OPENAI_API_KEY: "provider-private", DAYTONA_API_KEY: "infra-private",
     BRAINTRUST_API_KEY: "trace-private", PAPERCLIP_E2E_BRAINTRUST_PROJECT_ID: "11111111-1111-4111-8111-111111111111" };
   let operations: Awaited<ReturnType<typeof openEvalOperations>> | undefined;
@@ -225,6 +226,8 @@ it("gives remote workers scoped gateway/relay URLs and closes both local listene
     expect(JSON.stringify(worker)).not.toMatch(/provider-private|infra-private|trace-private/);
     const local = start.mock.calls[0]![0];
     expect(local.gateway.baseUrl).toMatch(/^http:\/\/127\.0\.0\.1:/);
+    expect(local.deadlineAt).toBeLessThanOrEqual(Date.now() + 4 * 3_600_000);
+    expect(local.deadlineAt).toBeLessThan(Date.parse(value.limits.deadlineAt));
     await operations.close(); operations = undefined; expect(close).toHaveBeenCalledOnce();
     await expect(fetch(local.gateway.baseUrl)).rejects.toThrow();
     await expect(fetch(local.observability!.baseUrl)).rejects.toThrow();
