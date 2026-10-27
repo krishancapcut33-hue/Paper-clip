@@ -1,3 +1,4 @@
+import { notifyObsoletePolicyReviews } from "../obsolete-policy-review-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyChatRunMilestones } from "../chat-run-milestone-notifications.js";
@@ -1974,6 +1975,7 @@ export async function commitNativeStatusDecision(input: {
       return { decision: decisionRow, issue, replayed: true };
     }
     await notifyChatRunMilestones(tx, input);
+    await notifyObsoletePolicyReviews(tx, input);
     if (!decisionRow) {
       const latestDecisionVersion = await tx
         .select({
