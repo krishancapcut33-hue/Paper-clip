@@ -110,10 +110,11 @@ describeDatabase("connection install permission preservation", () => {
     const app = createRouteApp(db);
     const service = toolAccessService(db);
     const policy = toolAccessPolicyService(db);
-    const putInstalls = (ids: string[]) => request(app)
+    const putTargets = (installs: Array<{ targetType: "agent" | "company"; targetId: string }>) => request(app)
       .put(`/api/tool-connections/${connection.id}/installs`)
-      .send({ installs: ids.map(targetId => ({ targetType: "agent", targetId })) })
+      .send({ installs })
       .expect(response => expect(response.status, JSON.stringify(response.body)).toBe(200));
+    const putInstalls = (ids: string[]) => putTargets(ids.map(targetId => ({ targetType: "agent", targetId })));
     const appBindings = () => db.select().from(toolProfileBindings)
       .where(and(eq(toolProfileBindings.companyId, companyId), eq(toolProfileBindings.profileId, appProfile.id)));
     const extensions = () => db.select().from(activityLog).where(and(
@@ -126,7 +127,7 @@ describeDatabase("connection install permission preservation", () => {
         toolName, arguments: {},
       },
     });
-    return { companyId, agentIds, connection, appProfile, limitedProfile, service, putInstalls, appBindings, extensions, decide };
+    return { companyId, agentIds, connection, catalog, appProfile, limitedProfile, service, putTargets, putInstalls, appBindings, extensions, decide };
   }
 
   it.each(["adding an agent", "removing an agent", "saving the same list"])(
@@ -173,14 +174,47 @@ describeDatabase("connection install permission preservation", () => {
     },
   );
 
+  it.each(["saving the same list", "removing an agent"])(
+    "removes legacy connection-wide includes when %s",
+    async change => {
+      const f = await fixture();
+      const [first, second] = f.agentIds;
+      await f.putInstalls([first, second]);
+      const writeEntry = f.catalog.find(entry => entry.toolName === "send_email")!;
+      await db.delete(toolProfileEntries).where(and(
+        eq(toolProfileEntries.profileId, f.appProfile.id), eq(toolProfileEntries.catalogEntryId, writeEntry.id),
+      ));
+      await db.insert(toolProfileEntries).values({
+        companyId: f.companyId, profileId: f.appProfile.id, selectorType: "connection",
+        effect: "include", connectionId: f.connection.id,
+      });
+      await expect(f.decide(first, "send_email")).resolves.toMatchObject({ decision: "allow", reasonCode: "allow_profile" });
+      const priorBindings = await f.appBindings();
+      const priorEvents = await f.extensions();
+      const desired = change === "removing an agent" ? [first] : [first, second];
+
+      await f.putInstalls(desired);
+
+      await expect(f.decide(first, "read_email")).resolves.toMatchObject({ decision: "allow" });
+      await expect(f.decide(first, "send_email")).resolves.toMatchObject({ decision: "deny", reasonCode: "deny_default" });
+      expect(await db.select().from(toolProfileEntries).where(and(
+        eq(toolProfileEntries.profileId, f.appProfile.id), eq(toolProfileEntries.selectorType, "connection"),
+      ))).toEqual([]);
+      expect((await f.appBindings()).sort((a, b) => a.targetId.localeCompare(b.targetId))).toEqual(
+        priorBindings.filter(binding => desired.includes(binding.targetId)).sort((a, b) => a.targetId.localeCompare(b.targetId)),
+      );
+      expect(await f.extensions()).toEqual(priorEvents);
+    },
+  );
+
   it("preserves a removed company app grant when saving a company install", async () => {
     const f = await fixture();
     const input = { installs: [{ targetType: "company" as const, targetId: f.companyId }] };
-    await f.service.putConnectionInstalls(f.connection.id, input);
+    await f.putTargets(input.installs);
     await f.service.unbindProfile(f.appProfile.id, { targetType: "company", targetId: f.companyId });
     const priorEvents = await f.extensions();
 
-    await f.service.putConnectionInstalls(f.connection.id, input);
+    await f.putTargets(input.installs);
 
     await expect(f.decide(f.agentIds[0], "send_email")).resolves.toMatchObject({ decision: "deny", reasonCode: "deny_default" });
     expect(await f.appBindings()).toEqual([]);

@@ -771,6 +771,9 @@ company, a later installation-list save must preserve that removal. This also
 applies when the list is unchanged or another agent is removed. Removing and
 then reinstalling a target is a new installation and uses the current setup
 defaults.
+Every non-empty installation-list save also removes legacy connection-wide
+include entries from the managed app profile. Keep this cleanup when no targets
+are added, so the selected action entries remain authoritative.
 
 If a destructive provider cannot be safe with those defaults, add a narrowly
 reviewed provider policy with tests. Do not hide a dangerous tool by
