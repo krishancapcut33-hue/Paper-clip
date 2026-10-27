@@ -104,6 +104,7 @@ it("reports final setup and canceled-request tokens once while exposing missing 
         await ledger.observe({ ...observation, observationId: requestId + "-partial", requestId, source: "gateway", tokens: { ...tokens, input: 1 }, final: false });
         await ledger.observe({ ...observation, observationId: requestId + "-gateway", requestId, source: "gateway", tokens });
         await ledger.observe({ ...observation, observationId: requestId + "-provider", requestId, source: "provider", tokens });
+        if (requestId === "setup") await ledger.observe({ ...observation, observationId: "native-telemetry", requestId, source: "native_otlp", tokens: { ...tokens, input: 999 } });
         if (requestId === "conflict") await ledger.observe({ ...observation, observationId: "conflicting-usage", requestId, source: "provider", tokens: { input: 11 } });
         if (requestId === "full-conflict") await ledger.observe({ ...observation, observationId: "full-conflicting-usage", requestId, source: "provider", tokens: { ...tokens, input: 11 } });
       }
