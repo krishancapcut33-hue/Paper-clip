@@ -1,3 +1,5 @@
+import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { pendingNativeGovernance } from "./native-governance.js";
@@ -378,6 +380,9 @@ async function recordRetryableFailure(input: {
             : "native_finalization_retry_exhausted"
           : input.failureCode;
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
+    if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
+    }
     await notifyExecutionRunWork(tx);
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
     await tx
@@ -412,6 +417,7 @@ async function recordRetryableFailure(input: {
     }
     if (projectsTerminalStatus) await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (projectsTerminalStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
+    if (projectsTerminalStatus) await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
     const [updatedRun] = await tx
       .update(heartbeatRuns)
       .set({
@@ -602,7 +608,7 @@ function recoveredExecutionFailureMetadata() {
 
 async function projectCommittedRun(input: {
   db: Db;
-  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "finishedAt" | "runtimeMode" | "nativePhase">;
+  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "finishedAt" | "runtimeMode" | "nativePhase" | "nativeIssueId" | "contextSnapshot">;
   coordinator: typeof nativeRunFinalizations.$inferSelect;
 }) {
   if (!input.coordinator.resultId) return;
@@ -671,6 +677,7 @@ async function projectCommittedRun(input: {
     const tx = transaction as unknown as Db;
     await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
     await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
+    await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
     await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     await notifyExecutionRunWork(tx);
     await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
@@ -1162,6 +1169,8 @@ export async function finalizeNativeRun(input: {
   const admittedRun = await input.db
     .select({ id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
       runtimeMode: heartbeatRuns.runtimeMode, status: heartbeatRuns.status, errorCode: heartbeatRuns.errorCode,
+      nativeIssueId: heartbeatRuns.nativeIssueId,
+      contextSnapshot: sql<Record<string, unknown>>`jsonb_build_object('issueId', ${heartbeatRuns.contextSnapshot}->>'issueId')`,
       nativePhase: heartbeatRuns.nativePhase, finishedAt: heartbeatRuns.finishedAt })
     .from(heartbeatRuns)
     .where(eq(heartbeatRuns.id, input.runId))
@@ -1681,6 +1690,7 @@ export async function finalizeNativeRun(input: {
         const tx = transaction as unknown as Db;
         if (input.projectRunStatus) await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+        if (input.projectRunStatus) await notifyUnsafeWorkspaceExportRunChange(tx, run);
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx);
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });

@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { providerPackWorkspaceId, recordAdmittedRemoteProviderPack, resolveRemoteProviderPackAuthority } from "./remote-provider-pack-authority.js";
@@ -9774,6 +9775,7 @@ async function executePaperclipNativeSessionWithinScope(
           .for("update");
         if (!ownershipUnverified) await notifyInstructionCollection(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
         if (!ownershipUnverified) await notifyCancelledWorkspacePreservation(tx, { companyId: input.execution.binding.companyId, runId: input.execution.binding.runId });
+        if (!ownershipUnverified) await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.execution.binding.companyId, issueId: input.execution.binding.issueId });
         let [updatedRun] = await tx
           .update(heartbeatRuns)
           .set({

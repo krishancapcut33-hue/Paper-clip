@@ -1,3 +1,4 @@
+import { notifyUnsafeWorkspaceExportRecovery, notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
 import { notifyInstructionCollection } from "../instruction-collection-notifications.js";
 import { notifyScheduledRetryCancellation } from "../scheduled-retry-cancellation-notifications.js";
@@ -853,6 +854,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
         await notifyChatRunMilestones(tx, { companyId: current.companyId, issueId });
         await notifyInstructionCollection(tx, { companyId: current.companyId, runId: current.id });
         await notifyCancelledWorkspacePreservation(tx, { companyId: current.companyId, runId: current.id });
+        await notifyUnsafeWorkspaceExportRunChange(tx, current);
         [terminal] = await tx
           .update(heartbeatRuns)
           .set({
@@ -976,6 +978,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           await notifyChatRunMilestones(tx, { companyId: run.companyId });
           await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
           await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+          await notifyUnsafeWorkspaceExportRunChange(tx, run);
           const [row] = await tx.update(heartbeatRuns).set({ status: "cancelled", finishedAt: new Date(),
             errorCode: "case_handoff_superseded", error: "This case handoff was cancelled or superseded.", updatedAt: new Date() })
             .where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId), eq(heartbeatRuns.status, "queued"))).returning();
@@ -1338,6 +1341,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                   await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                   await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                   await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+          await notifyUnsafeWorkspaceExportRunChange(tx, run);
                   const [cancelled] = await tx
                     .update(heartbeatRuns)
                     .set({
@@ -1461,6 +1465,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId });
                 await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
                 await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
+          await notifyUnsafeWorkspaceExportRunChange(tx, run);
                 const [cancelled] = await tx
                   .update(heartbeatRuns)
                   .set({
@@ -1794,7 +1799,9 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       error: reason,
     });
 
-    await db
+    await db.transaction(async tx => {
+      await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: run.companyId, issueId });
+      await tx
       .update(issues)
       .set({
         executionRunId: null,
@@ -1809,6 +1816,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           eq(issues.executionRunId, run.id),
         ),
       );
+    });
 
     await appendRunEvent(cancelled, {
       eventType: "lifecycle",
@@ -3480,6 +3488,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
               : "Cancelled because the issue was reassigned before the scheduled retry became due";
             await notifyInstructionCollection(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
             await notifyCancelledWorkspacePreservation(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
+            await notifyUnsafeWorkspaceExportRunChange(tx, scheduledRun);
             await notifyScheduledRetryCancellation(tx, { companyId: scheduledRun.companyId, runId: scheduledRun.id });
             await notifyChatRunMilestones(tx, { companyId: scheduledRun.companyId, issueId: issue.id });
             const cancelled = await tx
@@ -3620,6 +3629,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           ) {
             await notifyInstructionCollection(tx, { companyId: activeExecutionRun.companyId, runId: activeExecutionRun.id });
             await notifyCancelledWorkspacePreservation(tx, { companyId: activeExecutionRun.companyId, runId: activeExecutionRun.id });
+            await notifyUnsafeWorkspaceExportRunChange(tx, activeExecutionRun);
             await notifyChatRunMilestones(tx, { companyId: activeExecutionRun.companyId, issueId: issue.id });
             const cancelled = await tx
               .update(heartbeatRuns)
@@ -3662,6 +3672,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
           }
 
           if (!activeExecutionRun && issue.executionRunId) {
+            await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
             await tx
               .update(issues)
               .set({
@@ -3859,6 +3870,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
                 `- Reason: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_MESSAGE}`,
                 `- Next action: ${WORKSPACE_WORKTREE_REQUIRES_PROJECT_REMEDIATION}`,
               ].join("\n");
+              await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: issue.companyId, issueId: issue.id });
               if (issue.status !== "blocked") await notifyChatResponseAvailability(tx, { companyId: issue.companyId, issueId: issue.id });
               await tx
                 .update(issues)
