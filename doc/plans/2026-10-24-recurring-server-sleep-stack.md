@@ -2083,3 +2083,36 @@ before worker settlement. The assertion now waits for settled idle tracking and
 the actual future deadline; all 37 affected lifecycle/publication/startup cases
 pass. The full failure remains in the audit; latest-head remote gates are required.
 No full-run success or stack completion is inferred from that focused repair.
+
+
+## Slice 38 accepted; slice 39 retry cancellation
+
+[#17666](https://github.com/paperclipai/paperclip/pull/17666) at
+`d8e1bd97f530fc7a5119549a35b871b7b3d9f737` has all 53 remote checks
+passing, fresh Greptile 5/5, and its review finding resolved. The PR remains
+draft and unmerged. Its earlier local failure and focused repair remain recorded.
+
+Slice 39 separates interrupted scheduled-retry cancellation from the periodic
+orphan reaper. Existing run rows and transaction notifications drive bounded
+recovery through the existing cancellation owner. No table or external alarm is
+added. The producer audit includes dispatch deferral, budget fences, correlated
+Stop, lifecycle transitions, settings, and deletion. See
+[the owner audit](2026-10-25-scheduled-retry-cancellation-sleep-audit.md).
+Thirty route tests and all 34 recovery tests pass. Shared-helper consumers pass
+20 tests. Final combined owner acceptance and remote gates remain required.
+Earlier #17490/#17572 CI failures, #17576/#17580 review findings, master
+reconciliation, and every other original inventory duty remain outstanding.
+
+Final combined owner acceptance passed all 164 tests in five suites, with no
+skips, in 41.14 seconds using separate dispatch and recovery databases. Together
+with the 30 retry-route tests this covers 194 tests. Remote PR gates remain pending.
+
+
+## Startup CI fixture repair
+
+Initial head bd490ee50b failed server shard 4/12: eleven tests in the startup
+suite used a heartbeat test double without the new registration method. The
+real worker and owner acceptance passed, but startup wiring coverage was missing
+from the local selection. The double now exposes the method, and new assertions
+verify scheduler enablement and periodic-reaper exclusion. All 48 startup tests
+pass in 5.34 seconds. This is a test-only repair; fresh head CI/review is required.
