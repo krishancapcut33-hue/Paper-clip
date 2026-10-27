@@ -787,3 +787,17 @@ test('retained failure codes distinguish native startup, child exit and invalid 
   const artifact = await fixture(t, { missingRoute: true, requests: 0 });
   assert.equal((await artifact.run()).report.failure, 'artifact_invalid');
 });
+
+
+test('model readiness rejects a missing terminal model receipt even when its reservation has a reviewed bound', async t => {
+  const f = await fixture(t, { requests: 1 });
+  f.manifest.overhead.accountingReadiness = 'model_requests';
+  for (const component of f.manifest.overhead.components) delete component.provisionalBound;
+  await f.save();
+  const result = await f.run(0, async () => Response.json({ error: 'synthetic refusal' }, { status: 429 }));
+  assert.equal(result.report.failure, 'request_accounting_unbounded');
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.incompleteAttempts, 1);
+  assert.equal(summary.heldUsd, '0.014000000');
+  assert.equal(summary.operatingReconciliation, 'pending');
+});

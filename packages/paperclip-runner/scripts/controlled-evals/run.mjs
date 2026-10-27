@@ -185,7 +185,8 @@ registerHooks({ resolve(specifier, context, nextResolve) {
       catch { cleanupVerified = false; failure ??= 'executable_cleanup_unverified'; }
     }
     const snapshot = ledger.snapshot();
-    if (snapshot.overBudget || snapshot.conflictingRequests || snapshot.inflight || snapshot.unknownRequests !== snapshot.boundedUnresolvedRequests) failure ??= 'request_accounting_unbounded';
+    if (snapshot.overBudget || snapshot.conflictingRequests || snapshot.inflight || snapshot.unknownRequests !== snapshot.boundedUnresolvedRequests
+        || manifest.overhead.accountingReadiness === 'model_requests' && (!snapshot.requests.length || snapshot.unknownRequests)) failure ??= 'request_accounting_unbounded';
     const receiptHashes = {};
     try {
       for (const request of snapshot.requests) receiptHashes[request.requestId] = sha256(await readRegularFile(join(root, 'receipts', `${request.requestId}.json`), limitFor(`receipts/${request.requestId}.json`)));

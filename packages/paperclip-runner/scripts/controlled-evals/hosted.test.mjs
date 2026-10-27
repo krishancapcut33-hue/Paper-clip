@@ -119,3 +119,31 @@ test('hosted CLI reports safe admission reasons without echoing private paths or
   assert.match(result.stderr, /A required hosted input file is missing/);
   assert.doesNotMatch(result.stderr + result.stdout, /SENSITIVE_SENTINEL/);
 });
+
+
+test('model-readiness policy retains operating holds without requiring vendor cost proofs', async t => {
+  const c = await campaign(t);
+  c.input.policy.overhead.accountingReadiness = 'model_requests';
+  for (const component of c.input.policy.overhead.components) delete component.provisionalBound;
+  delete c.input.policy.capacityBound;
+  const result = c.build();
+  assert.equal(result.manifest.overhead.accountingReadiness, 'model_requests');
+  assert.equal(result.manifest.observability.provisionalBound, undefined);
+  Object.assign(c.f.manifest, result.manifest); await c.f.save();
+  const missing = await summarizeControlledManifest(result.manifest, []);
+  assert.equal(missing.incompleteAttempts, 2);
+  assert.equal(missing.operatingHeldUsd, '0.004000000');
+  Object.assign(c.f.environment, c.environment, { PAPERCLIP_RUNNER_EVAL_EXECUTION_ID: 'execution-0' });
+  assert.equal((await c.f.run(0, () => success())).code, 0);
+  const first = await packControlledAttempt({ manifest: result.manifest, attemptId: 'attempt-0', environment: c.f.environment });
+  Object.assign(c.f.environment, { PAPERCLIP_RUNNER_EVAL_EXECUTION_ID: 'execution-1' });
+  assert.equal((await c.f.run(1, () => success())).code, 0);
+  const second = await packControlledAttempt({ manifest: result.manifest, attemptId: 'attempt-1', environment: c.f.environment });
+  const complete = await summarizeControlledManifest(result.manifest, [first, second]);
+  assert.equal(complete.incompleteAttempts, 0);
+  assert.equal(complete.operatingHeldUsd, '0.004000000');
+  assert.equal(complete.accountingReadiness, 'model_requests');
+  assert.equal(complete.operatingReconciliation, 'pending');
+  delete c.input.policy.overhead.accountingReadiness;
+  assert.throws(() => c.build(), /cost bound|operating bound/);
+});
