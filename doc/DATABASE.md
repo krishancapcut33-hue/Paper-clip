@@ -336,6 +336,16 @@ agent, status, and exact JSON string task identity in SQL. Other tasks' comment
 identifiers stay in the database. The display projection, ordering, current run
 ownership checks, and persisted wake payloads retain their existing contract.
 
+### Runtime skill preparation
+
+Bundled inventory reconciliation reads existing imported skills and their folder
+paths in batches. It resolves each bundled category once per import operation.
+These batches last only for that operation; later reads still evaluate current
+company and project access. Runtime version reads bind the selected snapshot to
+the already authorized skill and company. Public version reads retain their
+independent access checks. Snapshot validation, local file changes, and durable
+version pinning remain part of preparation.
+
 ## 1. Embedded PostgreSQL — zero config
 
 If you don't set `DATABASE_URL`, the server automatically starts an embedded PostgreSQL instance and manages a local data directory.

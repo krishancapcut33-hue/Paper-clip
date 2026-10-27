@@ -3454,6 +3454,10 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
 
   async function getVersion(companyId: string, skillId: string, versionId: string): Promise<CompanySkillVersion | null> {
     if (!await getById(companyId, skillId)) return null;
+    return readVersionForSkill(companyId, skillId, versionId);
+  }
+
+  async function readVersionForSkill(companyId: string, skillId: string, versionId: string): Promise<CompanySkillVersion | null> {
     const row = await db
       .select()
       .from(companySkillVersions)
@@ -6070,7 +6074,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       ?? (options.snapshotLatest || (skill.metadata?.skillSourceId && skill.metadata?.snapshotHash) || skill.accessSourceId ? skill.currentVersionId : null);
     if (selectedVersionId) {
       const versionPath = path.resolve(resolveManagedSkillsRoot(companyId), "__versions__", skill.id, selectedVersionId);
-      const version = await getVersion(companyId, skill.id, selectedVersionId);
+      const version = await readVersionForSkill(companyId, skill.id, selectedVersionId);
       if (!version) {
         return {
           status: "missing",
@@ -6205,7 +6209,7 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           : skill.fileInventory.length === 1 && skill.fileInventory[0]?.path === "SKILL.md" && skill.markdown
             ? [{ path: "SKILL.md", kind: "skill" as const, content: skill.markdown }] : null;
         if (inventory) {
-          const previous = skill.currentVersionId ? await getVersion(companyId, skill.id, skill.currentVersionId) : null;
+          const previous = skill.currentVersionId ? await readVersionForSkill(companyId, skill.id, skill.currentVersionId) : null;
           if (!previous || skillSnapshotHash(previous.fileInventory) !== skillSnapshotHash(inventory)) {
             const version = await createVersion(companyId, skill.id, { label: "Execution snapshot" }, { type: "system" },
               { skipInventoryRefresh: true, skill, fileInventory: inventory });
@@ -6379,11 +6383,22 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
     imported: ImportedSkill[],
     database: DbOrTransaction = db,
   ): Promise<CompanySkill[]> {
+    if (imported.length === 0) return [];
+    const existingRows = await database.select(selectCompanySkillColumns()).from(companySkills)
+      .where(and(eq(companySkills.companyId, companyId), inArray(companySkills.key, [...new Set(imported.map(skill => skill.key))]),
+        await visibility(database).condition(companyId)));
+    const folderListing = await folderSvc.list(companyId, "skill");
+    const paths = new Map(folderListing.folders.map(folder => [folder.id, folder.path]));
+    const existingByKey = new Map(existingRows.map(row => {
+      const skill = toCompanySkill(row);
+      return [skill.key, { ...skill, folderPath: skill.folderId ? paths.get(skill.folderId) ?? null : null }];
+    }));
+    const bundledFolders = new Map<string, Awaited<ReturnType<typeof folderSvc.ensureBundledCategory>>>();
     const out: CompanySkill[] = [];
     for (const skill of imported) {
       assertImportedSkillKeyAllowed(skill);
       assertImportedSkillSourceAllowed(skill);
-      const existing = await getByKey(companyId, skill.key, database);
+      const existing = existingByKey.get(skill.key);
       const existingMeta = existing ? getSkillMeta(existing) : {};
       const incomingMeta = skill.metadata && isPlainRecord(skill.metadata) ? skill.metadata : {};
       const incomingOwner = asString(incomingMeta.owner);
@@ -6407,9 +6422,11 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
       const parsed = parseFrontmatterMarkdown(skill.markdown);
       const storeMetadata = readSkillStoreMetadata(parsed.frontmatter, metadata);
       const bundledCategory = paperclipBundledFolderCategory(skill.key, incomingMeta);
-      const bundledFolder = bundledCategory
-        ? await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory))
-        : null;
+      let bundledFolder = bundledCategory ? bundledFolders.get(bundledCategory) : null;
+      if (bundledCategory && !bundledFolder) {
+        bundledFolder = await folderSvc.ensureBundledCategory(companyId, bundledFolderLabel(bundledCategory));
+        bundledFolders.set(bundledCategory, bundledFolder);
+      }
       const projectId = asString(incomingMeta.projectId);
       const projectName = asString(incomingMeta.projectName);
       const projectFolder = !existing && incomingKind === "project_scan" && projectId && projectName
@@ -6458,7 +6475,9 @@ export function companySkillService(db: Db, options: { actor?: AuthorizationActo
           .returning()
           .then((rows) => rows[0] ?? null);
       if (!row) throw notFound("Failed to persist company skill");
-      out.push(toCompanySkill(row));
+      const persisted = toCompanySkill(row);
+      existingByKey.set(persisted.key, { ...persisted, folderPath: persisted.folderId ? paths.get(persisted.folderId) ?? null : null });
+      out.push(persisted);
     }
     return out;
   }
