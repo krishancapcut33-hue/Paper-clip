@@ -105,15 +105,18 @@ describe("PropertiesPanel", () => {
       expect(aside.style.width).toBe("0px");
       expect(aside.hasAttribute("inert")).toBe(true);
       expect(aside.getAttribute("aria-hidden")).toBe("true");
+      expect(aside.classList.contains("properties-panel-docked")).toBe(false);
 
       await renderPanel();
       expect(container.querySelector("aside")).toBe(aside);
       expect(aside.style.width).toBe(classic ? "320px" : "322px");
       expect(aside.hasAttribute("inert")).toBe(false);
+      expect(aside.classList.contains("properties-panel-docked")).toBe(true);
 
       await renderPanel({ content: null });
       expect(container.querySelector("aside")).toBe(aside);
       expect(aside.style.width).toBe("0px");
+      expect(aside.classList.contains("properties-panel-docked")).toBe(false);
       expect(mockSetPanelVisible).not.toHaveBeenCalled();
     });
 

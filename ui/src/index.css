@@ -3184,7 +3184,6 @@ span.paperclip-mention-chip[data-mention-kind="external-object"] {
   --tp-max-height: max-height; /* Extracted from ui/src/components/FoldCurtain.tsx (transition-[max-height]). */
   --tp-border-color-background-color-box-shadow: border-color,background-color,box-shadow; /* Extracted from ui/src/components/IssueChatThread.tsx (transition-[border-color,background-color,box-shadow]). */
   --tp-width-min-width: width,min-width; /* Extracted from ui/src/components/KanbanBoard.tsx (transition-[width,min-width]). */
-  --tp-width-opacity: width,opacity; /* Extracted from ui/src/components/OnboardingWizard.tsx (transition-[width,opacity]). */
   --tp-background-color-right: background-color,right; /* Extracted from ui/src/components/ScrollToBottom.tsx (transition-[background-color,right]). */
   --tp-background-color-border-color-color: background-color,border-color,color; /* Extracted from ui/src/components/SystemNotice.tsx (transition-[background-color,border-color,color]). */
   --tp-transform-opacity: transform,opacity; /* Extracted from ui/src/components/ToastViewport.tsx (transition-[transform,opacity]). */

@@ -26,15 +26,18 @@ for (const scenario of ["sidebar-during-skeleton", "sidebar-after-content"]) {
     const pane = page.locator("aside");
     await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width)).toBe(434);
     await page.getByRole("button", { name: "Replay cold load" }).click();
+    await expect(pane).toHaveAttribute("inert", "");
     const samples = await sampleLayout(page, 3000);
-    // Ignore the initial collapse on replay; inspect only the delayed arrival.
+    // Route cleanup removes the old pane immediately, before the delayed arrival.
+    expect(samples.filter((sample) => sample.time < 700).every((sample) => sample.pane === 0)).toBe(true);
     const reveal = samples.filter((sample) => sample.time > 700 && sample.pane > 2 && sample.pane < 432);
-    expect(reveal.length).toBeGreaterThan(2);
+    expect(reveal.length).toBeGreaterThan(0);
     expect(reveal.some((sample) => sample.skeleton)).toBe(scenario === "sidebar-during-skeleton");
     for (const sample of samples) {
       expect(Math.abs(sample.main + sample.pane - 1440)).toBeLessThan(2);
       expect(sample.overflow).toBe(false);
     }
+    await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width)).toBe(434);
     await expect(pane).not.toHaveAttribute("inert");
   });
 }
@@ -91,4 +94,18 @@ test("a viewport narrowed during loading clamps the sidebar before reveal", asyn
   await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width), { timeout: 8000 }).toBe(344);
   expect(await page.evaluate(() => localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth"))).toBe("700");
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(1000);
+});
+
+test("removing maximized content releases the empty pane immediately", async ({ page }) => {
+  await page.goto("/iframe.html?id=tasks-sidebar-loading--sidebar-during-skeleton&viewMode=story");
+  const pane = page.locator("aside");
+  await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width)).toBe(434);
+  await page.getByRole("button", { name: "Maximize side panel" }).click();
+  await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width)).toBe(1440);
+  await page.getByRole("button", { name: "Replay cold load" }).click();
+  await expect(pane).toHaveAttribute("inert", "");
+  const samples = await sampleLayout(page, 500);
+  expect(samples.filter((sample) => sample.pane !== 0 || sample.main !== 1440 || sample.overflow)).toEqual([]);
+  await expect(pane).toHaveAttribute("inert", "");
+  expect(await pane.evaluate((el) => getComputedStyle(el).transitionDuration)).toBe("0s");
 });

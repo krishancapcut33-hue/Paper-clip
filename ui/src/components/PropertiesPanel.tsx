@@ -31,7 +31,7 @@ export function PropertiesPanel({ taskDetailLayout = false }: { taskDetailLayout
       <aside
         inert={!visible}
         aria-hidden={!visible}
-        className={cn("properties-panel-docked hidden md:flex border-border bg-card flex-col shrink-0 overflow-hidden h-full", visible && "border-l")}
+        className={cn("hidden md:flex border-border bg-card flex-col shrink-0 overflow-hidden h-full", panelContent != null && "properties-panel-docked", visible && "border-l")}
         style={{ width: visible ? 320 : 0, opacity: visible ? 1 : 0 }}
       >
         <div className="w-80 flex-1 flex flex-col min-w-(--sz-320px) min-h-0">
@@ -358,7 +358,9 @@ function ResizablePropertiesPanel({
     [maximized, finishRestore],
   );
 
-  const isFixed = fixedPane !== null;
+  // Route cleanup removes content before the maximize reset effect runs.
+  // Release fixed geometry immediately so an empty pane cannot cover the next page.
+  const isFixed = panelContent != null && fixedPane !== null;
 
   return (
     <>
@@ -384,7 +386,7 @@ function ResizablePropertiesPanel({
                 panelVisible ? "overflow-visible" : "overflow-hidden",
                 // The width/opacity transition would fight pointer-driven
                 // resizing, so it is suspended while dragging.
-                !dragging && "properties-panel-docked",
+                !dragging && panelContent != null && "properties-panel-docked",
               ),
         )}
         style={
