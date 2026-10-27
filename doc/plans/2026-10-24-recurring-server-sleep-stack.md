@@ -1950,3 +1950,32 @@ Workspace typecheck/build pass again after the receipt-lifecycle correction.
 The fast-response suites pass 69 tests. The initial complete chat run passed
 1,554 tests; a fresh complete run with the three added lifecycle regressions
 is in progress. No remote gate or full-stack readiness claim is made yet.
+
+## Slice 34 accepted head and slice 35 checkpoint
+
+[#17656](https://github.com/paperclipai/paperclip/pull/17656) at
+`43900c1f94500af4c4de1987f9608ac4e12feae6` passes all 53 remote checks,
+fresh Greptile 5/5, and has zero review threads. Final chat/publication/startup
+acceptance passes all 1,557 tests with no skips in 514.70 seconds. Workspace
+types/build and 69 fast-response cases pass. The PR remains draft and unmerged.
+
+Branch `codex/sleep-35-github-terminal-responses` starts from that head.
+It extracts provider-owned terminal-state decisions, records successful paused
+presentation versions in existing receipts, and adds a scoped worker plus
+committed issue/run/response-slot notifications. Eight new real-database
+lifecycle cases and nine existing owner cases pass; server types/build pass.
+The broader GitHub workflow suite is running. Startup registration and polling
+removal wait for the three identified direct issue writers and remaining audit
+and acceptance requirements in the terminal-response audit. No slice-35 PR or
+full-stack readiness is claimed yet. Earlier parent CI/review findings, all other
+inventory duties, and reconciliation with current master remain required.
+
+Slice 35 now covers the reproduced direct tree-restoration, workspace-admission
+and exhausted-recovery producers. Real publication-owner tests preserve both
+known-unsent cancellation and ambiguous outcome parking. Startup registers the
+new terminal worker and recurring GitHub maintenance no longer invokes that duty.
+Fourteen new worker cases plus one existing case pass; workspace types/build and
+migration application/replay/safety pass. The partial candidate index excludes
+10,000 completed rows in a rollback-only query-plan experiment. Fresh full
+chat/publication/startup acceptance is running; remote gates remain required.
+See the terminal-response audit for all retained failures and scoped evidence.

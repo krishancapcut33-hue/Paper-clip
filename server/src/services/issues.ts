@@ -1,3 +1,4 @@
+import { notifyChatResponseAvailability } from "./chat-response-availability.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
@@ -11381,6 +11382,10 @@ export function issueService(db: Db) {
         }
         if (patch.status === "done" || patch.status === "cancelled") {
           await notifyDecisionTargetWork(tx, `issue:${id}`);
+        }
+        if ((patch.status !== undefined && patch.status !== receiptExisting.status) ||
+            (patch.assigneeAgentId !== undefined && patch.assigneeAgentId !== receiptExisting.assigneeAgentId)) {
+          await notifyChatResponseAvailability(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         if (patch.status !== undefined && patch.status !== receiptExisting.status) {
           await notifyChatInboundWakeNotices(tx, { companyId: receiptExisting.companyId, issueId: id });
