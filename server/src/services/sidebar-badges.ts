@@ -91,7 +91,7 @@ export function sidebarBadgeService(db: Db) {
         status: observedRuns.status,
         responsibleUserId: observedRuns.responsibleUserId,
         createdAt: observedRuns.createdAt,
-        agentRunRank: sql<number>`row_number() over (partition by ${observedRuns.agentId} order by ${observedRuns.observedOrder})`.as("agent_run_rank"),
+        agentRunRank: sql<number>`row_number() over (partition by ${observedRuns.agentId} order by ${observedRuns.createdAt} desc, ${observedRuns.observedOrder})`.as("agent_run_rank"),
       }).from(observedRuns).as("ranked_runs");
       const mineCondition = extra?.currentUserId === undefined
         ? undefined

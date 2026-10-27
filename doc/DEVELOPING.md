@@ -3371,7 +3371,8 @@ separate from Git materialization, environment acquisition, and provider startup
 
 The badge query keeps the newest 200 runs of nonterminated same-company agents.
 It selects each agent's first observed run before status or Mine filters. An
-observation ordinal preserves equal-time input order. SQL returns only failure
+observation ordinal preserves equal-time input order. Per-agent ranking orders
+by full creation time first, then that ordinal for exact ties. SQL returns only failure
 IDs, issue bindings, and creation times. Dismissals and fresh issue authorization
 still run in the service.
 
