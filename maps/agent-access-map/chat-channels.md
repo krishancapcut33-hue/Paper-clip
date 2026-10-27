@@ -177,7 +177,7 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 ### `post-chat-endpoints-github-registration`
 
 API: `present` — `POST /api/chat-endpoints/{endpointId}/github/registration`; JSON REST.
-Agent access: `available` — agent REST and default native `search_api` / `call_api`.
+Agent access: `available` — agent REST and admitted native `search_api` / `call_api` return the saved `requiredUserAction` for human App registration and consent.
 Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
 Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
 Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
@@ -204,7 +204,7 @@ Gaps: This individual operation has source review but no recorded HTTP verificat
 ### `post-chat-endpoints-github-setup`
 
 API: `present` — `POST /api/chat-endpoints/{endpointId}/github/setup`; JSON REST.
-Agent access: `available` — agent REST and admitted native `search_api` / `call_api` advance saved setup. Register, install and identity steps return `requiredUserAction` for the addressed human instead of performing human authentication.
+Agent access: `available` — agent REST and admitted native `search_api` / `call_api` advance saved setup. Install and identity steps return `requiredUserAction` for the addressed human. Registration returns `state: "create"` without that handoff; use [the registration operation](#post-chat-endpoints-github-registration) to obtain the saved human setup link.
 Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
 Evidence: `source-only` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above.
 Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
