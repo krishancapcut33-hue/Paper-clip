@@ -173,6 +173,21 @@ type PreparedPiMcpConfig = {
 };
 
 const PI_MCP_FILE = "mcp.json";
+const PI_MCP_MIN_VERSION = [0, 99, 0] as const;
+
+export function piVersionSupportsMcp(versionOutput: string): boolean | null {
+  const match = versionOutput.match(/(\d+)\.(\d+)\.(\d+)/);
+  if (!match) return null;
+  const version = match.slice(1, 4).map(Number);
+  for (let i = 0; i < PI_MCP_MIN_VERSION.length; i += 1) {
+    if (version[i] !== PI_MCP_MIN_VERSION[i]) return version[i]! > PI_MCP_MIN_VERSION[i]!;
+  }
+  return true;
+}
+
+export function piMcpUnsupportedNote(versionOutput: string, serverCount: number): string {
+  return `Pi ${versionOutput.trim()} has no MCP support (needs ${PI_MCP_MIN_VERSION.join(".")} or later); ${serverCount} Paperclip MCP server(s) were not delivered. Upgrade @earendil-works/pi-coding-agent to use them.`;
+}
 
 function buildPiMcpServers(servers: AdapterRuntimeMcpServer[]): Record<string, unknown> {
   const mcpServers: Record<string, unknown> = {};
@@ -207,6 +222,7 @@ export async function preparePiMcpConfig(input: {
   servers: AdapterRuntimeMcpServer[];
   env: Record<string, string>;
   managedAgentConfigDir: string | null;
+  cwd: string;
 }): Promise<PreparedPiMcpConfig> {
   if (input.servers.length === 0) {
     return { agentConfigDir: null, notes: [], cleanup: async () => {} };
@@ -223,10 +239,16 @@ export async function preparePiMcpConfig(input: {
     return { agentConfigDir: input.managedAgentConfigDir, notes: [note], cleanup: async () => {} };
   }
 
-  const sourceDir =
-    input.env.PI_CODING_AGENT_DIR ||
-    process.env.PI_CODING_AGENT_DIR ||
-    path.join(input.env.HOME || process.env.HOME || os.homedir(), ".pi", "agent");
+  const home = input.env.HOME || process.env.HOME || os.homedir();
+  const configuredDir = input.env.PI_CODING_AGENT_DIR || process.env.PI_CODING_AGENT_DIR;
+  const sourceDir = path.resolve(
+    input.cwd,
+    configuredDir
+      ? configuredDir === "~" || configuredDir.startsWith("~/")
+        ? path.join(home, configuredDir.slice(1))
+        : configuredDir
+      : path.join(home, ".pi", "agent"),
+  );
   const overlayDir = await fs.mkdtemp(path.join(os.tmpdir(), "paperclip-pi-agent-mcp-"));
   try {
     const entries = await fs.readdir(sourceDir).catch(() => [] as string[]);

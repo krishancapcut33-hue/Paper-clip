@@ -59,7 +59,12 @@ import { shellQuote } from "@paperclipai/adapter-utils/ssh";
 import { isPiUnknownSessionError, parsePiJsonl, createPiJsonlParser } from "./parse.js";
 import { createPiStdoutCompactor, resolvePiStdoutLogMode } from "./stdout-compaction.js";
 import { ensurePiModelConfiguredAndAvailable } from "./models.js";
-import { preparePiMcpConfig, preparePiRuntimeConfig } from "./runtime-config.js";
+import {
+  piMcpUnsupportedNote,
+  piVersionSupportsMcp,
+  preparePiMcpConfig,
+  preparePiRuntimeConfig,
+} from "./runtime-config.js";
 import { preparePiOpenRouterExtension } from "./openrouter-extension.js";
 import { SANDBOX_INSTALL_COMMAND } from "../index.js";
 
@@ -75,6 +80,29 @@ function firstNonEmptyLine(text: string): string {
       .map((line) => line.trim())
       .find(Boolean) ?? ""
   );
+}
+
+async function readPiVersion(command: string, cwd: string, env: Record<string, string>): Promise<string> {
+  const runtimeEnv = ensurePathInEnv({ ...sanitizeInheritedPaperclipEnv(process.env), ...env });
+  try {
+    const result = await runChildProcess(
+      `pi-version-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      command,
+      ["--version"],
+      {
+        cwd,
+        env: Object.fromEntries(
+          Object.entries(runtimeEnv).filter((entry): entry is [string, string] => typeof entry[1] === "string"),
+        ),
+        timeoutSec: 10,
+        graceSec: 2,
+        onLog: async () => {},
+      },
+    );
+    return result.exitCode === 0 ? firstNonEmptyLine(`${result.stdout}\n${result.stderr}`) : "";
+  } catch {
+    return "";
+  }
 }
 
 function parseModelProvider(model: string | null): string | null {
@@ -346,12 +374,22 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   let attributionExtension: Awaited<ReturnType<typeof preparePiOpenRouterExtension>> | undefined;
   let preparedMcpConfig: Awaited<ReturnType<typeof preparePiMcpConfig>> | undefined;
   try {
-    const runtimeMcpServers = executionTargetIsRemote ? [] : ctx.runtimeMcp?.getServers() ?? [];
+    let runtimeMcpServers = executionTargetIsRemote ? [] : ctx.runtimeMcp?.getServers() ?? [];
+    let piVersionNote: string | null = null;
+    if (runtimeMcpServers.length > 0) {
+      const piVersion = await readPiVersion(command, cwd, env);
+      if (piVersionSupportsMcp(piVersion) === false) {
+        piVersionNote = piMcpUnsupportedNote(piVersion, runtimeMcpServers.length);
+        runtimeMcpServers = [];
+      }
+    }
     preparedMcpConfig = await preparePiMcpConfig({
       servers: runtimeMcpServers,
       env,
       managedAgentConfigDir: localAgentConfigDir || null,
+      cwd,
     });
+    if (piVersionNote) preparedMcpConfig.notes.push(piVersionNote);
     if (preparedMcpConfig.agentConfigDir) {
       env.PI_CODING_AGENT_DIR = preparedMcpConfig.agentConfigDir;
     }
