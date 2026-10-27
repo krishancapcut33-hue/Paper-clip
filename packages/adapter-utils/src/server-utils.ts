@@ -2419,6 +2419,11 @@ function renderPaperclipWakePromptBody(
         "Keep the final response concise and provider-facing. Do not narrate Paperclip workflow, checkout, status, or completion bookkeeping. Keep wait and review dispositions in the semantic control fields rather than appending status boilerplate to the answer. Mention task state only when the user asks about it or must act on a real blocker.",
         "",
       ]
+    : normalized.reason === "issue_disposition_repair" && recovery?.cause === "deliberate_wait_without_target"
+      ? [
+          "Disposition repair: Continue the assigned work if actionable, applying the latest user direction and preserving all approval and execution gates. Record a valid disposition or a durable owned continuation before ending; do not fabricate a review path or hand the task back to yourself.",
+          "",
+        ]
     : recoveryScoped
       ? [
           "Recovery contract: your job is to RECOVER this task, not to do the work. Do not produce the deliverable yourself.",

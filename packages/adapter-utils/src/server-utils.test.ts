@@ -2887,14 +2887,34 @@ describe("renderPaperclipWakePrompt", () => {
     );
   });
 
+  it("allows the original owner to work during a deliberate-wait disposition repair", () => {
+    const prompt = renderPaperclipWakePrompt({
+      reason: "issue_disposition_repair",
+      issue: { id: "issue-1", status: "in_progress" },
+      recovery: { cause: "deliberate_wait_without_target", originalAssignee: { id: "agent-1", name: "Artist" }, attemptCount: 1, maxAttempts: 5, nextAction: "Record a durable disposition." },
+    }, { includeExecutionContract: true });
+    expect(prompt).toContain("Continue the assigned work");
+    expect(prompt).not.toContain("Do not produce the deliverable yourself");
+    expect(prompt).not.toContain("send back to Artist");
+  });
+
+  it("does not waive recovery restrictions for other causes", () => {
+    const prompt = renderPaperclipWakePrompt({ reason: "issue_disposition_repair", issue: { id: "issue-1" }, recovery: { cause: "workspace_validation_failed" } });
+    expect(prompt).toContain("Do not produce the deliverable yourself");
+  });
+
   it("delivers typed disposition repair instructions without liveness classification", () => {
     const payload = { reason: "issue_disposition_repair", issue: { id: "issue-1", status: "in_progress" },
       dispositionRepair: { attempt: 1, maxAttempts: 2, sourceRunId: "source-1", instruction: "Record completion or a durable waiting path through the API." } };
-    const prompt = renderPaperclipWakePrompt(payload);
-    expect(prompt).toContain("Task disposition repair:");
-    expect(prompt).toContain("- attempt: 1/2");
-    expect(prompt).toContain(payload.dispositionRepair.instruction);
-    expect(prompt).not.toContain("liveness state:");
+    for (const resumedSession of [false, true]) {
+      const prompt = renderPaperclipWakePrompt(payload, { resumedSession, includeExecutionContract: true });
+      expect(prompt).toContain("Task disposition repair:");
+      expect(prompt).toContain("- attempt: 1/2");
+      expect(prompt).toContain(payload.dispositionRepair.instruction);
+      expect(prompt).not.toContain("liveness state:");
+      expect(prompt).not.toContain("Do not produce the deliverable yourself");
+      expect(prompt).not.toContain("send back to the original assignee");
+    }
     expect(JSON.parse(stringifyPaperclipWakePayload(payload)!)).toMatchObject({ dispositionRepair: payload.dispositionRepair });
   });
 
