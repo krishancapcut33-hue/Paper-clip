@@ -22,12 +22,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "pi",
-    "agentProfileVersion": 29,
+    "agentProfileVersion": 30,
     "agentServerPackage": "pi-acp",
     "agentServerVersion": "0.0.33",
     "agentRuntimePackage": "@earendil-works/pi-coding-agent",
     "agentRuntimeVersion": "1.0.0",
-    "commandDigest": "sha256:e80c6dc7bde12790371345ee5a12f0201d30941d26f1a780aec3d090545b2a06",
+    "commandDigest": "sha256:4517ab123dd89140ef462fc1905ac7a16a0dfcbaf21d67299a3c62de29c08a4d",
     "permissionPolicy": "interactive"
   },
   "cursor": {
@@ -48,12 +48,12 @@ export const QUALIFIED_ACPX_PROFILE_DATA = {
     "protocolVersion": 1,
     "acpxVersion": "0.13.1",
     "agent": "copilot",
-    "agentProfileVersion": 66,
+    "agentProfileVersion": 67,
     "agentServerPackage": "@github/copilot",
     "agentServerVersion": "1.0.88",
     "agentRuntimePackage": null,
     "agentRuntimeVersion": null,
-    "commandDigest": "sha256:9f76dfecab81a32a6f2653854b7fbde53cd2abb9af780677fcc07ff89ec16490",
+    "commandDigest": "sha256:eb446f9249471739540c11d16150ce9c27cfb2edd7605e64b959b17fe044b03a",
     "permissionPolicy": "interactive"
   },
   "claude": {

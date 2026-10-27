@@ -1,3 +1,5 @@
+import { toolReviewExpiryService } from "./tool-review-expiry.js";
+import { writeToolReviewChange } from "./tool-review-work-notifications.js";
 import { restConnectorFor } from "./connectors/rest-registry.js";
 import type { runPromptInjectionProvider } from "./prompt-injection-provider.js";
 import { promptInjectionPreventionService } from "./prompt-injection-prevention.js";
@@ -2569,7 +2571,7 @@ export function createToolGatewayService(
         signingSecret: options.toolActionSigningSecret,
       });
     } catch (error) {
-      await db
+      await writeToolReviewChange(db, actionRequest.companyId, tx => tx
         .update(toolActionRequests)
         .set({
           status: "cancelled",
@@ -2581,7 +2583,7 @@ export function createToolGatewayService(
             eq(toolActionRequests.id, actionRequest.id),
             eq(toolActionRequests.status, "pending"),
           ),
-        );
+        ));
       if (error instanceof ToolActionSigningSecretMissingError) {
         await db
           .update(toolInvocations)
@@ -2728,7 +2730,7 @@ export function createToolGatewayService(
     // an expired row. When the guard matches no row, the row is already resolved.
     // Do not emit an approval card for a dead row; throw a retriable conflict so
     // the retry finds the live request or creates a fresh, signable one.
-    const signedRows = await db
+    const signedRows = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
       .update(toolActionRequests)
       .set({
         interactionId: interaction.id,
@@ -2746,7 +2748,7 @@ export function createToolGatewayService(
           eq(toolActionRequests.status, "pending"),
         ),
       )
-      .returning({ id: toolActionRequests.id });
+      .returning({ id: toolActionRequests.id }));
     if (signedRows.length === 0) {
       await db
         .update(toolInvocations)
@@ -8667,7 +8669,7 @@ export function createToolGatewayService(
       pendingRequest.expiresAt.getTime() <= Date.now();
     if (pendingUnsigned || pendingExpired) {
       const now = new Date();
-      await db
+      await writeToolReviewChange(db, pendingRequest.companyId, tx => tx
         .update(toolActionRequests)
         .set({ status: "expired", resolvedAt: now, updatedAt: now })
         .where(
@@ -8675,7 +8677,7 @@ export function createToolGatewayService(
             eq(toolActionRequests.id, match.actionRequest.id),
             eq(toolActionRequests.status, "pending"),
           ),
-        );
+        ));
       await db
         .update(toolInvocations)
         .set({
@@ -8877,6 +8879,11 @@ export function createToolGatewayService(
         : null,
     };
   }
+
+  const reviewExpiry = toolReviewExpiryService(db, async expired => {
+    void emitConnectionInvoked(db, expired.invocationId);
+    await reflectToolActionInteractionLifecycle(expired);
+  });
 
   return {
     async recordRuntimeMcpDeliveryDiagnostic(input: {
@@ -9210,45 +9217,48 @@ export function createToolGatewayService(
       const token = generateNamedGatewayToken(tokenId);
       const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
       const now = new Date();
-      const [row] = await db
-        .insert(toolMcpGatewayTokens)
-        .values({
-          id: tokenId,
-          companyId: input.companyId,
-          gatewayId: input.gatewayId,
-          name: input.body.name,
-          tokenHash: hashGatewayToken(token),
-          tokenPrefix,
-          subjectType: input.body.subjectType ?? "gateway_client",
-          subjectId: input.body.subjectId ?? null,
-          clientLabel: input.body.clientLabel,
-          ownerNote: input.body.ownerNote,
-          allowedActions: input.body.allowedActions ?? [
-            "tools/list",
-            "tools/call",
-            "resources/list",
-            "resources/read",
-            "prompts/list",
-            "prompts/get",
-          ],
-          expiresAt: input.body.expiresAt ?? null,
-          expiryOverrideReason: input.body.expiryOverrideReason ?? null,
-          expiryOverrideByAgentId:
-            input.actor?.agentId && input.body.expiryOverrideReason
-              ? input.actor.agentId
-              : null,
-          expiryOverrideByUserId:
-            input.actor?.userId && input.body.expiryOverrideReason
-              ? input.actor.userId
-              : null,
-          expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
-          responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+      const [row] = await db.transaction(async tx => {
+        if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+        return tx
+          .insert(toolMcpGatewayTokens)
+          .values({
+            id: tokenId,
+            companyId: input.companyId,
+            gatewayId: input.gatewayId,
+            name: input.body.name,
+            tokenHash: hashGatewayToken(token),
+            tokenPrefix,
+            subjectType: input.body.subjectType ?? "gateway_client",
+            subjectId: input.body.subjectId ?? null,
+            clientLabel: input.body.clientLabel,
+            ownerNote: input.body.ownerNote,
+            allowedActions: input.body.allowedActions ?? [
+              "tools/list",
+              "tools/call",
+              "resources/list",
+              "resources/read",
+              "prompts/list",
+              "prompts/get",
+            ],
+            expiresAt: input.body.expiresAt ?? null,
+            expiryOverrideReason: input.body.expiryOverrideReason ?? null,
+            expiryOverrideByAgentId:
+              input.actor?.agentId && input.body.expiryOverrideReason
+                ? input.actor.agentId
+                : null,
+            expiryOverrideByUserId:
+              input.actor?.userId && input.body.expiryOverrideReason
+                ? input.actor.userId
+                : null,
+            expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
+            responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+      });
       if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
         action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
         details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions } });
@@ -9373,18 +9383,21 @@ export function createToolGatewayService(
         expiresAt: new Date(now.getTime() + sessionTtlMs(input.ttlMs)),
       };
 
-      await db.insert(toolGatewaySessions).values({
-        id: session.id,
-        companyId: session.companyId,
-        agentId: input.agentId,
-        runId: input.runId,
-        issueId: session.issueId,
-        projectId: session.projectId,
-        tokenHash: hashGatewayToken(token),
-        expiresAt: session.expiresAt,
-        createdAt: session.createdAt,
-        updatedAt: session.createdAt,
-      } as any);
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+        await tx.insert(toolGatewaySessions).values({
+          id: session.id,
+          companyId: session.companyId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: session.issueId,
+          projectId: session.projectId,
+          tokenHash: hashGatewayToken(token),
+          expiresAt: session.expiresAt,
+          createdAt: session.createdAt,
+          updatedAt: session.createdAt,
+        } as any);
+      });
 
       await writeAudit({
         session,
@@ -9724,6 +9737,7 @@ export function createToolGatewayService(
             },
           );
         }
+        const pendingActionRequest = recorded.actionRequest;
         const canonicalArguments = canonicalToolArguments(requestedParameters);
         const canonicalArgumentsHash = toolRequestIdentityHash(requestedParameters, options.toolActionSigningSecret);
         const approvalSnapshot = await connectedRemoteApprovalSnapshot(
@@ -9744,7 +9758,7 @@ export function createToolGatewayService(
             signingSecret: options.toolActionSigningSecret,
           });
         } catch (error) {
-          await db
+          await writeToolReviewChange(db, pendingActionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -9753,10 +9767,10 @@ export function createToolGatewayService(
             })
             .where(
               and(
-                eq(toolActionRequests.id, recorded.actionRequest.id),
+                eq(toolActionRequests.id, pendingActionRequest.id),
                 eq(toolActionRequests.status, "pending"),
               ),
-            );
+            ));
           if (error instanceof ToolActionSigningSecretMissingError) {
             await db
               .update(toolInvocations)
@@ -9785,7 +9799,7 @@ export function createToolGatewayService(
           tool,
           argumentsSummary: argumentValidation.summary,
         });
-        await db
+        await writeToolReviewChange(db, pendingActionRequest.companyId, tx => tx
           .update(toolActionRequests)
           .set({
             canonicalArgumentsHash,
@@ -9795,7 +9809,7 @@ export function createToolGatewayService(
             expiresAt: new Date(Date.now() + 60 * 60 * 1000),
             updatedAt: new Date(),
           })
-          .where(eq(toolActionRequests.id, recorded.actionRequest.id));
+          .where(eq(toolActionRequests.id, pendingActionRequest.id)));
         await writeToolCallEvent({
           invocationId,
           actionRequestId: recorded.actionRequest.id,
@@ -9958,7 +9972,12 @@ export function createToolGatewayService(
       return buildTestCallStatus(actionRequest, invocation);
     },
 
-    async sweepActionReviews() {
+    sweepExpiredActionReviews: reviewExpiry.sweep,
+    nextActionReviewExpiryAt: reviewExpiry.next,
+    actionReviewExpiryDeadlines: reviewExpiry.deadlines,
+    sweepExpiredActionReviewsForCompany: reviewExpiry.sweepForCompany,
+
+    async sweepActionReviews(input: { includeExpiry?: boolean } = {}) {
       // A process may stop between persisting a provider outcome and updating the
       // feed projection. Reconcile from authoritative rows before delivering it.
       const unreflected = await db
@@ -9996,7 +10015,7 @@ export function createToolGatewayService(
       const now = new Date();
       const staleAt = new Date(now.getTime() - 10 * 60_000);
       let cursor: string | undefined;
-      let scanned = 0;
+      let scanned = input.includeExpiry === false ? 0 : (await reviewExpiry.sweep(now)).scanned;
       for (;;) {
         const rows = await db
           .select()
@@ -10004,10 +10023,6 @@ export function createToolGatewayService(
           .where(
             and(
               or(
-                and(
-                  eq(toolActionRequests.status, "pending"),
-                  lte(toolActionRequests.expiresAt, now),
-                ),
                 eq(toolActionRequests.status, "approved"),
                 and(
                   eq(toolActionRequests.status, "executing"),
@@ -10033,15 +10048,9 @@ export function createToolGatewayService(
             );
             continue;
           }
-          const status = row.status === "pending" ? "expired" : "failed";
-          const errorCode =
-            status === "failed"
-              ? "tool_execution_outcome_unknown"
-              : "action_expired";
-          const errorMessage =
-            status === "failed"
-              ? "Execution was interrupted; the external outcome is unknown. Inspect the provider before retrying."
-              : "The approval request expired before a decision.";
+          const status = "failed";
+          const errorCode = "tool_execution_outcome_unknown";
+          const errorMessage = "Execution was interrupted; the external outcome is unknown. Inspect the provider before retrying.";
           const [changed] = await db
             .update(toolActionRequests)
             .set({ status, resolvedAt: now, updatedAt: now })
@@ -10181,7 +10190,7 @@ export function createToolGatewayService(
       }
       if (!signedPayload) {
         if (actionRequest.status === "pending") {
-          await db
+          await writeToolReviewChange(db, actionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "cancelled",
@@ -10193,7 +10202,7 @@ export function createToolGatewayService(
                 eq(toolActionRequests.id, actionRequest.id),
                 eq(toolActionRequests.status, "pending"),
               ),
-            );
+            ));
         }
         await reflectToolActionInteractionLifecycle({
           actionRequestId: actionRequest.id,
@@ -10758,7 +10767,7 @@ export function createToolGatewayService(
           actionRequest.expiresAt.getTime() <= Date.now()
         ) {
           const expiredAt = new Date();
-          const [expired] = await db
+          const [expired] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
             .update(toolActionRequests)
             .set({
               status: "expired",
@@ -10771,7 +10780,7 @@ export function createToolGatewayService(
                 inArray(toolActionRequests.status, ["pending", "approved"]),
               ),
             )
-            .returning({ id: toolActionRequests.id });
+            .returning({ id: toolActionRequests.id }));
           if (expired) {
             await reflectToolActionInteractionLifecycle({
               actionRequestId: expired.id,
@@ -10806,7 +10815,7 @@ export function createToolGatewayService(
             interaction?.kind === "request_confirmation" &&
             interaction.status === "accepted"
           ) {
-            const [approved] = await db
+            const [approved] = await writeToolReviewChange(db, actionRequest.companyId, tx => tx
               .update(toolActionRequests)
               .set({
                 status: "approved",
@@ -10824,7 +10833,7 @@ export function createToolGatewayService(
                   eq(toolActionRequests.status, "pending"),
                 ),
               )
-              .returning();
+              .returning());
             if (!approved) {
               throw new ToolGatewayHttpError(
                 409,
@@ -11860,23 +11869,50 @@ export function createToolGatewayService(
       return { ...sessionView, revokedAt: session!.revokedAt ?? now };
     },
 
-    async cleanupExpiredSessions(input: { now?: Date } = {}) {
+    async nextCredentialExpiryAt(): Promise<number | null> {
+      const [row] = await db.execute<{ at: string | Date | null }>(sql`
+        select min(expires_at) as at from (
+          (select ${toolMcpGatewayTokens.expiresAt} as expires_at from ${toolMcpGatewayTokens}
+            where ${toolMcpGatewayTokens.expiresAt} is not null
+            order by ${toolMcpGatewayTokens.expiresAt} limit 1)
+          union all
+          (select ${toolGatewaySessions.expiresAt} as expires_at from ${toolGatewaySessions}
+            order by ${toolGatewaySessions.expiresAt} limit 1)
+        ) expiries
+      `);
+      return row?.at == null ? null : new Date(row.at).getTime();
+    },
+
+    async cleanupExpiredSessions(input: { now?: Date; singleBatch?: boolean } = {}) {
       const now = input.now ?? new Date();
-      const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
-        .from(toolMcpGatewayTokens)
-        .where(lte(toolMcpGatewayTokens.expiresAt, now))
-        .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
-        .limit(500);
-      if (expiredTokens.length > 0) {
-        await db.delete(toolMcpGatewayTokens)
+      let deletedCount = 0;
+      while (true) {
+        const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
+          .from(toolMcpGatewayTokens)
+          .where(lte(toolMcpGatewayTokens.expiresAt, now))
+          .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
+          .limit(500);
+        if (expiredTokens.length > 0) {
+          await db.delete(toolMcpGatewayTokens)
             .where(and(inArray(toolMcpGatewayTokens.id, expiredTokens.map((token) => token.id)), lte(toolMcpGatewayTokens.expiresAt, now)))
             .returning({ id: toolMcpGatewayTokens.id });
+        }
+        const expiredSessions = await db.select({ id: toolGatewaySessions.id })
+          .from(toolGatewaySessions)
+          .where(lte(toolGatewaySessions.expiresAt, now))
+          .orderBy(asc(toolGatewaySessions.expiresAt), asc(toolGatewaySessions.id))
+          .limit(500);
+        if (expiredSessions.length > 0) {
+          const rows = await db.delete(toolGatewaySessions)
+            .where(and(inArray(toolGatewaySessions.id, expiredSessions.map((session) => session.id)), lte(toolGatewaySessions.expiresAt, now)))
+            .returning({ id: toolGatewaySessions.id });
+          deletedCount += rows.length;
+        }
+        // The worker schedules the next page; one-shot startup/manual callers
+        // must finish the backlog without relying on another scheduled pass.
+        if (input.singleBatch || (expiredTokens.length < 500 && expiredSessions.length < 500)) break;
       }
-      const rows = await db
-        .delete(toolGatewaySessions)
-        .where(lte(toolGatewaySessions.expiresAt, now))
-        .returning({ id: toolGatewaySessions.id });
-      return { deletedCount: rows.length };
+      return { deletedCount };
     },
 
     async listRuntimeSlots(companyId?: string) {
