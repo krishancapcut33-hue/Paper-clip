@@ -9210,45 +9210,48 @@ export function createToolGatewayService(
       const token = generateNamedGatewayToken(tokenId);
       const tokenPrefix = `pcgw_${tokenId.slice(0, 8)}`;
       const now = new Date();
-      const [row] = await db
-        .insert(toolMcpGatewayTokens)
-        .values({
-          id: tokenId,
-          companyId: input.companyId,
-          gatewayId: input.gatewayId,
-          name: input.body.name,
-          tokenHash: hashGatewayToken(token),
-          tokenPrefix,
-          subjectType: input.body.subjectType ?? "gateway_client",
-          subjectId: input.body.subjectId ?? null,
-          clientLabel: input.body.clientLabel,
-          ownerNote: input.body.ownerNote,
-          allowedActions: input.body.allowedActions ?? [
-            "tools/list",
-            "tools/call",
-            "resources/list",
-            "resources/read",
-            "prompts/list",
-            "prompts/get",
-          ],
-          expiresAt: input.body.expiresAt ?? null,
-          expiryOverrideReason: input.body.expiryOverrideReason ?? null,
-          expiryOverrideByAgentId:
-            input.actor?.agentId && input.body.expiryOverrideReason
-              ? input.actor.agentId
-              : null,
-          expiryOverrideByUserId:
-            input.actor?.userId && input.body.expiryOverrideReason
-              ? input.actor.userId
-              : null,
-          expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
-          responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
-          createdByAgentId: input.actor?.agentId ?? null,
-          createdByUserId: input.actor?.userId ?? null,
-          createdAt: now,
-          updatedAt: now,
-        })
-        .returning();
+      const [row] = await db.transaction(async tx => {
+        if (input.body.expiresAt) await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+        return tx
+          .insert(toolMcpGatewayTokens)
+          .values({
+            id: tokenId,
+            companyId: input.companyId,
+            gatewayId: input.gatewayId,
+            name: input.body.name,
+            tokenHash: hashGatewayToken(token),
+            tokenPrefix,
+            subjectType: input.body.subjectType ?? "gateway_client",
+            subjectId: input.body.subjectId ?? null,
+            clientLabel: input.body.clientLabel,
+            ownerNote: input.body.ownerNote,
+            allowedActions: input.body.allowedActions ?? [
+              "tools/list",
+              "tools/call",
+              "resources/list",
+              "resources/read",
+              "prompts/list",
+              "prompts/get",
+            ],
+            expiresAt: input.body.expiresAt ?? null,
+            expiryOverrideReason: input.body.expiryOverrideReason ?? null,
+            expiryOverrideByAgentId:
+              input.actor?.agentId && input.body.expiryOverrideReason
+                ? input.actor.agentId
+                : null,
+            expiryOverrideByUserId:
+              input.actor?.userId && input.body.expiryOverrideReason
+                ? input.actor.userId
+                : null,
+            expiryOverrideAt: input.body.expiryOverrideReason ? now : null,
+            responsibleUserId: input.managementContext?.actor.type === "agent" ? input.managementContext.responsibleUserId : null,
+            createdByAgentId: input.actor?.agentId ?? null,
+            createdByUserId: input.actor?.userId ?? null,
+            createdAt: now,
+            updatedAt: now,
+          })
+          .returning();
+      });
       if (input.managementContext) await logActivity(db, { companyId: input.companyId, ...input.managementContext.audit,
         action: "tool_gateway.token_created", entityType: "tool_mcp_gateway", entityId: input.gatewayId,
         details: { tokenId: row.id, subjectType: row.subjectType, allowedActions: row.allowedActions } });
@@ -9373,18 +9376,21 @@ export function createToolGatewayService(
         expiresAt: new Date(now.getTime() + sessionTtlMs(input.ttlMs)),
       };
 
-      await db.insert(toolGatewaySessions).values({
-        id: session.id,
-        companyId: session.companyId,
-        agentId: input.agentId,
-        runId: input.runId,
-        issueId: session.issueId,
-        projectId: session.projectId,
-        tokenHash: hashGatewayToken(token),
-        expiresAt: session.expiresAt,
-        createdAt: session.createdAt,
-        updatedAt: session.createdAt,
-      } as any);
+      await db.transaction(async tx => {
+        await notifyDeliveryWork(tx, DELIVERY_QUEUES.gatewayCredentialExpiry);
+        await tx.insert(toolGatewaySessions).values({
+          id: session.id,
+          companyId: session.companyId,
+          agentId: input.agentId,
+          runId: input.runId,
+          issueId: session.issueId,
+          projectId: session.projectId,
+          tokenHash: hashGatewayToken(token),
+          expiresAt: session.expiresAt,
+          createdAt: session.createdAt,
+          updatedAt: session.createdAt,
+        } as any);
+      });
 
       await writeAudit({
         session,
@@ -11860,23 +11866,50 @@ export function createToolGatewayService(
       return { ...sessionView, revokedAt: session!.revokedAt ?? now };
     },
 
-    async cleanupExpiredSessions(input: { now?: Date } = {}) {
+    async nextCredentialExpiryAt(): Promise<number | null> {
+      const [row] = await db.execute<{ at: string | Date | null }>(sql`
+        select min(expires_at) as at from (
+          (select ${toolMcpGatewayTokens.expiresAt} as expires_at from ${toolMcpGatewayTokens}
+            where ${toolMcpGatewayTokens.expiresAt} is not null
+            order by ${toolMcpGatewayTokens.expiresAt} limit 1)
+          union all
+          (select ${toolGatewaySessions.expiresAt} as expires_at from ${toolGatewaySessions}
+            order by ${toolGatewaySessions.expiresAt} limit 1)
+        ) expiries
+      `);
+      return row?.at == null ? null : new Date(row.at).getTime();
+    },
+
+    async cleanupExpiredSessions(input: { now?: Date; singleBatch?: boolean } = {}) {
       const now = input.now ?? new Date();
-      const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
-        .from(toolMcpGatewayTokens)
-        .where(lte(toolMcpGatewayTokens.expiresAt, now))
-        .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
-        .limit(500);
-      if (expiredTokens.length > 0) {
-        await db.delete(toolMcpGatewayTokens)
+      let deletedCount = 0;
+      while (true) {
+        const expiredTokens = await db.select({ id: toolMcpGatewayTokens.id })
+          .from(toolMcpGatewayTokens)
+          .where(lte(toolMcpGatewayTokens.expiresAt, now))
+          .orderBy(asc(toolMcpGatewayTokens.expiresAt), asc(toolMcpGatewayTokens.id))
+          .limit(500);
+        if (expiredTokens.length > 0) {
+          await db.delete(toolMcpGatewayTokens)
             .where(and(inArray(toolMcpGatewayTokens.id, expiredTokens.map((token) => token.id)), lte(toolMcpGatewayTokens.expiresAt, now)))
             .returning({ id: toolMcpGatewayTokens.id });
+        }
+        const expiredSessions = await db.select({ id: toolGatewaySessions.id })
+          .from(toolGatewaySessions)
+          .where(lte(toolGatewaySessions.expiresAt, now))
+          .orderBy(asc(toolGatewaySessions.expiresAt), asc(toolGatewaySessions.id))
+          .limit(500);
+        if (expiredSessions.length > 0) {
+          const rows = await db.delete(toolGatewaySessions)
+            .where(and(inArray(toolGatewaySessions.id, expiredSessions.map((session) => session.id)), lte(toolGatewaySessions.expiresAt, now)))
+            .returning({ id: toolGatewaySessions.id });
+          deletedCount += rows.length;
+        }
+        // The worker schedules the next page; one-shot startup/manual callers
+        // must finish the backlog without relying on another scheduled pass.
+        if (input.singleBatch || (expiredTokens.length < 500 && expiredSessions.length < 500)) break;
       }
-      const rows = await db
-        .delete(toolGatewaySessions)
-        .where(lte(toolGatewaySessions.expiresAt, now))
-        .returning({ id: toolGatewaySessions.id });
-      return { deletedCount: rows.length };
+      return { deletedCount };
     },
 
     async listRuntimeSlots(companyId?: string) {
