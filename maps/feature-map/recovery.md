@@ -215,6 +215,12 @@ deadline. The cases also retain failed-welcome ticket fencing, identity checks,
 and reconnect replay without repeated provider effects. These transport cases
 do not establish hosted provider acceptance.
 
+The [native provider regression](../../packages/paperclip-runner/runner/crates/runner-core/tests/native_provider_backend.rs)
+sends malformed activity from a real ACPX sidecar process. It checks a structured
+transport error, one failed terminal, a closed session, and no provider reopening.
+It proves the error contract and retained failure boundary, not the cause of a
+historical provider outage or successful hosted task recovery.
+
 Active remote process supervision distinguishes a failed health read from a
 confirmed exit. The [executor tests](../../server/src/services/native-runtime/native-session-executor.test.ts)
 exercise timeout recovery with a real listening process, unchanged ownership,

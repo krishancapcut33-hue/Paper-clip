@@ -1322,6 +1322,13 @@ future execution until Resume, and missing stop proof still blocks continuation.
 
 A permanently unusable native runner session may be replaced only with evidence that its predecessor is stopped and fenced, completed results and workspace state are preserved, required task history is available, and pending effects have been reconciled. A provider-native shell command or external write without a reliable outcome receipt is unknown. Unknown effects, integrity failures, and unverified process ownership never authorize speculative replay. Once automatic recovery is ruled out, Paperclip selects a conservative default: preserve recorded work, stop the affected task, and retain a durable no-replay hold. Unknown action outcomes remain unknown. No reconciliation form or user diagnosis is required.
 
+An ACPX sidecar transport failure carries its redacted cause and code in the
+terminal event's structured `error` field. The session facade must retain that
+cause instead of reporting a failed turn with `error: null`. A transport failure
+does not prove that the provider stopped or that a retry is safe; it remains
+non-recoverable until the existing ownership and recovery checks establish the
+next permitted action.
+
 Local Codex crash replacement can use a complete interrupted-turn inventory,
 authenticated process-stop evidence, and unchanged retained-state fingerprints.
 Only text and an exactly receipted task-completion call qualify for this path;
