@@ -3,7 +3,7 @@ import express from "express";
 import request from "supertest";
 import { getTableName, type SQL } from "drizzle-orm";
 import { PgDialect } from "drizzle-orm/pg-core";
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { HttpError } from "../errors.js";
 import { hoistModuleGraph } from "./helpers/hoist-module-graph.js";
 
@@ -833,6 +833,150 @@ describe("agent issue mutation checkout ownership", () => {
     expect(res.status).toBe(403);
     expect(res.body.error).toContain("Task bridge keys cannot use company-wide issue list APIs");
     expect(mockIssueService.list).not.toHaveBeenCalled();
+  });
+
+  describe("task bridge issue creation in a scoped project", () => {
+    const scopedProjectId = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
+    const otherProjectId = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
+    const bridgeKeyId = "99999999-9999-4999-8999-999999999999";
+
+    function bridgeActor(keyScope: Record<string, unknown>) {
+      return peerActor({ keyId: bridgeKeyId, keyScope: { kind: "task_bridge", ...keyScope } });
+    }
+
+    function dbWithProjectPrivacy(projectReadable: boolean) {
+      const db = createRunContextDb({}, peerAgentId, "66666666-6666-4666-8666-666666666666");
+      const select = db.select;
+      db.select = vi.fn((selection: Record<string, unknown> = {}) => {
+        const query = select(selection);
+        const from = query.from;
+        query.from = vi.fn((table: Parameters<typeof getTableName>[0]) => {
+          const source = from(table);
+          if (getTableName(table) !== "projects") return source;
+          const where = source.where;
+          source.where = vi.fn((condition: SQL) => {
+            const result = where(condition);
+            result.limit = vi.fn(() => ({
+              then: async (resolve: (rows: unknown[]) => unknown) =>
+                resolve(projectReadable ? [{ id: scopedProjectId }] : []),
+            })) as typeof result.limit;
+            return result;
+          }) as typeof where;
+          return source;
+        }) as typeof from;
+        return query;
+      }) as typeof select;
+      return db;
+    }
+
+    function createInProject(app: Awaited<ReturnType<typeof createApp>>, projectId: string) {
+      return request(app)
+        .post(`/api/companies/${companyId}/issues`)
+        .send({ title: "Bridge-created task", projectId });
+    }
+
+    beforeEach(() => {
+      vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", "enforce");
+      mockProjectService.getById.mockImplementation(async (id: string) => ({
+        id, companyId, visibility: "open",
+      }) as never);
+      mockAccessService.decide.mockImplementation(async (input: { action: string }) => {
+        const allowed = input.action !== "project:read";
+        return {
+          allowed,
+          action: input.action,
+          reason: allowed ? "allow_explicit_grant" : "deny_scope",
+          explanation: allowed ? "Allowed by test default." : "Task bridge keys cannot use project APIs.",
+        };
+      });
+    });
+
+    afterEach(() => {
+      vi.unstubAllEnvs();
+    });
+
+    it.each([
+      ["projectIds", { projectIds: [otherProjectId, scopedProjectId] }],
+      ["projectId", { projectId: scopedProjectId }],
+    ])("creates an issue in a project listed in the key's %s without evaluating project:read", async (_name, keyScope) => {
+      const res = await createInProject(
+        await createApp(bridgeActor(keyScope), dbWithProjectPrivacy(true)),
+        scopedProjectId,
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(201);
+      expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "project:read" }));
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "tasks:assign",
+        resource: expect.objectContaining({ projectId: scopedProjectId }),
+      }));
+      expect(mockIssueService.create).toHaveBeenCalledWith(
+        companyId,
+        expect.objectContaining({ title: "Bridge-created task", projectId: scopedProjectId }),
+      );
+    });
+
+    const privacyMatrix = (["off", "shadow", "enforce"] as const).flatMap((mode) =>
+      [false, true].flatMap((withAuthorizingUser) =>
+        [false, true].map((isMember) => ({
+          mode,
+          withAuthorizingUser,
+          isMember,
+          expectedStatus:
+            isMember || (!withAuthorizingUser && mode !== "enforce") ? 201 : 404,
+        }))));
+
+    it.each(privacyMatrix)(
+      "mode $mode, authorizing user $withAuthorizingUser, project member $isMember on a scoped private project returns $expectedStatus",
+      async ({ mode, withAuthorizingUser, isMember, expectedStatus }) => {
+        vi.stubEnv("PAPERCLIP_ISSUE_PRIVACY_MODE", mode);
+        mockProjectService.getById.mockResolvedValue({ id: scopedProjectId, companyId, visibility: "private" } as never);
+        const actor = {
+          ...bridgeActor({ projectIds: [scopedProjectId] }),
+          ...(withAuthorizingUser ? { authorizingUserId: "authorizing-user" } : {}),
+        };
+
+        const res = await createInProject(
+          await createApp(actor, dbWithProjectPrivacy(isMember)),
+          scopedProjectId,
+        );
+
+        expect(res.status, JSON.stringify(res.body)).toBe(expectedStatus);
+        expect(mockAccessService.decide).not.toHaveBeenCalledWith(expect.objectContaining({ action: "project:read" }));
+        if (expectedStatus === 404) expect(mockIssueService.create).not.toHaveBeenCalled();
+        else expect(mockIssueService.create).toHaveBeenCalled();
+      },
+    );
+
+    it("still hides a project outside the key's project scope", async () => {
+      const res = await createInProject(
+        await createApp(bridgeActor({ projectIds: [scopedProjectId] })),
+        otherProjectId,
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(404);
+      expect(res.body.error).toBe("Project not found");
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "project:read",
+        resource: { type: "project", companyId, projectId: otherProjectId },
+      }));
+      expect(mockIssueService.create).not.toHaveBeenCalled();
+    });
+
+    it("still hides an explicit project from a key that only has a parent issue boundary", async () => {
+      const res = await createInProject(
+        await createApp(bridgeActor({ parentIssueIds: [issueId] })),
+        scopedProjectId,
+      );
+
+      expect(res.status, JSON.stringify(res.body)).toBe(404);
+      expect(res.body.error).toBe("Project not found");
+      expect(mockAccessService.decide).toHaveBeenCalledWith(expect.objectContaining({
+        action: "project:read",
+        resource: { type: "project", companyId, projectId: scopedProjectId },
+      }));
+      expect(mockIssueService.create).not.toHaveBeenCalled();
+    });
   });
 
   it("uses the company-scope fast path on the issue list route", async () => {
