@@ -128,9 +128,10 @@ async function readAvailableEvalOperationsReport(file: string): Promise<EvalOper
     const candidates = request.observations.filter(observation => observation.final && observation.tokens
       && ["gateway", "provider"].includes(observation.source));
     const values = tokenFields.map(key => new Set(candidates.flatMap(observation => observation.tokens![key] === undefined ? [] : [observation.tokens![key]!] )));
-    if (values.some(value => value.size > 1)) { tokenUsage.conflictingRequests++; continue; }
-    if (!candidates.some(observation => ["input", "cachedRead", "cachedWrite", "output"].every(key => observation.tokens![key as keyof ModelTokenTotals] !== undefined))) continue;
-    const tokens = Object.fromEntries(tokenFields.map((key, index) => [key, values[index]!.values().next().value ?? 0])) as unknown as ModelTokenTotals;
+    const complete = candidates.find(observation => ["input", "cachedRead", "cachedWrite", "output"].every(key => observation.tokens![key as keyof ModelTokenTotals] !== undefined));
+    if (values.some(value => value.size > 1) || complete && candidates.some(observation => (observation.tokens!.reasoning ?? 0) > complete.tokens!.output!)) { tokenUsage.conflictingRequests++; continue; }
+    if (!complete) continue;
+    const tokens = Object.fromEntries(tokenFields.map(key => [key, complete.tokens![key] ?? 0])) as unknown as ModelTokenTotals;
     tokenUsage.requests++;
     if (request.identity.phase === "setup") tokenUsage.setup.requests++;
     for (const key of tokenFields) {
