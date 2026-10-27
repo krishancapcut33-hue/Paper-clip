@@ -1,3 +1,4 @@
+import type { ChatRunMilestoneScope } from "./chat-run-milestone-notifications.js";
 import { notifyChatPublicationWork } from "./chat-work-notifications.js";
 import {
   and,
@@ -218,7 +219,7 @@ type ChatRunMilestoneCandidate = {
   runId: string;
   runStatus: string;
   runErrorCode: string | null;
-  runUpdatedAt: Date;
+  runUpdatedAt: string;
   issueId: string;
   companyId: string;
   endpointId: string;
@@ -297,10 +298,11 @@ export function safeMilestoneText(input: {
  * lane. The selector intentionally reads only event identity, type, sequence,
  * and time; native messages and payloads stay inside Paperclip.
  */
-async function enqueueSafeNativeChatProgress(
+export async function enqueueSafeNativeChatProgress(
   db: Db,
-  input: { since: Date; limit: number },
+  options: { since?: Date; limit?: number } = {},
 ): Promise<number> {
+  const input = chatRunProjectionWindow(options);
   const basePublication = alias(
     chatPublications,
     "safe_native_progress_base_publication",
@@ -670,26 +672,19 @@ async function enqueueSafeNativeChatProgress(
   return inserted;
 }
 
-/**
- * Project only coarse run lifecycle into bound external conversations. Raw
- * output, errors, tool events, and reasoning stay in Paperclip. Idempotency is
- * keyed by run, milestone, and endpoint so polling and restarts are harmless.
- */
-export async function enqueueChatRunMilestones(
-  db: Db,
-  input: {
-    publicBaseUrl?: string | null;
-    since?: Date;
-    limit?: number;
-  } = {},
-): Promise<number> {
-  const since = input.since ?? new Date(Date.now() - 24 * 60 * 60_000);
-  const limit = Math.max(1, Math.min(input.limit ?? 200, 1_000));
-  const issueIdFromContext = boundRunIssueIdSql();
-  const explicitlyAuthoredCommentReason = sql<boolean>`(
+type ChatRunMilestoneCursor = {
+  updatedAt: string;
+  runId: string;
+  conversationId: string;
+};
+
+const explicitlyAuthoredCommentReason = sql<boolean>`(
     ${issueComments.metadata} ->> 'authorizationReason' = 'paperclip_runner_protocol'
     or left(coalesce(${issueComments.metadata} ->> 'authorizationReason', ''), 6) = 'allow_'
   )`;
+
+function lifecycleMilestonePages(db: Db, since: Date, scope?: ChatRunMilestoneScope) {
+  const issueIdFromContext = boundRunIssueIdSql();
   const milestoneFromStatus = sql<string>`case
     when ${heartbeatRuns.status} = 'queued' then 'queued'
     when ${heartbeatRuns.status} = 'running'
@@ -801,26 +796,15 @@ export async function enqueueChatRunMilestones(
         and continuation_wake.payload->>'issueId' = ${issueIdFromContext}
     )
   )`;
-  let inserted = 0;
-  let cursor: {
-    updatedAt: Date;
-    runId: string;
-    conversationId: string;
-  } | null = null;
-  const bindingsCache = new Map<
-    string,
-    Awaited<ReturnType<typeof resolveChatOriginPublicationBindings>>
-  >();
-  const providerInteractionCache = new Map<string, boolean>();
-  while (inserted < limit) {
-    const pageSize = Math.max(25, Math.min(200, limit - inserted));
-    const pageCursor: typeof cursor = cursor;
-    const rows: ChatRunMilestoneCandidate[] = await db
+  return (pageSize: number, pageCursor: ChatRunMilestoneCursor | null): Promise<ChatRunMilestoneCandidate[]> => {
+    return db
       .select({
         runId: heartbeatRuns.id,
         runStatus: heartbeatRuns.status,
         runErrorCode: heartbeatRuns.errorCode,
-        runUpdatedAt: heartbeatRuns.updatedAt,
+        // Keep PostgreSQL precision: a Date cursor can repeatedly select a
+        // rejected page whose updated_at has submillisecond digits.
+        runUpdatedAt: sql<string>`${heartbeatRuns.updatedAt}::text`,
         issueId: chatConversations.issueId,
         companyId: chatConversations.companyId,
         endpointId: chatConversations.endpointId,
@@ -979,22 +963,13 @@ export async function enqueueChatRunMilestones(
                 and target_delivery.status in ('delivered', 'fallback_queued')
             )`,
           ),
+          scope ? eq(heartbeatRuns.companyId, scope.companyId) : undefined,
+          scope?.issueId ? eq(chatConversations.issueId, scope.issueId) : undefined,
           gte(heartbeatRuns.updatedAt, since),
           isNull(chatPublications.id),
           pageCursor
-            ? or(
-                gt(heartbeatRuns.updatedAt, pageCursor.updatedAt),
-                and(
-                  eq(heartbeatRuns.updatedAt, pageCursor.updatedAt),
-                  or(
-                    gt(heartbeatRuns.id, pageCursor.runId),
-                    and(
-                      eq(heartbeatRuns.id, pageCursor.runId),
-                      gt(chatConversations.id, pageCursor.conversationId),
-                    ),
-                  ),
-                ),
-              )
+            ? sql`(${heartbeatRuns.updatedAt}, ${heartbeatRuns.id}, ${chatConversations.id}) >
+                (${pageCursor.updatedAt}::timestamptz, ${pageCursor.runId}::uuid, ${pageCursor.conversationId}::uuid)`
             : undefined,
         ),
       )
@@ -1004,15 +979,59 @@ export async function enqueueChatRunMilestones(
         asc(chatConversations.id),
       )
       .limit(pageSize);
+  };
+}
+
+function milestoneCursor(row: ChatRunMilestoneCandidate): ChatRunMilestoneCursor {
+  return { updatedAt: row.runUpdatedAt, runId: row.runId, conversationId: row.conversationId };
+}
+
+/** Reconstruct issue-scoped projection work. Candidate rows are only hints;
+ * projection still applies current lineage and provider authority. */
+export async function loadChatRunLifecycleMilestoneScopes(
+  db: Db,
+  scope?: ChatRunMilestoneScope,
+  signal?: AbortSignal,
+): Promise<Array<{ companyId: string; issueId: string }>> {
+  const pages = lifecycleMilestonePages(db, chatRunProjectionWindow({}).since, scope);
+  const scopes = new Map<string, { companyId: string; issueId: string }>();
+  let cursor: ChatRunMilestoneCursor | null = null;
+  for (;;) {
+    signal?.throwIfAborted();
+    const rows = await pages(100, cursor);
+    for (const row of rows) scopes.set(`${row.companyId}:${row.issueId}`, { companyId: row.companyId, issueId: row.issueId });
+    if (rows.length < 100) return [...scopes.values()];
+    cursor = milestoneCursor(rows[rows.length - 1]);
+  }
+}
+
+/**
+ * Project only coarse run lifecycle into bound external conversations. Raw
+ * output, errors, tool events, and reasoning stay in Paperclip. Idempotency is
+ * keyed by run, milestone, and endpoint so polling and restarts are harmless.
+ */
+export async function enqueueChatRunLifecycleMilestones(
+  db: Db,
+  input: ChatRunProjectionInput & { scope?: ChatRunMilestoneScope; signal?: AbortSignal } = {},
+): Promise<number> {
+  const { since, limit } = chatRunProjectionWindow(input);
+  let inserted = 0;
+  const pages = lifecycleMilestonePages(db, since, input.scope);
+  let cursor: ChatRunMilestoneCursor | null = null;
+  const bindingsCache = new Map<
+    string,
+    Awaited<ReturnType<typeof resolveChatOriginPublicationBindings>>
+  >();
+  const providerInteractionCache = new Map<string, boolean>();
+  while (inserted < limit) {
+    const pageSize = Math.max(25, Math.min(200, limit - inserted));
+    input.signal?.throwIfAborted();
+    const rows = await pages(pageSize, cursor);
     if (rows.length === 0) break;
-    const lastRow = rows.at(-1)!;
-    cursor = {
-      updatedAt: lastRow.runUpdatedAt,
-      runId: lastRow.runId,
-      conversationId: lastRow.conversationId,
-    };
+    cursor = milestoneCursor(rows[rows.length - 1]);
 
     for (const row of rows) {
+      input.signal?.throwIfAborted();
       if (inserted >= limit) break;
       const milestone = milestoneForStatus(row.runStatus, row.runErrorCode);
       if (!milestone) continue;
@@ -1107,11 +1126,30 @@ export async function enqueueChatRunMilestones(
     }
     if (rows.length < pageSize) break;
   }
-  if (inserted < limit) {
-    inserted += await enqueueSafeNativeChatProgress(db, {
-      since,
-      limit: limit - inserted,
-    });
-  }
   return inserted;
+}
+
+type ChatRunProjectionInput = {
+  publicBaseUrl?: string | null;
+  since?: Date;
+  limit?: number;
+};
+
+function chatRunProjectionWindow(input: ChatRunProjectionInput) {
+  return {
+    since: input.since ?? new Date(Date.now() - 24 * 60 * 60_000),
+    limit: Math.max(1, Math.min(input.limit ?? 200, 1_000)),
+  };
+}
+
+/** Explicit combined reconciliation retains lifecycle priority and one shared
+ * publication budget. Background owners can reconcile the two duties separately. */
+export async function enqueueChatRunMilestones(
+  db: Db,
+  input: ChatRunProjectionInput = {},
+): Promise<number> {
+  const { since, limit } = chatRunProjectionWindow(input);
+  const inserted = await enqueueChatRunLifecycleMilestones(db, { ...input, since, limit });
+  if (inserted >= limit) return inserted;
+  return inserted + await enqueueSafeNativeChatProgress(db, { since, limit: limit - inserted });
 }

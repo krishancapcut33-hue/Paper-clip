@@ -1,3 +1,4 @@
+import { notifyChatRunMilestones } from "./chat-run-milestone-notifications.js";
 import { notifyApprovalWork } from "./approval-work-notifications.js";
 import { notifyDecisionTargetWork } from "./decision-target-work.js";
 import { resolveConnectionIntentContinuationSource, resolveItemVerdictContinuationWake } from "./chat-interaction-continuation.js";
@@ -11375,6 +11376,9 @@ export function issueService(db: Db) {
         }
         if (patch.status === "done" || patch.status === "cancelled") {
           await notifyDecisionTargetWork(tx, `issue:${id}`);
+        }
+        if (patch.hiddenAt === null && receiptExisting.hiddenAt !== null) {
+          await notifyChatRunMilestones(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         if (patch.hiddenAt !== undefined || patch.harnessKind !== undefined || patch.conversationAgentId !== undefined) {
           await notifyApprovalWork(tx, receiptExisting.companyId);

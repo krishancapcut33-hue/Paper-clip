@@ -1,3 +1,8 @@
+import { cloudActorHeaderSourceFromHeaders, resolveCloudTenantActor } from "../middleware/auth.js";
+import { cloudTenantPrimaryCompanyId } from "../services/cloud-instance.js";
+import { accessService } from "../services/access.js";
+import { signalDatabaseWork, subscribeDatabaseWork } from "@paperclipai/db";
+import { restoreNativeChatReviewPresentationInTransaction } from "../services/native-runtime/native-chat-review-presentation.js";
 import { notifyChatEndpointConfiguration, notifyChatCompanyConfiguration } from "../services/chat-channels/configuration-work-notifications.js";
 import { deleteCompany } from "../services/company-deletion.js";
 import { adapterExecutionControls, createAdapterExecutionControl } from "../services/adapter-execution-control.js";
@@ -23,6 +28,7 @@ import { chatSlackManagerGrants, chatSlackRegistrations, toolOauthStates, enviro
 import type { PaperclipCloudConnector, SealedConnectorCredentials } from "../services/paperclip-cloud-connector.js";
 import { buildSlackAppManifest, SLACK_MANAGER_SCOPES } from "@paperclipai/shared";
 import { registerChatActionWork, dueChatAction } from "../services/chat-action-work.js";
+import { chatRunMilestoneWork } from "../services/chat-run-milestone-work.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { registerChatDeliveryWork } from "../services/chat-delivery-work.js";
 import { notifyChatPublicationWork, notifyChatActionWork, CHAT_ACTION_QUEUES } from "../services/chat-work-notifications.js";
@@ -202,6 +208,8 @@ import {
 } from "../services/chat-interaction-publications.js";
 import {
   enqueueChatRunMilestones,
+  enqueueChatRunLifecycleMilestones,
+  enqueueSafeNativeChatProgress,
   githubRunReplyState,
   resolveChatRunPresentationAuthorizationReason,
   CHAT_RUN_PRESENTATION_AUTHORIZATION_REASON,
@@ -1144,8 +1152,7 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
   const companyPrefixAttempts = 8;
   const freshCompanyPrefix = () => `C${randomUUID().replaceAll("-", "").slice(0, 7).toUpperCase()}`;
 
-  async function seedCompany(nextIssuePrefix = freshCompanyPrefix) {
-    const companyId = randomUUID();
+  async function seedCompany(nextIssuePrefix = freshCompanyPrefix, companyId = randomUUID()) {
     const assignedAgentId = randomUUID();
     const replacementAgentId = randomUUID();
     let inserted = false;
@@ -6029,6 +6036,68 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           .where(eq(chatEndpointLeases.endpointId, f.endpoint.id)),
       ).toHaveLength(0);
     });
+    it("wakes GitHub milestone identity restoration only after outer commit and stays quiet on reconfirmation", async () => {
+      const f = await reviewBotFixture();
+      await f.service.revokeLink(f.endpoint.id, f.principal.id);
+      const verified = { githubUserId: "42", login: "octocat" };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
+      const link = () => db.select().from(chatIdentityLinks).where(and(
+        eq(chatIdentityLinks.endpointId, f.endpoint.id), eq(chatIdentityLinks.principalId, f.principal.id),
+      )).then(rows => rows[0]);
+      try {
+        await expect(db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+          throw new Error("rollback identity restoration");
+        })).rejects.toThrow("rollback identity restoration");
+        expect((await link()).status).toBe("revoked");
+        events.length = 0;
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+          expect(events).toEqual(["intent"]);
+          expect((await link()).status).toBe("revoked");
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await link()).status).toBe("linked");
+        events.length = 0;
+        await f.management.linkObservedIdentity(f.endpoint.id, "owner-user", verified);
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
+    it("wakes milestone authority only when GitHub guest settings change, after outer commit", async () => {
+      const f = await reviewBotFixture();
+      const initial = await f.management.configuration(f.endpoint.id, "owner-user");
+      const configuration = { ...initial.configuration, people: [{
+        kind: "guest" as const, githubUserId: "84", login: "contributor",
+        sponsorUserId: "owner-user", permissionProfile: "restricted" as const, automaticReviews: false,
+      }] };
+      const events: string[] = [];
+      const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+        if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+      });
+      try {
+        await db.transaction(async tx => {
+          await githubChatManagementService(tx as unknown as typeof db, f.providerFetch)
+            .saveConfiguration(f.endpoint.id, { expectedRevision: initial.revision, configuration }, "owner-user");
+          expect(events).toEqual(["intent"]);
+          expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(false);
+        });
+        expect(events).toEqual(["intent", "settled"]);
+        expect((await f.service.get(f.endpoint.id)).allowUnlinkedPeople).toBe(true);
+        events.length = 0;
+        const current = await f.management.configuration(f.endpoint.id, "owner-user");
+        await f.management.saveConfiguration(f.endpoint.id, { expectedRevision: current.revision, configuration }, "owner-user");
+        expect(events).toEqual([]);
+      } finally { unsubscribe(); }
+    });
+
     it("scopes guest tasks and rechecks their sponsor before every bot tool", async () => {
       const f = await reviewBotFixture();
       const initial = await f.management.configuration(
@@ -8295,11 +8364,62 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
         expect(posts(f)).toHaveLength(1);
         expect(new URLSearchParams(String(posts(f)[0]![1]!.body)).get("channel")).toBe(f.installerId);
       });
-      it("links the actor's own manager identity without requiring a connect command", async () => {
+      it("signals milestone eligibility around the real Slack account link and stays quiet on reconfirmation", async () => {
         const f = await managedFixture(); await f.provision();
         await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
-        expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
-        expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        let release!: () => void, acquired!: () => void;
+        const gate = new Promise<void>(resolve => { release = resolve; });
+        const locked = new Promise<void>(resolve => { acquired = resolve; });
+        const lock = db.transaction(async tx => {
+          await tx.execute(sql`lock table chat_identity_links in share mode`);
+          acquired(); await gate;
+        });
+        await locked;
+        const linking = f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() });
+        void linking.catch(() => undefined);
+        try {
+          try {
+            await vi.waitFor(async () => {
+              const [waiting] = await db.execute<{ count: number }>(sql`select count(*)::int as count from pg_stat_activity
+                where datname = current_database() and state = 'active' and wait_event_type = 'Lock'
+                  and query like 'insert into "chat_identity_links"%'`);
+              expect(waiting.count).toBeGreaterThan(0);
+            });
+            expect(events).toEqual(["intent"]);
+            expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          } finally { release(); await lock; await linking; }
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id)))
+            .toEqual([expect.objectContaining({ paperclipUserId: actor.userId, status: "linked" })]);
+          events.length = 0;
+          expect(await f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).toMatchObject({ status: "sent" });
+          expect(events).toEqual([]);
+        } finally { unsubscribe(); }
+      });
+      it("settles a failed Slack account-link intent without committing identity or sending a test message", async () => {
+        const f = await managedFixture(); await f.provision();
+        await db.delete(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id));
+        f.provider.mockClear();
+        const events: string[] = [];
+        const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, (event, scopes) => {
+          if ([...scopes ?? []].some(scope => JSON.parse(scope).companyId === f.companyId)) events.push(event);
+        });
+        await db.execute(sql`create function sleep_slack_link_failure() returns trigger language plpgsql as $$ begin raise exception 'link write unavailable'; end $$`);
+        await db.execute(sql`create trigger sleep_slack_link_failure before insert on chat_identity_links for each row execute function sleep_slack_link_failure()`);
+        try {
+          await expect(f.service.sendSlackTestMessage(f.endpoint.id, actor, { requestId: randomUUID() })).rejects.toThrow();
+          expect(events).toEqual(["intent", "settled"]);
+          expect(await db.select().from(chatIdentityLinks).where(eq(chatIdentityLinks.endpointId, f.endpoint.id))).toEqual([]);
+          expect(posts(f)).toHaveLength(0);
+        } finally {
+          unsubscribe();
+          await db.execute(sql`drop trigger sleep_slack_link_failure on chat_identity_links`);
+          await db.execute(sql`drop function sleep_slack_link_failure()`);
+        }
       });
       it("requires a private Slack challenge for an unknown account before linking and sending the test", async () => {
         const f = await managedFixture(); await f.provision();
@@ -34933,7 +35053,44 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     ]);
   });
 
-  it("drains bounded Slack chat-origin milestones without admitting an internal issue run", async () => {
+  it("wakes an existing chat milestone when ordinary ingress reactivates its conversation", async () => {
+    const fixture = await seedCompany();
+    const { callbacks, endpoint, wakeup } = await configuredSlackEndpoint(fixture);
+    const thread = makeThread({ channelId: "C-REOPEN-MILESTONE", id: "slack:C-REOPEN-MILESTONE:4100.1", name: "reopen-milestone" });
+    const send = (id: string) => deliverMessage({ callbacks, endpointId: endpoint.id, thread: thread.thread,
+      message: makeMessage({ id, text: "@maya continue this conversation", mentioned: true }), trigger: "mention" });
+    await send("4100.1");
+    const [conversation] = await readChatConversationsByEndpointId(endpoint.id);
+    const [link] = await db.select().from(chatMessageLinks).where(and(
+      eq(chatMessageLinks.conversationId, conversation.id), eq(chatMessageLinks.providerMessageId, "4100.1")));
+    const runId = randomUUID();
+    await db.insert(heartbeatRuns).values({ id: runId, companyId: fixture.companyId, agentId: fixture.assignedAgentId,
+      status: "failed", errorCode: "low_trust_isolation_unavailable", updatedAt: new Date(),
+      contextSnapshot: { issueId: conversation.issueId, source: "chat:slack", endpointId: endpoint.id, wakeCommentId: link.commentId },
+    });
+    await db.update(chatConversations).set({ state: "unavailable" }).where(eq(chatConversations.id, conversation.id));
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const notice = () => db.select().from(chatPublications).where(and(eq(chatPublications.issueId, conversation.issueId),
+      eq(chatPublications.idempotencyKey, `run:${runId}:failed:${endpoint.id}`)));
+    try {
+      await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(await notice()).toEqual([]);
+      const wakesBefore = wakeup.mock.calls.length;
+      await send("4100.2");
+      expect(wakeup.mock.calls.length).toBe(wakesBefore + 1);
+      // The harness accepts the new wake without creating a run. Existing
+      // projection debt must wake from ingress, not a later run transition.
+      await expect.poll(notice, { timeout: 5000 }).toEqual([
+        expect.objectContaining({ idempotencyKey: `run:${runId}:failed:${endpoint.id}` }),
+      ]);
+      await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); }
+  });
+
+  it.each(["milliseconds", "microseconds"])("drains bounded Slack chat-origin milestones without admitting an internal issue run (%s)", async (precision) => {
     const fixture = await seedCompany();
     const { callbacks, endpoint } = await configuredSlackEndpoint(fixture);
     const thread = makeThread({
@@ -35028,15 +35185,32 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       })),
     ]);
 
-    const inserted: number[] = [];
-    for (let index = 0; index < 4; index += 1) {
-      inserted.push(
-        await enqueueChatRunMilestones(db, {
-          since: new Date("2026-09-05T14:00:00.000Z"),
-          limit: 1,
-        }),
-      );
+    if (precision === "microseconds") {
+      await db.update(heartbeatRuns).set({
+        updatedAt: sql`'2026-09-05T14:59:00.000123Z'::timestamptz`,
+      }).where(inArray(heartbeatRuns.id, resolverRejectedRuns.map(run => run.id)));
     }
+    // Fail a non-advancing pagination loop explicitly instead of leaving a
+    // background query chain running after the test timeout.
+    const select = db.select.bind(db);
+    let reads = 0;
+    const readGuard = vi.spyOn(db, "select").mockImplementation((...args) => {
+      if (args[0] && "runUpdatedAt" in args[0] && ++reads > 100) {
+        throw new Error("Milestone projection did not advance past rejected candidates");
+      }
+      return select(...args);
+    });
+    const inserted: number[] = [];
+    try {
+      for (let index = 0; index < 4; index += 1) {
+        inserted.push(
+          await enqueueChatRunLifecycleMilestones(db, {
+            since: new Date("2026-09-05T14:00:00.000Z"),
+            limit: 1,
+          }),
+        );
+      }
+    } finally { readGuard.mockRestore(); }
     expect(inserted).toEqual([1, 1, 1, 0]);
     const publications = await db
       .select()
@@ -41727,13 +41901,18 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     }
   });
 
-  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async () => {
+  it("publishes a closed-choice question, settles its Slack card, and delivers its exact continuation response", async ({ onTestFinished }) => {
+    let receiptWakeObserved = false;
     const fixture = await seedCompany();
     const continuationRunId = randomUUID();
     const resolveNativeQuestion = vi.fn(async () => "not_native" as const);
     const { callbacks, endpoint, runtime, service } =
       await configuredSlackEndpoint(fixture, {
         resolveNativeQuestion,
+        questionResolutionPersistBarrier: async () => {
+          // Receipt commit must wake projection before the separate answer write.
+          expect(receiptWakeObserved).toBe(true);
+        },
         wakeup: async (agentId, options) => {
           if (options.contextSnapshot?.source !== "issue.interaction.respond") {
             return { accepted: true };
@@ -42056,6 +42235,12 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       .set({ state: "delivery_unknown", providerMessageId: null })
       .where(eq(chatPublications.id, publication.id));
 
+    const unsubscribeReceipt = subscribeDatabaseWork(db, "chat-run-milestones", (event, hints) => {
+      if (event === "settled" && hints?.has(JSON.stringify({ companyId: fixture.companyId, issueId: conversation.issueId }))) {
+        receiptWakeObserved = true;
+      }
+    });
+    onTestFinished(unsubscribeReceipt);
     const providerAcknowledgement = callbacks.onAction(actionEvent());
     await expect(
       Promise.race([
@@ -51802,8 +51987,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     const registeredCommandId = "888888888888888819";
     let interactionSequence = 0n;
 
-    async function commandFixture() {
-      const fixture = await seedCompany();
+    async function commandFixture(companyId?: string) {
+      const fixture = await seedCompany(undefined, companyId);
       const applicationId = uniqueDiscordApplicationId();
       let holdWork = false;
       const queued: Array<() => void> = [];
@@ -52897,8 +53082,8 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
             : lastFreshDiscordMessageId + 1n;
         return lastFreshDiscordMessageId.toString();
       };
-      async function reopenedFixture(includeDuringConfirmationSource = false) {
-        const f = await commandFixture();
+      async function reopenedFixture(includeDuringConfirmationSource = false, companyId?: string) {
+        const f = await commandFixture(companyId);
         const threadId = `discord:${guildId}:${channelId}:${rootMessageId}`;
         const admitMessage = async (message: ReturnType<typeof makeMessage>) => {
           await deliverMessage({
@@ -53045,6 +53230,142 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
           bindRun,
         };
       }
+
+      it.each(["action", "delivery"] as const)("wakes a post-close milestone when interrupted inbound acceptance settles its %s receipt", async receipt => {
+        const f = await reopenedFixture();
+        const onError = vi.fn();
+        const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+        const notice = () => db.select().from(chatPublications).where(and(
+          eq(chatPublications.issueId, f.conversation.issueId),
+          eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+        ));
+        try {
+          // Crash boundary: the run/wake is durable, but its inbound action has
+          // not yet recorded settlement. Recovery must not dispatch it again.
+          if (receipt === "action") {
+            await db.update(chatActions).set({ status: "issued", result: {}, updatedAt: new Date() })
+              .where(eq(chatActions.id, f.fresh.action.id));
+          } else {
+            // Operator repair of a failed ledger keeps the already-admitted
+            // action/run. Only delivery acceptance needs to commit again.
+            await db.update(chatDeliveries).set({ state: "retry", processedAt: null, nextAttemptAt: null })
+              .where(eq(chatDeliveries.id, f.delivery.id));
+          }
+          await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(await notice()).toEqual([]);
+          const wakesBefore = f.wakeup.mock.calls.length;
+          await expect.poll(async () => {
+            await f.service.processPendingDeliveries(25, f.delivery.id);
+            const [action] = await db.select().from(chatActions).where(eq(chatActions.id, f.fresh.action.id));
+            const [delivery] = await db.select().from(chatDeliveries).where(eq(chatDeliveries.id, f.delivery.id));
+            return [action.status, delivery.state];
+          }, { timeout: 10_000 }).toEqual(["processed", "processed"]);
+          expect(f.wakeup.mock.calls.length).toBe(wakesBefore);
+          await expect.poll(notice, { timeout: 5000 }).toEqual([
+            expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+          ]);
+          await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+          expect(onError).not.toHaveBeenCalled();
+        } finally { await coordinator.stop(); await f.close(); }
+      });
+
+      it.each(["connection", "resource", "unlinked", "identity", "member", "member_permissions", "ensure_membership", "company_access", "visibility", "cloud_sync"] as const)(
+        "wakes a post-close milestone when %s authority is restored", async owner => {
+          const stackId = randomUUID();
+          const f = await reopenedFixture(false, owner === "cloud_sync" ? cloudTenantPrimaryCompanyId(stackId) : undefined);
+          const previousToken = process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+          const [previousUser] = owner === "cloud_sync"
+            ? await db.select().from(authUsers).where(eq(authUsers.id, "owner-user"))
+            : [];
+          const onError = vi.fn();
+          const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+          const notice = () => db.select().from(chatPublications).where(and(
+            eq(chatPublications.issueId, f.conversation.issueId),
+            eq(chatPublications.idempotencyKey, `run:${f.fresh.runId}:working:${f.endpoint.id}`),
+          ));
+          const access = accessService(db);
+          const membership = (await db.select().from(companyMemberships).where(and(
+            eq(companyMemberships.companyId, f.fixture.companyId), eq(companyMemberships.principalId, "owner-user"),
+          )))[0];
+          try {
+            let restore: () => Promise<unknown>;
+            if (owner === "connection") {
+              await toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: false });
+              restore = () => toolAccessService(db).updateConnection(f.endpoint.connectionId, { enabled: true });
+            } else if (owner === "resource") {
+              const [conversation] = await db.select().from(chatConversations).where(eq(chatConversations.id, f.conversation.id));
+              expect(conversation.resourceId).not.toBeNull();
+              await f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: false }], "owner-user");
+              restore = () => f.service.replaceResources(f.endpoint.id, [{ id: conversation.resourceId!, enabled: true }], "owner-user");
+            } else if (owner === "identity" || owner === "unlinked") {
+              await f.service.update(f.endpoint.id, { allowUnlinkedPeople: false }, "owner-user");
+              await f.service.revokeLink(f.endpoint.id, f.fresh.action.principalId!);
+              if (owner === "unlinked") {
+                restore = () => f.service.update(f.endpoint.id, { allowUnlinkedPeople: true }, "owner-user");
+              } else {
+                const intent = await f.service.createLinkIntent(f.endpoint.id, f.fresh.action.principalId!, 1800);
+                restore = () => f.service.confirmIdentityLink(new URL(intent.confirmationUrl).searchParams.get("token")!, "owner-user");
+              }
+            } else if (owner === "visibility") {
+              await issueService(db).update(f.conversation.issueId, { hiddenAt: new Date() });
+              restore = () => issueService(db).update(f.conversation.issueId, { hiddenAt: null });
+            } else {
+              // Model existing denied authority without exercising revocation's
+              // unrelated credential cleanup; restoration uses its actual owner.
+              await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.id, membership.id));
+              if (owner === "member") restore = () => access.updateMember(f.fixture.companyId, membership.id, { status: "active" });
+              else if (owner === "member_permissions") restore = () => access.updateMemberAndPermissions(f.fixture.companyId, membership.id, { status: "active", grants: [] }, "owner-user");
+              else if (owner === "cloud_sync") {
+                process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = "milestone-cloud-sync-test";
+                let request = 0;
+                restore = () => resolveCloudTenantActor(db, cloudActorHeaderSourceFromHeaders({
+                  "x-paperclip-cloud-tenant-token": "milestone-cloud-sync-test",
+                  "x-paperclip-cloud-user-id": "owner-user",
+                  "x-paperclip-cloud-user-email": "owner@example.test",
+                  // Change the profile to force an actual sync on replay. The
+                  // debounce must not hide repeated unchanged membership wakes.
+                  "x-paperclip-cloud-user-name": `Owner ${request++}`,
+                  "x-paperclip-cloud-stack-id": stackId,
+                  "x-paperclip-cloud-stack-role": "owner",
+                }));
+              }
+              else if (owner === "ensure_membership") restore = () => access.ensureMembership(f.fixture.companyId, "user", "owner-user", membership.membershipRole, "active");
+              else {
+                const existing = await db.select().from(companyMemberships).where(and(
+                  eq(companyMemberships.principalType, "user"), eq(companyMemberships.principalId, "owner-user"),
+                ));
+                restore = () => access.setUserCompanyAccess("owner-user", existing.map(row => row.companyId));
+              }
+            }
+            await chatRunMilestoneWork(db).register(coordinator, () => true).ready;
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            expect(await notice()).toEqual([]);
+            await restore();
+            await expect.poll(notice, { timeout: 5000 }).toEqual([
+              expect.objectContaining({ idempotencyKey: `run:${f.fresh.runId}:working:${f.endpoint.id}` }),
+            ]);
+            await vi.waitFor(() => expect(coordinator.nextWakeAt()).toBeNull());
+            if (owner !== "identity" && owner !== "connection") {
+              const notices: string[] = [];
+              const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.chatRunMilestones, event => notices.push(event));
+              try { await restore(); expect(notices).toEqual([]); }
+              finally { unsubscribe(); }
+              expect(await notice()).toHaveLength(1);
+            }
+            expect(onError).not.toHaveBeenCalled();
+          } finally {
+            if (previousToken === undefined) delete process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN;
+            else process.env.PAPERCLIP_CLOUD_TENANT_SERVER_TOKEN = previousToken;
+            await coordinator.stop();
+            if (previousUser) await db.update(authUsers).set({
+              name: previousUser.name, email: previousUser.email,
+              emailVerified: previousUser.emailVerified, updatedAt: previousUser.updatedAt,
+            }).where(eq(authUsers.id, previousUser.id));
+            await f.close();
+          }
+        },
+      );
 
       it("publishes working and the exact fresh final after pinned close without resurrecting the old source", async () => {
         const f = await reopenedFixture();
@@ -65325,6 +65646,36 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
     };
   }
 
+  it.each(["separate owners", "combined budget"] as const)(
+    "keeps lifecycle and native progress projection independent with %s",
+    async (mode) => {
+      await enqueueChatRunMilestones(db, { since: new Date(0) });
+      const context = await safeNativeProgressFixture("telegram", mode === "separate owners" ? "111" : "112");
+      try {
+        const progressRun = await context.createRun("ongoing work");
+        await context.addEvent(progressRun);
+        const failedRun = await context.createRun("failed work");
+        await db.update(heartbeatRuns).set({ status: "failed" }).where(eq(heartbeatRuns.id, failedRun.runId));
+        const input = { since: new Date(0), limit: 1 };
+        await expect((mode === "separate owners" ? enqueueChatRunLifecycleMilestones : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        const rows = () => db.select({ key: chatPublications.idempotencyKey }).from(chatPublications)
+          .where(eq(chatPublications.conversationId, context.conversation.id));
+        expect((await rows()).map(row => row.key)).toContain(`run:${failedRun.runId}:failed:${context.endpoint.id}`);
+        expect((await rows()).some(row => row.key.includes(":native:"))).toBe(false);
+        if (mode === "separate owners") {
+          await expect(enqueueChatRunLifecycleMilestones(db, input)).resolves.toBe(0);
+        }
+        await expect((mode === "separate owners" ? enqueueSafeNativeChatProgress : enqueueChatRunMilestones)(db, input)).resolves.toBe(1);
+        expect((await rows()).filter(row => row.key.includes(":native:"))).toEqual([
+          { key: `run:${progressRun.runId}:working:${context.endpoint.id}:native:making_progress:1` },
+        ]);
+        await expect(enqueueChatRunMilestones(db, input)).resolves.toBe(0);
+      } finally {
+        await retirePublicationFixture(context.service, context.endpoint.id);
+      }
+    },
+  );
+
   it.each(["issue", "run"] as const)(
     "skips a locked native progress %s while unrelated final and question publications deliver",
     async (lockTarget) => {
@@ -72378,6 +72729,48 @@ describeEmbeddedPostgres("chat channel control-plane integration", () => {
       service,
     };
   }
+
+  it("restores changed native review metadata once and signals only its committed change", async () => {
+    const context = await committedNativeReviewPublicationFixture("milestone-repair");
+    // Earlier failure cases can leave intent awaiting XID reconciliation on the
+    // suite's shared owner. Subscribing to that owner immediately replays intent.
+    await expect(db.transaction(async tx => {
+      await signalDatabaseWork(tx, "chat-run-milestones");
+      throw new Error("unrelated rolled-back producer");
+    })).rejects.toThrow("unrelated rolled-back producer");
+    const repairDb = createDb(externalTestDatabaseUrl ?? tempDb!.connectionString);
+    const events: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(repairDb, "chat-run-milestones", event => events.push(event));
+    try {
+      const [coordinator] = await db.select().from(nativeRunFinalizations).where(eq(nativeRunFinalizations.runId, context.runId));
+      const input = { companyId: context.fixture.companyId, issueId: coordinator.issueId, runId: context.runId,
+        decisionId: coordinator.decisionId!, resultId: coordinator.resultId!, assessmentId: coordinator.assessmentId! };
+      const savedAt = new Date(Date.now() - 60_000);
+      await db.update(heartbeatRuns).set({ updatedAt: savedAt }).where(eq(heartbeatRuns.id, context.runId));
+      // Already-restored metadata still authorizes materialization by the caller,
+      // but must neither rewrite the run nor wake projection again.
+      await expect(repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input))).resolves.toBe(true);
+      expect((await readHeartbeatRunsById(context.runId))[0].updatedAt).toEqual(savedAt);
+      expect(events).toEqual([]);
+      await db.update(heartbeatRuns).set({ resultJson: sql`${heartbeatRuns.resultJson} - 'externalChatReviewPresentation'` })
+        .where(eq(heartbeatRuns.id, context.runId));
+      await repairDb.transaction(async tx => {
+        expect(await restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input)).toBe(true);
+        expect(events).toEqual(["intent"]);
+      });
+      expect(events).toEqual(["intent", "settled"]);
+      expect((await readHeartbeatRunsById(context.runId))[0].resultJson).toMatchObject({
+        externalChatReviewPresentation: { decisionId: coordinator.decisionId, runId: context.runId },
+      });
+      events.length = 0;
+      await repairDb.transaction(tx => restoreNativeChatReviewPresentationInTransaction(tx as unknown as typeof db, input));
+      expect(events).toEqual([]);
+    } finally {
+      unsubscribe();
+      await repairDb.$client.end({ timeout: 1 });
+      await context.service.shutdown();
+    }
+  });
 
   it.each(["principal_revoked", "gate_changed"] as const)(
     "blocks a committed native review response and selected files at transport after %s",
