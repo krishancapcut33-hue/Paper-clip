@@ -173,6 +173,22 @@ describe("PropertiesPanel", () => {
       });
     });
 
+    it.each([false, true])("clamps late content to a narrowed viewport (task detail: %s)", async (taskDetailLayout) => {
+      const storageKey = taskDetailLayout
+        ? "taskChatRedesign.taskDetailPropertiesPaneWidth"
+        : "taskChatRedesign.propertiesPaneWidth";
+      window.localStorage.setItem(storageKey, "700");
+      await renderPanel({ taskDetailLayout, content: null });
+      const aside = container.querySelector("aside")!;
+
+      Object.defineProperty(window, "innerWidth", { configurable: true, value: 1000 });
+      await renderPanel({ taskDetailLayout });
+
+      expect(container.querySelector("aside")).toBe(aside);
+      expect(aside.style.width).toBe("344px");
+      expect(window.localStorage.getItem(storageKey)).toBe("700");
+    });
+
     it("renders the Paper task-detail rail width with a drag grip and a maximize button", async () => {
       await renderPanel({ taskDetailLayout: true });
       const aside = container.querySelector("aside");

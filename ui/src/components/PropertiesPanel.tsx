@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type ReactNode } from "react";
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type ReactNode } from "react";
 import { X } from "lucide-react";
 import { usePanel } from "../context/PanelContext";
 import { useClassicTaskInterfaceEnabled } from "../hooks/useClassicTaskInterfaceEnabled";
@@ -197,6 +197,12 @@ function ResizablePropertiesPanel({
   const [dragging, setDragging] = useState(false);
   const [maximized, setMaximized] = useState(false);
   const [fixedPane, setFixedPane] = useState<FixedPane | null>(null);
+
+  // The host can outlive a viewport change while its content is loading.
+  // Clamp before revealing it, without overwriting the user's saved width.
+  useLayoutEffect(() => {
+    if (panelVisible) setWidth(clampPaneWidth);
+  }, [panelVisible]);
 
   const asideRef = useRef<HTMLElement | null>(null);
   const widthRef = useRef(width);

@@ -80,3 +80,15 @@ test("resizing stays immediate and maximize restores the docked width", async ({
   await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width)).toBe(524);
   expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(1440);
 });
+
+test("a viewport narrowed during loading clamps the sidebar before reveal", async ({ page }) => {
+  await page.addInitScript(() => localStorage.setItem("taskChatRedesign.taskDetailPropertiesPaneWidth", "700"));
+  await page.goto("/iframe.html?id=tasks-sidebar-loading--sidebar-during-skeleton&viewMode=story&args=sidebarDelay:3500;contentDelay:4500");
+  await page.getByRole("button", { name: "Replay cold load" }).click();
+  const pane = page.locator("aside");
+  await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width)).toBe(0);
+  await page.setViewportSize({ width: 1000, height: 960 });
+  await expect.poll(() => pane.evaluate((el) => el.getBoundingClientRect().width), { timeout: 8000 }).toBe(344);
+  expect(await page.evaluate(() => localStorage.getItem("taskChatRedesign.taskDetailPropertiesPaneWidth"))).toBe("700");
+  expect(await page.evaluate(() => document.documentElement.scrollWidth)).toBe(1000);
+});
