@@ -1,4 +1,4 @@
-import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRunChange } from "../unsafe-workspace-export-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyCancelledWorkspacePreservation } from "../cancelled-workspace-preservation-notifications.js";
@@ -37,6 +37,7 @@ import {
   nativeRunFinalizations,
   nativeRunResults,
   statusDecisions,
+  statusDecisionEffects,
   workAssessments,
   workspaceOperations,
 } from "@paperclipai/db";
@@ -213,7 +214,7 @@ async function claimCoordinator(input: {
       coordinator.leaseOwner !== leaseOwner
     )
       throw new Error("native_finalization_lease_busy");
-    if (coordinator.decisionId) await notifyNativePendingEffects(tx, coordinator);
+    if (coordinator.decisionId) await notifyNativeFinalizationWork(tx, coordinator);
     const [updated] = await tx
       .update(nativeRunFinalizations)
       .set({
@@ -381,7 +382,7 @@ async function recordRetryableFailure(input: {
             ? "native_workspace_sync_out_retry_exhausted"
             : "native_finalization_retry_exhausted"
           : input.failureCode;
-    await notifyNativePendingEffects(tx, { companyId: input.run.companyId, runId: input.run.id });
+    await notifyNativeFinalizationWork(tx, { companyId: input.run.companyId, runId: input.run.id });
     if (phase === "terminal_failure") await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
     if (phase === "terminal_failure" && failureCode === "native_workspace_sync_out_unsafe_archive") {
       await notifyUnsafeWorkspaceExportRecovery(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
@@ -847,6 +848,21 @@ export async function repairCommittedNativeChatResponse(
   db: Db,
   input: { companyId: string; issueId: string; runId: string },
 ): Promise<boolean> {
+  try {
+    return await recoverCommittedNativeChatResponse(db, input);
+  } catch (error) {
+    logger.warn(
+      { runId: input.runId, error },
+      "Committed chat response is awaiting presentation retry",
+    );
+    return false;
+  }
+}
+
+export async function recoverCommittedNativeChatResponse(
+  db: Db,
+  input: { companyId: string; issueId: string; runId: string; onlyWhenDue?: boolean },
+): Promise<boolean> {
   let agentId: string | null = null;
   let materialized = false;
   try {
@@ -931,6 +947,16 @@ export async function repairCommittedNativeChatResponse(
         !coordinator.assessmentId
       )
         return false;
+      if (input.onlyWhenDue) {
+        if (coordinator.nextAttemptAt && coordinator.nextAttemptAt.getTime() > Date.now()) return false;
+        const [pendingEffect] = await tx.select({ id: statusDecisionEffects.id }).from(statusDecisionEffects).where(and(
+          eq(statusDecisionEffects.companyId, input.companyId),
+          eq(statusDecisionEffects.issueId, input.issueId),
+          eq(statusDecisionEffects.decisionId, coordinator.decisionId),
+          inArray(statusDecisionEffects.deliveryState, ["pending", "failed"]),
+        )).limit(1);
+        if (pendingEffect) return false;
+      }
       const [accepted] = await tx
         .select()
         .from(nativeRunResults)
@@ -1121,13 +1147,7 @@ export async function repairCommittedNativeChatResponse(
     });
   } catch (error) {
     if (error instanceof CommittedChatResponseAuthorizationError) return false;
-    // Keep transient failures visible and retryable without reclassifying the
-    // committed run or acknowledging a publication that never committed.
-    logger.warn(
-      { runId: input.runId, error },
-      "Committed chat response is awaiting presentation retry",
-    );
-    return false;
+    throw error;
   }
   if (materialized && agentId)
     publishChatPublicationCommitSignal({
@@ -1165,6 +1185,7 @@ export async function finalizeNativeRun(input: {
   workspaceFinalizeStatus: "succeeded" | "failed";
   /** Reconciliation owns terminal run projection; the live heartbeat does it afterward. */
   projectRunStatus?: boolean;
+  skipNativeResponsePresentation?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
   failpoint?: NativeStatusCommitFailpoint;
@@ -1218,7 +1239,7 @@ export async function finalizeNativeRun(input: {
       await projectCommittedRun({ db: input.db, run: admittedRun, coordinator });
     if (input.projectRunStatus && !presentationAlreadyMaterialized)
       await materializeCommittedReviewResponse(input.db, input.runId);
-    if (input.projectRunStatus)
+    if (input.projectRunStatus && !input.skipNativeResponsePresentation)
       await repairCommittedNativeChatResponse(input.db, {
         companyId: admittedRun.companyId,
         issueId: coordinator.issueId,

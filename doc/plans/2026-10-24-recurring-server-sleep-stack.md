@@ -2296,3 +2296,114 @@ and all final-head PR gates remain open. No PR has been merged by this stack wor
 Final slice 47 source passes workspace typecheck/build and 158 worker/startup
 cases, including exact near-term concurrent deadlines. Remote publication and
 acceptance are the next gates; local success does not satisfy the full stack.
+
+## Slice 47 published; slice 48 response-owner audit
+
+Slice 47 is draft [#17690](https://github.com/paperclipai/paperclip/pull/17690),
+head `56c3601ea605b333141e86e0a810ed790fb6ce48`, based on #17687. Its final local
+checks passed; remote CI and Greptile are running. No merge or remote acceptance
+is claimed yet.
+
+Slice 48 starts accepted-response presentation recovery, excluding governed-review
+presentation. Its current helper conflates dormant/settled work and transient
+failures as false; resolve that owner contract before removing its backstop.
+The exact null-lease, digest, selected-answer, and publication-authority fences
+must remain intact. The existing external-chat baseline passed 33 selected cases;
+1,551 others were not selected. See the
+[response-presentation audit](2026-10-25-native-response-presentation-sleep-audit.md).
+
+The old action-required check on #17576 is Superagent Security Scan. Its existing
+voice-review findings and the older E2E failures remain outstanding. Work on the
+rest of the original stack continues; none of these gates are waived.
+
+Slice 48's first owner-contract change now passes the same 33 real-PostgreSQL
+response cases plus server typecheck. The strict recovery entry point propagates
+operational errors; existing callers keep their logging/boolean contract. No
+response worker has been wired and no response polling is removed yet.
+
+The Superagent action-required gate on #17576 was traced to review 5643793631,
+inline finding 4371283330: repeated connection/health writes reload the full live
+voice-session inventory. This is the already-recorded bounded-discovery issue,
+not a missing credential or permission. It still needs a code/test repair and
+fresh review; the gate must not be bypassed.
+
+## Slice 47 accepted
+
+[#17690](https://github.com/paperclipai/paperclip/pull/17690) at exact head
+`56c3601ea605b333141e86e0a810ed790fb6ce48` has all 53 checks passing, Greptile 5/5
+with no actionable findings or review threads, and a mergeable parent. Its PR body
+records those gates. It remains draft and unmerged. Evidence is retained in
+`/tmp/sleep47-checks-accepted.json`, `/tmp/sleep47-final-gates.json`,
+`/tmp/sleep47-review-accepted.json`, and `/tmp/sleep47-review-threads.json`.
+
+Slice 48 remains local and incomplete: owner error separation and the 33-case
+baseline pass; candidate discovery, producer coverage, lifecycle wiring, and
+periodic removal remain. Older unresolved stack gates and every other original
+recurring-server duty still require completion. The active goal is not complete.
+
+
+## Slice 48 local worker progress
+
+Accepted-response recovery now has a local scoped worker, locked retry/effect
+fences, milestone-topic notifications, and live authority registration invalidation.
+The final selected real-PostgreSQL/lifecycle run passes 45 cases, and server types
+pass. An elapsed-deadline race was reproduced before repair. A generated concurrent
+partial index plus expression statistics avoids selected-history scans in the
+10,000-row fixture; fresh migration and replay pass. See the
+[response audit](2026-10-25-native-response-presentation-sleep-audit.md) for exact
+scope and preserved failures.
+
+The worker is not wired into startup and periodic response recovery remains.
+Producer coverage, remaining variants/failure tests, large dormant-backlog cost,
+full local/remote acceptance, and PR publication are still required. Master was
+refreshed to `7703220d38`; the complete stack has not yet been reconciled with it.
+No merge, complete migration, whole-instance sleep, or full-goal completion is
+claimed.
+
+## Slice 48 producer and lifecycle checkpoint
+
+Response recovery now shares the finalization notification boundary, receives
+run-scoped late evidence, and wakes when a paused agent resumes or retry admission
+settles. The resume gap was reproduced before fixing it at lifecycle's transaction
+boundary. The existing lifecycle suite, both response variants' supporting suites,
+and the combined acceptance selection cover 175 distinct passing cases across
+runs; server types pass. A real source-row lock verifies retry across drain.
+Earlier harness/test failures and the 10,000-unpresented-row discovery measurements
+are preserved in the response audit. No startup wiring, periodic removal, PR
+publication, remote acceptance, or whole-instance sleep is claimed yet.
+
+
+## Slice 48 startup integration, 2026-10-26
+
+The response worker now registers under enabled maintenance and releases its
+subscription during shutdown. Periodic recovery skips both its direct repair and
+already-committed finalizer replay; fresh finalization and explicit recovery stay
+active. The startup suite passes 66 cases, and two database regressions confirm
+periodic calls defer to the new worker. Workspace types pass. Full local tests
+remain in progress with embedded-database initialization failures; build and
+remote checks remain pending. The stack goal is still incomplete.
+
+
+## Slice 48 review repair, 2026-10-26
+
+Draft #17696 is open and attached. Review identified company-wide response reloads
+from routine run-status notifications; three real database regressions reproduced
+it. Status/claim/release wakes now retain task or exact-run scope while task
+lineage remains task-wide. All 34 heartbeat lifecycle and 63 response/authority/
+admission tests pass, as do server types and the workspace build. The full local
+suite was stopped after repeated embedded PostgreSQL startup failures and remains
+unproven. Remote failures at `79bf36cbf8` include an early startup-settlement test
+assertion (repaired), a workspace staging timeout, and an E2E runner shutdown.
+See the response audit for logs. Fresh-head CI/review, earlier stack findings,
+master reconciliation, and all remaining original duties stay open. Nothing merged.
+
+
+## Slice 48 full-history acceptance repair
+
+Fresh review of `c4beddad1e` is 5/5 with its scope finding resolved. Remote CI
+exposed a second early startup assertion. Full local chat verification finished
+1,595 passed / seven failed; all seven were new worker tests observing a transient
+null deadline or unfinished startup batch. Their settlement predicate now includes
+zero active work. All 18 affected cases pass against the full suite's retained
+history. Fresh remote acceptance remains pending; these are recorded test repairs,
+not a waiver of failed gates or a change to production batch behavior.

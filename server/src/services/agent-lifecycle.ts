@@ -1,4 +1,5 @@
 import { isAgentStatusInvokable } from "@paperclipai/shared";
+import { notifyNativeResponsePresentation } from "./native-response-presentation-notifications.js";
 import { notifyChatInboundWakeNotices } from "./chat-inbound-wake-notice-notifications.js";
 import { logger } from "../middleware/logger.js";
 import { companies, type Db } from "@paperclipai/db";
@@ -35,8 +36,9 @@ export function createAgentLifecycleEffects(_hooks: BudgetServiceHooks = {}): li
       return true;
     },
     notifyWork: tx => notifyDeliveryWork(tx, DELIVERY_QUEUES.agentLifecycle),
-    async beforeStatusChange(tx, companyId, _agentId, before, after) {
+    async beforeStatusChange(tx, companyId, agentId, before, after) {
       if (!isAgentStatusInvokable(before) && isAgentStatusInvokable(after)) {
+        await notifyNativeResponsePresentation(tx, { companyId, agentId });
         await notifyChatInboundWakeNotices(tx, { companyId });
       }
     },

@@ -1,4 +1,4 @@
-import { notifyNativePendingEffects } from "../native-pending-effect-notifications.js";
+import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "../unsafe-workspace-export-notifications.js";
 import { notifyAutomaticCompletionReviews } from "../automatic-completion-review-notifications.js";
 import { notifyObsoletePolicyReviews } from "../obsolete-policy-review-notifications.js";
@@ -152,7 +152,7 @@ export async function dispatchPendingNativeStatusEffects(input: {
         targetId: effect.targetId,
       });
     }
-    await notifyNativePendingEffects(tx, input);
+    await notifyNativeFinalizationWork(tx, input);
     await notifyChatRunMilestones(tx, input);
     await tx
       .update(statusDecisionEffects)
@@ -1239,7 +1239,7 @@ async function materializeDecisionEffect(input: {
       )
       .for("update");
     if (pending.length === 0) throw new Error("native_pending_effect_missing");
-    await notifyNativePendingEffects(input.tx, { companyId: input.companyId });
+    await notifyNativeFinalizationWork(input.tx, { companyId: input.companyId });
     await input.tx
       .update(statusDecisionEffects)
       .set({
@@ -1924,7 +1924,7 @@ export async function commitNativeStatusDecision(input: {
         effect => effect.kind === "record_finalization_error",
       );
       await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.companyId);
-      await notifyNativePendingEffects(tx, input);
+      await notifyNativeFinalizationWork(tx, input);
       await tx
         .update(nativeRunFinalizations)
         .set({

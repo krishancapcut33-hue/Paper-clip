@@ -638,6 +638,7 @@ type NativeReconciliationOptions = {
   skipAutomaticCompletionReviews?: boolean;
   skipUnsafeWorkspaceExports?: boolean;
   skipNativePendingEffects?: boolean;
+  skipNativeResponsePresentation?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -855,7 +856,7 @@ async function reconcileNativeFinalizationsPass(
           )).limit(1).then((entries) => entries[0] ?? null)
         : null;
       const currentDecisionJson = record(currentDecision?.decisionJson);
-      if (row.coordinatorPhase === "committed") {
+      if (row.coordinatorPhase === "committed" && !options.skipNativeResponsePresentation) {
         // A later decision can supersede this run's task status, but cannot
         // erase its accepted, still-authorized response. Repair presentation
         // before the status-only early return below, without rerunning work.
@@ -1111,6 +1112,7 @@ async function reconcileNativeFinalizationsPass(
           runId: row.runId,
           workspaceFinalizeStatus,
           projectRunStatus: true,
+          skipNativeResponsePresentation: options.skipNativeResponsePresentation,
           preserveProviderAttempt: Boolean(
             readNativeWorkspaceSyncReference(
               row.nativeWorkspaceSync,
@@ -1169,6 +1171,7 @@ async function reconcileNativeFinalizationsPass(
         runId: row.runId,
         workspaceFinalizeStatus: barrier.status as "succeeded" | "failed",
         projectRunStatus: true,
+        skipNativeResponsePresentation: options.skipNativeResponsePresentation,
         preserveProviderAttempt: Boolean(
           readNativeWorkspaceSyncReference(
             row.nativeWorkspaceSync,

@@ -1,0 +1,400 @@
+# Native accepted-response presentation recovery
+
+Status: worker, producers, and startup/periodic integration implemented; full local and remote acceptance pending.
+Branch: `codex/sleep-48-native-response-presentation`.
+Parent: [#17690](https://github.com/paperclipai/paperclip/pull/17690),
+`56c3601ea605b333141e86e0a810ed790fb6ce48`.
+
+## Reason for work
+
+A native run can have an accepted, committed result but no saved public reply.
+The finalization reconciler calls `repairCommittedNativeChatResponse` before
+skipping superseded status decisions. A later task decision must not erase an
+already accepted, still-authorized response. This work neither re-executes the
+provider nor changes issue disposition. It is separate from governed-review
+presentation, evidence reassessment, and result/workspace settlement.
+
+The current helper covers three variants of the same accepted-response duty:
+a saved same-agent/monitor continuation summary, an internal task's exact final
+assistant message, and an authorized external response-wake summary. Governed
+review responses are explicitly excluded and retain their own stricter owner.
+Do not merge the review response migration into this slice merely because both
+helpers live in the finalizer.
+
+## Existing authority and mutation boundary
+
+`repairCommittedNativeChatResponse` locks issue, run, and coordinator in that
+order. It requires native runtime; succeeded, failed, or timed_out with finishedAt;
+a committed coordinator with result/assessment/decision and a null leaseOwner.
+It refuses to replace a selected comment, including a deleted selected answer.
+It checks the accepted result's digest using either the coordinator format or
+the older authenticated control-plane format, retaining its bounded journal
+source lookup. It excludes externalChatReviewPresentation decisions.
+
+A lease that expired but still has an owner is not permission to publish: the
+helper requires actual release. Do not reuse the pending-effects lease rule.
+The outer periodic candidate query additionally respects saved nextAttemptAt.
+A future worker must preserve that fence where applicable and wake on release.
+
+Internal completion needs an exact final assistant event for the accepted turn,
+current internal-write authorization, and permission to create a new completion
+comment. Continuation summaries check provider-owned interactions. External
+response-wake summaries require the live registered chat authority, exact durable
+source provenance, and current presentation authorization. The chat owner validates
+source edits/deletion, membership, endpoint state/generation, consumed failure
+lanes, and ambiguous delivery. None of this policy belongs in a generic scheduler.
+
+The comment and presentationDecision are written in the same transaction, through
+the existing comment/publication owner. Notification follows durable commit.
+Recovery must not revive private provider narration, duplicate a target, publish
+under another source, or reinterpret the saved result using new task settings.
+
+## Contract gap to resolve before retiring polling
+
+The helper currently returns false for several distinct outcomes: already settled,
+structurally ineligible, authority unavailable/revoked, and transient SQL/lock or
+materialization failure. It logs most errors then returns false. A worker cannot
+use that boolean as a pending-work predicate: dropping false loses retryable
+responses, while retrying every false rescans ineligible history indefinitely.
+
+Keep the current boolean caller contract where needed, but expose the smallest
+owner-level result/error contract that distinguishes dormant history from concrete
+retry debt. Do not translate all authorization failures into retry forever. The
+registered authority lives in durable-chat-wakeup.ts and is installed by
+chat-channels/failed-run-retry.ts. Missing registration and later registration need
+an explicit lifecycle wake path, separate from committed database mutations.
+
+Audit and test the candidate predicate before introducing a worker. Startup scans
+must filter selected answers, irrelevant result kinds, review-owned responses,
+and other passive history. Full authorization stays in the locked owner; SQL
+prefiltering is not a new publication authorization mechanism. Measure actual query
+plans with substantial completed history before claiming bounded discovery.
+
+## Producer audit still required
+
+- Native coordinator decision commit, persisted-attention replay, and ownership
+  release; result/assessment/decision binding changes.
+- Run terminalization and accepted-turn event persistence, including late journal
+  arrival and direct recovery writers. Avoid waking on every unrelated progress
+  event merely because it shares the journal.
+- Presentation selection/materialization and existing-comment suppression. A
+  deleted selected answer remains settled rather than becoming repair debt.
+- Issue conversation/context changes and skipIssueComment behavior.
+- Exact chat source, action/admission, publication, endpoint generation/status,
+  principal/membership, continuation provenance, and ambiguous-delivery resolution.
+  Separate mutations that only revoke work from supported reactivation paths.
+- Live chat-authority registration/replacement/shutdown; subscription ownership.
+- Startup, first write during drain, retry during drain, resume, and shutdown.
+
+Use existing durable records, scoped transaction signals, and the shared scheduler.
+No new response queue table or permissive publication fallback is justified.
+Independent SQL/multi-process writes remain outside the existing local signal
+contract unless explicitly integrated; preserve the documented limitation.
+
+## Baseline evidence
+
+On the unchanged parent source, a fresh external PostgreSQL selection passed
+33 accepted-response cases in chat-channels.integration.test.ts. The remaining
+1,551 cases in that file were not selected, not claimed passed. The selection
+covers duplicate/concurrent repair, source/authority changes, digest changes,
+private disposition, cross-company/run binding, live heartbeat fences, the older
+port-bound digest, GitHub internal prose/attachments, failure-lane replacement,
+provider-dispatch reauthorization, selected/deleted answers, and contention.
+Log: `/tmp/sleep48-chat-baseline.log`. Database:
+`paperclip_sleep48_chat_baseline_20261025_test`.
+
+The monitor-continuation and control-plane-port suites currently require embedded
+PostgreSQL directly. Qualify a validated external-test path if needed before using
+their results on this host; do not count skipped or initialization-failed suites.
+No sleep or migrated-worker behavior is established by this baseline.
+
+## Initial owner-contract change
+
+`recoverCommittedNativeChatResponse` now exposes the existing transaction and
+returns false for settled/ineligible/authorization-denied state, while propagating
+operational failures. The existing `repairCommittedNativeChatResponse` wrapper
+retains logging and false-on-error behavior for current callers. Authority checks,
+lock order, target materialization, and commit signaling remain in the same owner.
+The commit signal itself contains subscriber errors, so the wrapper does not hide
+a previously propagated publication error.
+
+The same 33-case real-PostgreSQL selection passes after this change, with added
+assertions that the new entry point rejects under actual source-action lock
+contention and returns false for the existing authorization/binding fences. The
+server typecheck passes (`/tmp/sleep48-contract-typecheck.log`). Worker discovery,
+producer notifications, startup wiring, and periodic removal are not implemented.
+
+## Existing notification boundary to reuse
+
+The current `notifyChatRunMilestones` boundary already covers 102 production call
+sites and fans out lineage/authority changes to native progress, inbound notices,
+confirmations, and GitHub work. Its scope is company plus optional issue because
+source changes can authorize descendants. Audit its coverage for this duty before
+adding caller wrappers. It already reaches status-decision settlement and run
+projection, but raw coordinator-store/session release and accepted-turn journal
+writers need individual inspection. Reuse is not proof that all producers exist.
+
+
+## Local worker and locked scheduling fences
+
+The local worker now discovers exact run/coordinator/result/decision bindings,
+filters selected answers and structurally irrelevant results, and dispatches
+through `recoverCommittedNativeChatResponse`. It does not own publication policy.
+`onlyWhenDue` rechecks the saved retry and outstanding status effects while the
+existing coordinator lock is held. Existing explicit callers retain their old
+behavior. A future retry is retained even if it becomes due between the locked
+check and the follow-up read; its next attempt is immediate rather than discarded.
+
+Operational errors remain retryable through the shared coordinator. A structurally
+eligible but unauthorized row becomes dormant until an eligibility mutation or
+live authority registration invalidates its scope. Selected comments, including
+deleted selections, remain excluded. No provider rerun or new work table is added.
+
+The existing milestone notification boundary now includes the response topic.
+Hints explicitly select company and issue IDs: structural TypeScript callers may
+pass larger objects, so serializing the whole argument is not safe. The first
+integration run exposed that mistake as circular-object serialization during
+status materialization; it was corrected before the passing runs below.
+
+Two narrow lifecycle capabilities support the new consumer:
+
+- `registerScopedDeadlineWork.invalidate` marks reconstruction dirty before waking.
+  A plain wake is insufficient after a prior dormant result removed its entry.
+  Existing consumers keep the same registration and scheduling behavior.
+- The committed-response authority owner exposes registration notifications.
+  Registering/replacing the actual chat service reactivates dormant responses.
+  The worker's `stop` removes this subscription; the delivery coordinator still
+  owns worker cancellation and awaiting in-flight work. Repeated unsubscription
+  cannot delete a later listener set. The authority remains scoped to the exact Db.
+
+No startup registration or periodic skip is wired yet. The old recovery path is
+still present. Full producer coverage, internal/continuation variants, recovery
+failure/drain tests, and repeated large-scope mutation cost remain acceptance work.
+Current discovery pages by run ID but reconstructs all matching pages in one
+load; its resource bound under a large unresolved/dormant backlog needs proof
+before activation. Do not describe the worker as a completed migration yet.
+
+## Query-plan and migration evidence
+
+The actual discovery query was captured from the driver. On a disposable database
+with 10,000 additional selected runs, results, assessments, decisions, and
+coordinators, it initially scanned completed history (22.656 ms). A partial
+unpresented-run index alone still chose the wrong join order (16.532 ms).
+Expression statistics for the selected-comment predicate allowed PostgreSQL to
+start from the one unpresented run (0.091 ms).
+
+Generated migration `0404_futuristic_earthquake.sql` creates the partial index
+concurrently, adds idempotent expression statistics, and analyzes the table.
+The existing top-level migration runner owns concurrent-index replay/repair.
+Snapshot retention contains exactly 0396–0400. Fresh migration, journal replay,
+direct SQL replay, ready/valid index flags, and statistics presence passed.
+
+Rechecking the actual migration's objects (after removing experimental objects)
+used the driver's real global, company, and issue-scoped queries. Global discovery
+found one candidate in 0.078 ms; history-only company/issue scopes returned none
+in 0.024/0.019 ms without sequential scans. These are query-plan fixtures, not
+latency or fleet-sleep claims. Large unselected ineligible histories and repeated
+configuration signals still need separate qualification.
+
+Evidence: `/tmp/sleep48-query.json`, `/tmp/sleep48-query-plan.sql`,
+`/tmp/sleep48-query-plan.log`, `/tmp/sleep48-query-statistics.log`,
+`/tmp/sleep48-production-plan.log`, `/tmp/sleep48-migration-verify.log`.
+
+## Current verification and preserved failures
+
+The expanded final selection passed 45 cases in two files: 33 existing accepted-
+response cases, ten new worker/owner cases, and two authority lifecycle cases.
+The 1,551 unselected chat cases are not claimed passed. Server typecheck passed.
+The worker cases establish startup recovery, selected-history quiet over former
+poll periods, real chat-service authority restoration, outer commit/rollback,
+first notification during drain, SQL-free drain waiting, resume, saved future
+retry, pending/failed status-effect ordering, and an elapsed-deadline race.
+
+The elapsed-deadline test failed before its fix: the worker returned null even
+though the locked owner had deferred the response. It now retains the due entry
+and the next attempt publishes exactly once. Log:
+`/tmp/sleep48-elapsed-deadline-before.log`.
+
+Earlier worker runs exposed the hint serialization defect (nine fixture failures),
+then two test-observation mistakes. A timer created before fake-time installation
+was not advanced by the fake clock; the test now installs time before registration.
+A null next deadline can occur while a sweep is in flight; commit assertions now
+wait for the persisted publication, zero tracked activity, and no next deadline
+jointly. The original logs remain `/tmp/sleep48-worker-tests.log`,
+`/tmp/sleep48-worker-tests-v2.log`, `/tmp/sleep48-drain-isolated.log`, and
+`/tmp/sleep48-worker-tests-v3.log`. The corrected initial selection passed eleven
+cases in `/tmp/sleep48-worker-tests-v4.log`; the final expanded result is
+`/tmp/sleep48-acceptance-v2.log` with server types in
+`/tmp/sleep48-acceptance-typecheck-v2.log`.
+
+No slice 48 PR, full workspace acceptance, remote CI/review, or provider sleep
+qualification is claimed by these local results. The earlier stack gates and
+remaining recurring-server duties are unchanged.
+
+## Producer integration and lifecycle evidence
+
+The existing pending-effect notification boundary is now named
+`notifyNativeFinalizationWork` and wakes both consumers. Its existing coordinator
+claim/retry, effect settlement, persisted-attention replay, retained-session release,
+and recovery callers retain transaction ownership. No new wrappers are threaded
+through those callers. Response discovery now accepts exact run and agent scopes.
+
+Both journal writers notify for accepted-result evidence and normalized completed
+final assistant messages, after source/deduplication checks and before persistence.
+Deltas, tool completions, and analysis messages do not activate response recovery.
+The port's late accepted-result journal test and the internal final-message test
+exercise these existing writers. Monitor continuation recovery is also exercised
+through the worker, without another accepted result or provider execution.
+
+Agent availability was a real missing producer: the recovery owner rejects a
+paused agent, but resuming that agent did not invalidate dormant responses. A
+real resume regression failed before the fix. Lifecycle now exposes a narrow
+`beforeStatusChange` integration callback, invoked inside its existing transaction
+before the compatibility status write. The service supplies response policy only
+for a transition from non-invokable to invokable, scoped to that agent. Lifecycle
+still owns status transitions and the transaction; its existing resource-event
+callback retains its semantics. With no response worker registered, this adds only
+the existing notification protocol, not an independent worker or provider call.
+The complete lifecycle suite exercises existing consumers of the new contract.
+
+Failed-chat retry admission also notifies response recovery when its source action
+becomes processed. This can establish the ancestry proof after a very fast child
+run has already finished. Five real admission scenarios verify that the response
+consumer observes the committed action and the exact issue scope: commit, retry,
+startup, stale claim, and rollback. An assignment-reactivation experiment instead
+hit the existing prohibition on changing a channel-bound task's agent; that
+unsupported fixture was removed without relaxing the guard.
+
+Validation across these runs covers 175 distinct cases: 59 response/authority and
+retry-admission cases, 58 lifecycle cases, 21 monitor-continuation cases, and 37
+control-plane-port cases. Server typechecking passes. These are selected suites,
+not a claim that the entire repository suite or remote PR checks passed.
+
+- `/tmp/sleep48-producers-rerun.log`: port 37/37, continuation 20/20, server types.
+- `/tmp/sleep48-producer-acceptance.log`: lifecycle 58/58, expanded continuation
+  21/21, response/authority 53 selected, server types.
+- `/tmp/sleep48-acceptance-v5.log`: combined response/authority/admission 59 passed;
+  1,546 unrelated cases not selected. Types in
+  `/tmp/sleep48-acceptance-typecheck-v5.log`.
+- Real action-row contention now verifies retry retention through drain, zero
+  passive SQL while paused, and eventual single publication after resume.
+
+Failures remain recorded. The first external-port run had 36 passes and one
+observer connection using the absent embedded database; the observer now uses the
+validated external URL. The resume regression and invalid reassignment experiment
+are in `/tmp/sleep48-eligibility-before.log`. A test-only observer initially omitted
+its required retry interval and produced finite-deadline warnings; corrected in
+`/tmp/sleep48-retry-producer-v2.log`. The combined v4 run exposed a global fault
+injection targeting another retained fixture (13 transactions, not one). The v5
+run uses an actual lock on the tested response's source instead of assuming global
+candidate order; all 59 cases pass with that stronger fault boundary.
+
+## Unpresented-backlog measurement
+
+A disposable clone of the earlier plan fixture has 10,008 structurally eligible,
+unpresented candidates. The actual worker loader took 2,980 ms and 101 queries for
+global reconstruction; 10,001 candidates in one company took 2,828 ms; the exact
+run took 1.73 ms and one query. Agent reconstruction for that company's 10,001
+candidates took 2,826 ms. Serialized entries occupy about 2.05 MB. The drain gate
+stopped discovery after two pages. Evidence:
+`/tmp/sleep48-unpresented-backlog.mts` and `.log`.
+
+This measures discovery, not authorization or publication throughput: the cloned
+rows do not establish valid independent publication authority. Each SQL page is
+bounded to 100 rows, but total reconstruction memory/time still scales with the
+unpresented backlog. Ordinary finalization and journal notifications are run-scoped;
+agent resume is agent-scoped; actual authority/configuration changes may reconstruct
+a larger scope. Health-only configuration signals do not invalidate this worker.
+Do not describe total reconstruction as constant-cost or claim fleet qualification.
+
+Startup/shutdown integration, removal of this duty's periodic call, final producer
+coverage review, full PR verification, and publication remain outstanding. The old
+backstop is still present. Master was refreshed to `6bdcb70244`; the full stack
+still needs reconciliation and its earlier failing/review gates remain open.
+
+
+## Startup integration, 2026-10-26
+
+The heartbeat facade now registers this worker with the existing task-drain gate.
+Enabled maintenance awaits reconstruction during startup. Shutdown and listener
+close release its live-authority subscription; coordinator shutdown retains
+ownership of cancellation and in-flight work.
+
+The periodic orphan-recovery caller now passes `skipNativeResponsePresentation`.
+The reconciler skips its direct repair call and passes the same option into
+canonical finalizer replay. The finalizer skips only its already-committed response
+repair in that mode. Fresh finalization still delivers immediately. Explicit
+recovery and startup recovery keep their default behavior. Governed-review
+presentation and other native finalization duties remain separate.
+
+All 66 startup tests pass, including disabled maintenance and close subscription
+registration. Two real PostgreSQL regressions verify that both periodic entry
+points leave the response unmaterialized, and the worker then creates exactly one
+publication from the accepted result. Log: `/tmp/sleep48-wiring-tests.log`.
+Workspace typecheck passes (`/tmp/sleep48-full-typecheck.log`). The full local suite
+is still running and has reported embedded PostgreSQL initialization failures;
+its final result and build status remain pending. No full-suite or remote check
+acceptance is claimed at this checkpoint.
+
+
+## Review repair and current verification, 2026-10-26
+
+Published draft #17696 at `79bf36cbf8`. Greptile found a real precision gap:
+`writeRunStatus` still sent a company-only milestone hint. Every unrelated run
+status could reconstruct dormant response history. Three real-PostgreSQL cases
+(native binding, legacy context binding, and taskless run) failed before repair
+(`/tmp/sleep48-scope-before.log`).
+
+The milestone contract now accepts an optional run identity. Status producers
+supply the task when bound and the exact run otherwise. The response fanout
+prefers task scope over run scope, because lineage changes can authorize other
+runs on that task. Known run claim/release and completion producers also preserve
+an exact-run fallback. Existing company configuration invalidations remain broad.
+No new durable rows or caller recovery wrappers are introduced.
+
+All 34 heartbeat lifecycle tests pass after repair. Two real worker regressions
+retain a dormant eligible response, send unrelated task/run wakes, and observe
+one actual candidate SQL query at the postgres.js debug boundary, without
+rechecking the dormant row. The outer-commit/rollback cases additionally send a
+different run identity within the same task and retain task-level recovery.
+An initial test mistakenly counted Drizzle subquery builder construction as a
+second SQL statement; driver-level observation corrected the measurement.
+
+The response/authority/admission selection now passes all 63 cases
+(`/tmp/sleep48-scope-acceptance.log`). Server typechecking and the workspace build
+pass (`/tmp/sleep48-scope-typecheck-v3.log`, `/tmp/sleep48-scope-build.log`).
+The previous full workspace typecheck passed at `79bf36cbf8`. The full local
+Vitest run was explicitly stopped after repeated embedded PostgreSQL bootstrap
+failures; `/tmp/sleep48-full-tests.log` preserves those failures. It is not a
+full-suite pass. Focused database acceptance uses the validated external
+PostgreSQL path and isolated disposable test databases.
+
+Remote CI at `79bf36cbf8` also exposed a late-journal test that assumed worker
+startup drains all candidates in one batch. It now waits for actual settlement,
+as the shared worker deliberately processes fair batches. The workspaces-b job
+hit a five-second sandbox staging test timeout; E2E shard five received a runner
+shutdown signal. These failures remain recorded in `/tmp/sleep48-ci-chat3.log`,
+`/tmp/sleep48-ci-workspaces-b.log`, and `/tmp/sleep48-ci-e2e5.log`. Fresh-head CI and
+review are required after the repair; no failing gate is waived.
+
+
+## Full-history test repair, 2026-10-26
+
+At `c4beddad1e`, fresh Greptile review is 5/5 and the scope thread is resolved.
+Remote CI passed 51 contexts but failed the chat shard and its aggregate gate:
+a second startup assertion assumed `worker.ready` drained every fair batch.
+The full local chat file finished with 1,595 passing and seven failing tests
+(`/tmp/sleep48-chat-full.log`); all seven were in the newly added worker tests.
+
+The larger run exposed two related observation errors: startup can have another
+batch scheduled, and `nextWakeAt() === null` can be transient while a batch runs.
+The latter caused query instrumentation to count unfinished startup checks and
+an outcome assertion to run before its response had been materialized. An early
+future-deadline test failure then left its fixture's real deadline for later tests.
+
+Worker startup/settlement assertions now require both zero active work and the
+expected next deadline. This changes test observation, not scheduler behavior or
+batch limits. All 18 affected cases pass against the retained history database
+from the full 1,602-case run (`/tmp/sleep48-settlement-history.log`), including
+single-query unrelated wakes, future deadlines, and coordinator retry release.
+The full-run failure remains recorded; fresh remote CI is still required.
