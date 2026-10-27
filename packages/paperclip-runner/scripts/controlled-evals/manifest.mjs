@@ -146,3 +146,8 @@ function validateObservability(manifest) {
   if (!operating || policy.provisionalBound?.evidenceSha256 !== operating.provisionalBound?.evidenceSha256) throw new Error('Observability capacity requires its operating bound evidence');
   costRuntime.reservationBound('operating_allowance', policy.provisionalBound, observabilityBoundConfiguration(manifest));
 }
+
+
+export function modelReadinessDefect(manifest, snapshot) {
+  return manifest.overhead.accountingReadiness === 'model_requests' && (!snapshot.requests.length || snapshot.unknownRequests > 0);
+}

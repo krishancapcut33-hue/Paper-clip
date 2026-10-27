@@ -947,3 +947,8 @@ reconciliation pending. Missing, failed or canceled model evidence still holds
 the full cell allocation and fails completion. This policy does not certify a
 vendor operating-cost bound. Omit the field to retain full-lifecycle proof
 requirements. Existing manifests and held amounts are not rewritten.
+
+For this policy version, `operatingReconciliation` is always `pending`; the
+immutable controller summary has no operating invoice settlement step. Mixed
+histories retain that warning when any campaign uses the policy. A shared
+`accountingReadiness` label appears only when every campaign uses it.

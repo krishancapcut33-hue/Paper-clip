@@ -1,6 +1,6 @@
 import { isEntrypoint } from './entrypoint.mjs';
 import { join } from 'node:path';
-import { canonical, costRuntime, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
+import { modelReadinessDefect, canonical, costRuntime, readJson, requestBindingSha256, sha256, units, usd, validateManifest } from './manifest.mjs';
 import { inspectControlledObservability } from './observability.mjs';
 import { attemptDirectory } from './run.mjs';
 import { limitFor, readRegularFile } from './evidence-files.mjs';
@@ -80,7 +80,7 @@ export async function summarizeControlledCampaign(value, { filesByAttempt } = {}
           || artifact.attemptId !== allocation.attemptId || artifact.requestedModel !== allocation.model
           || snapshot.inflight || snapshot.conflictingRequests || snapshot.overBudget
           || snapshot.unknownRequests !== snapshot.boundedUnresolvedRequests
-          || manifest.overhead.accountingReadiness === 'model_requests' && (!snapshot.requests.length || snapshot.unknownRequests)) throw new Error('Incomplete controller evidence');
+          || modelReadinessDefect(manifest, snapshot)) throw new Error('Incomplete controller evidence');
       verified = true;
     } catch {}
     const cost = snapshot ? units(snapshot.knownUsd) : 0n;

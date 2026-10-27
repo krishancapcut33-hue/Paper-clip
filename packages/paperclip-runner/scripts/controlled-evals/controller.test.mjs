@@ -801,3 +801,28 @@ test('model readiness rejects a missing terminal model receipt even when its res
   assert.equal(summary.heldUsd, '0.014000000');
   assert.equal(summary.operatingReconciliation, 'pending');
 });
+
+
+test('model readiness rejects zero model requests and keeps the full allocation', async t => {
+  const f = await fixture(t, { requests: 0 });
+  f.manifest.overhead.accountingReadiness = 'model_requests';
+  for (const component of f.manifest.overhead.components) delete component.provisionalBound;
+  await f.save();
+  const result = await f.run();
+  assert.equal(result.report.failure, 'request_accounting_unbounded');
+  assert.equal(result.report.accounting.requests.length, 0);
+  const summary = await summarizeControlledCampaign(f.manifest);
+  assert.equal(summary.incompleteAttempts, 1); assert.equal(summary.heldUsd, '0.014000000');
+});
+
+test('mixed-policy private histories keep the pending operating reconciliation warning', async t => {
+  const model = await fixture(t, { requests: 1 }), strict = await fixture(t, { requests: 1 });
+  model.manifest.campaignId = 'model-readiness-history';
+  model.manifest.overhead.accountingReadiness = 'model_requests';
+  for (const component of model.manifest.overhead.components) delete component.provisionalBound;
+  await model.save(); await model.run(); await strict.run();
+  const bundles = await Promise.all([model, strict].map(f => packControlledAttempt({ manifest: f.manifest, attemptId: 'attempt-0', environment: f.environment })));
+  const history = await summarizeControlledEvidence(bundles);
+  assert.equal(history.incompleteAttempts, 0); assert.equal(history.operatingHeldUsd, '0.008000000');
+  assert.equal(history.accountingReadiness, undefined); assert.equal(history.operatingReconciliation, 'pending');
+});

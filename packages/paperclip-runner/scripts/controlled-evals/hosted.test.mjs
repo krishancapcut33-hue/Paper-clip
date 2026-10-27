@@ -147,3 +147,24 @@ test('model-readiness policy retains operating holds without requiring vendor co
   delete c.input.policy.overhead.accountingReadiness;
   assert.throws(() => c.build(), /cost bound|operating bound/);
 });
+
+
+test('model readiness still validates supplied operating and capacity proofs', async t => {
+  const c = await campaign(t), policy = c.input.policy;
+  policy.overhead.accountingReadiness = 'model_requests';
+  for (const component of policy.overhead.components) {
+    component.provisionalBound.configurationSha256 = sha256(canonical({ accountingReadiness: 'model_requests',
+      reference: policy.overhead.reference, runner: policy.overhead.runner, verifiedAt: policy.overhead.verifiedAt,
+      expiresAt: policy.overhead.expiresAt, component: { component: component.component, maxUsd: component.maxUsd, reference: component.reference } }));
+  }
+  policy.capacityBound.configurationSha256 = sha256(canonical(hostedPolicyConfiguration(policy)));
+  assert.equal(c.build().manifest.overhead.accountingReadiness, 'model_requests');
+  const mismatch = structuredClone(c.input); mismatch.policy.capacityBound.evidenceSha256 = '0'.repeat(64);
+  assert.throws(() => prepareHostedManifest(mismatch), /Observability capacity requires its operating bound evidence/);
+  const stale = structuredClone(c.input); stale.policy.capacityBound.configurationSha256 = '0'.repeat(64);
+  assert.throws(() => prepareHostedManifest(stale), /Reviewed cost bound configuration changed/);
+  const absent = structuredClone(c.input);
+  for (const component of absent.policy.overhead.components) delete component.provisionalBound;
+  absent.policy.capacityBound.configurationSha256 = sha256(canonical(hostedPolicyConfiguration(absent.policy)));
+  assert.throws(() => prepareHostedManifest(absent), /Observability capacity requires its operating bound evidence/);
+});
