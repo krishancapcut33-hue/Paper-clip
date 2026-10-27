@@ -4,7 +4,7 @@ import path from "node:path";
 import { expect, it } from "vitest";
 import { EvalSpendState, openEvalCostLedger, readEvalCostLedger, type EvalSpendLimits } from "./cost-ledger.js";
 import { EVAL_OVERHEAD_COMPONENTS, scheduledOperatingOverhead, validateOperatingOverhead, type EvalOperatingOverhead } from "./operating-overhead.js";
-import { readEvalOperationsReport, renderEvalOperationsReport } from "./operations-report.js";
+import { evalAccountingStatus, evalReadinessStatus, readEvalOperationsReport, renderEvalOperationsReport } from "./operations-report.js";
 
 const now = Date.parse("2026-10-21T00:00:00Z");
 const allowance = (): EvalOperatingOverhead => ({ version: 1, reference: "fixture-only", runner: "aws-fleet",
@@ -116,4 +116,38 @@ it("stops new admission after allowance expiry while preserving late invoice rec
   expect(() => state.validate({ type: "reserve", requestId: "model", identity: modelIdentity, maxUsd: "1" }, expiredAt)).toThrow("needs review");
   expect(() => state.validate({ type: "observe", observation: { observationId: "late-invoice", requestId: "overhead:ci_compute",
     source: "invoice", provider: "aws", currency: "USD", route: "infrastructure", classification: "reconciled", costUsd: "0.5", final: true } }, expiredAt)).not.toThrow();
+});
+
+
+it("separates model readiness from unresolved overhead without releasing holds or masking model gaps", async () => {
+  const directory = await mkdtemp(path.join(tmpdir(), "eval-model-readiness-"));
+  const file = path.join(directory, "ledger.jsonl");
+  const overhead = { ...currentAllowance(), accountingReadiness: "model_requests" as const };
+  const ledger = await openEvalCostLedger(file, { campaignId: "model-readiness", maxUsd: "20",
+    deadlineAt: "2099-01-01T00:00:00Z", maxRequests: 10, maxConcurrent: 1, maxAttemptsPerExecution: 1, overhead });
+  try {
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+    await ledger.admitAttempt(modelIdentity.executionId, modelIdentity.attemptId);
+    await ledger.reserve("model", modelIdentity, "2");
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+    await ledger.finish("model", "cancelled");
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+    await ledger.observe({ observationId: "model-final", requestId: "model", source: "provider", provider: "anthropic",
+      currency: "USD", route: "direct", classification: "reported", costUsd: "0.5", final: true });
+    const report = await readEvalOperationsReport(file);
+    expect(evalAccountingStatus(report)).toBe("blocked");
+    expect(evalReadinessStatus(report)).toBe("receipts_complete");
+    expect(evalReadinessStatus({ ...report, accountingReadiness: undefined } as never)).toBe("blocked");
+    expect(report).toMatchObject({ accountingReadiness: "model_requests", heldUsd: "4.000000000",
+      committedUsd: "4.500000000", modelAccounting: { requests: 1, knownUsd: "0.500000000", unresolvedRequests: 0 } });
+    expect(renderEvalOperationsReport(report)).toContain("Operating costs remain separately unreconciled");
+    await ledger.observe({ observationId: "overrun", requestId: "overhead:ci_compute", source: "invoice", provider: "aws",
+      currency: "USD", route: "infrastructure", classification: "reconciled", costUsd: "21", final: true });
+    expect(evalReadinessStatus(await readEvalOperationsReport(file))).toBe("blocked");
+  } finally { await ledger.close(); await rm(directory, { recursive: true, force: true }); }
+});
+
+it("rejects unknown readiness policies instead of silently loosening accounting", () => {
+  expect(() => validateOperatingOverhead({ ...allowance(), accountingReadiness: "ignore_costs" } as never, "20"))
+    .toThrow("Invalid accounting readiness policy");
 });
