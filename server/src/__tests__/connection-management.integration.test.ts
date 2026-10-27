@@ -796,6 +796,70 @@ describe("connection management with production default agents", () => {
     } finally { vi.useRealTimers(); provider = null; }
   });
 
+  it.each(["linked", "invitation"] as const)("checks caller and target policy for delegated Slack %s sends", async recipient => {
+    for (const mode of ["caller-block", "caller-ask", "caller-rate", "target-block", "target-rate", "shared-rate"] as const) {
+      const f = await fixture();
+      const cookie = await server.humanSession(f.userId);
+      const targetResponse = await fetch(`${server.apiUrl}/api/companies/${f.companyId}/agents`, {
+        method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
+        body: JSON.stringify({ name: "Slack target", role: "engineer", adapterType: "paperclip_runner", adapterConfig: { provider: "codex" },
+          permissions: {}, runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: false } } }),
+      });
+      const target = await targetResponse.json();
+      expect(targetResponse.status, JSON.stringify(target)).toBe(201);
+      await lifecycle.process(target.id);
+      await vi.waitFor(async () => expect((await agentService(server.db).getById(target.id))?.status).toBe("idle"));
+      let sends = 0;
+      const workspaceId = `T${f.companyId.replaceAll("-", "").toUpperCase()}`;
+      const scopes = [...SLACK_CHAT_BOT_SCOPES, ...SLACK_BOT_TOOL_SCOPES];
+      provider = async (url, init) => {
+        if (url.endsWith("auth.test")) return Response.json({ ok: true, team_id: workspaceId, team: "Delegated fixture", user_id: `U${target.id.replaceAll("-", "").toUpperCase()}`, user: "fixture-bot" }, { headers: { "x-oauth-scopes": scopes.join(",") } });
+        if (url.includes("conversations.list")) return Response.json({ ok: true, channels: [], response_metadata: { next_cursor: "" } });
+        if (url.endsWith("users.info")) return Response.json({ ok: true, user: { id: new URLSearchParams(String(init?.body)).get("user"), team_id: workspaceId, name: "Fixture user", is_bot: false, deleted: false } });
+        if (url.endsWith("chat.postMessage")) { sends++; return Response.json({ ok: true, channel: "DTEST", ts: "1.000001" }); }
+        if (url.endsWith("agents.sessions.setStatus")) return Response.json({ ok: true });
+        throw new Error(`Unexpected Slack fixture operation: ${new URL(url).pathname}`);
+      };
+      try {
+        const created = await f.request("POST", `/companies/${f.companyId}/chat-endpoints`, { provider: "slack", assignedAgentId: target.id, slackSetupMethod: "manual" });
+        expect(created, JSON.stringify(created)).toMatchObject({ status: 201 });
+        const configured = await fetch(`${server.apiUrl}/api/chat-endpoints/${created.body.id}/setup`, {
+          method: "POST", headers: { cookie, origin: server.apiUrl, "Content-Type": "application/json" },
+          body: JSON.stringify({ action: "configure", credentials: { botToken: `xoxb-${target.id}`, signingSecret: "fixture-signing-secret" } }),
+        });
+        expect({ status: configured.status, body: await configured.json() }).toMatchObject({ status: 200 });
+        await server.db.update(chatEndpoints).set({ status: "active", allowDirectMessages: true }).where(eq(chatEndpoints.id, created.body.id));
+        await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
+        if (recipient === "linked") {
+          const [principal] = await server.db.insert(chatExternalPrincipals).values({ companyId: f.companyId, provider: "slack", providerAccountId: workspaceId, externalId: "UHUMAN", isBot: false }).returning();
+          await server.db.insert(chatIdentityLinks).values({ companyId: f.companyId, endpointId: created.body.id, principalId: principal.id, paperclipUserId: f.userId, status: "linked", confirmedAt: new Date() });
+        }
+        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: "Slack fixture access", policyType: "allow", selectors: { connectionId: created.body.connectionId }, priority: 2 });
+        const rate = mode.endsWith("rate");
+        await server.db.insert(toolPolicies).values({ companyId: f.companyId, name: mode, policyType: rate ? "rate_limit" : mode === "caller-ask" ? "require_approval" : "block",
+          selectors: { connectionId: created.body.connectionId, ...(mode === "shared-rate" ? {} : { agentId: mode.startsWith("caller") ? f.agentId : target.id }) }, priority: 0,
+          ...(rate ? { config: { limit: 1, windowSeconds: 60, keyBy: mode === "shared-rate" ? ["company", "tool"] : ["agent", "tool"] } } : {}),
+        });
+        const path = `/chat-endpoints/${created.body.id}/slack/test-message`;
+        if (rate) {
+          // Shared buckets admit one actual send, while each principal's own
+          // limit also prevents the next send. Neither may consume twice.
+          expect(await f.request("POST", path, { requestId: randomUUID(), slackUserId: "UHUMAN" }, f.jwt), mode)
+            .toMatchObject({ status: 200, body: { status: recipient === "linked" ? "sent" : "connection_pending" } });
+          expect(sends, mode).toBe(1);
+        }
+        for (const token of [f.key.token, f.jwt]) {
+          const denied = await f.request("POST", path, { requestId: randomUUID(), slackUserId: "UHUMAN" }, token);
+          expect(denied, `${mode}: ${JSON.stringify(denied)}`).toMatchObject({ status: 403, body: { details: { reasonCode: rate ? "rate_limited" : mode === "caller-ask" ? "requires_approval_policy" : "deny_policy_block" } } });
+          if (mode === "caller-ask") expect(denied.body.details.requiredUserAction).toMatchObject({ kind: "approve" });
+        }
+        expect(sends, mode).toBe(rate ? 1 : 0);
+        const audit = await server.db.select().from(toolAccessAuditEvents).where(eq(toolAccessAuditEvents.companyId, f.companyId));
+        expect(audit.some(event => event.details.agentId === f.agentId && event.actorId === f.agentId), mode).toBe(true);
+      } finally { provider = null; }
+    }
+  }, 90_000);
+
   it("imports a GitHub App and discovers repositories against provider fixtures", async () => {
     const f = await fixture();
     const permissions = { contents: "read", issues: "write", metadata: "read", pull_requests: "write" };
@@ -847,6 +911,13 @@ describe("connection management with production default agents", () => {
       expect(refreshed, JSON.stringify(refreshed)).toMatchObject({ status: 200 });
       expect(JSON.stringify(refreshed.body)).toContain("fixture/repo");
       expect(await f.request("POST", `/chat-endpoints/${created.body.id}/github/verify`, {})).toMatchObject({ status: 200 });
+      await server.db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, created.body.id));
+      await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
+      const identityHandoff = await f.request("POST", `/chat-endpoints/${created.body.id}/github/identity/start`, {}, f.jwt);
+      expect(identityHandoff).toMatchObject({ status: 200, body: { requiredUserAction: { kind: "confirm_identity" } } });
+      const [identityIntent] = await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, identityHandoff.body.interactionId));
+      const [identityTask] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
+      expect(await findSatisfiedToolConnection(server.db, identityTask, identityIntent)).toBeNull();
       const start = await humanRequest(`/api/chat-endpoints/${created.body.id}/github/identity/start`, "POST", {});
       const started = await start.json();
       expect(started, JSON.stringify(started)).toHaveProperty("authorizationUrl");
@@ -857,11 +928,13 @@ describe("connection management with production default agents", () => {
       expect((await humanRequest(callback, "GET", undefined, otherCookie)).status).toBe(403);
       expect((await humanRequest(callback)).status).toBe(303);
       expect((await humanRequest(callback)).status).toBe(403);
+      expect(await findSatisfiedToolConnection(server.db, identityTask, identityIntent)).toBeNull();
       const confirmed = await humanRequest(`/api/chat-endpoints/${created.body.id}/github/identity/confirm`, "POST", { githubUserId: "1357" });
       expect(confirmed.status, JSON.stringify(await confirmed.json())).toBe(200);
       const [endpoint] = await server.db.select().from(chatEndpoints).where(eq(chatEndpoints.id, created.body.id));
       await server.db.update(chatEndpoints).set({ status: "active", setup: { ...endpoint.setup, webhookVerifiedAt: new Date().toISOString() } }).where(eq(chatEndpoints.id, endpoint.id));
       await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
+      expect((await findSatisfiedToolConnection(server.db, identityTask, identityIntent))?.id).toBe(created.body.connectionId);
       const credentialHandoff = await f.request("POST", `/chat-endpoints/${created.body.id}/setup`, { action: "reconnect", credentials: { webhookSecret: "agent-chosen-key" } }, f.jwt);
       expect(credentialHandoff).toMatchObject({ status: 200, body: { requiredUserAction: { kind: "enter_credentials" } } });
       const entryLink = new URL(credentialHandoff.body.requiredUserAction.setupPath, server.apiUrl);
@@ -1376,10 +1449,27 @@ describe("connection management with production default agents", () => {
     const [task] = await server.db.select().from(issues).where(eq(issues.id, f.issueId));
     expect(intent).toMatchObject({ addresseeUserId: f.userId, payload: { savedSetup: { endpointId: created.body.id, connectionId: created.body.connectionId } } });
     expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
-    // Provider fixture marks the exact saved endpoint authenticated, after the run yields.
+    // Healthy App credentials alone do not prove the addressee's identity.
     await server.db.update(heartbeatRuns).set({ status: "succeeded" }).where(eq(heartbeatRuns.id, f.runId));
-    await server.db.update(chatEndpoints).set({ status: "active" }).where(eq(chatEndpoints.id, created.body.id));
+    await server.db.update(chatEndpoints).set({ status: "active", providerAccountId: "identity-fixture" }).where(eq(chatEndpoints.id, created.body.id));
     await server.db.update(toolConnections).set({ status: "active", enabled: true, healthStatus: "healthy" }).where(eq(toolConnections.id, created.body.connectionId));
+    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    await satisfiedConnectionIntentService(server.db).sweepPending();
+    expect((await server.db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.id, intent.id)))[0].status).toBe("pending");
+    expect(await server.db.select().from(connectionIntentDeliveries).where(eq(connectionIntentDeliveries.interactionId, intent.id))).toEqual([]);
+    const [principal] = await server.db.insert(chatExternalPrincipals).values({ companyId: f.companyId, provider: "github", providerAccountId: "identity-fixture", externalId: "1357" }).returning();
+    const [link] = await server.db.insert(chatIdentityLinks).values({ companyId: f.companyId, endpointId: created.body.id, principalId: principal.id, paperclipUserId: f.userId, status: "pending" }).returning();
+    for (const status of ["pending", "revoked", "expired"] as const) {
+      await server.db.update(chatIdentityLinks).set({ status }).where(eq(chatIdentityLinks.id, link.id));
+      expect(await findSatisfiedToolConnection(server.db, task, intent), status).toBeNull();
+    }
+    await server.db.update(chatIdentityLinks).set({ status: "linked", confirmedAt: new Date() }).where(eq(chatIdentityLinks.id, link.id));
+    await server.db.update(chatIdentityLinks).set({ paperclipUserId: randomUUID() }).where(eq(chatIdentityLinks.id, link.id));
+    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    await server.db.update(chatIdentityLinks).set({ paperclipUserId: f.userId }).where(eq(chatIdentityLinks.id, link.id));
+    await server.db.update(chatExternalPrincipals).set({ providerAccountId: "different-installation" }).where(eq(chatExternalPrincipals.id, principal.id));
+    expect(await findSatisfiedToolConnection(server.db, task, intent)).toBeNull();
+    await server.db.update(chatExternalPrincipals).set({ providerAccountId: "identity-fixture" }).where(eq(chatExternalPrincipals.id, principal.id));
     expect((await findSatisfiedToolConnection(server.db, task, intent))?.id).toBe(created.body.connectionId);
     expect(await findSatisfiedToolConnection(server.db, { ...task, status: "cancelled" }, intent)).toBeNull();
     await accessService(server.db).ensureMembership(f.companyId, "user", f.userId, "operator", "suspended");
