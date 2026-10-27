@@ -16,7 +16,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 02 | Remaining chat maintenance | Provider runtime discovery; voice reconciliation; milestones; wake notices; interaction continuations; terminal confirmations; GitHub recovery; Teams maintenance, separately by owner | Pending |
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Retention pending; archive delivery [#17475](https://github.com/paperclipai/paperclip/pull/17475) merged after exact-head 5/5 reviews and passing current CI |
-| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations [#17478](https://github.com/paperclipai/paperclip/pull/17478) merged; expiry [#17479](https://github.com/paperclipai/paperclip/pull/17479) merged; effects [#17482](https://github.com/paperclipai/paperclip/pull/17482) merged; targets [#17486](https://github.com/paperclipai/paperclip/pull/17486) await current-head review/CI gates |
+| 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations [#17478](https://github.com/paperclipai/paperclip/pull/17478) merged; expiry [#17479](https://github.com/paperclipai/paperclip/pull/17479) merged; effects [#17482](https://github.com/paperclipai/paperclip/pull/17482) merged; targets [#17486](https://github.com/paperclipai/paperclip/pull/17486) merged |
 
 
 
@@ -796,3 +796,13 @@ cases across nine complete dispatch/qualification/startup/deadline/settings
 suites, server types/build, schema drift, migration safety and fresh apply/replay
 pass. Prior browser fixture-cleanup failure evidence remains in its owning audit.
 Fresh current-head CI and Greptile/Ponytail are required before merge.
+
+
+Slice 12 merged `e6dff4b06f` → `8dfed893d8` after exact-head Greptile/Ponytail 5/5
+and all 58 checks passed or were neutral/skipped. One failed-job retry passed;
+the original CLI startup/ZIP timeouts and local startup limitation remain in its
+PR evidence. Slice 13 normally integrates that landed dependency and four
+independent Runner E2E accounting files. All runtime and acceptance sources match
+its tested/reviewed `679f523d78` tree; the 273-case, type/build and migration
+receipts retain their original revisions. Migration 0391 and all parent journal
+entries are unchanged. Fresh final-head CI and reviews required against master.
