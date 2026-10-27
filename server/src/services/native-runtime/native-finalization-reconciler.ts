@@ -37,7 +37,7 @@ import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { issueService } from "../issues.js";
 import { emitAgentTaskRun } from "../agent-task-run-telemetry.js";
 import { isNewTerminalRunFailure, reportRunFailure } from "../run-failure-report.js";
-import { resumeNativeWorkspaceFinalization } from "./native-workspace-finalizer.js";
+import { resumeNativeWorkspaceFinalization, recordNativeWorkspaceFinalizationFailure } from "./native-workspace-finalizer.js";
 import { dismissObsoleteNativePolicyReviews } from "./obsolete-policy-reviews.js";
 import {
   cleanupNativeWorkspaceSync,
@@ -382,6 +382,7 @@ type NativeReconciliationOptions = {
   skipNativeResponsePresentation?: boolean;
   skipNativeReviewResponse?: boolean;
   skipNativeStatusReassessment?: boolean;
+  skipNativeWorkspaceFinalization?: boolean;
   pluginWorkerManager?: WorkspaceWorkers;
   environmentRuntime?: EnvironmentRuntimeService;
   onWorkspaceSettled?: (input: {
@@ -614,13 +615,18 @@ async function reconcileNativeFinalizationsPass(
     const barrier = await db.select({ status: workspaceOperations.status })
       .from(workspaceOperations)
       .where(and(
+        eq(workspaceOperations.companyId, row.companyId),
+        eq(workspaceOperations.issueId, row.issueId),
         eq(workspaceOperations.heartbeatRunId, row.runId),
         eq(workspaceOperations.phase, "workspace_finalize"),
       ))
-      .orderBy(desc(workspaceOperations.createdAt))
+      // Successful copy-back is durable. A late failure from an old controller
+      // cannot make result projection depend on running physical copy-back again.
+      .orderBy(desc(sql`${workspaceOperations.status} = 'succeeded'`), desc(workspaceOperations.createdAt))
       .limit(1)
       .then((entries) => entries[0] ?? null);
     if (!barrier || barrier.status !== "succeeded") {
+      if (options.skipNativeWorkspaceFinalization) continue;
       const recoveryDecision = resolveNativeReconciliationStatus({
         facts: { workspaceOperationPending: true },
         priorIssueStatus: row.issueStatus as NativeAuthoritativeIssueStatus,
@@ -640,23 +646,7 @@ async function reconcileNativeFinalizationsPass(
       const workspaceFinalizeStatus =
         operation.status === "succeeded" ? "succeeded" : "failed";
       if (workspaceFinalizeStatus === "failed") {
-        const unrecoverable = operation.stderrExcerpt?.includes(
-          "workspace_sync_out_unrecoverable",
-        );
-        const pluginFailure = operation.stderrExcerpt?.trim();
-        const pluginRepair = pluginFailure === "plugin_workspace_branch_mismatch" || pluginFailure === "plugin_workspace_owner_mismatch";
-        const failure = await recordNativeFinalizationFailure({
-          db,
-          runId: row.runId,
-          error: new Error(
-            pluginRepair ? `native_${pluginFailure}` : unrecoverable
-              ? "native_workspace_sync_out_unrecoverable"
-              : "native_workspace_sync_out_failed",
-          ),
-          projectRunStatus: true,
-          failureScope: "workspace",
-          permanent: unrecoverable,
-        });
+        const failure = await recordNativeWorkspaceFinalizationFailure(db, row.runId, operation);
         results.push({
           ...failure,
           reconciliationAction: "resume_workspace_operation" as const,

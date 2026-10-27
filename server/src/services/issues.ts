@@ -1,3 +1,4 @@
+import { notifyNativeWorkspaceFinalization } from "./native-workspace-finalization-notifications.js";
 import { notifyNativeStatusReassessment } from "./native-status-reassessment-notifications.js";
 import { notifyUnsafeWorkspaceExportRecovery } from "./unsafe-workspace-export-notifications.js";
 import { notifyChatResponseAvailability } from "./chat-response-availability.js";
@@ -11436,6 +11437,7 @@ export function issueService(db: Db) {
         if (patch.status !== undefined || patch.statusVersion !== undefined || patch.executionState !== undefined
           || patch.executionRunId !== undefined || patch.checkoutRunId !== undefined
           || patch.assigneeAgentId !== undefined || patch.assigneeUserId !== undefined || blockedByIssueIds !== undefined) {
+          await notifyNativeWorkspaceFinalization(tx, { companyId: receiptExisting.companyId, issueId: id });
           await notifyNativeStatusReassessment(tx, { companyId: receiptExisting.companyId, issueId: id });
         }
         const updated = await tx

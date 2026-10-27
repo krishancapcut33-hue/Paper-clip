@@ -2745,3 +2745,70 @@ are finished. Audit first-result publication in `paperclip-control-plane-port.ts
 workspace operation writes, durable workspace-owner release, retry updates and
 cleanup completion before disabling their existing recovery paths. No migration
 of these next duties is claimed by slice 51.
+
+## 2026-10-26: verified slice 51 and workspace-finalization migration
+
+[#17717](https://github.com/paperclipai/paperclip/pull/17717) is verified at
+`d0036fce3e039e91ab2bf2602e3e6a87a4476491`: all 56 remote check/status entries
+passed or intentionally skipped, Greptile 5/5 on that head, and no unresolved
+review threads. It remains draft/open and unmerged. The older local full-suite
+run was interrupted with exit 130 after current-head CI passed; do not count it
+as a local full-suite pass. The separate local resource-limit failure remains
+recorded. The explicitly approved 11 semaphore sets were removed once.
+
+Slice 52 is `codex/sleep-52-native-workspace-finalization` on that parent.
+[Its audit](2026-10-26-native-workspace-finalization-sleep-audit.md) records the
+copy-back obligation, exact owner/proof outcomes, commit/release producers,
+shared-scheduler integration, and 12 passing real-database lifecycle cases.
+The periodic orphan pass skips only this physical-copyback duty. Result projection
+and resource settlement retain existing recovery and are the next separate slices.
+Final full verification, publication and review are pending for slice 52. Inspected
+master is `a1f77821b9cd5c9c846fdf7a0fa5cc620ad2b6bb`; stack-base propagation is
+still outstanding. Older gates (#17490, #17572, #17576, #17580) and the rest of the
+requested recurring-server inventory remain active. No merge is authorized.
+
+Slice 52 publication: [#17734](https://github.com/paperclipai/paperclip/pull/17734)
+is draft on #17717. Workspace types/build passed. The initial broad command had
+582 passes and 88 board-action failures from incorrectly shared external test
+fixtures; it is not a pass. Separate databases then pass all 203 cases in four
+complete follow-up suites. A reproduced stale-success-barrier regression is
+fixed: result reconciliation prefers the existing successful scoped receipt even
+when a stale controller later writes failure, without repeating copy-back.
+The worker lifecycle now passes all 13 cases. Full-command disposition and
+repaired-head remote gates remain pending. No merge; all older gates and later
+recurring duties remain in scope.
+
+Slice 52 review repair: initial Greptile 3/5 identified the already-reproduced
+stale barrier and missing heartbeat execution-suppression checks. Restore/worktree
+regressions both failed red through public heartbeat registration. The worker now
+consults the owning suppression policy before discovery/execution, and worktree
+activation publishes a reconstruction signal. All 15 lifecycle cases pass,
+including real settings activation after quiet. Latest validation/review are still
+pending; the scope remains active with no merge.
+
+
+Slice 52 startup repair: Greptile reached 5/5 at `020ccbc66d` with both threads
+resolved, but CI server shard 4/12 found a missing startup fixture method. Added
+that method and enabled/disabled lifecycle coverage, then corrected the exact
+periodic skip expectation. All 74 startup cases pass. The old-head default local
+full run was deliberately interrupted (Vitest 130, wrapper 1) before editing;
+it is not a pass. Remote gates and review on the repaired head remain pending.
+
+Follow-up audit: eight earlier native worker registrations gate task drain but
+lack the new worker's restore/worktree suppression boundary: retained session
+cleanup, status reassessment, governed response, response presentation, pending
+effects, unsafe exports, automatic completion review and obsolete policy review.
+Verify each duty's prior suppression contract and its settings activation wake
+before declaring it safe. This is outstanding stack acceptance work, not a claim
+that every listed duty has the same defect. All remaining duties and older gates
+remain active; no merge is authorized.
+
+
+Slice 52 producer audit correction: the hidden PRP coordinator has a second
+accepted-result writer. Added its missing transaction-aware workspace hint after
+two red real-producer regressions. The complete lifecycle suite passes all 18
+cases, covering first result plus outer commit/rollback for both writer paths.
+The previous head's startup gate passed, with Greptile 5/5. A separate CI import
+hook timeout (118 agent-skills cases skipped) passed all 118 locally and received
+one justified job retry. New producer-fix acceptance remains pending. No merge;
+all prior gate, suppression-audit and remaining-duty obligations remain open.

@@ -1391,6 +1391,7 @@ async function startServerWithDatabaseTeardown(
   });
   let unregisterTerminalWorkspaceProbe: (() => void) | undefined;
   let unsubscribeNativeResponsePresentation: (() => void) | undefined;
+  let unsubscribeNativeWorkspaceFinalization: (() => void) | undefined;
   let unsubscribeRetainedNativeSessionCleanup: (() => void) | undefined;
   let unsubscribeNativeWorkspaceSyncRetention: (() => void) | undefined;
   const fastResponses = app.locals.fastResponses as ReturnType<typeof import("./services/fast-responses.js").fastResponseService>;
@@ -1814,6 +1815,14 @@ async function startServerWithDatabaseTeardown(
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerInstructionDirectoryCleanupWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
     if (config.heartbeatSchedulerEnabled) {
+      const worker = heartbeat.registerNativeWorkspaceFinalizationWork(deliveryWork,
+        () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
+      unsubscribeNativeWorkspaceFinalization = worker.stop;
+      server.on("close", worker.stop);
+      // Copy-back remains owned through drain/shutdown without delaying readiness.
+      trackHeartbeatSchedulerWork(worker.ready);
+    }
+    if (config.heartbeatSchedulerEnabled) {
       const worker = heartbeat.registerRetainedNativeSessionCleanupWork(deliveryWork,
         () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby());
       unsubscribeRetainedNativeSessionCleanup = worker.stop;
@@ -1973,7 +1982,7 @@ async function startServerWithDatabaseTeardown(
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
           runPeriodicRecovery(() => heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true, skipInstructionDirectoryCleanup: true, skipStoppedInstructionCollection: true, skipCancelledWorkspacePreservation: true, skipObsoletePolicyReviews: true, skipAutomaticCompletionReviews: true, skipUnsafeWorkspaceExports: true, skipNativePendingEffects: true, skipNativeResponsePresentation: true, skipNativeReviewResponse: true, skipNativeStatusReassessment: true, skipRetainedNativeSessionCleanup: true, skipNativeWorkspaceFinalization: true })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();
@@ -2169,6 +2178,7 @@ async function startServerWithDatabaseTeardown(
     await skillSourceSync.stop();
     unsubscribeChatCompletions();
     unsubscribeNativeResponsePresentation?.();
+    unsubscribeNativeWorkspaceFinalization?.();
     unsubscribeRetainedNativeSessionCleanup?.();
     await deliveryWork.stop();
     await workspaceRecoveryWork.stop();
