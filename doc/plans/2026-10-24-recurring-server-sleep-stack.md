@@ -2,6 +2,10 @@
 
 Baseline: `785d54636e1c8513ee5503d602daf6a5ee1970d6` (2026-10-24).
 
+Current integration baseline: master `507dc70be26c191e372f09e58dc0965e73bf8f57`
+(October 26). Earlier gate results below are historical; current acceptance is
+pending. See the final integration/review-repair section for the current state.
+
 The requested outcome is a reviewed PR stack for every remaining recurring server
 work item below. A PR owns one reason for background activity. Split compound
 items into separate PRs as their producer and lifecycle audits identify distinct
@@ -2911,3 +2915,124 @@ Whole-stack master integration, older failed gates and suppression audits, and
 all remaining inventory reasons remain active. Nothing was merged. Existing
 active-transport replay polling remains a separate reason to inventory and
 migrate, rather than a false claim of whole-instance quiet.
+
+## Slice 57 acceptance and slice 58 environment settlement
+
+Slice 57 [#17793](https://github.com/paperclipai/paperclip/pull/17793) is published
+at `be8f3284c2c8a05903f2eca000ad86d046780fec`. Latest-head checks show 53 success
+and one neutral result, and the PR is mergeable. Greptile is 5/5 with no unresolved
+threads. One failed-job rerun recovered initial runner shutdowns and missing or
+truncated logs. The latter individual causes remain unknown. No source change
+was needed for that rerun. Nothing was merged.
+
+Slice 58, `codex/sleep-58-native-environment-settlement`, moves the environment
+release duty out of periodic native finalization replay. Existing lease records
+and the existing release owner's predicate supply debt. Existing native and lease
+transactions wake the shared coordinator. Saved cleanup deadlines, workspace
+preservation, provider stop evidence, and warm-retention policy keep their owners.
+See the [owner and lifecycle audit](2026-10-26-native-environment-settlement-sleep.md).
+The initial combined run passed 127 affected tests. Final workspace checks and
+remote acceptance remain required before this slice is accepted.
+
+The compound callback's runtime-service release and agent-status projection are
+still outstanding. Workspace descriptor cleanup remains separate. All earlier
+inventory reasons, master propagation, older failed gates, and suppression debts
+remain active; this section does not narrow the original goal.
+
+## October 26 master integration and review repairs
+
+All 60 published branches (58 numbered duties and two auxiliary slices) now
+contain master `507dc70be26c191e372f09e58dc0965e73bf8f57` through normal parent
+merges. Earlier acceptance entries in this document describe their recorded
+historical heads; they do not certify these new integrated heads. The current
+stack still requires fresh CI, fresh review, and resolution of outstanding
+findings. Nothing has been merged into master.
+
+Three review/compatibility repairs were made at their owning stack boundaries:
+
+- Slice 01 / [#17443](https://github.com/paperclipai/paperclip/pull/17443):
+  a successfully read future custom-image expiry now runs at its saved deadline.
+  A five-second deadline and an earlier committed replacement previously waited
+  for the 30-second retry floor. Failure and unfinished-overdue work retain
+  backoff. Slice 02 carries the same correction into the shared deadline helper.
+  The new unit and real-producer regressions failed first; root verification
+  passed 47 custom-image cases and 39 startup cases. Slice 02 passed 122
+  custom-image, secret-proposal and startup cases.
+- Slice 17 / [#17518](https://github.com/paperclipai/paperclip/pull/17518):
+  plugin inventory notification batching is now an explicit, optional shared
+  deadline contract. Only the plugin scheduler opts into its existing bounded
+  batching latency; consumers without the option reconcile notifications
+  immediately. Known saved deadlines preempt batching, including a ten-second
+  job deadline. This preserves bounded full-inventory reads for bursts of
+  job-status writes without making every successful expiry pass a cooldown.
+  Newly changed plugin configuration retains bounded batching latency. Idle
+  queues still disarm. The focused owner run passed 76 cases.
+- Slice 51 / [#17717](https://github.com/paperclipai/paperclip/pull/17717):
+  HTTP readiness and later worker registration no longer wait for retained
+  physical-session cleanup. The existing scheduler-work and delivery owners
+  retain the original cleanup promise through idle drain and shutdown. A held
+  cleanup regression failed before the fix; 73 startup cases and 28 real-DB
+  retained-cleanup cases passed after it.
+
+Combined source revision `6a5ff3683614d8f954986157f158d74b1f653d22` passed
+workspace typechecking, the full build, and 246 focused cases across seven
+suites. The first combined run exposed the plugin batching dependency: 244
+passed and one failed. The explicit batching repair fixed that failure. This
+ledger-only follow-up does not alter the tested code. Earlier integrated-tip
+validation also covered 470 cases; that remains evidence for its recorded
+revision, not a substitute for fresh checks. Full local `test:run` was not
+repeated because of the previously recorded embedded PostgreSQL capacity
+limitation. Full remote CI remains required.
+
+Known acceptance debt still includes approved-tool rate-limit admission and
+permanent recovery classification, native recovery-notice lock ordering,
+workspace-export scheduling and plugin completion-persistence CI failures,
+cancellation lock failures, several retention/backlog/producer review findings,
+and the native-worker scheduling-suppression audit. Passing focused tests does
+not close those investigations. The remaining original inventory also remains
+in scope; the next native duty audit is agent-status projection. An empty local
+runtime-service map is already SQL/network quiet and does not by itself justify
+another queue. No deployed host suspension, external alarm coverage, or fleet
+savings are claimed by these repairs.
+
+## October 26 approved-review and interrupted-outcome repairs
+
+Slice 05 now retains the originally admitted rate slot through human review,
+reconciles durable request/invocation history before dispatch, and settles
+permanently invalid records without recurring recovery. Formal approvals still
+awaiting human input remain quiet until a committed decision/cancellation; startup
+rediscovers them. Configuration/dependency failures retain retry debt, and saved
+or unknown provider outcomes are never replayed. The originating branch passed
+208 gateway/policy/approval/signature cases and server typechecking.
+
+Propagation preserved each existing owner boundary. Slice 06 retains its shared
+Test-tab fixture with optional rate admission. Slice 14 folds formal-review wakes
+into the existing approval write transaction; slice 16 carries that signal through
+the company-scoped approval notification owner; slice 49 also retains native task
+scopes. Eight affected suites passed 506 cases at source
+`d4ff4b9c04cbaa3739d1b62f7c29a3bff670c901`, including retention, seeding, and native
+review consumers. This is evidence for those integration changes, not separate
+certification of each intermediate branch.
+
+Slice 06 additionally preserves saved `cancelled` invocation status, completion
+time, and error while repairing a stranded executing request. Its new regression
+reproduced the unwanted overwrite; all 14 interrupted-review worker cases passed
+at that branch. Final combined source `b91de5102faf548217ea489667fe51de98c9071a`
+passes all 129 gateway tests, workspace typechecking, and the full build. This
+ledger-only follow-up leaves the tested source unchanged. Full local test:run was
+not repeated because of the previously documented embedded PostgreSQL capacity
+limitation. Fresh remote CI is still required.
+
+No stack PR was merged. Earlier CI debts, other review findings (including native
+notice lock order), the eight native facade suppression audits, the next native
+agent-status projection duty, and the rest of the original inventory remain in
+scope. These repairs do not establish deployed instance/database suspension.
+
+Slice 58 readiness follow-up: fresh review found its first physical provider
+release could block HTTP readiness, just as retained-session cleanup had done.
+The startup/shutdown regression reproduced that blockage. Registration now tracks
+the worker's ready promise through the existing heartbeat work owner without
+awaiting provider cleanup inline. All 84 startup and 20 real-database environment
+settlement cases pass, plus workspace typechecking and the full build. This
+changes only the last PR; earlier stack qualification and unresolved scope remain
+as recorded above. Fresh CI is required and nothing is merged.

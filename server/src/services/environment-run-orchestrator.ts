@@ -673,6 +673,8 @@ export function environmentRunOrchestrator(
     failureReason?: string;
     /** Explicit Stop during adapter startup; never used for ordinary cleanup. */
     cancelActiveWork?: boolean;
+    /** Background settlement must honor each lease's saved cleanup deadline. */
+    respectCleanupDeadlines?: boolean;
     /** Explicit paperclip_runner resource lifecycle. Omitted for legacy adapters. */
     providerResourceDisposition?: ProviderResourceDisposition;
     nativeLifecycleTelemetry?: {
@@ -690,13 +692,15 @@ export function environmentRunOrchestrator(
 
     let releasedLeases: EnvironmentRuntimeLeaseRecord[];
     try {
-      releasedLeases = await environmentRuntime.releaseRunLeases(
+      const releaseArgs: Parameters<typeof environmentRuntime.releaseRunLeases> = [
         input.heartbeatRunId,
         status,
         (leaseId, error) => result.errors.push({ leaseId, error }),
         input.providerResourceDisposition,
-        ...(input.cancelActiveWork ? [true] as const : []),
-      );
+      ];
+      if (input.cancelActiveWork) releaseArgs[4] = true;
+      if (input.respectCleanupDeadlines) releaseArgs[5] = { respectCleanupDeadlines: true };
+      releasedLeases = await environmentRuntime.releaseRunLeases(...releaseArgs);
     } catch (err) {
       result.errors.push({ leaseId: "*", error: err });
       return result;
