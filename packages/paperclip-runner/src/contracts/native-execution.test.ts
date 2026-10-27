@@ -835,6 +835,14 @@ describe("Grok effort input v10", () => {
     runtimeContext: { ...context, aggregateDigest: canonicalNativeRuntimeContextDigest(context) },
     session: { ...input.session, driverKind: "acpx_runtime" },
     provider: { kind: "acpx", agent: "grok", model: "grok-4.7", permissionMode: "approve-all", profile } };
+  it.each([undefined, true, false])("round trips Grok search policy %s and rejects it on other providers", grokDisableWebSearch => {
+    expect(parseNativeExecutionInput({ ...current, provider: { ...current.provider, grokDisableWebSearch } }).provider)
+      .toMatchObject(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch });
+    if (grokDisableWebSearch !== undefined) {
+      expect(() => parseNativeExecutionInput({ ...current, schema: NATIVE_EXECUTION_INPUT_SCHEMA_V9, provider: { ...current.provider, grokDisableWebSearch } })).toThrow("grokDisableWebSearch");
+      expect(() => parseNativeExecutionInput({ ...current, provider: { ...current.provider, agent: "codex", profile: QUALIFIED_ACPX_PROFILES.codex, grokDisableWebSearch } })).toThrow("Grok web search");
+    }
+  });
   it.each(["minimal", "low", "medium", "high", "xhigh"])("round trips explicit %s and retains the compact model envelope", grokEffort => {
     const parsed = parseNativeExecutionInput({ ...current, provider: { ...current.provider, grokEffort } });
     expect(parsed).toMatchObject({ schema: NATIVE_EXECUTION_INPUT_SCHEMA_V10, provider: { grokEffort } });

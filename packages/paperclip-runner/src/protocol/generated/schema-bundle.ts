@@ -1383,6 +1383,9 @@ export const providerDescriptorSchema = {
         "high",
         "xhigh"
       ]
+    },
+    "grokDisableWebSearch": {
+      "type": "boolean"
     }
   },
   "allOf": [
@@ -1738,6 +1741,26 @@ export const providerDescriptorSchema = {
       "if": {
         "required": [
           "grokEffort"
+        ]
+      },
+      "then": {
+        "properties": {
+          "provider": {
+            "const": "acpx"
+          },
+          "agent": {
+            "const": "grok"
+          }
+        },
+        "required": [
+          "agent"
+        ]
+      }
+    },
+    {
+      "if": {
+        "required": [
+          "grokDisableWebSearch"
         ]
       },
       "then": {

@@ -180,3 +180,5 @@ export const configuredEnvironmentProjection = runner.configuredEnvironmentProje
 export const configuredEnvironment = runner.configuredEnvironment;
 
 export const probeNativeRunnerEnvironment = runner.probeNativeRunnerEnvironment;
+
+export const resolveGrokDisableWebSearch = runner.resolveGrokDisableWebSearch;

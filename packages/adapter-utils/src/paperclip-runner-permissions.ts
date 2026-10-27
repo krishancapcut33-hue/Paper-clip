@@ -219,7 +219,7 @@ export function paperclipRunnerTransitionConfig(
   return {
     provider,
     model: provider === "acpx" && previousAdapterType === "grok_local"
-      ? typeof previousModel === "string" && previousModel.trim() ? previousModel.trim() : "grok-build"
+      ? typeof previousModel === "string" && previousModel.trim() && previousModel.trim() !== "grok-build" ? previousModel.trim() : "grok-4.7"
       : provider === "acpx" && previousAdapterType === "pi_local"
       ? typeof previousModel === "string" ? previousModel.trim() : ""
       : resolvePaperclipRunnerModel(

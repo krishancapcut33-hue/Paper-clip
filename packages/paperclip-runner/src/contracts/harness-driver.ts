@@ -461,6 +461,7 @@ export interface AcpxSessionIdentity {
   piThinkingLevel?: "off" | "low" | "high" | "max";
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 

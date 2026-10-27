@@ -59,6 +59,10 @@ describe("Paperclip Runner permission defaults", () => {
       .toMatchObject({ provider: "acpx", acpxAgent: "grok", model: "grok-4.7" });
   });
 
+  it.each([undefined, "", "grok-build"])("resolves Grok's legacy default %s to the native model", model => {
+    expect(paperclipRunnerTransitionConfig("grok_local", model)).toMatchObject({ model: "grok-4.7" });
+  });
+
   it("recognizes only exact provider identifiers", () => {
     expect(isPaperclipRunnerProvider("codex")).toBe(true);
     expect(isPaperclipRunnerProvider("opencode")).toBe(true);

@@ -89,7 +89,7 @@ describe("Copilot build-owned installation", () => {
   it("admits the current profile with environment launch preparation", () => {
     expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(66);
     expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBeUndefined();
-    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:790105c58d18ee98485d232193b67ebff702cddd4600156911ca90639fa10760");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:fee8a2ced89067039d6021fedbcd9d1f70ea4d314ce7c8d2a3eef89c6879199b");
   });
 
   it("retains v65 history while binding the shared native Grok effort transport in v66", async () => {
@@ -98,7 +98,7 @@ describe("Copilot build-owned installation", () => {
     expect(Object.keys(current.declaration).filter(key => current.declaration[key] !== prior.declaration[key]).sort()).toEqual([
       "agentProfileVersion", "harnessSessionContractSourceSha256", "nativeBackendSourceSha256", "nativeExecutionSourceSha256",
       "nativeInstructionsSourceSha256", "profileCompatibilitySourceSha256", "providerLaunchSourceSha256", "runtimeAdapterSourceSha256",
-      "runtimeHostSourceSha256", "runtimeRequestBridgeSourceSha256", "semanticDirectDriverSourceSha256", "semanticSchemaBundleSourceSha256",
+      "runtimeHostSourceSha256", "runtimeRequestBridgeSourceSha256", "runtimeSandboxSourceSha256", "semanticDirectDriverSourceSha256", "semanticSchemaBundleSourceSha256",
       "semanticSidecarProtocolSourceSha256", "semanticSidecarSourceSha256",
     ]);
     expect(isSupportedAcpxProfileVersion("copilot", 65)).toBe(true);

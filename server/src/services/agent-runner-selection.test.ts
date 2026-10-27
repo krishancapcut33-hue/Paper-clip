@@ -476,7 +476,15 @@ describe("Grok runner migration", () => {
     const adapterConfig = { model: "grok-4.7", reasoningEffort: "high", command: "grok", aiConnection, cwd: "/workspace" };
     expect(paperclipRunnerProfileForHarness("grok_local")).toEqual({ provider: "acpx", acpxAgent: "grok" });
     expect(resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", adapterConfig, target }))
-      .toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", aiConnection, cwd: "/workspace", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } });
+      .toEqual({ adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true, aiConnection, cwd: "/workspace", acpxPermissionMode: "approve-all", lifecycleMode: "per_turn" } });
+  });
+  it.each([undefined, "", "grok-build"])("resolves legacy default model %s before native admission", model => {
+    expect(resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target, adapterConfig: { model } }).adapterConfig)
+      .toMatchObject({ model: "grok-4.7", disableWebSearch: true });
+  });
+  it.each([undefined, true, false])("preserves effective legacy web search policy %s", disableWebSearch => {
+    const result = resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target, adapterConfig: { disableWebSearch } });
+    expect(result.adapterConfig.disableWebSearch).toBe(disableWebSearch ?? true);
   });
   it.each([
     { platform: "darwin", architecture: "x64" },
@@ -489,7 +497,7 @@ describe("Grok runner migration", () => {
     const selected = resolveNewAgentRunner({ adapterType: "grok_local", runner: "paperclip", target,
       adapterConfig: { model: "grok-4.7", reasoningEffort: "high" } });
     expect(resolveNewAgentRunner({ ...selected, runner: "legacy", target })).toEqual({
-      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high" },
+      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true },
     });
     expect(() => resolveNewAgentRunner({ ...selected, runner: "legacy", target,
       adapterConfig: { ...selected.adapterConfig, acpxPermissionMode: "deny-all" } })).toThrow("cannot honor");
@@ -497,7 +505,7 @@ describe("Grok runner migration", () => {
   it.each(["modelReasoningEffort", "effort"])("preserves native %s when switching to Legacy", key => {
     const saved = { adapterType: "paperclip_runner", adapterConfig: { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", [key]: "high" } };
     expect(resolveNewAgentRunner({ ...saved, runner: "legacy", target })).toEqual({
-      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high" },
+      adapterType: "grok_local", adapterConfig: { model: "grok-4.7", reasoningEffort: "high", disableWebSearch: false },
     });
   });
   it.each([{ command: "custom-grok" }, { extraArgs: ["--unsafe"] }, { permissionMode: "dontAsk" }, { alwaysApprove: false }, { maxTurns: 5 }])("rejects incompatible settings %j without mutating them", adapterConfig => {

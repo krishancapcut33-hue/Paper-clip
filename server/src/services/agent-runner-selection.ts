@@ -66,15 +66,14 @@ function resolveGrokRunnerConfig(config: Record<string, unknown>): Record<string
     .filter(key => config[key] !== undefined && config[key] !== "" && config[key] !== 0 && !(Array.isArray(config[key]) && config[key].length === 0));
   if (config.command && config.command !== "grok") unsupported.push("command");
   if (config.alwaysApprove !== undefined && config.alwaysApprove !== true) unsupported.push("alwaysApprove");
-  // The ACP runtime owns its tool set and does not expose the legacy search flag.
-  if (config.disableWebSearch !== undefined) unsupported.push("disableWebSearch");
+  if (config.disableWebSearch !== undefined && typeof config.disableWebSearch !== "boolean") unsupported.push("disableWebSearch");
   if (config.model !== undefined && typeof config.model !== "string") unsupported.push("model");
   if (unsupported.length) incompatible(unsupported);
   const translated = { ...config };
   const effort = config.reasoningEffort ?? config.modelReasoningEffort ?? config.effort;
   for (const key of ["command", "extraArgs", "args", "alwaysApprove", "maxTurns", "permissionMode", "reasoningEffort", "modelReasoningEffort", "effort"]) delete translated[key];
-  return { ...translated, provider: "acpx", acpxAgent: "grok",
-    model: typeof config.model === "string" && config.model.trim() ? config.model.trim() : DEFAULT_GROK_LOCAL_MODEL,
+  return { ...translated, provider: "acpx", acpxAgent: "grok", disableWebSearch: config.disableWebSearch ?? true,
+    model: typeof config.model === "string" && config.model.trim() && config.model.trim() !== DEFAULT_GROK_LOCAL_MODEL ? config.model.trim() : "grok-4.7",
     ...(effort === undefined || effort === "" ? {} : { reasoningEffort: effort }),
     acpxPermissionMode: config.acpxPermissionMode ?? "approve-all", lifecycleMode: config.lifecycleMode ?? "per_turn" };
 }
@@ -181,7 +180,7 @@ function resolveAgentRunner(input: AgentRunnerSelection): { adapterType: string;
       if (config.lifecycleMode !== undefined && config.lifecycleMode !== "per_turn") incompatible(["lifecycleMode"]);
       const effort = config.modelReasoningEffort ?? config.reasoningEffort ?? config.effort;
       for (const key of ["provider", "acpxAgent", "acpxPermissionMode", "lifecycleMode", "idleTimeoutMs", "modelReasoningEffort", "effort"]) delete config[key];
-      return { adapterType: "grok_local", adapterConfig: { ...config, ...(effort === undefined ? {} : { reasoningEffort: effort }) } };
+      return { adapterType: "grok_local", adapterConfig: { ...config, disableWebSearch: config.disableWebSearch ?? false, ...(effort === undefined ? {} : { reasoningEffort: effort }) } };
     }
     if (harness === "pi_local") {
       if (!native) return { adapterType, adapterConfig: config };

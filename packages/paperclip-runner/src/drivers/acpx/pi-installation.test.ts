@@ -169,7 +169,7 @@ describe("Pi installation factory", () => {
     const read = async (version: number) => JSON.parse(await readFile(new URL(`../../../test-fixtures/pi-acp/profile-v${version}-identity.json`, import.meta.url), "utf8"));
     const prior = await read(29), current = await read(30);
     expect(Object.keys(current.declaration).filter(key => JSON.stringify(current.declaration[key]) !== JSON.stringify(prior.declaration[key])).sort())
-      .toEqual(["agentProfileVersion", "recoveryIdentitySourceSha256"]);
+      .toEqual(["agentProfileVersion", "recoveryIdentitySourceSha256", "runtimeSandboxSourceSha256"]);
     expect(current.declaration.closure).toEqual(prior.declaration.closure);
     expect(current.commandDigest).not.toBe(prior.commandDigest);
     expect(isSupportedAcpxProfileVersion("pi", 29)).toBe(true);

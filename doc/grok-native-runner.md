@@ -23,6 +23,17 @@ value. Missing configuration, a rejected value, or effort drift stops admission.
 Omitting effort retains Grok's provider default. This setting remains outside
 the model-visible task prompt. Historical execution inputs retain their schemas.
 
+The upgrade resolves an unset model or the legacy `grok-build` default to the
+native `grok-4.7` default. Task-level model and effort overrides use the Grok
+catalog and keep the account and tool policy unchanged.
+
+Migration also preserves the effective `disableWebSearch` setting, whose legacy
+default is `true`. Native input v10 carries it as `grokDisableWebSearch` through
+startup and recovery. Grok's private `requirements.toml` enforces disabled search
+above compatible project settings. Explicit `false` retains enabled search;
+unset native configurations retain their provider default. See Grok's
+[configuration reference](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/26-config-reference.md).
+
 Grok Build speaks [ACP over stdio](https://github.com/xai-org/grok-build/blob/main/crates/codegen/xai-grok-pager/docs/user-guide/15-agent-mode.md).
 The runner owns `grok agent --no-leader stdio` through ACPX, including session
 identity, cancellation, recovery and the authenticated Paperclip MCP bridge.

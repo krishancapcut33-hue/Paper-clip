@@ -1,5 +1,5 @@
 {
-  "commandDigest": "sha256:797cfafba21cfb17499850cb92ddb5f4a2b33c052eab699ebf9bbeea8d67c9bb",
+  "commandDigest": "sha256:4517ab123dd89140ef462fc1905ac7a16a0dfcbaf21d67299a3c62de29c08a4d",
   "declaration": {
     "schema": "paperclip.acpx_profile_declaration.v1",
     "agent": "pi",
@@ -42,8 +42,8 @@
     "modelSelection": "caller-selected-native-verified-v1",
     "providerConfigurationSourceSha256": "75a9a13f13f224dc092bd8ebf49e8747162172943761e44476c8eb18d80c52d4",
     "credentialEnvironmentSourceSha256": "7586d44b47c83395498dc8806287cd3538ef58177ba7c5949f5766ed105a0161",
-    "runtimeSandboxSourceSha256": "92dfa53f5a3ed0062913ae417eeccec243b430d444495efde2a8e9c4c02e78ea",
-    "recoveryIdentitySourceSha256": "7fe12512d2a18019e0cbd092231fb116978f111ac061f6106d8260f2c8456577",
+    "runtimeSandboxSourceSha256": "981449a4c6d10f682ecf86d834eed07faca30a7d9b419fb8db4973a442a343ec",
+    "recoveryIdentitySourceSha256": "f74d061cc07b0c7ca04df62ca991d940a733d9ef6594b3362451769fc10030b8",
     "nativeCancellation": "acknowledged-cancelled-terminal-preserves-usage-v1",
     "dependencySecurityPatchSha256": "5273a195b952f233336122842faaf650193c04f36b9359d20d4d63079b0ce814",
     "openRouterAttributionSourceSha256": "1211191529d6073b733b311c3d69cada4973eede0f3e540c46e261f78e0b90f9"

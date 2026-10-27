@@ -1,3 +1,4 @@
+import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveClaudeEffort } from "./claude-effort.js";
 import { resolveGrokEffort } from "./grok-effort.js";
 import { parseProviderMode } from "../../contracts/provider-mode.js";
@@ -27,6 +28,7 @@ export interface AcpxRecoveryBinding {
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   profileSessionKey: string;
 }
 
@@ -45,6 +47,7 @@ export interface AcpxIdentityRecord {
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerLifetimeFenceCandidates: readonly [number, number, number];
 }
 
@@ -59,6 +62,7 @@ export async function createAcpxRecoveryBinding(input: {
   piThinkingLevel?: PiThinkingLevel;
   claudeEffort?: "low" | "medium" | "high" | "xhigh" | "max";
   grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh";
+  grokDisableWebSearch?: boolean;
   providerConfigurationDigest?: string;
   homeBinding?: Readonly<Record<string, string>>;
   providerPolicy?: { readOnly: boolean; readRoots?: readonly string[]; protectedPaths?: readonly string[] };
@@ -68,6 +72,7 @@ export async function createAcpxRecoveryBinding(input: {
   const piThinkingLevel = resolvePiThinkingLevel(input.profile.agent, input.piThinkingLevel);
   const claudeEffort = resolveClaudeEffort(input.profile.agent, input.claudeEffort);
   const grokEffort = resolveGrokEffort(input.profile.agent, input.grokEffort);
+  const grokDisableWebSearch = resolveGrokDisableWebSearch(input.profile.agent, input.grokDisableWebSearch);
   if (input.providerPolicy !== undefined && typeof input.providerPolicy.readOnly !== "boolean") throw new Error("ACPX recovery requires a valid task execution policy");
   if (input.requestedModel !== input.profile.qualificationModel) {
     throw new Error("ACPX recovery requested model does not match its admitted profile");
@@ -118,6 +123,7 @@ export async function createAcpxRecoveryBinding(input: {
       ...(piThinkingLevel ? { piThinkingLevel } : {}),
       ...(claudeEffort ? { claudeEffort } : {}),
       ...(grokEffort ? { grokEffort } : {}),
+      ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }),
     }),
   ).replace("sha256:", "paperclip-");
   return {
@@ -134,6 +140,7 @@ export async function createAcpxRecoveryBinding(input: {
       ...(piThinkingLevel ? { piThinkingLevel } : {}),
       ...(claudeEffort ? { claudeEffort } : {}),
       ...(grokEffort ? { grokEffort } : {}),
+      ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }),
     profileSessionKey,
   };
 }
@@ -158,6 +165,7 @@ export function createAcpxIdentityRecord(
     ...(binding.piThinkingLevel ? { piThinkingLevel: binding.piThinkingLevel } : {}),
     ...(binding.claudeEffort ? { claudeEffort: binding.claudeEffort } : {}),
     ...(binding.grokEffort ? { grokEffort: binding.grokEffort } : {}),
+    ...(binding.grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch: binding.grokDisableWebSearch }),
     providerLifetimeFenceCandidates: Object.freeze([
       ...expected.providerLifetimeFenceCandidates,
     ]) as readonly [number, number, number],
@@ -187,6 +195,7 @@ export function acpxProviderSessionIdentity(
     ...(record.piThinkingLevel ? { piThinkingLevel: record.piThinkingLevel } : {}),
     ...(record.claudeEffort ? { claudeEffort: record.claudeEffort } : {}),
     ...(record.grokEffort ? { grokEffort: record.grokEffort } : {}),
+    ...(record.grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch: record.grokDisableWebSearch }),
     providerLifetimeFenceCandidates: record.providerLifetimeFenceCandidates,
   };
   verifyExpectedAcpxIdentity(identity, binding, record);
@@ -215,7 +224,7 @@ export function verifyExpectedAcpxIdentity(
     expected.mode !== binding.mode ||
     expected.piThinkingLevel !== binding.piThinkingLevel ||
     expected.claudeEffort !== binding.claudeEffort ||
-    expected.grokEffort !== binding.grokEffort
+    expected.grokEffort !== binding.grokEffort || expected.grokDisableWebSearch !== binding.grokDisableWebSearch
   ) {
     throw new Error(
       "ACPX recovery identity conflicts with the immutable session configuration",
@@ -237,7 +246,7 @@ export function verifyExpectedAcpxIdentity(
     record.mode !== binding.mode ||
     record.piThinkingLevel !== binding.piThinkingLevel ||
     record.claudeEffort !== binding.claudeEffort ||
-    record.grokEffort !== binding.grokEffort ||
+    record.grokEffort !== binding.grokEffort || record.grokDisableWebSearch !== binding.grokDisableWebSearch ||
     !sameFenceCandidates(
       record.providerLifetimeFenceCandidates,
       expected.providerLifetimeFenceCandidates,
@@ -264,7 +273,7 @@ function parsePersistedRecord(value: unknown): AcpxIdentityRecord {
     "permissionMode",
     "mode",
     "piThinkingLevel",
-    "claudeEffort", "grokEffort",
+    "claudeEffort", "grokEffort", "grokDisableWebSearch",
     "providerLifetimeFenceCandidates",
   ]);
   return validatedRecord(record);
@@ -294,6 +303,7 @@ function validatedRecord(value: Record<string, unknown>): AcpxIdentityRecord {
   if (value.mode !== undefined) parseProviderMode(value.mode);
   resolveClaudeEffort("claude", value.claudeEffort);
   resolveGrokEffort("grok", value.grokEffort);
+  resolveGrokDisableWebSearch("grok", value.grokDisableWebSearch);
   if (value.piThinkingLevel !== undefined) resolvePiThinkingLevel("pi", value.piThinkingLevel);
   validateFenceCandidates(value.providerLifetimeFenceCandidates);
   return value as unknown as AcpxIdentityRecord;
@@ -326,6 +336,7 @@ function validateExpected(expected: AcpxExpectedSessionIdentity): void {
   if (expected.mode !== undefined) parseProviderMode(expected.mode);
   resolveClaudeEffort("claude", expected.claudeEffort);
   resolveGrokEffort("grok", expected.grokEffort);
+  resolveGrokDisableWebSearch("grok", expected.grokDisableWebSearch);
   if (expected.piThinkingLevel !== undefined) resolvePiThinkingLevel("pi", expected.piThinkingLevel);
   validateFenceCandidates(expected.providerLifetimeFenceCandidates);
 }

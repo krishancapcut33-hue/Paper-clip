@@ -1,3 +1,4 @@
+import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
 import { resolveGrokEffort, createGrokEffortAdmission } from "./grok-effort.js";
 import { resolveClaudeEffort, createClaudeEffortAdmission } from "./claude-effort.js";
 import { createPiThinkingAdmission, resolvePiThinkingLevel } from "./pi-thinking.js";
@@ -320,6 +321,7 @@ export async function openQualifiedAcpxRuntime(
   const piThinking = selectedPiThinkingLevel ? createPiThinkingAdmission(selectedPiThinkingLevel, { restoring: options.restoringSession }) : undefined;
   const selectedClaudeEffort = resolveClaudeEffort(options.profile.agent, options.claudeEffort);
   const selectedGrokEffort = resolveGrokEffort(options.profile.agent, options.grokEffort);
+  const grokDisableWebSearch = resolveGrokDisableWebSearch(options.profile.agent, options.grokDisableWebSearch);
   const effortAdmission = selectedClaudeEffort ? createClaudeEffortAdmission(selectedClaudeEffort)
     : selectedGrokEffort ? createGrokEffortAdmission(selectedGrokEffort) : undefined;
   const cursorInstructions = options.profile.agent === "cursor"
@@ -647,7 +649,7 @@ export async function openQualifiedAcpxRuntime(
     return runtimePort(
       runtime,
       handle,
-      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}), ...(selectedGrokEffort ? { grokEffort: selectedGrokEffort } : {}) },
+      { ...requireIdentity(handle), ...(modeBinding ? { mode: modeBinding.selectedMode } : {}), ...(selectedPiThinkingLevel ? { piThinkingLevel: selectedPiThinkingLevel } : {}), ...(selectedClaudeEffort ? { claudeEffort: selectedClaudeEffort } : {}), ...(selectedGrokEffort ? { grokEffort: selectedGrokEffort } : {}), ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }) },
       baseStore,
       children,
       runtimeCloseTimeoutMs,

@@ -1,3 +1,4 @@
+import { resolveGrokDisableWebSearch } from "../drivers/acpx/grok-web-search.js";
 import { resolveGrokEffort } from "../drivers/acpx/grok-effort.js";
 import { resolveClaudeEffort } from "../drivers/acpx/claude-effort.js";
 import type { DotBindingSnapshot, MuseBindingSnapshot, ExternalBotProviderKind } from "./external-provider.js";
@@ -268,7 +269,7 @@ export interface NativeExecutionInputV9 extends Omit<NativeExecutionInputV7, "sc
 }
 
 export type NativeProviderConfigV10 = Exclude<NativeProviderConfigV9, { kind: "acpx" }>
-  | (Extract<NativeProviderConfigV9, { kind: "acpx" }> & { grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh" });
+  | (Extract<NativeProviderConfigV9, { kind: "acpx" }> & { grokEffort?: "minimal" | "low" | "medium" | "high" | "xhigh"; grokDisableWebSearch?: boolean });
 export interface NativeExecutionInputV10 extends Omit<NativeExecutionInputV9, "schema" | "provider"> {
   schema: typeof NATIVE_EXECUTION_INPUT_SCHEMA_V10;
   provider: NativeProviderConfigV10;
@@ -579,7 +580,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       : provider.kind === "aws_agentcore"
         ? ["kind", "model", "agentCoreProfile", "maxEstimatedSessionCostUsd", "invocationLimits"]
       : provider.kind === "acpx"
-        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : []), ...(isV9 ? ["claudeEffort"] : []), ...(isV10 ? ["grokEffort"] : [])]
+        ? ["kind", "agent", "model", isV4 ? "permissionMode" : "permissionPolicy", "profile", "piThinkingLevel", ...(isV4 ? ["mode"] : []), ...(isV9 ? ["claudeEffort"] : []), ...(isV10 ? ["grokEffort", "grokDisableWebSearch"] : [])]
       : provider.kind === "codex" && isV4
         ? ["kind", "model", "approvalPolicy", ...(isV5 ? ["reasoningEffort", "webSearch"] : [])]
         : provider.kind === "opencode" && isV4
@@ -720,6 +721,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
     }
     const claudeEffort = resolveClaudeEffort(provider.agent, provider.claudeEffort);
     const grokEffort = resolveGrokEffort(provider.agent, provider.grokEffort);
+    const grokDisableWebSearch = resolveGrokDisableWebSearch(provider.agent, provider.grokDisableWebSearch);
     const profile = record(provider.profile, "input.provider.profile");
     exactKeys(profile, [
       "driverKind",
@@ -760,6 +762,7 @@ export function parseNativeExecutionInput(value: unknown): NativeExecutionInput 
       ...(provider.mode === undefined ? {} : { mode: provider.mode as string }),
       ...(claudeEffort === undefined ? {} : { claudeEffort }),
       ...(grokEffort === undefined ? {} : { grokEffort }),
+      ...(grokDisableWebSearch === undefined ? {} : { grokDisableWebSearch }),
       ...(provider.piThinkingLevel === undefined ? {} : { piThinkingLevel: provider.piThinkingLevel as "off" | "low" | "high" | "max" }),
       profile: {
         driverKind: "acpx_runtime",
