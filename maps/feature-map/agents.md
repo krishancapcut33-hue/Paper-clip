@@ -173,6 +173,10 @@ pending edits and an environment-variable draft. An unsaved change to a differen
 effective computer must disable the action and explain that the computer change
 must be saved first; restoring the saved target must re-enable it. Reopen the page and compare the
 saved harness, model, account bindings, instructions, and run policy. Check a
+Grok upgrade with an unset or `grok-build` model: it must use `grok-4.7`.
+Compare effective search policy before and after, including the implicit disabled
+default and explicit enabled search. Verify task model and effort changes use the
+Grok catalog and reach execution while retaining the account and search policy. Check a
 saved `maxTurnsPerRun: 1000`: upgrade must warn and remove it. Test an initially
 unqualified Daytona Paperclip Computer: click must probe, record qualification,
 refresh availability, and only then save. A failed probe or changed selection must
