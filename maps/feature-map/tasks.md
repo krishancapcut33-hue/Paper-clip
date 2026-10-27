@@ -164,17 +164,6 @@ Sources: [Privacy actions](../../ui/src/components/IssuePrivacyActions.tsx), [sh
 
 ## Gotchas
 
-Cold task loads do not reserve space for an unknown right sidebar. When sidebar
-content arrives, its width transition moves the task thread with it. Hidden-panel
-preferences stay hidden, and reduced motion disables the transition.
-
-The [Sidebar loading stories](../../ui/storybook/stories/tasks/task-sidebar-loading.stories.tsx)
-isolate the production skeleton and panel host with delayed fixture data. The
-[browser suite](../../tests/storybook-visual/task-sidebar-loading.spec.ts) checks
-intermediate layout widths, absent and hidden sidebars, and reduced motion.
-For real-page acceptance, cold-open a populated task in a fresh browser context;
-a warm query cache can hide the initial transition.
-
 - Private task sharing and private project membership are distinct read sources. Revoking a direct task grant does not revoke an independent ancestor/project grant; inspect the actual access source.
 
 - Priority remains an API field, but ordinary priority UI editing is hidden.
