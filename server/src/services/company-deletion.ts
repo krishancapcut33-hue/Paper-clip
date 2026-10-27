@@ -2,7 +2,8 @@ import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notificatio
 import { agentObservabilityService } from "./agent-observability.js";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import type { Db } from "@paperclipai/db";
-import { eq, inArray } from "drizzle-orm";
+import { withDedicatedDbConnection } from "@paperclipai/db";
+import { eq, inArray, sql } from "drizzle-orm";
 import { createAgentLifecycle, processAgentLifecycle } from "./agent-lifecycle.js";
 import { requestRestorePointDeletion } from "./git-restore-point-ledger.js";
 import { agentLifecycleCompanyDeletion } from "../modules/agent-lifecycle/company-deletion.js";
@@ -46,18 +47,36 @@ import {
   routines,
 } from "@paperclipai/db";
 
+type CompanyTx = Parameters<Parameters<Db["transaction"]>[0]>[0];
+
+export async function lockCompanyLifecycle(tx: CompanyTx, id: string, exclusive = false) {
+  const key = `company-lifecycle:${id}`;
+  await tx.execute(exclusive
+    ? sql`select pg_advisory_xact_lock(hashtextextended(${key}, 0))`
+    : sql`select pg_advisory_xact_lock_shared(hashtextextended(${key}, 0))`);
+}
+
 export async function deleteCompany(
   db: Db,
   id: string,
   beforeDelete?: (tx: Parameters<Parameters<Db["transaction"]>[0]>[0]) => Promise<void>,
 ) {
-  const lifecycle = createAgentLifecycle(db);
-  const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));
-  for (const agent of companyAgents) {
-    await lifecycle.terminateAgent(agent.id);
-    await processAgentLifecycle(db, agent.id);
-  }
-  return withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
+  return withDedicatedDbConnection(db, (lockDb) => lockDb.transaction(async (lockTx) => {
+    await lockCompanyLifecycle(lockTx, id, true);
+    const existing = await db.transaction(async (tx) => {
+      const [company] = await tx.select({ id: companies.id }).from(companies)
+        .where(eq(companies.id, id)).for("no key update");
+      if (company) await beforeDelete?.(tx);
+      return company;
+    });
+    if (!existing) return null;
+    const lifecycle = createAgentLifecycle(db);
+    const companyAgents = await db.select({ id: agents.id }).from(agents).where(eq(agents.companyId, id));
+    for (const agent of companyAgents) {
+      await lifecycle.terminateAgent(agent.id);
+      await processAgentLifecycle(db, agent.id);
+    }
+    return withAccountHomeSecretMutationLock(undefined, id, () => db.transaction(async (tx) => {
         // Exclude accounting writers before taking child locks. KEY SHARE must
         // remain compatible: native writers can already hold a child row while
         // saving a company-scoped result. FOR UPDATE would deadlock that save.
@@ -125,4 +144,5 @@ export async function deleteCompany(
           .returning();
         return rows[0] ?? null;
       }));
+  }));
 }

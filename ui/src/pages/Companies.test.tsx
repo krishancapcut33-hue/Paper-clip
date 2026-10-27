@@ -153,6 +153,32 @@ describe("Companies page", () => {
     });
   });
 
+  it("shows the server's deletion error and keeps confirmation available", async () => {
+    mockCompaniesApi.remove.mockRejectedValue(new Error("Wait for company runs to finish before deleting managed files"));
+    const root = await renderPage({ status: "archived" });
+    const deleteButton = [...container.querySelectorAll("button")].find((button) =>
+      button.textContent?.trim() === "Delete Organization",
+    );
+    expect(deleteButton).toBeDefined();
+    act(() => deleteButton?.click());
+    await flushReact();
+    const confirmButton = [...container.querySelectorAll("button")].findLast((button) =>
+      button.textContent?.trim() === "Delete",
+    );
+    expect(confirmButton).toBeDefined();
+    act(() => confirmButton?.click());
+    await flushReact();
+    await flushReact();
+
+    expect(mockPushToast).toHaveBeenCalledWith({
+      tone: "error",
+      title: "Could not delete organization",
+      body: "Wait for company runs to finish before deleting managed files",
+    });
+    expect(container.textContent).toContain("Delete this organization and all its data?");
+    act(() => root.unmount());
+  });
+
   it("reports an unarchive failure", async () => {
     mockCompaniesApi.update.mockRejectedValue(new Error("Network unavailable"));
     const root = await renderPage({ status: "archived" });

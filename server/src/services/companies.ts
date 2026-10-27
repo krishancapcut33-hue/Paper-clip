@@ -2,7 +2,7 @@ import { rm } from "node:fs/promises";
 import path from "node:path";
 import { DELIVERY_QUEUES, notifyDeliveryWork } from "./delivery-work-notifications.js";
 import { isRunnerApiResponseAsset } from "./asset-content-access.js";
-import { deleteCompany } from "./company-deletion.js";
+import { deleteCompany, lockCompanyLifecycle } from "./company-deletion.js";
 import { fenceActiveCompanyAgentStopsInTransaction } from "./agent-lifecycle.js";
 import { publishAccountingActivities } from "./accounting-transaction.js";
 import { budgetServiceInTransaction, type BudgetServiceHooks } from "./budgets.js";
@@ -35,6 +35,7 @@ import { builtInAgentService } from "./built-in-agents.js";
 import { heartbeatService } from "./heartbeat.js";
 import { loadConfig } from "../config.js";
 import { resolvePaperclipInstanceRoot } from "../home-paths.js";
+import { resolveRunLogBasePath } from "./run-log-store.js";
 import { logger } from "../middleware/logger.js";
 
 export type FileCleanupStatus = "not_requested" | "succeeded" | "failed";
@@ -52,7 +53,7 @@ async function removeCompanyManagedFiles(companyId: string): Promise<void> {
     path.resolve(instanceRoot, "companies", companyId),
     path.resolve(instanceRoot, "projects", companyId),
     path.resolve(instanceRoot, "skills", companyId),
-    path.resolve(instanceRoot, "data", "run-logs", companyId),
+    path.resolve(resolveRunLogBasePath(), companyId),
   ];
   if (config.storageProvider === "local_disk") {
     targets.push(path.resolve(config.storageLocalDiskBaseDir, companyId));
@@ -85,7 +86,6 @@ export function companyService(
   db: Db,
   options: BudgetServiceHooks & {
     removeManagedFiles?: (companyId: string) => Promise<void>;
-    drainActiveRunExecutions?: () => Promise<void>;
     waitForRunExecutionDrain?: (runId: string) => Promise<void>;
   } = {},
 ) {
@@ -365,6 +365,7 @@ export function companyService(
       const budgetPublications: ActivityPublication[] = [];
       const result = await db.transaction(async (tx) => {
         if (data.status !== undefined || data.budgetMonthlyCents !== undefined) {
+          await lockCompanyLifecycle(tx, id);
           await tx.select({ id: companies.id }).from(companies).where(eq(companies.id, id)).for("no key update");
         }
         const existing = await getCompanyQuery(tx)
@@ -534,6 +535,7 @@ export function companyService(
 
     archive: async (id: string, actor: CompanyActivityActor = SYSTEM_COMPANY_ACTOR) => {
       const result = await db.transaction(async (tx) => {
+        await lockCompanyLifecycle(tx, id);
         const existing = await tx
           .select({ status: companies.status })
           .from(companies)
@@ -581,9 +583,6 @@ export function companyService(
     remove: async (id: string, removeOptions: { deleteFiles?: boolean } = {}) => {
       if (removeOptions.deleteFiles) {
         const heartbeat = heartbeatService(db);
-        const initialRunIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
-        if (!initialRunIds) return null;
-        await (options.drainActiveRunExecutions ?? heartbeat.drainActiveRunExecutions)();
         const stableRunIds = await db.transaction((tx) => getCompanyFileDeletionRunIds(tx, id));
         if (!stableRunIds) return null;
         for (const runId of stableRunIds) {

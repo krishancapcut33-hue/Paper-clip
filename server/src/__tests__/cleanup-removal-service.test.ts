@@ -1,9 +1,13 @@
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
+import { access, mkdtemp, rm } from "node:fs/promises";
+import os from "node:os";
+import path from "node:path";
 import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
+  agentApiKeys,
   agents,
   companies,
   companySkills,
@@ -25,6 +29,8 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { companyService } from "../services/companies.ts";
+import { deleteCompany } from "../services/company-deletion.js";
+import { createDurableRunLogStore } from "../services/run-log-store.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -46,6 +52,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
   }, 20_000);
 
   afterEach(async () => {
+    vi.unstubAllEnvs();
+    await db.delete(agentApiKeys);
     await db.delete(heartbeatRunEvents);
     await db.delete(activityLog);
     await db.delete(issueReadStates);
@@ -296,13 +304,12 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     expect(removed?.fileCleanup).toBe("succeeded");
   });
 
-  it("drains archived company runs before deleting managed files", async () => {
+  it("drains only the archived company's runs before deleting managed files", async () => {
     const { companyId, runId } = await seedFixture();
+    const other = await seedFixture();
+    await db.update(heartbeatRuns).set({ status: "running" }).where(eq(heartbeatRuns.id, other.runId));
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
     const order: string[] = [];
-    const drainActiveRunExecutions = vi.fn(async () => {
-      order.push("global-drain");
-    });
     const waitForRunExecutionDrain = vi.fn(async () => {
       order.push("drain");
     });
@@ -311,15 +318,16 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     });
 
     const removed = await companyService(db, {
-      drainActiveRunExecutions,
       removeManagedFiles,
       waitForRunExecutionDrain,
     }).remove(companyId, { deleteFiles: true });
 
-    expect(drainActiveRunExecutions).toHaveBeenCalledOnce();
+    expect(waitForRunExecutionDrain).toHaveBeenCalledOnce();
     expect(waitForRunExecutionDrain).toHaveBeenCalledWith(runId);
-    expect(order).toEqual(["global-drain", "drain", "cleanup"]);
+    expect(order).toEqual(["drain", "cleanup"]);
     expect(removed?.fileCleanup).toBe("succeeded");
+    const [otherRun] = await db.select().from(heartbeatRuns).where(eq(heartbeatRuns.id, other.runId));
+    expect(otherRun.status).toBe("running");
   });
 
   it("requires the company to be archived before deleting managed files", async () => {
@@ -339,10 +347,10 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
     const before = await db.select().from(agents).where(eq(agents.id, agentId));
     const removeManagedFiles = vi.fn();
-    const drainActiveRunExecutions = vi.fn().mockRejectedValue(new Error("drain timeout"));
+    const waitForRunExecutionDrain = vi.fn().mockRejectedValue(new Error("drain timeout"));
 
     await expect(
-      companyService(db, { removeManagedFiles, drainActiveRunExecutions })
+      companyService(db, { removeManagedFiles, waitForRunExecutionDrain })
         .remove(companyId, { deleteFiles: true }),
     ).rejects.toThrow("drain timeout");
 
@@ -356,17 +364,107 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
     const before = await db.select().from(agents).where(eq(agents.id, agentId));
     const removeManagedFiles = vi.fn();
-    const drainActiveRunExecutions = vi.fn(async () => {
+    const waitForRunExecutionDrain = vi.fn(async () => {
       await db.update(companies).set({ status: "active" }).where(eq(companies.id, companyId));
     });
 
     await expect(
-      companyService(db, { removeManagedFiles, drainActiveRunExecutions })
+      companyService(db, { removeManagedFiles, waitForRunExecutionDrain })
         .remove(companyId, { deleteFiles: true }),
     ).rejects.toThrow("Archive the company");
 
     expect(removeManagedFiles).not.toHaveBeenCalled();
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toEqual(before);
+  });
+
+  it("preserves agents and API keys when the locked deletion check rejects", async () => {
+    const { companyId, agentId } = await seedFixture();
+    await db.insert(agentApiKeys).values({ companyId, agentId, keyHash: randomUUID(), name: "Deletion test" });
+    const before = await db.select().from(agents).where(eq(agents.id, agentId));
+    const keysBefore = await db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, agentId));
+
+    await expect(deleteCompany(db, companyId, async () => {
+      throw new Error("Deletion rejected");
+    })).rejects.toThrow("Deletion rejected");
+
+    await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toEqual(before);
+    await expect(db.select().from(agentApiKeys).where(eq(agentApiKeys.agentId, agentId))).resolves.toEqual(keysBefore);
+  });
+
+  it("serializes unarchive with deletion without blocking another company", async () => {
+    const { companyId } = await seedFixture();
+    const other = await seedFixture();
+    await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+    let stopping!: () => void;
+    const stopStarted = new Promise<void>((resolve) => { stopping = resolve; });
+    let release!: () => void;
+    const continueDeletion = new Promise<void>((resolve) => { release = resolve; });
+    configureAgentLifecycle(db, {
+      requiredPluginIds: async () => [],
+      runPlugin: async () => "complete",
+      runHost: async (agent) => {
+        if (agent.companyId === companyId) {
+          stopping();
+          await continueDeletion;
+        }
+        return "complete";
+      },
+    });
+    const deletion = companyService(db, { removeManagedFiles: async () => {} })
+      .remove(companyId, { deleteFiles: true });
+    await stopStarted;
+    let reactivated = false;
+    const reactivation = companyService(db).update(companyId, { status: "active" }).then((result) => {
+      reactivated = true;
+      return result;
+    });
+    try {
+      await expect(companyService(db).update(other.companyId, { status: "paused" }))
+        .resolves.toMatchObject({ status: "paused" });
+      expect(reactivated).toBe(false);
+    } finally {
+      release();
+    }
+    await expect(deletion).resolves.toMatchObject({ id: companyId, fileCleanup: "succeeded" });
+    await expect(reactivation).resolves.toBeNull();
+    configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+  });
+
+  it("deletes safely when the application pool has only one connection", async () => {
+    const { companyId } = await seedFixture();
+    const singleConnectionDb = createDb(tempDb!.connectionString, { maxConnections: 1 });
+    configureAgentLifecycle(singleConnectionDb, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
+    try {
+      await expect(companyService(singleConnectionDb).remove(companyId))
+        .resolves.toMatchObject({ id: companyId });
+    } finally {
+      await singleConnectionDb.$client.end();
+    }
+  });
+
+  it("removes the actual custom run logs and preserves another company's logs", async () => {
+    const { companyId, agentId, runId } = await seedFixture();
+    const other = await seedFixture();
+    const root = await mkdtemp(path.join(os.tmpdir(), "paperclip-cleanup-files-"));
+    vi.stubEnv("PAPERCLIP_HOME", path.join(root, "home"));
+    vi.stubEnv("RUN_LOG_BASE_PATH", path.join(root, "custom-logs"));
+    try {
+      const store = createDurableRunLogStore({ basePath: path.join(root, "custom-logs") });
+      const log = await store.begin({ companyId, agentId, runId });
+      await store.append(log, { stream: "stdout", chunk: "test", ts: new Date().toISOString() });
+      await store.finalize(log);
+      const otherLog = await store.begin({ companyId: other.companyId, agentId: other.agentId, runId: other.runId });
+      await store.finalize(otherLog);
+      await db.update(companies).set({ status: "archived" }).where(eq(companies.id, companyId));
+
+      await expect(companyService(db).remove(companyId, { deleteFiles: true }))
+        .resolves.toMatchObject({ fileCleanup: "succeeded" });
+
+      await expect(access(path.join(root, "custom-logs", companyId))).rejects.toMatchObject({ code: "ENOENT" });
+      await expect(access(path.join(root, "custom-logs", other.companyId))).resolves.toBeUndefined();
+    } finally {
+      await rm(root, { recursive: true, force: true });
+    }
   });
 
   it("rejects managed-file deletion while archived company runs are active", async () => {

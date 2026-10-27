@@ -1,3 +1,4 @@
+import { registerWorkspaceRecoveryWork } from "./services/workspace-recovery-work.js";
 import { registerEnvironmentCleanupWork } from "./services/environment-cleanup-work.js";
 import { loginCleanupSchedule } from "./services/login-cleanup-state.js";
 import { registerLoginCleanupWork } from "./services/login-cleanup-work.js";
@@ -84,6 +85,7 @@ import detectPort from "detect-port";
 import { createApp } from "./app.js";
 import { loadConfig } from "./config.js";
 import { logger } from "./middleware/logger.js";
+import { createIncompleteTaskWatchdogScanReporter } from "./services/task-watchdog-diagnostics.js";
 import { setStartupRecoveryPhase } from "./startup-recovery-state.js";
 import {
   StartupRefusalError,
@@ -926,6 +928,9 @@ async function startServerWithDatabaseTeardown(
     }
   };
   const pluginWorkerManager = createPluginWorkerManager();
+  const reportIncompleteWatchdogScans = createIncompleteTaskWatchdogScanReporter(
+    (details, message) => logger.warn(details, message),
+  );
   const heartbeat = config.heartbeatSchedulerEnabled
     ? heartbeatService(db as any, { pluginWorkerManager })
     : null;
@@ -1342,6 +1347,9 @@ async function startServerWithDatabaseTeardown(
   });
   const deliveryWork = app.locals.deliveryWork as ReturnType<typeof createDeliveryWorkCoordinator>;
   const executionSchedule = executionControlSchedule(db);
+  const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
+  const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
+    accountingHeartbeat.resumeRemoteStopComments, () => !heartbeatSchedulerStopped);
   registerExecutionControlWork(deliveryWork, [
     { queue: DELIVERY_QUEUES.executionFinalization, run: () => reconcileAbandonedExecutionControl(db), next: executionSchedule.finalization },
     { queue: DELIVERY_QUEUES.executionStatus, run: () => deliverExecutionStatuses(db), next: executionSchedule.status },
@@ -1729,6 +1737,7 @@ async function startServerWithDatabaseTeardown(
         }
 
         const taskWatchdogsReconciled = await heartbeat.reconcileTaskWatchdogs();
+        reportIncompleteWatchdogScans(taskWatchdogsReconciled, "startup");
         if (taskWatchdogsReconciled.triggered > 0) {
           logger.warn(
             { ...taskWatchdogsReconciled },
@@ -1936,6 +1945,7 @@ async function startServerWithDatabaseTeardown(
             })
             .then(async () => {
               const reconciled = await heartbeat.reconcileTaskWatchdogs();
+              reportIncompleteWatchdogScans(reconciled, "periodic");
               if (reconciled.triggered > 0) {
                 logger.warn({ ...reconciled }, "periodic task-watchdog reconciliation triggered watchdog work");
               }
@@ -2103,6 +2113,7 @@ async function startServerWithDatabaseTeardown(
     await skillSourceSync.stop();
     unsubscribeChatCompletions();
     await deliveryWork.stop();
+    await workspaceRecoveryWork.stop();
     unregisterTerminalWorkspaceProbe?.();
     unsubscribeNativeWorkspaceSyncRetention?.();
     if (heartbeatSchedulerInterval) {

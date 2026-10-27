@@ -86,6 +86,13 @@ export function Companies() {
         });
       }
     },
+    onError: (error) => {
+      pushToast({
+        tone: "error",
+        title: "Could not delete organization",
+        body: error instanceof Error ? error.message : "Please try again.",
+      });
+    },
   });
 
   // Unarchiving previously had no UI at all: archiving happens in company
