@@ -2243,3 +2243,56 @@ producer coverage, fixture failures, and the supported writer boundary. Workspac
 typechecks and build passed; remote acceptance remains outstanding. Origin/master was fetched at
 `6336c34041`; the full stack still needs final reconciliation with master. No PR
 in this stack has been merged, and the original remaining scope is unchanged.
+
+## Slice 46 published; slice 47 pending-effects audit
+
+Unsafe-export recovery is draft [#17687](https://github.com/paperclipai/paperclip/pull/17687)
+at `b9fe9e2e40ab48104cf18822b5302a740d1957a7`, stacked on #17680. Workspace types
+and build passed. Greptile reviewed that exact head at 5/5 with no actionable
+findings; full remote CI remains active. This is not acceptance or merge proof.
+The attempted full local `pnpm test:run` hit embedded PostgreSQL initialization
+failures (15 native-session failures plus database-suite skips) and was stopped
+with its log preserved at `/tmp/sleep46-full-tests.log`. It did not pass. The
+626 focused external-database cases remain the local acceptance evidence.
+
+Slice 47 begins with native pending status effects. The current writer already
+materializes targets and records delivered effects atomically; historical pending
+or failed rows still require recovery. The existing owner validates targets and
+settles the ledger without recreating effects. The audit and open producer/
+ordering questions are in [the pending-effects audit](2026-10-25-native-pending-effects-sleep-audit.md).
+Its 72-case status-arbiter baseline passed. No source migration is implemented yet.
+
+Older gates were revalidated: #17490 and #17572 still have E2E shard 3 and aggregate
+failures at their recorded heads. #17576 additionally reports an action-required
+check. #17580 has successful/neutral CI, but its recorded review findings still
+require resolution. These remain part of the full requested stack finish line.
+
+
+## Slice 46 accepted; slice 47 locally verified
+
+#17687 at `b9fe9e2e40ab48104cf18822b5302a740d1957a7` has all 53 checks passing,
+Greptile 5/5, no unresolved review threads, and a mergeable base. It remains
+unmerged. Its full-local-suite PostgreSQL failure above remains part of the record.
+
+Slice 47 implements native pending-effect recovery with exact coordinator binding,
+commit-aware producers, saved lease/retry deadlines, lock-time eligibility checks,
+and pending-only indexed discovery. Periodic finalization skips this duty and
+preserves ordering; explicit/startup recovery remains compatible. No provider turn,
+new queue table, or host-sleep exemption is introduced. See the
+[pending-effects audit](2026-10-25-native-pending-effects-sleep-audit.md).
+
+The expanded consumer run passed 680 tests across 15 files. The final producer
+audit found a lease-shortening wake gap; its new real-store regression failed
+before the fix and passed afterward. Final owner/startup tests pass 158 cases;
+the finalizer rerun passes 29 on a fresh database (683 distinct local cases across
+these runs). The initial finalizer rerun reused a fixed company prefix and failed
+setup; that failure is preserved. Index discovery was measured with 10,000 delivered
+effects and 10,000 completed coordinators. Migration replay and valid/ready checks
+pass. Final workspace and remote gates must be recorded before acceptance.
+
+The remaining original scope, older CI/review issues, full master reconciliation,
+and all final-head PR gates remain open. No PR has been merged by this stack work.
+
+Final slice 47 source passes workspace typecheck/build and 158 worker/startup
+cases, including exact near-term concurrent deadlines. Remote publication and
+acceptance are the next gates; local success does not satisfy the full stack.
