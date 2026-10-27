@@ -3342,7 +3342,7 @@ export function issueThreadInteractionService(
       }> = [];
       for (const row of rows) {
         if (!row.createdByAgentId) continue;
-        const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}`;
+        const groupKey = `${row.companyId}:${row.issueId}:${row.kind}:${row.createdByAgentId}:${row.addresseeAgentId ?? ""}:${row.addresseeUserId ?? ""}`;
         const newest = newestByGroup.get(groupKey);
         if (!newest) {
           newestByGroup.set(groupKey, row);
@@ -3794,7 +3794,12 @@ export function issueThreadInteractionService(
                 eq(issueThreadInteractions.createdByAgentId, actor.agentId),
                 eq(issueThreadInteractions.status, "pending"),
                 ne(issueThreadInteractions.id, row.id),
-
+                row.addresseeAgentId
+                  ? eq(issueThreadInteractions.addresseeAgentId, row.addresseeAgentId)
+                  : isNull(issueThreadInteractions.addresseeAgentId),
+                row.addresseeUserId
+                  ? eq(issueThreadInteractions.addresseeUserId, row.addresseeUserId)
+                  : isNull(issueThreadInteractions.addresseeUserId),
               ),
             )
             .returning();
