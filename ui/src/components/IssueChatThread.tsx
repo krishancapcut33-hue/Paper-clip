@@ -6103,9 +6103,13 @@ export function IssueChatThread({
     takingLonger: submissionTakingLonger,
     begin: beginSubmission,
     reject: rejectSubmission,
+    blocked: startupBlocked,
   } = useRunnerSubmission({
     issueId,
     agentId: issueAssigneeAgentId,
+    agentStatus: agentMap?.get(issueAssigneeAgentId ?? "")?.status,
+    blocked: Boolean(composerPause || composerDisabledReason),
+    comments,
     issueStatus,
     runId: displayLiveRuns[0]?.id ?? null,
     linkedRuns,
@@ -6115,7 +6119,8 @@ export function IssueChatThread({
   const sendComposerComment = useCallback<IssueChatThreadProps["onAdd"]>(
     async (body, reopen, reassignment, attachmentIds, clientRequestId, runSettings) => {
       pendingSubmitScrollRef.current = true;
-      const attempt = beginSubmission();
+      clientRequestId ??= crypto.randomUUID();
+      const attempt = beginSubmission(clientRequestId);
       try {
         await (runSettings
           ? onAdd(body, reopen, reassignment, attachmentIds, clientRequestId, runSettings)
@@ -6654,7 +6659,7 @@ export function IssueChatThread({
                     />
                   ))
                 )}
-                {!isRunning && issueAssigneeAgentId && (submissionPending || retryPreparing || interruption?.state === "working") ? (
+                {!isRunning && !startupBlocked && issueAssigneeAgentId && (submissionPending || retryPreparing || interruption?.state === "working") ? (
                   <TaskChatRunnerTurn items={[]} status="queued" startedAtMs={null}
                     agent={agentMap?.get(issueAssigneeAgentId)}
                     agentName={agentMap?.get(issueAssigneeAgentId)?.name}

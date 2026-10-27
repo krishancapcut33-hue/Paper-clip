@@ -2652,9 +2652,13 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     takingLonger: submissionTakingLonger,
     begin: beginSubmission,
     reject: rejectSubmission,
+    blocked: startupBlocked,
   } = useRunnerSubmission({
     issueId: issueId ?? null,
     agentId: issueAssigneeAgentId,
+    agentStatus: agentMap?.get(issueAssigneeAgentId ?? "")?.status,
+    blocked: Boolean(composerPause || composerDisabledReason),
+    comments,
     issueStatus,
     runId: liveRun?.id ?? null,
     linkedRuns,
@@ -2663,7 +2667,8 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   });
   const handleThreadAdd = useCallback(
     async (...args: Parameters<typeof onAdd>) => {
-      const attempt = beginSubmission();
+      args[4] ??= crypto.randomUUID();
+      const attempt = beginSubmission(args[4]);
       try {
         await onAdd(...args);
         if (selectedPendingInput?.kind === "durable" && selectedPendingInput.interaction.kind === "ask_user_questions") {
@@ -2680,6 +2685,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   );
   const optimisticRunnerStartup =
     hasAgentAssignee &&
+    !startupBlocked &&
     !tailRunId &&
     (props.retryPreparing || props.interruption?.state === "working" || runnerSubmissionPending ||
       commentItems.some(

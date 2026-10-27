@@ -499,7 +499,11 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
   }
 });
 
-it.each(["task", "legacy"] as const)("keeps an existing %s thread's responder mounted after the comment saves", async surface => {
+it.each((["task", "legacy"] as const).flatMap(surface =>
+  [-300_000, 0, 300_000].map(clockOffset => ({ surface, clockOffset })),
+))("keeps an existing $surface thread's responder mounted with clock offset $clockOffset", async ({ surface, clockOffset }) => {
+  const serverTime = new Date("2026-01-02T00:00:00Z").getTime();
+  vi.spyOn(Date, "now").mockReturnValue(serverTime + clockOffset);
   const Component = surface === "task" ? TaskChatThread : IssueChatThread;
   let acknowledge!: () => void;
   const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>(() => new Promise<void>(resolve => { acknowledge = resolve; }));
@@ -520,7 +524,7 @@ it.each(["task", "legacy"] as const)("keeps an existing %s thread's responder mo
   expect(responder?.textContent).toBe("Worker");
   expect(avatar).not.toBeNull();
   const saved = { ...prior, id: "saved-message", authorType: "user" as const, authorAgentId: null, authorUserId: "board",
-    body: "Please check again.", clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(), updatedAt: new Date() };
+    body: "Please check again.", clientRequestId: onAdd.mock.calls[0]?.[4], createdAt: new Date(serverTime), updatedAt: new Date(serverTime) };
   render(<Component {...props} comments={[prior, saved]} />);
   await act(async () => { acknowledge(); });
   expect(container.contains(responder)).toBe(true);
@@ -530,9 +534,25 @@ it.each(["task", "legacy"] as const)("keeps an existing %s thread's responder mo
   }]} />);
   expect(container.contains(responder)).toBe(true);
   render(<Component {...props} comments={[prior, saved]} linkedRuns={[{
-    runId: "new-run", agentId: "agent", status: "succeeded", createdAt: new Date(Date.now() + 1), startedAt: new Date(),
+    runId: "new-run", agentId: "agent", status: "succeeded", createdAt: new Date(serverTime + 1), startedAt: new Date(serverTime + 1),
   }]} />);
   expect(container.contains(responder)).toBe(false);
+});
+
+it.each(["task", "legacy"] as const)("does not show startup work for a paused agent in %s chat", async surface => {
+  const Component = surface === "task" ? TaskChatThread : IssueChatThread;
+  const onAdd = vi.fn<ComponentProps<typeof TaskChatThread>["onAdd"]>().mockResolvedValue(undefined);
+  const agentMap = new Map([["agent", { id: "agent", name: "Worker", status: "paused", adapterType: "paperclip_runner" } as Agent]]);
+  const props = { issueId: "issue", comments: [], issueStatus: "todo", issueAssigneeAgentId: "agent", agentMap, onAdd };
+  render(<Component {...props} />);
+  await act(async () => { editorCallbacks.change("Save a note for later."); });
+  const send = surface === "task" ? container.querySelector<HTMLButtonElement>('[data-testid="task-chat-composer-send"]')
+    : [...container.querySelectorAll<HTMLButtonElement>('[data-testid="issue-chat-composer"] button')].find(button => button.textContent === "Send");
+  await act(async () => { send!.click(); });
+  expect(onAdd).toHaveBeenCalledTimes(1);
+  expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBeNull();
+  expect(container.textContent).not.toContain("Thinking");
+  expect(container.textContent).not.toContain("Taking longer than usual");
 });
 
 it("prepares comment-link history and its composer before reveal", async () => {

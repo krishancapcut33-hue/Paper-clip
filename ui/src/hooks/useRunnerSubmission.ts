@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { TaskInterruptionPresentation } from "@paperclipai/shared";
-import type { IssueChatLinkedRun } from "@/lib/issue-chat-messages";
+import type { AgentStatus, TaskInterruptionPresentation } from "@paperclipai/shared";
+import type { IssueChatComment, IssueChatLinkedRun } from "@/lib/issue-chat-messages";
 import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
 import { isTerminalIssueStatus } from "@/lib/liveIssueIds";
 
@@ -8,13 +8,16 @@ interface Submission {
   issueId: string | null;
   agentId: string;
   runIds: Set<string>;
-  submittedAt: number;
+  clientRequestId: string;
   interruptionKey: string;
 }
 
 export function useRunnerSubmission({
   issueId,
   agentId,
+  agentStatus,
+  blocked = false,
+  comments,
   issueStatus,
   runId,
   linkedRuns = [],
@@ -23,6 +26,9 @@ export function useRunnerSubmission({
 }: {
   issueId: string | null;
   agentId: string | null;
+  agentStatus?: AgentStatus;
+  blocked?: boolean;
+  comments: readonly IssueChatComment[];
   issueStatus?: string;
   runId: string | null;
   linkedRuns?: readonly IssueChatLinkedRun[];
@@ -36,19 +42,26 @@ export function useRunnerSubmission({
   const interruptionKey = JSON.stringify([
     interruption?.intentId, interruption?.state, interruption?.observedRunId,
   ]);
+  const startupBlocked = blocked || agentStatus === "paused" ||
+    agentStatus === "pending_approval" || agentStatus === "terminated";
+  const savedComment = submission && comments.find(comment =>
+    comment.clientRequestId === submission.clientRequestId && !comment.clientStatus);
+  const acknowledgedAt = savedComment ? new Date(savedComment.createdAt).getTime() : null;
+  const submissionRuns = submission && savedComment ? linkedRuns.filter(run =>
+    run.agentId === submission.agentId && (
+      run.runId === savedComment.consumedByRunId || run.runId === savedComment.steeredIntoRunId ||
+      (!submission.runIds.has(run.runId) && acknowledgedAt !== null &&
+        new Date(run.createdAt).getTime() >= acknowledgedAt)
+    )) : [];
   const settled = Boolean(submission && (
-    runId || isTerminalIssueStatus(issueStatus) ||
+    runId || startupBlocked || isTerminalIssueStatus(issueStatus) ||
     submission.agentId !== agentId ||
     (submission.issueId && submission.issueId !== issueId) ||
     (interruption && interruption.state !== "working" &&
       interruptionKey !== submission.interruptionKey &&
       (interruption.intentId !== null ||
-        (interruption.observedRunId !== null &&
-          linkedRuns.some(run => run.runId === interruption.observedRunId &&
-            new Date(run.createdAt).getTime() >= submission.submittedAt)))) ||
-    linkedRuns.some(run => run.agentId === submission.agentId &&
-      !submission.runIds.has(run.runId) &&
-      new Date(run.createdAt).getTime() >= submission.submittedAt &&
+        submissionRuns.some(run => run.runId === interruption.observedRunId))) ||
+    submissionRuns.some(run =>
       run.status !== "queued" && run.status !== "running")
   ));
   const pending = submission !== null && !settled;
@@ -69,15 +82,15 @@ export function useRunnerSubmission({
     return () => window.clearTimeout(timeout);
   }, [pending, submission]);
 
-  const begin = useCallback(() => {
-    const next: Submission | null = agentId ? {
-      issueId, agentId, interruptionKey, submittedAt: Date.now(),
+  const begin = useCallback((clientRequestId: string) => {
+    const next: Submission | null = agentId && !startupBlocked ? {
+      issueId, agentId, interruptionKey, clientRequestId,
       runIds: new Set(linkedRuns.map(run => run.runId)),
     } : null;
     setSubmission(next);
     setTakingLonger(false);
     return next;
-  }, [agentId, issueId, interruptionKey, linkedRuns]);
+  }, [agentId, issueId, interruptionKey, linkedRuns, startupBlocked]);
 
   const reject = useCallback((attempt: Submission | null, error: unknown) => {
     setSubmission(current => current === attempt &&
@@ -85,5 +98,5 @@ export function useRunnerSubmission({
     if (error instanceof CommentSubmissionUnknownError) setTakingLonger(true);
   }, []);
 
-  return { pending, takingLonger, begin, reject };
+  return { pending, takingLonger, begin, reject, blocked: startupBlocked };
 }
