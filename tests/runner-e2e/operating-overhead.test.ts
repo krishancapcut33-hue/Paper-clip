@@ -3,8 +3,10 @@ import { tmpdir } from "node:os";
 import path from "node:path";
 import { expect, it } from "vitest";
 import { EvalSpendState, openEvalCostLedger, readEvalCostLedger, type EvalSpendLimits } from "./cost-ledger.js";
-import { EVAL_OVERHEAD_COMPONENTS, scheduledOperatingOverhead, validateOperatingOverhead, type EvalOperatingOverhead } from "./operating-overhead.js";
+import { EVAL_OVERHEAD_COMPONENTS, operatingReservationBound, scheduledOperatingOverhead, validateOperatingOverhead, type EvalOperatingOverhead } from "./operating-overhead.js";
 import { evalAccountingStatus, evalReadinessStatus, readEvalOperationsReport, renderEvalOperationsReport } from "./operations-report.js";
+
+import { costBoundConfigurationSha256 } from "./cost-bound-evidence.js";
 
 const now = Date.parse("2026-10-21T00:00:00Z");
 const allowance = (): EvalOperatingOverhead => ({ version: 1, reference: "fixture-only", runner: "aws-fleet",
@@ -150,4 +152,18 @@ it("separates model readiness from unresolved overhead without releasing holds o
 it("rejects unknown readiness policies instead of silently loosening accounting", () => {
   expect(() => validateOperatingOverhead({ ...allowance(), accountingReadiness: "ignore_costs" } as never, "20"))
     .toThrow("Invalid accounting readiness policy");
+});
+
+it("binds optional readiness policy to reviewed operating evidence without changing legacy hash recipes", () => {
+  for (const accountingReadiness of [undefined, "model_requests"] as const) {
+    const value = { ...allowance(), ...(accountingReadiness ? { accountingReadiness } : {}) };
+    const component = value.components[0]!;
+    const calculation = { reference: value.reference, runner: value.runner, verifiedAt: value.verifiedAt,
+      expiresAt: value.expiresAt, component: { ...component }, ...(accountingReadiness ? { accountingReadiness } : {}) };
+    component.provisionalBound = { version: 1, scope: "full_lifecycle", evidenceSha256: "a".repeat(64),
+      configurationSha256: costBoundConfigurationSha256(calculation) };
+    expect(operatingReservationBound(value, component)?.calculationSha256).toBe(component.provisionalBound.configurationSha256);
+    const changed = { ...value, accountingReadiness: accountingReadiness ? undefined : "model_requests" as const };
+    expect(() => operatingReservationBound(changed, component)).toThrow("Reviewed cost bound configuration changed");
+  }
 });
