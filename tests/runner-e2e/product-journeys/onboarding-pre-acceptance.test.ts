@@ -61,6 +61,13 @@ describe("onboarding pre-acceptance retained evidence", () => {
     retained.productJourney!.onboardingPreAcceptance = preAcceptanceReceipt();
     expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.onboardingPreAcceptance");
   });
+  it.each(["onboarding_artifact_evidence_missing", undefined])("rejects a valid receipt for an unrelated or absent failure code (%s)", error => {
+    const retained = result();
+    retained.error = error;
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    retained.productJourney!.onboardingPreAcceptance = preAcceptanceReceipt();
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.onboardingPreAcceptance");
+  });
   it.each([
     ["raw bodies", (): unknown => ({ ...preAcceptanceReceipt(), body: "private-body-must-not-render" })],
     ["task identifiers", (): unknown => ({ ...preAcceptanceReceipt(), taskIds: ["private-task"] })],

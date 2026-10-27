@@ -18,6 +18,12 @@ export interface OnboardingPreAcceptanceEvidence {
   canonicalParentStatus: typeof statuses[number];
 }
 
+const receiptKeys = {
+  version: true, checkpoint: true, violations: true, taskCount: true, attachmentCount: true,
+  documentCount: true, nonPlanningDocumentCount: true, firstTaskMatchesCanonicalParent: true,
+  firstTaskStatus: true, canonicalParentStatus: true,
+} satisfies Record<keyof OnboardingPreAcceptanceEvidence, true>;
+
 export function preAcceptanceTaskStatus(task: { status?: unknown; [key: string]: unknown } | undefined): OnboardingPreAcceptanceEvidence["firstTaskStatus"] {
   if (!task) return "missing";
   return ISSUE_STATUSES.find(status => status === task.status) ?? "unknown";
@@ -36,7 +42,7 @@ export function preAcceptanceViolations(observed: Pick<OnboardingPreAcceptanceEv
 /** Closed validation is shared by normalized-result readers and explicit report rendering. */
 export function validateOnboardingPreAcceptanceEvidence(value: unknown): asserts value is OnboardingPreAcceptanceEvidence {
   const invalid = (): never => { throw new Error("invalid_onboarding_pre_acceptance_evidence"); };
-  const keys = ["version", "checkpoint", "violations", "taskCount", "attachmentCount", "documentCount", "nonPlanningDocumentCount", "firstTaskMatchesCanonicalParent", "firstTaskStatus", "canonicalParentStatus"];
+  const keys = Object.keys(receiptKeys);
   if (!value || typeof value !== "object" || Array.isArray(value) || Object.keys(value).length !== keys.length || keys.some(key => !Object.hasOwn(value, key))) invalid();
   const receipt = value as OnboardingPreAcceptanceEvidence;
   if (receipt.version !== 1 || !checkpoints.includes(receipt.checkpoint) ||

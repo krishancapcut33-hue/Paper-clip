@@ -407,7 +407,8 @@ export function validateRetainedRunnerResult(
   const checked = value as RunnerE2EResult;
   const artifact = checked.productJourney?.artifact;
   if (checked.productJourney?.onboardingPreAcceptance && (checked.suiteId !== "product-journeys" || checked.caseId !== "cloud-onboarding" ||
-    checked.status !== "failed" || checked.productJourney.outcome !== "failed")) invalid("result.productJourney.onboardingPreAcceptance");
+    checked.status !== "failed" || checked.productJourney.outcome !== "failed" ||
+    checked.error !== "onboarding_work_before_acceptance")) invalid("result.productJourney.onboardingPreAcceptance");
   if (artifact && (checked.suiteId !== "product-journeys" || checked.caseId !== "cloud-onboarding" ||
     checked.runIds && !checked.runIds.includes(artifact.originatingRunId))) invalid("result.productJourney.artifact");
   if (checked.workerTiming !== undefined) {
