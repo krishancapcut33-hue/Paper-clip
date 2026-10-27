@@ -5,11 +5,13 @@ import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
 import { isTerminalIssueStatus } from "@/lib/liveIssueIds";
 
 interface Submission {
+  attemptId: number;
   issueId: string | null;
   agentId: string;
   runIds: Set<string>;
   clientRequestId: string;
   interruptionKey: string;
+  takingLonger: boolean;
 }
 
 export function useRunnerSubmission({
@@ -36,7 +38,7 @@ export function useRunnerSubmission({
   onRefresh?: () => void | Promise<unknown>;
 }) {
   const [submission, setSubmission] = useState<Submission | null>(null);
-  const [takingLonger, setTakingLonger] = useState(false);
+  const nextAttemptId = useRef(0);
   const refreshRef = useRef(onRefresh);
   refreshRef.current = onRefresh;
   const interruptionKey = JSON.stringify([
@@ -65,37 +67,41 @@ export function useRunnerSubmission({
       run.status !== "queued" && run.status !== "running")
   ));
   const pending = submission !== null && !settled;
+  const takingLonger = submission?.takingLonger ?? false;
+  const attemptId = submission?.attemptId;
 
   useLayoutEffect(() => {
     if (settled) {
       setSubmission(null);
-      setTakingLonger(false);
     }
   }, [settled]);
 
   useEffect(() => {
     if (!pending) return;
     const timeout = window.setTimeout(() => {
-      setTakingLonger(true);
+      setSubmission(current => current && current.attemptId === attemptId
+        ? { ...current, takingLonger: true } : current);
       void refreshRef.current?.();
     }, 10_000);
     return () => window.clearTimeout(timeout);
-  }, [pending, submission]);
+  }, [pending, attemptId]);
 
   const begin = useCallback((clientRequestId: string) => {
     const next: Submission | null = agentId && !startupBlocked ? {
       issueId, agentId, interruptionKey, clientRequestId,
+      attemptId: ++nextAttemptId.current, takingLonger: false,
       runIds: new Set(linkedRuns.map(run => run.runId)),
     } : null;
     setSubmission(next);
-    setTakingLonger(false);
-    return next;
+    return next?.attemptId ?? null;
   }, [agentId, issueId, interruptionKey, linkedRuns, startupBlocked]);
 
-  const reject = useCallback((attempt: Submission | null, error: unknown) => {
-    setSubmission(current => current === attempt &&
-      !(error instanceof CommentSubmissionUnknownError) ? null : current);
-    if (error instanceof CommentSubmissionUnknownError) setTakingLonger(true);
+  const reject = useCallback((attempt: number | null, error: unknown) => {
+    setSubmission(current => {
+      if (!current || current.attemptId !== attempt) return current;
+      return error instanceof CommentSubmissionUnknownError
+        ? { ...current, takingLonger: true } : null;
+    });
   }, []);
 
   return { pending, takingLonger, begin, reject, blocked: startupBlocked };

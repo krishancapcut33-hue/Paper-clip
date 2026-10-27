@@ -6108,7 +6108,7 @@ export function IssueChatThread({
     issueId,
     agentId: issueAssigneeAgentId,
     agentStatus: agentMap?.get(issueAssigneeAgentId ?? "")?.status,
-    blocked: Boolean(composerPause || composerDisabledReason),
+    blocked: Boolean(composerPause),
     comments,
     issueStatus,
     runId: displayLiveRuns[0]?.id ?? null,

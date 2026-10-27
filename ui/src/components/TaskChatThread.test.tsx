@@ -484,6 +484,8 @@ it.each((["task", "legacy"] as const).flatMap(surface =>
     expect(onAdd).toHaveBeenCalledTimes(1);
     expect(container.textContent).toContain("Thinking");
     const identity = container.querySelector('[data-testid="task-chat-agent-identity"]');
+    render(<Component {...props} composerDisabledReason="Could not load task pause state." />);
+    expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
     await act(async () => { await vi.advanceTimersByTimeAsync(10_000); });
     expect(container.textContent).toContain("Taking longer than usual");
     expect(refresh).toHaveBeenCalledTimes(1);

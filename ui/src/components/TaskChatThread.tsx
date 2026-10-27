@@ -2657,7 +2657,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
     issueId: issueId ?? null,
     agentId: issueAssigneeAgentId,
     agentStatus: agentMap?.get(issueAssigneeAgentId ?? "")?.status,
-    blocked: Boolean(composerPause || composerDisabledReason),
+    blocked: Boolean(composerPause),
     comments,
     issueStatus,
     runId: liveRun?.id ?? null,
