@@ -390,7 +390,7 @@ API: `present` — `POST /api/chat-endpoints/{endpointId}/github/identity/start`
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
 Policy: `tools:manage_connections`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user.
 Evidence: `verified` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above. [Authenticated fixtures](../../server/src/__tests__/connection-management.integration.test.ts) passed with database persistence and actual bearer/session middleware.
-Verification: `passed` — deterministic provider fixtures / local assembled server; no live provider qualification.
+Verification: `passed` — actual run-JWT handoff and human-session OAuth/confirmation routes against deterministic providers. Healthy credentials and an OAuth callback alone leave the request pending with no continuation delivery. Missing, pending, revoked, expired, wrong-user and wrong-provider-account links do not satisfy it; the addressed user's current link for this endpoint does. Current membership and management authority still apply. No live provider qualification.
 Gaps: Provider fixtures do not qualify live provider setup or availability.
 
 ### `post-chat-endpoints-github-identity-confirm`
@@ -398,8 +398,8 @@ Gaps: Provider fixtures do not qualify live provider setup or availability.
 API: `present` — `POST /api/chat-endpoints/{endpointId}/github/identity/confirm`; JSON REST.
 Agent access: `restricted` — existing human setup or approval surface; agent can identify the saved setup and inspect the result.
 Policy: Human consent, identity confirmation, action approval, or trusted-host administration. This endpoint does not delegate human identity or self-approval to an agent.
-Evidence: `source-only` — [route](../../server/src/routes/chat-channels.ts); reviewed in the working tree based on the source commit above.
-Verification: `not-run` — individual operation not executed in this audit; shared authorization and representative family flows are exercised by the authenticated integration suite. Follow the route schema, inspect persistence/audit, and assert owner, scope and revoked-authority denial.
+Evidence: `verified` — [actual human-session OAuth/confirmation fixture](../../server/src/__tests__/connection-management.integration.test.ts) with production session middleware and database identity persistence.
+Verification: `passed` — the addressed human completes OAuth and explicitly confirms the observed GitHub identity; only then can the saved identity handoff satisfy its identity requirement. Provider responses are fixtures and do not prove live consent.
 Gaps: Agent invocation is denied by the stated policy. The authorized human or operator must perform this step; this entry does not claim delegated execution.
 
 ### `get-chat-endpoints-principals`
@@ -809,9 +809,9 @@ Review: `operation-reviewed`.
 
 API: `present` — `POST /api/chat-endpoints/{endpointId}/slack/test-message`; JSON REST.
 Agent access: `available` — agent REST and default native `search_api` / `call_api`.
-Policy: `tools:use`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Test messages and identity-link invitations consume normal action-policy rate limits once before dispatch; saved request receipts prevent duplicate sends.
+Policy: `tools:use`; [shared management policy](../../doc/plans/2026-10-13-connection-api-parity.md#authorization-contract). Resolved resources and every affected target are checked; personal ownership remains the responsible user. Test messages and identity-link invitations intersect caller and endpoint-agent Block/Ask first/rate policies before dispatch. Independent rate buckets apply separately, identical shared buckets consume once, and saved request receipts prevent duplicate sends.
 Evidence: `verified` — [production-authenticated integration fixture](../../server/src/__tests__/connection-management.integration.test.ts) with real database persistence and deterministic provider responses where required.
-Verification: `passed` — Actual agent-key requests honor Off/Allowed policy, consume the configured one-message quota, replay a saved request without another send, and deny distinct test/invitation requests after the quota. Provider responses are fixtures.
+Verification: `passed` — actual agent-key/run-JWT requests cover caller Block/Ask first/rate rules, target Block/rate rules and one shared quota for both linked-account test messages and identity invitations. Denied requests make no additional provider send, caller audit retains the actual acting agent, and saved requests replay without another send. Provider responses are fixtures.
 Gaps: Fixture evidence does not qualify live provider behavior or an empirical model success rate.
 
 ### `post-chat-endpoints-slack-resume`

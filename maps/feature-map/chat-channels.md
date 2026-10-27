@@ -33,6 +33,8 @@ Delegated setup can save ordinary bot tokens and API keys. Provider verification
 
 Open `/apps/chat/:endpointId/settings` and the endpoint’s other available tabs; identity confirmation uses `/chat-identity/confirm`.
 
+For delegated Slack test messages and identity invitations, apply a Block or Ask first rule to the calling agent while allowing the endpoint's assigned agent. Verify no message is sent. Exercise caller, target and shared rate limits: one shared quota admits one send and the next distinct request is denied. For a saved GitHub identity handoff on an otherwise healthy endpoint, verify the card stays pending before identity confirmation and after an OAuth callback alone. Confirm the addressed user's identity through their human session, then verify continuation becomes available. Revoked, expired, wrong-user and wrong-installation links must keep the handoff blocked. These cases pass through the assembled API with real key/JWT/session middleware and deterministic providers; live Slack/GitHub consent remains separate evidence.
+
 ### `outbound-agentmail`
 
 Use `paperclipai email inboxes --company-id <company-id>`, then `email send --company-id <company-id> --file <new-email.json>` or `email reply --company-id <company-id> --file <reply.json>`. Inspect `email thread <email-task-id> --company-id <company-id>` and `email delivery <publication-id> --company-id <company-id>`. Agent mutations must provide --run-id or the active PAPERCLIP_RUN_ID.
