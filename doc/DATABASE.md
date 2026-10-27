@@ -57,7 +57,7 @@ profiles. Wrong runtime, nonterminal status, process identity, provider events,
 invalid but non-null checkpoints, and future checkpoint barriers retain their
 existing selection rules. Stored run payloads and history reads stay complete.
 Run the synthetic PostgreSQL comparison with a pinned pre-change revision:
-`pnpm --filter @paperclipai/server exec tsx scripts/benchmark-native-session-resume-reads.ts --baseline-ref=<commit>`.
+`pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-native-session-resume-reads.ts --baseline-ref=<commit>`.
 An optional `PAPERCLIP_SESSION_RESUME_BENCHMARK_DATABASE_URL` must name a dedicated
 test database ending in `_test`; otherwise the harness starts disposable PostgreSQL.
 

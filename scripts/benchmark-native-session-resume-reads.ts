@@ -4,13 +4,12 @@ import { randomBytes, randomUUID } from "node:crypto";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
-import { eq } from "drizzle-orm";
-import { agents, applyPendingMigrations, companies, createDb, heartbeatRuns, issues, startEmbeddedPostgresTestDatabase, type Db } from "../../packages/db/src/index.js";
-import { findNativeSessionResumeRun } from "../src/services/native-runtime/native-session-resume.js";
-import { resolveExternalTestDatabaseUrl } from "../src/__tests__/helpers/external-test-database.js";
+import { agents, applyPendingMigrations, companies, createDb, heartbeatRuns, issues, startEmbeddedPostgresTestDatabase, type Db } from "../packages/db/src/index.js";
+import { findNativeSessionResumeRun } from "../server/src/services/native-runtime/native-session-resume.js";
+import { resolveExternalTestDatabaseUrl } from "../server/src/__tests__/helpers/external-test-database.js";
 
 type Query = { sql: string; params: unknown[] };
-const root = fileURLToPath(new URL("../../", import.meta.url));
+const root = fileURLToPath(new URL("../", import.meta.url));
 const baselineRef = process.argv.find(arg => arg.startsWith("--baseline-ref="))?.slice(15);
 assert.ok(baselineRef, "Pass a pinned pre-fix --baseline-ref");
 const baselineRevision = execFileSync("git", ["rev-parse", "--verify", `${baselineRef}^{commit}`], { cwd: root, encoding: "utf8" }).trim();
@@ -24,7 +23,7 @@ const baselineDir = await fs.mkdtemp(path.join(root, "server/scripts/.session-re
 const companyIds: string[] = [];
 try {
   if (externalUrl) await applyPendingMigrations(externalUrl);
-  const moduleUrl = new URL(`../../${sourcePath}`, import.meta.url);
+  const moduleUrl = new URL(`../${sourcePath}`, import.meta.url);
   const source = execFileSync("git", ["show", `${baselineRevision}:${sourcePath}`], { cwd: root, encoding: "utf8" });
   await fs.writeFile(path.join(baselineDir, "resume.ts"), source.replace(/from "(\.{1,2}\/[^\"]+)"/g,
     (_match, specifier: string) => `from ${JSON.stringify(fileURLToPath(new URL(specifier, moduleUrl)))}`));
@@ -113,10 +112,10 @@ try {
 } finally {
   try {
     for (const companyId of companyIds) {
-      await db.delete(heartbeatRuns).where(eq(heartbeatRuns.companyId, companyId));
-      await db.delete(issues).where(eq(issues.companyId, companyId));
-      await db.delete(agents).where(eq(agents.companyId, companyId));
-      await db.delete(companies).where(eq(companies.id, companyId));
+      await db.$client.unsafe("DELETE FROM heartbeat_runs WHERE company_id = $1::uuid", [companyId]);
+      await db.$client.unsafe("DELETE FROM issues WHERE company_id = $1::uuid", [companyId]);
+      await db.$client.unsafe("DELETE FROM agents WHERE company_id = $1::uuid", [companyId]);
+      await db.$client.unsafe("DELETE FROM companies WHERE id = $1::uuid", [companyId]);
     }
   } finally {
     try { await db.$client.end({ timeout: 0 }); }
