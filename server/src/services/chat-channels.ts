@@ -3350,7 +3350,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function processPublicationMaintenance(limit = 25) {
     scheduleGitHubMaintenance();
-    await reconcileTerminalConfirmationActions(limit);
     await processPendingInteractionWakeups(limit);
   }
 
@@ -3479,7 +3478,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { processPendingInteractionWakeups } = createChatInteractionContinuations(db, {
     redactError, CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS, get heartbeat() { return options.heartbeat; },
   });
-  const { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions } = createChatInteractionCallbacks(db, {
+  const { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions, registerTerminalConfirmationWork } = createChatInteractionCallbacks(db, {
     heartbeat: options.heartbeat,
     CAPABILITIES, MAX_ERROR_TEXT, actionThreadMatchesConversation, nonDirectDestinationAllowed, sameTeamsThreadIdentity,
     ensurePrincipal, endpointRecord, runtimeCallbackRecord, runtimeCallbackEndpoint,
@@ -3503,6 +3502,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { prepareTeamsBoardSend } = createTeamsBoardSendPreparation(db, { endpointRecord, runtimeFor });
   const { getPublicationBatchStatus, publishComment, publishBoardMessage } = createChatPublicationRequests(db, { endpointRecord, stageTeamsBoardFileIntent, processPendingSlackBoardMessages, processPendingPublications, prepareTeamsBoardSend });
 return {
+    registerTerminalConfirmationWork,
     loadFailedRetryNoticeScopes,
     reconcileFailedRetryNotices,
     registerTeamsAttemptRecoveryWork,

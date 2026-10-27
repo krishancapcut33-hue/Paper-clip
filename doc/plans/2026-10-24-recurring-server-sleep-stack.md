@@ -1831,3 +1831,49 @@ filesystem execution proof, and retains the fake-clock connection failure and
 Runner CI receipt timeout. Existing lease acceptance, updated full acceptance,
 remote gates, older parent findings, and every remaining original duty are still
 required. No stack PR has been merged.
+
+
+## Slice 31 accepted checkpoint and slice 32 owner audit
+
+[#17649](https://github.com/paperclipai/paperclip/pull/17649) at
+`2384384eeec4f32d073242ebf597b81df2df1ccb` has all 53 checks passing,
+fresh Greptile 5/5, and no inline review findings. Full chat/startup acceptance
+passes all 1,505 cases on fresh `paperclip_sleep31_native_full_20261025_test`
+(`/tmp/sleep31-native-full-chat.log`, 446.10 seconds, exit 0). The lease service
+passes 51 tests; focused native/notice acceptance passes 36; final server
+typecheck and build pass. This supersedes the earlier slice-31 pending statuses.
+The initial Runner receipt timeout did not reproduce after building debug Rust
+binaries (10 local tests pass), nor in a controlled 500ms event-loop-delay
+experiment. The updated-head remote Runner gate passes without an unchanged-job
+retry. Its exact initial cause remains unproven.
+
+The next branch is `codex/sleep-32-terminal-confirmations`, based on the accepted
+slice-31 commit. See the terminal confirmation owner audit. There is no slice-32
+implementation or PR yet. Older #17490/#17572 CI failures, #17576 inventory
+amplification findings, #17580 offboarding/cleanup ownership findings, the entire
+remaining original list, final master reconciliation and all final-head checks
+remain required. All stack PRs remain unmerged.
+
+
+## Slice 32 implementation checkpoint
+
+`codex/sleep-32-terminal-confirmations` implements terminal-confirmation recovery
+on committed signals and the shared scoped coordinator. Its Telegram owner keeps
+payload validation, settlement, continuation staging and activity attribution.
+The audit is `2026-10-25-terminal-confirmation-sleep-audit.md`. Nine distinct focused
+cases pass across the recorded commands, including real callback failure, outer
+commit/rollback, historical waiting/invalid prefixes, and a write during an active
+settlement. The new source guard excludes this duty from periodic maintenance.
+Full local acceptance, remote review/checks and publication are pending here.
+This supersedes the audit-only slice-32 status above. All older stack gates and
+every remaining original obligation remain required; no PR is merged.
+
+Slice 32 is now draft [#17651](https://github.com/paperclipai/paperclip/pull/17651).
+Initial workspace types/build pass; full chat/startup acceptance passes 1,511 of
+1,512, with a prior retry-notice test fake-clock CONNECT_TIMEOUT retained and
+corrected. Initial CI passes 51 gates but fails a plugin test at a cron boundary
+and its aggregate. A controlled timestamp diagnostic establishes an additional
+owed cron occurrence; fixing that fixture clock passes all 28 plugin tests.
+Thirteen selected chat lifecycle cases pass after the retry-notice wait fix.
+Initial Greptile is 5/5 without findings. Fresh full acceptance and corrected-head
+remote gates remain required; see the slice-32 audit for all retained failures.
