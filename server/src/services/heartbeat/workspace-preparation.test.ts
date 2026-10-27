@@ -328,7 +328,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(prepared.persistedExecutionWorkspace!.id);
   });
 
-  it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
+  it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement", "canonical_repaired_git"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
     const { input, issue } = await fixture();
     const userId = `directory-owner-${randomUUID()}`;
     await db.insert(authUsers).values({ id: userId, name: "Directory owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -369,9 +369,13 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
         return { exitCode: 0, signal: null, timedOut: false, summary: "Fresh workspace required" };
       }
-      expect(lease.executionWorkspaceId).toBe(workspace.id);
+      if (scenario !== "canonical_repaired_git") expect(lease.executionWorkspaceId).toBe(workspace.id);
       const activeWorkspace = await input.services.executionWorkspacesSvc.getStoredById(input.agent.companyId, lease.executionWorkspaceId!);
-      expect(activeWorkspace?.cwd).toBe(workspace.cwd);
+      if (scenario === "canonical_repaired_git") {
+        expect(execution.config.workspaceStrategy).toMatchObject({ type: "git_worktree" });
+        expect((await execFile("git", ["-C", activeWorkspace!.cwd!, "rev-parse", "--is-inside-work-tree"])).stdout.trim()).toBe("true");
+      }
+      else expect(activeWorkspace?.cwd).toBe(workspace.cwd);
       expect(await readFile(join(activeWorkspace!.cwd!, "saved-review.txt"), "utf8")).toBe("completed snapshot review\n");
       await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
       return { exitCode: 0, signal: null, timedOut: false, summary: "Retained review confirmed" };
@@ -402,7 +406,13 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
         if (scenario === "canonical_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, next!.id));
         if (scenario === "canonical_output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, next!.id));
         if (scenario === "canonical_measurement") { const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, next!.id)); const measured = events.find(event => event.eventType === "lifecycle")!; await db.update(heartbeatRunEvents).set({ payload: { ...measured.payload, durationMs: -1 } }).where(eq(heartbeatRunEvents.id, measured.id)); }
-        await db.update(issues).set({ executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
+        if (scenario === "canonical_repaired_git") {
+          await execFile("git", ["init", "--initial-branch=main", workspace.cwd!]);
+          await execFile("git", ["-C", workspace.cwd!, "config", "user.email", "test@example.com"]);
+          await execFile("git", ["-C", workspace.cwd!, "config", "user.name", "Directory repair"]);
+          await execFile("git", ["-C", workspace.cwd!, "add", "."]);
+          await execFile("git", ["-C", workspace.cwd!, "commit", "-m", "Retain saved review"]);
+        } else await db.update(issues).set({ executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
         const intent = await requestTaskRetry({ db, companyId: input.agent.companyId, issueId: issue.id,
           actorId: userId, actorSource: "local_implicit", observedRunId: next!.id, idempotencyKey: randomUUID() });
         expect(intent.requestId).toBeTruthy();
@@ -425,7 +435,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       }
       expect(executed).toHaveBeenCalledTimes(continued ? 1 : 0);
       if (freshExpected) expect((await readIssue(issue.id)).executionWorkspaceId).not.toBe(workspace.id);
-      else expect((await readIssue(issue.id)).executionWorkspaceId).toBe(scenario === "binding_changed" ? null : workspace.id);
+      else if (scenario !== "canonical_repaired_git") expect((await readIssue(issue.id)).executionWorkspaceId).toBe(scenario === "binding_changed" ? null : workspace.id);
       expect(await readFile(join(preservedCwd, "saved-review.txt"), "utf8")).toBe("completed snapshot review\n");
       if (scenario === "missing_path") await expect(access(workspace.cwd!)).rejects.toThrow();
     } finally { await heartbeat.drainActiveRunExecutions(); registerServerAdapter(originalAdapter); }

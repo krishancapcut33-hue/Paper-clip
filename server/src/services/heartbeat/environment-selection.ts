@@ -480,17 +480,18 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
   const explicitTaskDirectory = !isDotRun && taskWorkspaceIntent?.selection.kind === "task_directory";
   const explicitDirectoryStrategies = [issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
     projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy];
-  const reuseTaskDirectory = !isDotRun && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
+  const boundTaskDirectory = !isDotRun && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
     requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
     !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId &&
     taskWorkspaceIntent?.selection.kind !== "configured_source" &&
     (taskWorkspaceIntent?.selection.kind !== "existing" || taskWorkspaceIntent.selection.workspaceId === issueRef.executionWorkspaceId) &&
-    explicitDirectoryStrategies.every(value => {
-      const strategy = parseObject(value);
-      return Object.keys(strategy).length === 0 || (Object.keys(strategy).length === 1 && strategy.type === "project_primary");
-    }) && await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
+    await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
       workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace });
-  if (retainedDirectory && !reuseTaskDirectory) throw new WorkspaceValidationFailure("The saved Retry task directory is unavailable.", {
+  const reuseTaskDirectory = boundTaskDirectory && explicitDirectoryStrategies.every(value => {
+    const strategy = parseObject(value);
+    return Object.keys(strategy).length === 0 || (Object.keys(strategy).length === 1 && strategy.type === "project_primary");
+  });
+  if (retainedDirectory && !boundTaskDirectory) throw new WorkspaceValidationFailure("The saved Retry task directory is unavailable.", {
     workspaceValidation: { reason: "isolated_task_directory_binding_mismatch", issueId },
   });
   const useIsolatedTaskDirectory = !isDotRun && issueRef !== null && (reuseTaskDirectory || (fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
