@@ -440,7 +440,8 @@ attempt. Installing the ACP package alone does not satisfy this setup path.
 
 Bounded cases keep the gateway in the setup phase until the created agent's
 asynchronous lifecycle verification reaches ready. This wait uses the remaining
-attempt deadline, allows at most 45 seconds, and stops on an observed setup error
+attempt deadline, allows at most 45 seconds locally and the bounded attempt window
+for Daytona provisioning, and stops on an observed setup error
 or hold. The private `budgeted-setup.json` snapshot retains state transitions.
 Only then does the case begin agent-phase accounting and create its task.
 Older evidence that advanced after fixture creation may label hello probes as

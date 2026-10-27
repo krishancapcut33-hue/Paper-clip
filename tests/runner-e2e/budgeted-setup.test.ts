@@ -73,3 +73,25 @@ it("does not advance when saving readiness crosses the deadline", async () => {
     expect((await readEvalAttemptPhase(f.file, identity)).phase).toBe("setup");
   } finally { now.mockRestore(); await rm(f.directory, { recursive: true, force: true }); }
 });
+
+it.each(["local", "daytona"] as const)("uses the bounded attempt window for remote setup while keeping the local limit: %s", async environmentId => {
+  const f = await fixture();
+  let time = Date.now();
+  const now = vi.spyOn(Date, "now").mockImplementation(() => time);
+  const get = vi.fn().mockResolvedValueOnce({ ...ready, status: "paused", lifecycleState: "verifying" }).mockResolvedValue(ready);
+  let observations = 0;
+  try {
+    const result = finishBudgetedEvalSetup({ executionId: identity.executionId, environmentId, agentId: "agent", companyId: "company",
+      deadlineAt: time + 15 * 60_000, api: { get } as unknown as RunnerApi,
+      observe: async () => { if (++observations === 1) time += 46_000; } }, f.env);
+    if (environmentId === "daytona") {
+      await result;
+      expect(get).toHaveBeenCalledTimes(2);
+      expect((await readEvalAttemptPhase(f.file, identity)).phase).toBe("agent");
+    } else {
+      await expect(result).rejects.toThrow("Timed out");
+      expect(get).toHaveBeenCalledOnce();
+      expect((await readEvalAttemptPhase(f.file, identity)).phase).toBe("setup");
+    }
+  } finally { now.mockRestore(); await rm(f.directory, { recursive: true, force: true }); }
+});

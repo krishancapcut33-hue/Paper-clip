@@ -7,6 +7,7 @@ export type EvalSetupObservation = SetupState & { observedAt: string };
 
 export async function finishBudgetedEvalSetup(input: {
   executionId: string;
+  environmentId?: "local" | "daytona";
   agentId: string;
   companyId: string;
   deadlineAt: number;
@@ -14,7 +15,7 @@ export async function finishBudgetedEvalSetup(input: {
   observe: (observations: EvalSetupObservation[]) => Promise<void>;
 }, env: NodeJS.ProcessEnv = process.env) {
   if (env.PAPERCLIP_E2E_GATEWAY_BASE_URL) {
-    const deadlineAt = Math.min(input.deadlineAt, Date.now() + 45_000);
+    const deadlineAt = input.environmentId === "daytona" ? input.deadlineAt : Math.min(input.deadlineAt, Date.now() + 45_000);
     const observations: EvalSetupObservation[] = [];
     let previous: string | undefined;
     const scoped = (agent: SetupState) => agent.id === input.agentId && agent.companyId === input.companyId;
