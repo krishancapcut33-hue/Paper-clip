@@ -1807,6 +1807,9 @@ async function startServerWithDatabaseTeardown(
     if (config.heartbeatSchedulerEnabled) await heartbeat.registerScheduledRetryCancellationWork(deliveryWork,
       () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
 
+    if (config.heartbeatSchedulerEnabled) await heartbeat.registerCapturedInstructionCommitWork(deliveryWork,
+      () => !isIdleTaskDrainActive() && !heartbeatSchedulerStopped && !isWarmStandby()).ready;
+
     const runRetentionSweep = async () => {
       const activeCompanies = await db.select({ id: companies.id }).from(companies).where(eq(companies.status, "active"));
       let archived = 0;
@@ -1934,7 +1937,7 @@ async function startServerWithDatabaseTeardown(
           // Periodically reap orphaned runs (5-min staleness threshold) and make sure
           // persisted queued work is still being driven forward.
           runPeriodicRecovery(() => heartbeat
-            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true })
+            .reapOrphanedRuns({ staleThresholdMs: 5 * 60 * 1000, skipScheduledRetryCancellation: true, skipCapturedInstructionCommit: true })
             .then(() => heartbeat.promoteDueScheduledRetries())
             .then(async (promotion) => {
               await heartbeat.resumeQueuedRuns();
