@@ -1,7 +1,7 @@
 import { agentAppearanceSchema, randomAgentAppearance } from "@paperclipai/shared";
 import { normalizePaperclipRunnerAdapterConfig } from "@paperclipai/adapter-utils/server-utils";
 import { agents, toolConnectionInstalls, principalPermissionGrants, type Db } from "@paperclipai/db";
-import { eq } from "drizzle-orm";
+import { and, eq, inArray } from "drizzle-orm";
 import { unprocessable } from "../errors.js";
 import { agentRecordQueries, isPlainRecord, configPatchFromApprovalPayload, normalizeRuntimeConfigForNewAgent,
   deduplicateAgentName, type CreateAgentData, type CreateAgentOptions, type AgentConfigurationPatch, type AgentHireRecord } from "../lib/agent-records.js";
@@ -13,6 +13,8 @@ import { agentCredentialService } from "./agent-credentials.js";
 import { agentIdentityService } from "./agent-identity.js";
 import { initializePrimaryAgent } from "./primary-agent.js";
 import { resolveNewAgentRunnerForCompany } from "./agent-runner-selection.js";
+import { agentInstructionsService } from "./agent-instructions.js";
+import { agentInstructionRevisionService } from "./agent-instruction-revisions.js";
 
 export async function prepareAgentHire(db: Db, companyId: string, input: CreateAgentData, options?: CreateAgentOptions): Promise<CreateAgentData> {
   const { runner, ...data } = input;
@@ -87,9 +89,50 @@ export async function initializeAgentHire(txDb: Db, created: AgentHireRecord, op
   }
 }
 
-export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null): Promise<AgentConfigurationPatch> {
-  const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload) : {};
+export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireRecord, approvedPayload?: Record<string, unknown> | null, approvedByUserId?: string, approvalId?: string): Promise<AgentConfigurationPatch> {
+  const hasExplicitApprovedAdapterConfig = Boolean(
+    approvedPayload && Object.prototype.hasOwnProperty.call(approvedPayload, "adapterConfig"),
+  );
+  const approvedPatch = approvedPayload ? configPatchFromApprovalPayload(approvedPayload, isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {}) : {};
   const patch = { ...approvedPatch } as AgentConfigurationPatch;
+  if (hasExplicitApprovedAdapterConfig && !isPlainRecord(patch.adapterConfig)) {
+    patch.adapterConfig = {};
+  }
+  if (approvedPayload && isPlainRecord(approvedPayload.instructionsBundle)) {
+    const bundle = approvedPayload.instructionsBundle;
+    if (isPlainRecord(bundle.files)) {
+      const files = Object.fromEntries(
+        Object.entries(bundle.files).filter(([, content]) => typeof content === "string"),
+      ) as Record<string, string>;
+      if (Object.keys(files).length > 0) {
+        const entryFile = typeof bundle.entryFile === "string" ? bundle.entryFile : "AGENTS.md";
+        if (!approvedByUserId || !approvalId) throw unprocessable("Approved hire instructions require authenticated approval authority");
+        const configured = await agentInstructionsService(txDb).updateBundle({
+          ...existing,
+          adapterConfig: isPlainRecord(patch.adapterConfig) ? patch.adapterConfig : existing.adapterConfig,
+        }, { mode: "managed", entryFile });
+        const revisionService = agentInstructionRevisionService(txDb);
+        const persistedAdapterConfig = await revisionService.persistHireApprovalBundleConfiguration(
+          existing.id,
+          configured.adapterConfig,
+        );
+        patch.adapterConfig = hasExplicitApprovedAdapterConfig
+          ? persistedAdapterConfig
+          : {
+              ...(isPlainRecord(existing.adapterConfig) ? existing.adapterConfig : {}),
+              ...persistedAdapterConfig,
+            };
+        const current = await revisionService.readCommittedForRuntime({ companyId: existing.companyId, agentId: existing.id });
+        await revisionService.commit({ companyId: existing.companyId, agentId: existing.id, entryFile,
+          content: files[entryFile] ?? current?.content ?? "", baseRevisionId: current?.revision.id ?? null, source: "board" },
+          { type: "hire_approval", approvalId, userId: approvedByUserId });
+        for (const [relativePath, content] of Object.entries(files)) {
+          if (relativePath === entryFile) continue;
+          await agentInstructionsService(txDb).writeFile({ ...existing, adapterConfig: patch.adapterConfig }, relativePath, content);
+        }
+      }
+    }
+  }
   const hasApprovedAdapterConfig = Object.prototype.hasOwnProperty.call(patch, "adapterConfig") && isPlainRecord(patch.adapterConfig);
   if (
     Object.prototype.hasOwnProperty.call(patch, "adapterConfig") &&
@@ -111,6 +154,9 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
       existing.adapterConfig,
     );
   }
+  if (!hasExplicitApprovedAdapterConfig && isPlainRecord(patch.adapterConfig) && isPlainRecord(existing.adapterConfig)) {
+    patch.adapterConfig = { ...existing.adapterConfig, ...patch.adapterConfig };
+  }
   if (patch.permissions !== undefined) {
     // The pending-approval activation replays the original hire
     // request, so the new-agent creation default applies.
@@ -129,8 +175,22 @@ export async function prepareAgentHireApproval(txDb: Db, existing: AgentHireReco
 
 export async function completeAgentHireApproval(txDb: Db, updated: AgentHireRecord, existing: AgentHireRecord) {
   const tx = txDb;
+  const permissions = isPlainRecord(updated.permissions) ? updated.permissions : {};
+  const explicitlyRestricted = permissions.canCreateAgents === false
+    || permissions.canCreateSkills === false
+    || permissions.canAssignTasks === false;
+  if (explicitlyRestricted) {
+    await tx.delete(principalPermissionGrants).where(
+      and(
+        eq(principalPermissionGrants.companyId, updated.companyId),
+        eq(principalPermissionGrants.principalType, "agent"),
+        eq(principalPermissionGrants.principalId, updated.id),
+        inArray(principalPermissionGrants.permissionKey, NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS),
+      ),
+    );
+  }
   await agentCredentialService(txDb).syncAgentSecretBindings(updated, txDb, existing.adapterConfig);
-  if (!permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
+  if (!explicitlyRestricted && !permissionsImplyLowTrust(updated.permissions) && !readBuiltInAgentMarker(updated.metadata)) {
     await tx.insert(principalPermissionGrants).values(
       NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
         companyId: updated.companyId,

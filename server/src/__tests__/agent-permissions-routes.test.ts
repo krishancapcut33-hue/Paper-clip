@@ -2048,6 +2048,30 @@ describe("agent permission routes", () => {
     expect(res.body.access.taskAssignSource).toBe("simple_default");
   }, 15_000);
 
+  it("reports an explicit canAssignTasks=false deny instead of simple_default", async () => {
+    mockAgentService.getById.mockResolvedValue({
+      ...baseAgent,
+      permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+    });
+    mockAccessService.listPrincipalGrants.mockResolvedValue([]);
+
+    const app = await createApp({
+      type: "board",
+      userId: "board-user",
+      source: "local_implicit",
+      isInstanceAdmin: true,
+      companyIds: [companyId],
+    });
+
+    const res = await requestApp(app, (baseUrl) => request(baseUrl).get(`/api/agents/${agentId}`));
+
+    expect(res.status).toBe(200);
+    expect(res.body.access).toMatchObject({
+      canAssignTasks: false,
+      taskAssignSource: "explicit_permission_denied",
+    });
+  }, 15_000);
+
   it("keeps task assignment enabled when agent creation privilege is enabled", async () => {
     mockAgentService.updatePermissions.mockResolvedValue({
       ...baseAgent,

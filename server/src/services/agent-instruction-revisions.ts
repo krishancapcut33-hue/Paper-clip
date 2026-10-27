@@ -5,6 +5,9 @@ import { and, desc, eq, getTableColumns, lt, or, sql } from "drizzle-orm";
 import {
   activityLog,
   agents,
+  approvals,
+  authUsers,
+  companyMemberships,
   plugins,
   pluginManagedResources,
   agentInstructionHeads as heads,
@@ -40,7 +43,8 @@ import type { AuthorizationActor } from "./authorization.js";
 type Tx = Parameters<Parameters<Db["transaction"]>[0]>[0];
 type Revision = typeof revisions.$inferSelect;
 type PluginResetActor = { type: "plugin"; pluginId: string; pluginKey: string; agentKey: string };
-type RevisionActor = AuthorizationActor | PluginResetActor;
+type HireApprovalActor = { type: "hire_approval"; approvalId: string; userId: string };
+type RevisionActor = AuthorizationActor | PluginResetActor | HireApprovalActor;
 const { contentBase64: _contentColumn, ...revisionMetadataColumns } =
   getTableColumns(revisions);
 export type InstructionTarget = { companyId: string; agentId: string };
@@ -84,7 +88,7 @@ export function agentInstructionRevisionService(db: Db) {
   async function lockTarget(
     tx: Tx,
     target: InstructionTarget,
-    actor?: AuthorizationActor,
+    actor?: AuthorizationActor | HireApprovalActor,
   ) {
     if (actor?.type === "agent" && actor.companyId !== target.companyId)
       throw notFound("Agent not found");
@@ -134,6 +138,30 @@ export function agentInstructionRevisionService(db: Db) {
     const declared = plugin.manifestJson.agents!.find((declaration) => declaration.agentKey === actor.agentKey)!;
     return { ...actor, declaredEntryFile: instructionPath(declared.instructions?.entryFile ?? "AGENTS.md") };
   }
+  async function authorizeHireApprovalCommit(tx: Tx, actor: HireApprovalActor, target: InstructionTarget) {
+    const [approval] = await tx.select({
+      id: approvals.id,
+      companyId: approvals.companyId,
+      type: approvals.type,
+      status: approvals.status,
+      decidedByUserId: approvals.decidedByUserId,
+      payload: approvals.payload,
+    }).from(approvals).where(and(eq(approvals.id, actor.approvalId), eq(approvals.companyId, target.companyId)));
+    const [membership] = await tx.select({ userId: authUsers.id })
+      .from(companyMemberships)
+      .innerJoin(authUsers, eq(authUsers.id, companyMemberships.principalId))
+      .where(and(
+        eq(companyMemberships.companyId, target.companyId),
+        eq(companyMemberships.principalType, "user"),
+        eq(companyMemberships.principalId, actor.userId),
+        eq(companyMemberships.status, "active"),
+      ));
+    if (!approval || approval.type !== "hire_agent" || approval.status !== "approved"
+      || approval.decidedByUserId !== actor.userId || approval.payload?.agentId !== target.agentId || !membership) {
+      throw forbidden("Hire approval authority is invalid for this instruction commit");
+    }
+    return { type: "board" as const, userId: actor.userId } satisfies AuthorizationActor;
+  }
   async function readForPluginReset(target: InstructionTarget, actor: PluginResetActor) {
     return db.transaction(async (tx) => {
       const state = await lockTarget(tx, target);
@@ -167,7 +195,7 @@ export function agentInstructionRevisionService(db: Db) {
       actorAgentId: actor?.type === "agent" ? actor.agentId ?? null : null,
       actorUserId: actor?.type === "board" ? actor.userId ?? null : null,
       responsibleUserId: actor?.type === "board" ? actor.userId ?? null : actor?.type === "agent" ? actor.onBehalfOfUserId ?? null : null,
-      sourceRunId: actor && actor.type !== "plugin" ? actor.runId ?? null : null, createdAt: new Date(0) };
+      sourceRunId: actor?.type === "agent" ? actor.runId ?? null : null, createdAt: new Date(0) };
   }
   async function getRevision(
     tx: Tx,
@@ -209,6 +237,18 @@ export function agentInstructionRevisionService(db: Db) {
       await adoptAgentFiles(tx, state.agent);
     });
   }
+  async function persistHireApprovalBundleConfiguration(
+    agentId: string,
+    adapterConfig: Record<string, unknown>,
+  ): Promise<Record<string, unknown>> {
+    const persisted = await updateAgentConfigurationInTransaction(
+      db,
+      agentId,
+      { adapterConfig },
+      { allowPendingApprovalConfigUpdate: true },
+    );
+    return persisted?.adapterConfig ?? adapterConfig;
+  }
   async function commitInternal(
     input:
       | InstructionCommitInput
@@ -224,7 +264,9 @@ export function agentInstructionRevisionService(db: Db) {
       const state = await lockTarget(tx, input, actor.type === "plugin" ? undefined : actor);
       const bound = actor.type === "plugin"
         ? await authorizePluginReset(tx, actor, input, state.agent)
-        : await authorizeInstructionCommit(tx, actor, state.agent);
+        : actor.type === "hire_approval"
+          ? await authorizeHireApprovalCommit(tx, actor, input)
+          : await authorizeInstructionCommit(tx, actor, state.agent);
       if (bound.type === "plugin") {
         if (input.entryFile !== bound.declaredEntryFile) throw forbidden("Plugin reset must restore its declared entry file");
         if (configuredEntryFile !== state.entryFile) throw conflict("Configured instruction entry changed; read the current entry and retry", { code: "INSTRUCTION_ENTRY_CHANGED", entryFile: state.entryFile });
@@ -413,7 +455,8 @@ export function agentInstructionRevisionService(db: Db) {
     history,
     diff,
     materializeCurrent,
-    commit: (input: InstructionCommitInput, actor: AuthorizationActor) =>
+    persistHireApprovalBundleConfiguration,
+    commit: (input: InstructionCommitInput, actor: RevisionActor) =>
       commitInternal(input, actor),
     restore: (
       input: InstructionTarget & {

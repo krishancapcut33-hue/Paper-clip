@@ -1260,6 +1260,15 @@ export function agentRoutes(
       ? await access.listPrincipalGrants(agent.companyId, "agent", agent.id)
       : [];
     const hasExplicitTaskAssignGrant = grants.some((grant) => grant.permissionKey === "tasks:assign");
+    if (agent.permissions && typeof agent.permissions === "object" &&
+        (agent.permissions as Record<string, unknown>).canAssignTasks === false) {
+      return {
+        canAssignTasks: false,
+        taskAssignSource: "explicit_permission_denied" as const,
+        membership,
+        grants,
+      };
+    }
 
     if (agent.role === "ceo") {
       return {
@@ -1393,7 +1402,12 @@ export function agentRoutes(
     agentId: string,
     grantedByUserId: string | null,
   ) {
+    const agent = await svc.getById(agentId);
     await access.ensureMembership(companyId, "agent", agentId, "member", "active");
+    if (agent?.permissions && typeof agent.permissions === "object" &&
+        (agent.permissions as Record<string, unknown>).canAssignTasks === false) {
+      return;
+    }
     await access.setPrincipalPermission(
       companyId,
       "agent",
@@ -4633,6 +4647,7 @@ export function agentRoutes(
                 ? normalizedHireInput.budgetMonthlyCents
                 : agent.budgetMonthlyCents,
             desiredSkills: desiredSkillAssignment.desiredSkills,
+            instructionsBundle: instructionsBundle ?? null,
             metadata: requestedMetadata,
             agentId: agent.id,
             requestedByAgentId: actor.actorType === "agent" ? actor.actorId : null,

@@ -8,6 +8,8 @@ import {
   activityLog,
   budgetPolicies,
   companies,
+  authUsers,
+  companyMemberships,
   createDb,
   principalPermissionGrants,
 } from "@paperclipai/db";
@@ -18,6 +20,9 @@ import {
 import { agentService } from "../services/agents.ts";
 import { approvalService } from "../services/approvals.ts";
 import { paperclipRunnerSupportsPlatform } from "@paperclipai/shared";
+import { NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS } from "../lib/agent-permissions.js";
+import { agentInstructionsService } from "../services/agent-instructions.js";
+import { agentInstructionRevisionService } from "../services/agent-instruction-revisions.js";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -46,6 +51,8 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
     await db.delete(principalPermissionGrants);
     await db.delete(budgetPolicies);
     await db.delete(approvals);
+    await db.delete(companyMemberships);
+    await db.delete(authUsers);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -63,6 +70,11 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       requireBoardApprovalForNewAgents: true,
     });
     return companyId;
+  }
+
+  async function seedApprover(companyId: string) {
+    await db.insert(authUsers).values({ id: "board-user", name: "Board member", email: "board-user@example.test", createdAt: new Date(), updatedAt: new Date() }).onConflictDoNothing();
+    await db.insert(companyMemberships).values({ companyId, principalType: "user", principalId: "board-user", status: "active", membershipRole: "member" });
   }
 
   it("resolves internal Codex creation once and preserves legacy agents through ordinary edits", async () => {
@@ -186,5 +198,219 @@ describeEmbeddedPostgres("pending approval agent config integrity", () => {
       budgetMonthlyCents: 1234,
       metadata: { source: "hire-form" },
     });
+  });
+
+  it("replays approved skills and instructions and removes standard grants for restricted hires", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const agentSvc = agentService(db);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Restricted Reliability Analyst",
+      role: "engineer",
+      title: "Reliability Analyst",
+      icon: "shield",
+      capabilities: "Diagnostics",
+      adapterType: "codex_local",
+      adapterConfig: { search: false, paperclipSkillSync: { desiredSkills: [{ key: "paperclipai/paperclip/browser-use", versionId: "version-7" }] } },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      budgetMonthlyCents: 0,
+      metadata: null,
+      status: "pending_approval",
+      spentMonthlyCents: 0,
+      permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+      lastHeartbeatAt: null,
+    });
+    expect(pending).toMatchObject({
+      status: "pending_approval",
+      lifecycleState: "pending_approval",
+      permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+    });
+    await db.insert(principalPermissionGrants).values(
+      NEW_STANDARD_AGENT_DEFAULT_GRANT_KEYS.map((permissionKey) => ({
+        companyId,
+        principalType: "agent" as const,
+        principalId: pending.id,
+        permissionKey,
+        scope: permissionKey === "tasks:assign_scope" ? { subtreeRootAgentId: pending.id } : null,
+      })),
+    );
+    const instructions = "Approved reliability instructions.";
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent",
+      requestedByAgentId: null,
+      requestedByUserId: "board-user",
+      status: "pending",
+      payload: {
+        agentId: pending.id,
+        name: pending.name,
+        role: pending.role,
+        title: pending.title,
+        icon: pending.icon,
+        adapterType: pending.adapterType,
+        runtimeConfig: pending.runtimeConfig,
+        permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+        desiredSkills: ["paperclipai/paperclip/browser-use"],
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": instructions } },
+      },
+      decisionNote: null,
+      decidedByUserId: null,
+      decidedAt: null,
+      updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved restricted hire");
+
+    const updated = await agentSvc.getById(pending.id);
+    expect(updated).toMatchObject({
+      status: "paused",
+      adapterConfig: {
+        paperclipSkillSync: { desiredSkills: [{ key: "paperclipai/paperclip/browser-use", versionId: "version-7" }] },
+      },
+      runtimeConfig: { heartbeat: { enabled: false, wakeOnDemand: true, maxConcurrentRuns: 1 } },
+      permissions: { canCreateAgents: false, canCreateSkills: false, canAssignTasks: false },
+    });
+
+    const [grantRows, file] = await Promise.all([
+      db.select({ permissionKey: principalPermissionGrants.permissionKey })
+        .from(principalPermissionGrants)
+        .where(eq(principalPermissionGrants.principalId, pending.id)),
+      (await import("../services/agent-instructions.js")).agentInstructionsService(db)
+        .readFile(updated!, "AGENTS.md"),
+    ]);
+    expect(grantRows).toEqual([]);
+    expect(file.content).toBe(instructions);
+  });
+
+  it("preserves the existing adapter configuration when approval omits adapterConfig", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Preserved Adapter Configuration",
+      adapterType: "process",
+      adapterConfig: { search: true, command: "echo safe" },
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "pending",
+      payload: { agentId: pending.id, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Keep settings" } } },
+      decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved");
+
+    const updated = await agentService(db).getById(pending.id);
+    expect(updated?.adapterConfig).toMatchObject({ search: true, command: "echo safe" });
+  });
+
+  it("applies approved skill additions and removals while retaining approved versionIds", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Skill Reconciliation Hire",
+      adapterType: "process",
+      adapterConfig: {
+        paperclipSkillSync: {
+          desiredSkills: [
+            { key: "paperclipai/paperclip/keep", versionId: "version-keep" },
+            { key: "paperclipai/paperclip/remove", versionId: "version-remove" },
+          ],
+        },
+      },
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "pending",
+      payload: {
+        agentId: pending.id,
+        desiredSkills: [
+          "paperclipai/paperclip/keep",
+          { key: "paperclipai/paperclip/add", versionId: "version-add" },
+        ],
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Reconcile skills" } },
+      },
+      decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved skill reconciliation");
+
+    const updated = await agentService(db).getById(pending.id);
+    expect(updated?.adapterConfig).toMatchObject({
+      paperclipSkillSync: {
+        desiredSkills: [
+          { key: "paperclipai/paperclip/keep", versionId: "version-keep" },
+          { key: "paperclipai/paperclip/add", versionId: "version-add" },
+        ],
+      },
+    });
+    const desiredSkills = (updated?.adapterConfig as {
+      paperclipSkillSync?: { desiredSkills?: unknown[] };
+    } | undefined)?.paperclipSkillSync?.desiredSkills;
+    expect(desiredSkills).not.toEqual(expect.arrayContaining([
+      { key: "paperclipai/paperclip/remove", versionId: "version-remove" },
+    ]));
+  });
+
+  it("does not restore removed adapter settings when approval explicitly replaces adapterConfig", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Replaced Adapter Configuration",
+      adapterType: "process",
+      adapterConfig: { search: true, command: "echo safe" },
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "pending",
+      payload: {
+        agentId: pending.id,
+        adapterConfig: {},
+        instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Replace settings" } },
+      },
+      decisionNote: null, decidedByUserId: null, decidedAt: null, updatedAt: new Date(),
+    });
+
+    await approvalSvc.approve(approval.id, "board-user", "Approved replacement");
+
+    const updated = await agentService(db).getById(pending.id);
+    expect(updated?.adapterConfig).not.toHaveProperty("search");
+    expect(updated?.adapterConfig).not.toHaveProperty("command");
+  });
+
+  it("approves revised entry instructions through the canonical revision service", async () => {
+    const companyId = await seedCompany();
+    await seedApprover(companyId);
+    const lifecycle = createAgentLifecycle(db);
+    const approvalSvc = approvalService(db);
+    const pending = await lifecycle.requestHire(companyId, {
+      name: "Revision Analyst", role: "engineer", adapterType: "process", adapterConfig: {},
+      runtimeConfig: {}, budgetMonthlyCents: 0, metadata: null, status: "pending_approval",
+      spentMonthlyCents: 0, permissions: {}, lastHeartbeatAt: null,
+    });
+    const bundle = await agentInstructionsService(db).materializeManagedBundle(pending, { "AGENTS.md": "Original" }, { replaceExisting: true });
+    await db.update(agents).set({ adapterConfig: bundle.adapterConfig }).where(eq(agents.id, pending.id));
+    const approval = await approvalSvc.create(companyId, {
+      type: "hire_agent", requestedByAgentId: null, requestedByUserId: "board-user", status: "revision_requested",
+      payload: { agentId: pending.id, instructionsBundle: { entryFile: "AGENTS.md", files: { "AGENTS.md": "Original" } } },
+      decisionNote: "Please revise", decidedByUserId: "board-user", decidedAt: new Date(), updatedAt: new Date(),
+    });
+    await approvalSvc.resubmit(approval.id, { agentId: pending.id, instructionsBundle: { entryFile: "ROLE.md", files: { "ROLE.md": "Revised" } } });
+    await approvalSvc.approve(approval.id, "board-user", "Approved revised instructions");
+    const activated = await agentService(db).getById(pending.id);
+    expect(activated).toMatchObject({ status: "paused", adapterConfig: { instructionsEntryFile: "ROLE.md" } });
+    const current = await agentInstructionRevisionService(db).readCurrent({ companyId, agentId: pending.id }, { type: "board", userId: "board-user" });
+    expect(current?.revision.entryFile).toBe("ROLE.md");
+    expect(current?.content).toBe("Revised");
   });
 });
