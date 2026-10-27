@@ -11,6 +11,7 @@ import { credentialFingerprint } from "./chat-channels/credential-fingerprint.js
 import { createChatSdkMessageReceiver } from "./chat-channels/runtime/sdk-messages.js";
 import { admitDiscordSdkMessage } from "./chat-channels/discord/messages.js";
 import { resolveInboundConversationBinding } from "./chat-channels/inbound/conversation-binding.js";
+import { githubResponseCommentService } from "./chat-github-response-comments.js";
 import { createGitHubMaintenance } from "./chat-channels/github/maintenance.js";
 import { createSpekoChannelService, authorizeSpekoPublicVoiceTask, replaceSpekoChannelRuntime, SPEKO_CONVERSATION_IS_LINEAR } from "./chat-channels/speko/runtime.js";
 import { prepareDiscordRuntimeCommand } from "./chat-channels/discord/runtime-commands.js";
@@ -3503,6 +3504,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { getPublicationBatchStatus, publishComment, publishBoardMessage } = createChatPublicationRequests(db, { endpointRecord, stageTeamsBoardFileIntent, processPendingSlackBoardMessages, processPendingPublications, prepareTeamsBoardSend });
 return {
     registerInteractionContinuationWork,
+    registerGitHubAcknowledgementWork: githubResponseCommentService(db, fetchImpl).registerAcknowledgementWork,
     registerTerminalConfirmationWork,
     loadFailedRetryNoticeScopes,
     reconcileFailedRetryNotices,
