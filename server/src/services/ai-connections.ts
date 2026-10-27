@@ -1,5 +1,4 @@
 import { notifyLoginSessionChanged } from "./login-cleanup-notifications.js";
-import type { ConnectionManagementContext } from "./connection-management.js";
 import { WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { withAccountHomeSecretMutationLock } from "@paperclipai/adapter-codex-local/server";
 import { syncConnectionCredentialBindings } from "./connection-credential-bindings.js";
@@ -32,6 +31,7 @@ import {
   aiSubscriptionNeedsIsolatedLogin,
   isAiConnectionCompatible,
   supportsAiConnectionUsage,
+  aiRoutingHarness,
   type AiConnectionBinding,
   type AiConnectionAttribution,
   type AiConnectionMetadata,
@@ -39,6 +39,7 @@ import {
   type AiConnectionUsage,
   type CreateAiConnection,
   type AiConnectionLoginIntent,
+  type AiProvider,
 } from "@paperclipai/shared";
 import { forbidden, notFound, unprocessable } from "../errors.js";
 import { aiConnectionConfigurationFailure, aiConnectionCredentialNotSharedFailure } from "./ai-connection-configuration-failure.js";
@@ -47,6 +48,23 @@ import { logger } from "../middleware/logger.js";
 import { logActivity } from "./activity-log.js";
 import { secretService } from "./secrets.js";
 import { probeAiConnectionUsage } from "./ai-connection-usage.js";
+
+const ADAPTER_REQUIRED_PROVIDER: Partial<Record<string, AiProvider>> = (() => {
+  const providerSets = new Map<string, Set<AiProvider>>();
+  for (const [provider, cap] of Object.entries(AI_CONNECTION_CAPABILITIES)) {
+    for (const method of Object.values(cap.methods)) {
+      for (const adapter of method?.adapters ?? []) {
+        if (!providerSets.has(adapter)) providerSets.set(adapter, new Set());
+        providerSets.get(adapter)!.add(provider as AiProvider);
+      }
+    }
+  }
+  const result: Partial<Record<string, AiProvider>> = {};
+  for (const [adapter, providers] of providerSets) {
+    if (providers.size === 1) result[adapter] = [...providers][0];
+  }
+  return result;
+})();
 
 /** Same human audience displayed by the existing Connections identity controls. */
 function canUseCredential(
@@ -268,8 +286,24 @@ export function aiConnectionService(db: Db) {
         input.runnerProvider,
         input.acpxAgent,
       )
-    )
+    ) {
+      const effectiveAdapterType = aiRoutingHarness(
+        input.adapterType,
+        input.runnerProvider,
+        input.acpxAgent,
+      );
+      const requiredProvider = ADAPTER_REQUIRED_PROVIDER[effectiveAdapterType];
+      if (requiredProvider && requiredProvider !== binding.provider) {
+        const requiredName = AI_CONNECTION_CAPABILITIES[requiredProvider].name;
+        // Spelling heuristic (not phonetic) — correct for all current provider display names
+        const article = /^[AEIOU]/i.test(requiredName) ? "an" : "a";
+        throw aiConnectionConfigurationFailure(
+          "ai_connection_incompatible",
+          `Select ${article} ${requiredName} connection; the current selection uses ${AI_CONNECTION_CAPABILITIES[binding.provider].name}`,
+        );
+      }
       throw aiConnectionConfigurationFailure("ai_connection_incompatible", "Select an AI connection compatible with this harness and model");
+    }
     if (binding.mode === "responsible_user" && !userId)
       throw aiConnectionConfigurationFailure("ai_connection_responsible_user_missing", "This run needs a responsible user to select an AI connection");
     if (userId && !(await membership(companyId, userId)))
@@ -573,9 +607,7 @@ export function aiConnectionService(db: Db) {
     verifiedCredential: string,
     loginSession?: { id: string; complete?: (tx: Db) => Promise<void> },
     attemptStartedAt = new Date(),
-    managementContext?: ConnectionManagementContext,
   ) {
-    await managementContext?.reauthorize();
     const routing = "routing" in input ? input.routing : undefined;
     if (!(await membership(companyId, userId)))
       throw forbidden("An active company member must own this connection");
@@ -613,7 +645,6 @@ export function aiConnectionService(db: Db) {
     const id = reconnect?.connection.id ?? randomUUID();
     const grantId = reconnect?.grant.id ?? randomUUID();
     const persist = () => withAccountHomeSecretMutationLock(undefined, companyId, () => db.transaction(async (tx) => {
-      await managementContext?.reauthorize();
       const secrets = secretService(tx);
       if (loginSession) {
         const [session] = await tx
@@ -906,7 +937,8 @@ export function aiConnectionService(db: Db) {
       await loginSession?.complete?.(tx as unknown as Db);
       await logActivity(tx as unknown as Db, {
         companyId,
-        ...(managementContext?.audit ?? { actorType: "user" as const, actorId: userId }),
+        actorType: "user",
+        actorId: userId,
         action: reconnect
           ? "ai_connection.reconnected"
           : "ai_connection.connected",
