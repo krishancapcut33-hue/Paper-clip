@@ -363,6 +363,24 @@ describe("agent routes adapter validation", () => {
     await unregisterTestAdapter(missingAdapterType);
   });
 
+  it("omits the default marker from the native Grok catalog while retaining Legacy defaults", async () => {
+    const adapters = await import("../adapters/index.js");
+    const models = [{ id: "grok-build", label: "Default" }, { id: "grok-4.7", label: "Grok 4.7" }];
+    const list = vi.spyOn(adapters, "listAdapterModels").mockResolvedValue(models);
+    const refresh = vi.spyOn(adapters, "refreshAdapterModels").mockResolvedValue(models);
+    try {
+      const app = await createApp();
+      for (const suffix of ["", "&refresh=true"]) {
+        const native = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/adapters/paperclip_runner/models?provider=acpx&acpxAgent=grok${suffix}`));
+        expect(native.status).toBe(200);
+        expect(native.body).toEqual([models[1]]);
+        const legacy = await requestApp(app, baseUrl => request(baseUrl).get(`/api/companies/company-1/adapters/grok_local/models?refresh=${Boolean(suffix)}`));
+        expect(legacy.status).toBe(200);
+        expect(legacy.body).toEqual(models);
+      }
+    } finally { list.mockRestore(); refresh.mockRestore(); }
+  });
+
   it("selects and refreshes the runner provider catalog independently", async () => {
     const adapters = await import("../adapters/index.js");
     const list = vi.spyOn(adapters, "listAdapterModels").mockImplementation(async (type) => [{ id: type, label: type }]);

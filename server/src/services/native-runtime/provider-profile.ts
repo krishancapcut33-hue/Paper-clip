@@ -576,7 +576,9 @@ export function resolvePaperclipRunnerProviderProfile(
       "Paperclip Runner ACPX requires a qualified agent profile.",
     );
   }
-  const selectedModel = model || DEFAULT_ACPX_RUNNER_MODELS[acpxAgent] || "";
+  const selectedModel = acpxAgent === "grok" && model === "grok-build"
+    ? DEFAULT_ACPX_RUNNER_MODELS.grok
+    : model || DEFAULT_ACPX_RUNNER_MODELS[acpxAgent] || "";
   try {
     resolveQualifiedAcpxProfile(acpxAgent, selectedModel);
   } catch (error) {

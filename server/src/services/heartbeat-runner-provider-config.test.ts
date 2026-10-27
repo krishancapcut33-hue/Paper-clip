@@ -161,6 +161,13 @@ describe("Paperclip Runner native provider configuration", () => {
       .toMatchObject({ acpxAgent: "grok", model: "grok-next", grokEffort: "medium", grokDisableWebSearch: true });
   });
 
+  it("resolves the Grok task default marker before native model admission", () => {
+    const base = { provider: "acpx", acpxAgent: "grok", model: "grok-4.7", reasoningEffort: "high", disableWebSearch: true };
+    const config = projectPaperclipRunnerTaskConfig("acpx_runtime", base, { model: "grok-build", reasoningEffort: "high" });
+    expect(resolvePaperclipRunnerNativeProviderInput({ backend: "acpx_runtime", adapterConfig: config }))
+      .toMatchObject({ model: "grok-4.7", grokEffort: "high", grokDisableWebSearch: true });
+  });
+
   it("uses an OpenCode task model without changing the Runner provider", () => {
     const projected = projectPaperclipRunnerTaskConfig(
       "opencode_server",

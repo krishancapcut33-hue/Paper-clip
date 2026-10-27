@@ -3108,7 +3108,10 @@ export function agentRoutes(
     const models = refresh
       ? await refreshAdapterModels(modelAdapterType)
       : await listAdapterModels(modelAdapterType);
-    res.json(models);
+    // The Legacy default marker is not an explicit native ACP model ID.
+    res.json(type === "paperclip_runner" && modelAdapterType === "grok_local"
+      ? models.filter(model => model.id !== "grok-build")
+      : models);
   });
 
   router.get("/companies/:companyId/adapters/:type/detect-model", async (req, res) => {
