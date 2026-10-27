@@ -19,6 +19,9 @@ Agent access: [companion](../agent-access-map/recovery.md).
   progress, and next action without requiring a raw-log interpretation.
 - `bounded-continuation`: `recovery/bounded-continuation` — supported interrupted work continues with preserved
   conversation context and bounded attempts, without blindly replaying tools.
+  Restart recovery respects live heartbeat preparation before workspace
+  synchronization finishes. PostgreSQL regressions cover unchanged ownership,
+  no duplicate dispatch, and later recovery after preparation leaves the registry.
 - `source-action`: `recovery/source-action` — source-scoped recovery actions remain attached to the task;
   independent repair work may have its own issue and return owner.
 - `exhaustion`: `recovery/exhaustion` — an exhausted infrastructure attempt offers ordinary Retry.

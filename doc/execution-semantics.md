@@ -1352,6 +1352,13 @@ fresh native run identities. Unmarked preparations from older servers remain
 held during rolling upgrades, because those servers cannot safely yield to a
 recovery owner. Revisiting an existing preparation cannot add that marker.
 
+Restart recovery checks the heartbeat process's live execution registry before
+claiming an observed run. Native input can exist before workspace synchronization
+has saved its descriptor or the executor has claimed its lease. A live preparation
+keeps ownership throughout that interval. Recovery leaves its coordinator unchanged
+and does not dispatch a second executor. An inactive run still requires the normal
+ownership, workspace integrity, and provider evidence checks.
+
 A preparation that resumes after another execution acquired the coordinator
 lease yields through the controller-detachment path. It does not fail the shared
 run, release its environment, or start another provider. Lease expiry alone does
