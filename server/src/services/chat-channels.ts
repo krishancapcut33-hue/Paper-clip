@@ -3350,7 +3350,6 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function processPublicationMaintenance(limit = 25) {
     scheduleGitHubMaintenance();
-    await processPendingInteractionWakeups(limit);
   }
 
   // The app refills free endpoint slots on commits and durable deadlines.
@@ -3475,7 +3474,8 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     withCredentialMutationLease, receiptReactionCompletionRunId,
   });
   const { processSelectedPublication } = publicationWorker;
-  const { processPendingInteractionWakeups } = createChatInteractionContinuations(db, {
+  const { processPendingInteractionWakeups, registerInteractionContinuationWork } = createChatInteractionContinuations(db, {
+    preparePublications: (scope, canContinue) => processPendingPublications(25, { maintenance: false, scope, canContinue }),
     redactError, CONFIRMATION_WAKEUP_RETRY_BACKOFF_MS, get heartbeat() { return options.heartbeat; },
   });
   const { handleAction, handleModalSubmit, reconcileTerminalConfirmationActions, registerTerminalConfirmationWork } = createChatInteractionCallbacks(db, {
@@ -3502,6 +3502,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
   const { prepareTeamsBoardSend } = createTeamsBoardSendPreparation(db, { endpointRecord, runtimeFor });
   const { getPublicationBatchStatus, publishComment, publishBoardMessage } = createChatPublicationRequests(db, { endpointRecord, stageTeamsBoardFileIntent, processPendingSlackBoardMessages, processPendingPublications, prepareTeamsBoardSend });
 return {
+    registerInteractionContinuationWork,
     registerTerminalConfirmationWork,
     loadFailedRetryNoticeScopes,
     reconcileFailedRetryNotices,
