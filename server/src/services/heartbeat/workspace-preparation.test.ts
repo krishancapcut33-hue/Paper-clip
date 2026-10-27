@@ -7,7 +7,7 @@ import { pathToFileURL } from "node:url";
 import { promisify } from "node:util";
 import { captureDirectorySnapshot, directorySnapshotSha256, serializeDirectorySnapshot } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import type { AdapterExecutionTarget } from "@paperclipai/adapter-utils/execution-target";
-import { agentWakeupRequests, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
+import { agentWakeupRequests, heartbeatRunEvents, companyObservability, issueRecoveryActions, agents, authUsers, companyMemberships, companies, createDb, applyPendingMigrations, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, environmentLeases, executionWorkspaces, executionWorkspaceRepositoryAccess, heartbeatRuns, issues, issueAccessGrants, plugins, projects, projectWorkspaces, type Db } from "@paperclipai/db";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from "vitest";
 import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "../../__tests__/helpers/embedded-postgres.js";
@@ -25,6 +25,7 @@ import { prepareHeartbeatWorkspace, type HeartbeatWorkspacePreparationInput } fr
 import { buildNativeExecutionInput } from "../native-runtime/native-execution-input.js";
 import { nativeRuntimeContextFixture } from "../native-runtime/runtime-context.test-fixture.js";
 import * as managedRepositoryCheckout from "../managed-repository-checkout.js";
+import { requestTaskRetry } from "../task-retry.js";
 import { readFreshWorkspaceReadiness } from "../fresh-workspace-continuation.js";
 import { createSystemRecovery } from "../system-recovery-state.js";
 import { isolatedRemoteSourcePath } from "../isolated-remote-workspace-source.js";
@@ -327,7 +328,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     expect((await readIssue(issue.id)).executionWorkspaceId).toBe(prepared.persistedExecutionWorkspace!.id);
   });
 
-  it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
+  it.each(["reuse", "explicit_git", "foreign_path", "missing_path", "symlink_path", "binding_changed", "canonical_retry", "canonical_warning", "canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement"] as const)("recomputes ordinary-turn policy for a saved source-free fresh directory: %s", async scenario => {
     const { input, issue } = await fixture();
     const userId = `directory-owner-${randomUUID()}`;
     await db.insert(authUsers).values({ id: userId, name: "Directory owner", email: `${userId}@example.test`, createdAt: new Date(), updatedAt: new Date() });
@@ -350,7 +351,7 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     const adapterType = "process";
     const originalAdapter = getServerAdapter(adapterType);
     let preservedCwd = workspace.cwd!;
-    if (scenario === "explicit_git") await db.update(issues).set({ executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } } }).where(eq(issues.id, issue.id));
+    if (scenario === "explicit_git" || scenario.startsWith("canonical_")) await db.update(issues).set({ executionWorkspaceSettings: { mode: "isolated_workspace", workspaceStrategy: { type: "git_worktree" } } }).where(eq(issues.id, issue.id));
     if (scenario === "foreign_path") {
       const outside = join(home, "unowned-directory"); await mkdir(outside);
       await db.update(executionWorkspaces).set({ cwd: outside }).where(eq(executionWorkspaces.id, workspace.id));
@@ -360,8 +361,14 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
       if (scenario === "symlink_path") await symlink(preservedCwd, workspace.cwd!);
     }
     if (scenario === "binding_changed") await db.update(issues).set({ executionWorkspaceId: null }).where(eq(issues.id, issue.id));
+    const freshExpected = ["canonical_unknown_warning", "canonical_provider_warning", "canonical_fresh", "canonical_lease", "canonical_result", "canonical_controller", "canonical_output", "canonical_measurement"].includes(scenario);
     const executed = vi.fn(async (execution: AdapterExecutionContext) => {
       const [lease] = await leases(execution.runId);
+      if (freshExpected) {
+        expect(lease.executionWorkspaceId).not.toBe(workspace.id);
+        await db.update(issues).set({ status: "done" }).where(eq(issues.id, issue.id));
+        return { exitCode: 0, signal: null, timedOut: false, summary: "Fresh workspace required" };
+      }
       expect(lease.executionWorkspaceId).toBe(workspace.id);
       const activeWorkspace = await input.services.executionWorkspacesSvc.getStoredById(input.agent.companyId, lease.executionWorkspaceId!);
       expect(activeWorkspace?.cwd).toBe(workspace.cwd);
@@ -372,22 +379,53 @@ describe.skipIf(!support.supported && !externalDatabaseUrl)("heartbeat workspace
     registerServerAdapter({ ...originalAdapter, type: adapterType, supportsLocalAgentJwt: false, execute: executed,
       testEnvironment: async () => ({ adapterType, status: "pass", checks: [], testedAt: new Date().toISOString() }) });
     await db.update(agents).set({ adapterType, status: "idle", adapterConfig: { workspaceStrategy: { type: "git_worktree" } } }).where(eq(agents.id, input.agent.id));
+    if (scenario.includes("warning")) await db.insert(companyObservability).values({ companyId: input.agent.companyId, revision: randomUUID(), enabled: true,
+      destination: { provider: "otlp", endpointBaseUrl: "https://collector.example/otel" },
+      capture: { userPrompts: false, assistantResponses: false, toolDetails: false, toolContent: false } });
     const heartbeat = heartbeatService(db);
     try {
       const next = await heartbeat.wakeup(input.agent.id, { source: "on_demand", triggerDetail: "manual", reason: "manual",
         requestedByActorType: "user", requestedByActorId: userId, payload: { issueId: issue.id }, contextSnapshot: { issueId: issue.id } });
       await heartbeat.drainActiveRunExecutions();
+      let finalRunId = next?.id;
+      if (scenario.startsWith("canonical_")) {
+        expect(await readRun(next!.id)).toMatchObject({ status: "failed", errorCode: "workspace_validation_failed" });
+        expect(executed).not.toHaveBeenCalled();
+        if (scenario.includes("warning")) {
+          const warning = (await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, next!.id))).find(event => event.seq === 1)!;
+          expect(warning).toMatchObject({ eventType: "agent_observability.unavailable", payload: { reason: "unsupported_harness" } });
+          if (scenario === "canonical_unknown_warning") await db.update(heartbeatRunEvents).set({ payload: { ...warning.payload, reason: "unknown" } }).where(eq(heartbeatRunEvents.id, warning.id));
+          if (scenario === "canonical_provider_warning") await db.update(heartbeatRunEvents).set({ sourcePayloadSha256: "a".repeat(64), protocolSchemaVersion: 1 }).where(eq(heartbeatRunEvents.id, warning.id));
+        }
+        if (scenario === "canonical_lease") await db.insert(environmentLeases).values({ companyId: input.agent.companyId, issueId: issue.id, heartbeatRunId: next!.id, provider: "local_fs", status: "expired", cleanupStatus: "success" });
+        if (scenario === "canonical_result") { const failed = await readRun(next!.id); await db.update(heartbeatRuns).set({ resultJson: { ...failed.resultJson, acceptedResult: { outcome: "unknown" } } }).where(eq(heartbeatRuns.id, next!.id)); }
+        if (scenario === "canonical_controller") await db.update(heartbeatRuns).set({ controllerLeaseExpiresAt: new Date(Date.now() + 60_000) }).where(eq(heartbeatRuns.id, next!.id));
+        if (scenario === "canonical_output") await db.update(heartbeatRuns).set({ lastOutputSeq: 1 }).where(eq(heartbeatRuns.id, next!.id));
+        if (scenario === "canonical_measurement") { const events = await db.select().from(heartbeatRunEvents).where(eq(heartbeatRunEvents.runId, next!.id)); const measured = events.find(event => event.eventType === "lifecycle")!; await db.update(heartbeatRunEvents).set({ payload: { ...measured.payload, durationMs: -1 } }).where(eq(heartbeatRunEvents.id, measured.id)); }
+        await db.update(issues).set({ executionWorkspaceSettings: { mode: "isolated_workspace" } }).where(eq(issues.id, issue.id));
+        const intent = await requestTaskRetry({ db, companyId: input.agent.companyId, issueId: issue.id,
+          actorId: userId, actorSource: "local_implicit", observedRunId: next!.id, idempotencyKey: randomUUID() });
+        expect(intent.requestId).toBeTruthy();
+        if (scenario === "canonical_fresh") await db.update(agentWakeupRequests).set({ payload: sql`jsonb_set(${agentWakeupRequests.payload}, '{taskRetry,strategy}', '"fresh_isolated_workspace"'::jsonb)` }).where(eq(agentWakeupRequests.id, intent.requestId!));
+        await heartbeat.resumeTaskRetry(input.agent.companyId, intent.requestId!);
+        await heartbeat.drainActiveRunExecutions();
+        const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.id, intent.requestId!));
+        expect(receipt.runId).toBeTruthy();
+        finalRunId = receipt.runId!;
+      }
+      const continued = scenario === "reuse" || scenario.startsWith("canonical_");
       if (scenario === "binding_changed") {
         expect(next).toBeNull();
         const [receipt] = await db.select().from(agentWakeupRequests).where(eq(agentWakeupRequests.agentId, input.agent.id));
         expect(receipt).toMatchObject({ status: "skipped", reason: "workspace_worktree_requires_project", runId: null });
       } else {
         expect(next).not.toBeNull();
-        expect(await readRun(next!.id)).toMatchObject(scenario === "reuse"
+        expect(await readRun(finalRunId!)).toMatchObject(continued
           ? { status: "succeeded", errorCode: null } : { status: "failed", errorCode: "workspace_validation_failed" });
       }
-      expect(executed).toHaveBeenCalledTimes(scenario === "reuse" ? 1 : 0);
-      expect((await readIssue(issue.id)).executionWorkspaceId).toBe(scenario === "binding_changed" ? null : workspace.id);
+      expect(executed).toHaveBeenCalledTimes(continued ? 1 : 0);
+      if (freshExpected) expect((await readIssue(issue.id)).executionWorkspaceId).not.toBe(workspace.id);
+      else expect((await readIssue(issue.id)).executionWorkspaceId).toBe(scenario === "binding_changed" ? null : workspace.id);
       expect(await readFile(join(preservedCwd, "saved-review.txt"), "utf8")).toBe("completed snapshot review\n");
       if (scenario === "missing_path") await expect(access(workspace.cwd!)).rejects.toThrow();
     } finally { await heartbeat.drainActiveRunExecutions(); registerServerAdapter(originalAdapter); }
