@@ -1785,3 +1785,49 @@ wake notice audit for the producer inventory, regressions and fixture correction
 This update does not clear the older Grok/runtime-discovery CI failures, voice
 session recovery review, or inbound voice cleanup ownership findings, and it does
 not shrink the remaining original checklist.
+
+
+## Slice 30 gate and slice 31 projection checkpoint (2026-10-25)
+
+[#17647](https://github.com/paperclipai/paperclip/pull/17647) at
+`fee07f3fa8cbc489cb9bbf657a6065c6e00748c3` has all 53 checks passing,
+a fresh Greptile 5/5 review, and its fairness finding resolved. The pre-repair
+full chat/startup acceptance passed 1,486 cases; the bounded-candidate repair
+passes 44 selected integration cases and server typecheck/build. No merge occurred.
+
+The next separate branch, `codex/sleep-31-failed-retry-notices`, fixes a reproduced
+manual-cursor starvation defect and adds scoped, bounded retry-notice projection.
+Its normal periodic pass remains until producer/lifecycle migration is complete.
+See [the retry notice audit](2026-10-25-failed-retry-notices-sleep-audit.md).
+
+Fresh older-parent audit still shows #17490 at `31bcd19888` and #17572 at
+`8815dfad38` failing E2E shard 3 and its aggregate. #17576 still has unresolved
+voice inventory amplification findings 4371283330/4371307607, and #17580 still
+has unresolved company-offboarding/cleanup findings 4370459800/4370543984. These
+are required repairs, not exemptions. The full original migration scope,
+master reconciliation, and all latest-head gates remain required.
+
+
+## Slice 31 worker and producer checkpoint (2026-10-25)
+
+Failed-retry notices now register a scoped worker and leave periodic publication
+maintenance. Real missed wakes were reproduced for admission, agent/tree
+cancellation, resumed-admission denial, early admission refusal, and requester
+restoration. Their owning transactions now notify through the existing shared
+boundary. Fourteen selected lifecycle cases and all 1,503 chat/startup acceptance
+cases pass. Workspace typecheck and build pass. See the retry audit for retained
+failures, exact commands/logs, and native source-cleanup qualification still open.
+This is a draft checkpoint, not a merge-ready claim. Older parent gates and every
+remaining original recurring-server duty stay in scope. No merge occurred.
+
+
+## Slice 31 native producer repairs
+
+Draft [#17649](https://github.com/paperclipai/paperclip/pull/17649) now covers
+source lease cleanup and reusable-lease retirement, each with a reproduced
+missing notice and real writer transaction tests. All 36 selected native/notice
+cases pass. The owning audit distinguishes notice authority from the stronger
+filesystem execution proof, and retains the fake-clock connection failure and
+Runner CI receipt timeout. Existing lease acceptance, updated full acceptance,
+remote gates, older parent findings, and every remaining original duty are still
+required. No stack PR has been merged.
