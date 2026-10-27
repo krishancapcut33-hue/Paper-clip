@@ -70,33 +70,40 @@ export async function startEvalRemoteGateway(input: Parameters<typeof startEvalR
   let home: string;
   try { home = await mkdtemp(path.join(tmpdir(), "eval-cloudflare-")); }
   catch (error) { await bridge.close(); throw error; }
-  const tunnel = spawn(env.PAPERCLIP_EVAL_CLOUDFLARED ?? "cloudflared",
-    ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", bridge.baseUrl],
-    { stdio: ["ignore", "pipe", "pipe"], env: { PATH: env.PATH, HOME: home, TMPDIR: home } });
-  let closing: Promise<void> | undefined, deadlineTimer: ReturnType<typeof setTimeout>;
+  let tunnel: ReturnType<typeof spawn> | undefined;
+  let closing: Promise<void> | undefined, deadlineTimer: ReturnType<typeof setTimeout> | undefined;
   const close = () => closing ??= (async () => {
-    clearTimeout(deadlineTimer); await bridge.close();
-    if (tunnel.pid && tunnel.exitCode === null && tunnel.signalCode === null) {
-      const exited = once(tunnel, "exit").catch(() => {});
-      tunnel.kill("SIGTERM"); const timer = setTimeout(() => tunnel.kill("SIGKILL"), 5000);
-      try { await exited; } finally { clearTimeout(timer); }
-    }
-    await rm(home, { recursive: true, force: true });
+    clearTimeout(deadlineTimer);
+    const errors: unknown[] = [];
+    try { await bridge.close(); } catch (error) { errors.push(error); }
+    try {
+      if (tunnel?.pid && tunnel.exitCode === null && tunnel.signalCode === null) {
+        const exited = once(tunnel, "exit").catch(() => {});
+        tunnel.kill("SIGTERM"); const timer = setTimeout(() => tunnel?.kill("SIGKILL"), 5000);
+        try { await exited; } finally { clearTimeout(timer); }
+      }
+    } catch (error) { errors.push(error); }
+    try { await rm(home, { recursive: true, force: true }); } catch (error) { errors.push(error); }
+    if (errors.length) throw new AggregateError(errors, "Remote eval exposure cleanup failed");
   })();
-  deadlineTimer = setTimeout(() => { void close().catch(() => {}); }, input.deadlineAt - Date.now()); deadlineTimer.unref();
   try {
+    tunnel = spawn(env.PAPERCLIP_EVAL_CLOUDFLARED?.trim() || "cloudflared",
+      ["tunnel", "--no-autoupdate", "--protocol", "http2", "--url", bridge.baseUrl],
+      { stdio: ["ignore", "pipe", "pipe"], env: { PATH: env.PATH, HOME: home, TMPDIR: home } });
+    deadlineTimer = setTimeout(() => { void close().catch(() => {}); }, input.deadlineAt - Date.now()); deadlineTimer.unref();
+    const child = tunnel;
     const origin = await new Promise<string>((resolve, reject) => {
       let output = "";
       const timer = setTimeout(() => finish(new Error("Remote eval tunnel startup timed out")), Math.min(120_000, input.deadlineAt - Date.now()));
       const finish = (error?: Error, value?: string) => { clearTimeout(timer); if (error) reject(error); else resolve(value!); };
-      tunnel.once("error", () => finish(new Error("Remote eval tunnel executable unavailable")));
-      tunnel.once("exit", () => finish(new Error("Remote eval tunnel exited")));
+      child.once("error", () => finish(new Error("Remote eval tunnel executable unavailable")));
+      child.once("exit", () => finish(new Error("Remote eval tunnel exited")));
       const read = (chunk: Buffer) => {
         output = (output + chunk.toString()).slice(-32768);
         const value = output.match(/https:\/\/[a-z0-9-]+\.trycloudflare\.com/)?.[0];
         if (value && output.includes("Registered tunnel connection")) finish(undefined, value);
       };
-      tunnel.stdout!.on("data", read); tunnel.stderr!.on("data", read);
+      child.stdout!.on("data", read); child.stderr!.on("data", read);
     });
     const readyBy = Math.min(Date.now() + 120_000, input.deadlineAt);
     while (Date.now() < readyBy) {

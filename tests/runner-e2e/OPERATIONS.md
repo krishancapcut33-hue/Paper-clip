@@ -914,7 +914,9 @@ product, cleanup, feedback and trace checks still fail qualification.
 ### Explicit bounded Daytona gateway qualification
 
 A manual manifest can set `remoteGateway: "cloudflare"` for the native Codex
-or Claude marker/feedback Daytona cells. The parent starts its existing model
+or Claude marker/feedback Daytona cells. Install `cloudflared` on the controller
+PATH, or set `PAPERCLIP_EVAL_CLOUDFLARED` to its executable path. Empty overrides
+use the PATH default. The parent starts its existing model
 gateway and native OTLP relay, then exposes only their authenticated endpoints
 through one owned HTTPS quick tunnel. It verifies a fresh health nonce before
 fixture setup, waits up to 120 seconds for registration and 120 seconds for
@@ -926,10 +928,19 @@ credential separately. The model gateway still enforces its campaign allowance,
 request count, concurrency, deadline and receipt journal. The bridge streams
 responses and preserves terminal-usage draining after a client disconnect.
 The tunnel receives no ambient provider credentials or Cloudflare config. Its
-exposure closes at the campaign deadline and on attempt cleanup. Owned gateway,
+exposure closes at the campaign deadline or four hours after startup, whichever
+comes first, and on attempt cleanup. Owned gateway,
 relay and tunnel cleanup failures remain failures. A configured remote route
 is not live acceptance; retain the actual Daytona result, cleanup, feedback,
 native traces and complete model receipts.
 
 Daily and weekly selections remain local. This explicit remote option adds no
 scheduled coverage or public report publication.
+
+The worker generates the attempt's trace parent. The relay validates the project
+in both the header and payload, but does not pin that worker-generated parent.
+Treat the attempt OTLP token as authority to submit trace attribution within
+this eval project. Keep it limited to the trusted harness/provider runtime;
+never expose it to test prompts or unrelated clients. The project check is not
+an attempt-isolation guarantee. Retained indexing checks verify the expected
+attempt traces after the run.

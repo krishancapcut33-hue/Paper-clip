@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, writeFile, rm } from "node:fs/promises";
+import { mkdtemp, readFile, writeFile, rm, readdir } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { createServer } from "node:http";
@@ -57,7 +57,7 @@ it("closes remote exposure at its original campaign deadline", async () => {
 });
 
 
-it("waits for registration and the correct public nonce, then terminates the owned tunnel", async () => {
+it.each(["explicit", "empty-override"])("waits for registration and the correct public nonce, then terminates the owned tunnel: %s", async mode => {
   const root = await mkdtemp(path.join(tmpdir(), "eval-fake-tunnel-"));
   const executable = path.join(root, "cloudflared"), state = path.join(root, "state.json"), stopped = path.join(root, "stopped");
   const origin = "https://synthetic-owned.trycloudflare.com";
@@ -80,7 +80,7 @@ setInterval(() => {}, 1000);
   let remote: Awaited<ReturnType<typeof startEvalRemoteGateway>> | undefined;
   try {
     remote = await startEvalRemoteGateway({ gateway: { baseUrl: "http://127.0.0.1:1", token: "a".repeat(64) },
-      deadlineAt: Date.now() + 10_000 }, { PAPERCLIP_EVAL_CLOUDFLARED: executable, PATH: process.env.PATH, OPENAI_API_KEY: "must-not-leave" });
+      deadlineAt: Date.now() + 10_000 }, { PAPERCLIP_EVAL_CLOUDFLARED: mode === "explicit" ? executable : "", PATH: root, OPENAI_API_KEY: "must-not-leave" });
     expect(remote.baseUrl).toBe(origin); expect(healthChecks).toBe(2);
     const { baseUrl, pid, env } = JSON.parse(await readFile(state, "utf8"));
     expect(env.OPENAI_API_KEY).toBeUndefined(); expect(env.HOME).not.toBe(process.env.HOME);
@@ -91,3 +91,11 @@ setInterval(() => {}, 1000);
     await expect(readFile(path.join(env.HOME, "anything"))).rejects.toThrow();
   } finally { fetchSpy.mockRestore(); await remote?.close(); await rm(root, { recursive: true, force: true }); }
 }, 15_000);
+
+
+it("cleans the private tunnel home after synchronous spawn rejection", async () => {
+  const before = new Set((await readdir(tmpdir())).filter(name => name.startsWith("eval-cloudflare-")));
+  await expect(startEvalRemoteGateway({ gateway: { baseUrl: "http://127.0.0.1:1", token: "a".repeat(64) },
+    deadlineAt: Date.now() + 60_000 }, { PAPERCLIP_EVAL_CLOUDFLARED: "invalid\0executable", PATH: "" })).rejects.toThrow();
+  expect((await readdir(tmpdir())).filter(name => name.startsWith("eval-cloudflare-") && !before.has(name))).toEqual([]);
+});
