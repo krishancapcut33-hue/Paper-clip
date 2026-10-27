@@ -97,26 +97,34 @@ it("reports final setup and canceled-request tokens once while exposing missing 
   const ledger = await openEvalCostLedger(file, { campaignId: "tokens", maxUsd: "10", deadlineAt: "2099-01-01T00:00:00Z", maxRequests: 10, maxConcurrent: 1 });
   const observation = { provider: "fixture", currency: "USD" as const, route: "direct" as const, classification: "reported" as const, costUsd: "0.05", final: true };
   try {
-    for (const [requestId, phase] of [["setup", "setup"], ["canceled", "agent"], ["missing", "agent"], ["conflict", "agent"], ["overhead", "infrastructure"]] as const) {
+    for (const [requestId, phase] of [["setup", "setup"], ["canceled", "agent"], ["missing", "agent"], ["conflict", "agent"], ["full-conflict", "agent"], ["overhead", "infrastructure"]] as const) {
       await ledger.reserve(requestId, { executionId: "cell", attemptId: "first", phase }, "1");
       if (requestId !== "missing") {
         const tokens = { input: 10, cachedRead: 20, cachedWrite: 30, output: 5, reasoning: 2 };
         await ledger.observe({ ...observation, observationId: requestId + "-partial", requestId, source: "gateway", tokens: { ...tokens, input: 1 }, final: false });
         await ledger.observe({ ...observation, observationId: requestId + "-gateway", requestId, source: "gateway", tokens });
         await ledger.observe({ ...observation, observationId: requestId + "-provider", requestId, source: "provider", tokens });
-        if (requestId === "conflict") await ledger.observe({ ...observation, observationId: "conflicting-usage", requestId, source: "provider", tokens: { ...tokens, input: 11 } });
+        if (requestId === "conflict") await ledger.observe({ ...observation, observationId: "conflicting-usage", requestId, source: "provider", tokens: { input: 11 } });
+        if (requestId === "full-conflict") await ledger.observe({ ...observation, observationId: "full-conflicting-usage", requestId, source: "provider", tokens: { ...tokens, input: 11 } });
       }
       await ledger.finish(requestId, requestId === "canceled" ? "cancelled" : "succeeded");
     }
     const report = await readEvalOperationsReport(file);
     if (report.status === "unavailable") throw new Error("Expected readable token report");
-    expect(report.modelAccounting?.tokenUsage).toEqual({ requests: 2, conflictingRequests: 1,
+    expect(report.modelAccounting?.tokenUsage).toEqual({ requests: 2, conflictingRequests: 2,
       totals: { input: 20, cachedRead: 40, cachedWrite: 60, output: 10, reasoning: 4 },
       setup: { requests: 1, totals: { input: 10, cachedRead: 20, cachedWrite: 30, output: 5, reasoning: 2 } } });
     const rendered = renderEvalOperationsReport(report);
-    expect(rendered).toContain("2/4 model requests have unambiguous final usage; 1 conflicting; 1 missing");
+    expect(rendered).toContain("2/5 model requests have unambiguous final usage; 2 conflicting; 1 missing");
     expect(rendered).toContain("Reported reasoning: 4, included in output");
     expect(rendered).toContain("Setup token usage (1 requests, included above)");
+    const emptySetup = structuredClone(report);
+    emptySetup.modelAccounting!.tokenUsage!.setup.requests = 0;
+    expect(() => validateEvalOperationsReport(emptySetup)).toThrow("Invalid retained");
+    const emptyOverall = structuredClone(report);
+    emptyOverall.modelAccounting!.tokenUsage!.requests = 0;
+    emptyOverall.modelAccounting!.tokenUsage!.setup = { requests: 0, totals: { input: 0, cachedRead: 0, cachedWrite: 0, output: 0, reasoning: 0 } };
+    expect(() => validateEvalOperationsReport(emptyOverall)).toThrow("Invalid retained");
     const changed = structuredClone(report);
     changed.modelAccounting!.tokenUsage!.setup.totals.input = 21;
     expect(() => validateEvalOperationsReport(changed)).toThrow("Invalid retained");

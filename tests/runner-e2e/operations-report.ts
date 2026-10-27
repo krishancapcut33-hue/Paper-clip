@@ -65,10 +65,10 @@ export function validateEvalOperationsReport(report: EvalOperationsReport): void
       fields(usage.setup, ["requests", "totals"]);
       [usage.requests, usage.conflictingRequests, usage.setup.requests].forEach(count);
       if (usage.requests + usage.conflictingRequests > model.requests || usage.setup.requests > usage.requests) fail();
-      for (const totals of [usage.totals, usage.setup.totals]) {
+      for (const [requests, totals] of [[usage.requests, usage.totals], [usage.setup.requests, usage.setup.totals]] as const) {
         fields(totals, [...tokenFields]);
         tokenFields.forEach(key => count(totals[key]));
-        if (totals.reasoning > totals.output) fail();
+        if (totals.reasoning > totals.output || requests === 0 && tokenFields.some(key => totals[key] !== 0)) fail();
       }
       if (tokenFields.some(key => usage.setup.totals[key] > usage.totals[key])) fail();
     }
@@ -125,16 +125,12 @@ async function readAvailableEvalOperationsReport(file: string): Promise<EvalOper
   const tokenUsage: ModelTokenUsage = { requests: 0, conflictingRequests: 0, totals: emptyTokenTotals(), setup: { requests: 0, totals: emptyTokenTotals() } };
   for (const request of loaded.state.requests.values()) {
     if (request.identity.phase === "infrastructure") continue;
-    const candidates = request.observations.filter(observation => observation.final
-      && ["gateway", "provider"].includes(observation.source)
-      && ["input", "cachedRead", "cachedWrite", "output"].every(key => observation.tokens?.[key as keyof ModelTokenTotals] !== undefined));
-    const values = new Map(candidates.map(observation => {
-      const tokens = Object.fromEntries(tokenFields.map(key => [key, observation.tokens![key] ?? 0])) as unknown as ModelTokenTotals;
-      return [JSON.stringify(tokens), tokens];
-    }));
-    if (values.size > 1) { tokenUsage.conflictingRequests++; continue; }
-    if (values.size === 0) continue;
-    const tokens = values.values().next().value!;
+    const candidates = request.observations.filter(observation => observation.final && observation.tokens
+      && ["gateway", "provider"].includes(observation.source));
+    const values = tokenFields.map(key => new Set(candidates.flatMap(observation => observation.tokens![key] === undefined ? [] : [observation.tokens![key]!] )));
+    if (values.some(value => value.size > 1)) { tokenUsage.conflictingRequests++; continue; }
+    if (!candidates.some(observation => ["input", "cachedRead", "cachedWrite", "output"].every(key => observation.tokens![key as keyof ModelTokenTotals] !== undefined))) continue;
+    const tokens = Object.fromEntries(tokenFields.map((key, index) => [key, values[index]!.values().next().value ?? 0])) as unknown as ModelTokenTotals;
     tokenUsage.requests++;
     if (request.identity.phase === "setup") tokenUsage.setup.requests++;
     for (const key of tokenFields) {
