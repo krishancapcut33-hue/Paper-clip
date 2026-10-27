@@ -48,6 +48,7 @@ fn config(mode: &str) -> AcpxProviderSessionConfig {
         mode: None,
         pi_thinking_level: None,
         claude_effort: None,
+        grok_effort: None,
         permission_mode_pinned: true,
         provider_policy: None,
         system_instructions: "Complete the supplied task.".to_owned(),
@@ -72,6 +73,7 @@ fn expected_identity() -> AcpxProviderSessionIdentity {
         mode: None,
         pi_thinking_level: None,
         claude_effort: None,
+        grok_effort: None,
         provider_lifetime_fence_candidates: [60_001, 60_002, 60_003],
     }
 }
