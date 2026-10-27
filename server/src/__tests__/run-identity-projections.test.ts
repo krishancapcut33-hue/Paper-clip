@@ -2,20 +2,22 @@ import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
 import { applyPendingMigrations, createDb, heartbeatRuns, issues, type Db } from "@paperclipai/db";
-import { startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
+import { getEmbeddedPostgresTestSupport, startEmbeddedPostgresTestDatabase } from "./helpers/embedded-postgres.js";
 import { captureIdentityQueries, seedIdentityProjection, type IdentityQuery } from "./helpers/run-identity-projection-fixture.js";
 import { captureRunIdentity } from "../services/run-identity.js";
 import { projectToolContext } from "../services/project-tool-context.js";
 import { boundRunIssueId } from "../services/run-task-binding.js";
 
+const externalDatabaseUrl = process.env.PAPERCLIP_TEST_DATABASE_URL;
+const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPostgresTestSupport();
 const scopes = ["identity", "task_authorization", "token_broker"] as const;
-describe("operation identity read projections", () => {
+(support.supported ? describe : describe.skip)("operation identity read projections", () => {
   let temporary: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   let db: Db;
   beforeAll(async () => {
-    if (process.env.PAPERCLIP_TEST_DATABASE_URL) {
-      await applyPendingMigrations(process.env.PAPERCLIP_TEST_DATABASE_URL);
-      db = createDb(process.env.PAPERCLIP_TEST_DATABASE_URL);
+    if (externalDatabaseUrl) {
+      await applyPendingMigrations(externalDatabaseUrl);
+      db = createDb(externalDatabaseUrl);
     } else {
       temporary = await startEmbeddedPostgresTestDatabase("identity-projection-");
       db = createDb(temporary.connectionString);

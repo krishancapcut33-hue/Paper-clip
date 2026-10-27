@@ -264,9 +264,9 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
     await expect(initialization).resolves.toMatchObject({ responsibleUserId: "A" });
   });
 
-  it.each(["initialize", "capture"] as const)(
-    "can %s identity while an audit append holds foreign-key locks",
-    async (operation) => {
+  it.each((["initialize", "capture"] as const).flatMap(operation => [false, true].map(withQuery => ({ operation, withQuery }))))(
+    "can $operation identity while an audit append holds foreign-key locks (query: $withQuery)",
+    async ({ operation, withQuery }) => {
       const input = await seed();
       if (operation === "capture") {
         await initializeRunIdentity(db, { ...input, messageIds: [], responsibleUserId: "A", cause: "instruction" });
@@ -274,11 +274,22 @@ const support = externalDatabaseUrl ? { supported: true } : await getEmbeddedPos
       // A real append holds KEY SHARE on both parent rows until it commits.
       // Bound the other connection's wait so a conflicting lock fails this
       // regression instead of leaving both transactions waiting for each other.
-      const identityDb = createDb(`${externalDatabaseUrl ?? database.connectionString}?options=-c%20lock_timeout%3D1000`, {
+      const identityUrl = new URL(externalDatabaseUrl ?? database.connectionString);
+      if (withQuery) {
+        identityUrl.searchParams.set("application_name", "identity-query-test");
+        identityUrl.searchParams.set("options", [identityUrl.searchParams.get("options"), "-c statement_timeout=5000"].filter(Boolean).join(" "));
+      }
+      identityUrl.searchParams.set("options", [identityUrl.searchParams.get("options"), "-c lock_timeout=1000"].filter(Boolean).join(" "));
+      const identityDb = createDb(identityUrl.toString(), {
         maxConnections: 1,
       });
       const [settings] = await identityDb.execute(sql`show lock_timeout`);
       expect(settings?.lock_timeout).toBe("1s");
+      if (withQuery) {
+        expect(identityUrl.searchParams.get("application_name")).toBe("identity-query-test");
+        const [timeouts] = await identityDb.execute(sql`show statement_timeout`);
+        expect(timeouts?.statement_timeout).toBe("5s");
+      }
       await db.transaction(async (audit) => {
         await audit.insert(secretAccessEvents).values({
           companyId: input.companyId,
