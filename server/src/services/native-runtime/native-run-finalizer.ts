@@ -1,3 +1,5 @@
+import { notifyNativeRecoveryNotices } from "../native-recovery-notice-notifications.js";
+import { resolveCommittedNativeRecoveryNotices } from "./native-recovery-notices.js";
 import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
 import { projectCommittedRun, recoveredExecutionFailureMetadata } from "./native-run-projection.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
@@ -35,7 +37,6 @@ import {
   heartbeatRuns,
   heartbeatRunEvents,
   issueComments,
-  issueRecoveryActions,
   issueThreadInteractions,
   issues,
   nativeRunFinalizations,
@@ -592,21 +593,6 @@ export async function recordNativeFinalizationFailure(input: {
   });
 }
 
-async function resolveCommittedFinalizationRecovery(db: Db, run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId">, issueId: string) {
-  const actions = await db.select().from(issueRecoveryActions).where(and(
-    eq(issueRecoveryActions.companyId, run.companyId), eq(issueRecoveryActions.sourceIssueId, issueId),
-    eq(issueRecoveryActions.kind, "active_run_watchdog"), inArray(issueRecoveryActions.status, ["active", "escalated"]),
-    sql`${issueRecoveryActions.evidence}->>'runId' = ${run.id}`,
-    or(
-      sql`${issueRecoveryActions.wakePolicy}->>'kind' = 'resume_native_run'`,
-      eq(issueRecoveryActions.cause, "native_workspace_finalization_owner_unverified"),
-    ),
-  ));
-  for (const action of actions) await issueRecoveryActionService(db).resolveActiveForIssue({
-    companyId: run.companyId, sourceIssueId: issueId, actionId: action.id,
-    status: "resolved", outcome: "restored", resolutionNote: "The accepted native result and workspace finalization committed successfully; this run needs no further finalization retry.",
-  });
-}
 
 async function materializeNativeReviewResponse(db: Db, runId: string, dbOrTx: Db = db) {
   const [run] = await dbOrTx
@@ -752,6 +738,27 @@ export async function recoverCommittedNativeChatResponse(
   try {
     materialized = await db.transaction(async (transaction) => {
       const tx = transaction as unknown as Db;
+      // Share coordinator -> issue -> run ordering with status, workspace, and
+      // recovery-notice owners; presentation may repair the same committed run.
+      const [coordinator] = await tx
+        .select()
+        .from(nativeRunFinalizations)
+        .where(
+          and(
+            eq(nativeRunFinalizations.runId, input.runId),
+            eq(nativeRunFinalizations.companyId, input.companyId),
+            eq(nativeRunFinalizations.issueId, input.issueId),
+            eq(nativeRunFinalizations.phase, "committed"),
+            isNull(nativeRunFinalizations.leaseOwner),
+          ),
+        )
+        .for("update");
+      if (
+        !coordinator?.resultId ||
+        !coordinator.decisionId ||
+        !coordinator.assessmentId
+      )
+        return false;
       const [issue] = await tx
         .select()
         .from(issues)
@@ -810,25 +817,6 @@ export async function recoverCommittedNativeChatResponse(
       if (
         typeof record(record(run.resultJson).presentationDecision).commentId ===
         "string"
-      )
-        return false;
-      const [coordinator] = await tx
-        .select()
-        .from(nativeRunFinalizations)
-        .where(
-          and(
-            eq(nativeRunFinalizations.runId, run.id),
-            eq(nativeRunFinalizations.companyId, input.companyId),
-            eq(nativeRunFinalizations.issueId, input.issueId),
-            eq(nativeRunFinalizations.phase, "committed"),
-            isNull(nativeRunFinalizations.leaseOwner),
-          ),
-        )
-        .for("update");
-      if (
-        !coordinator?.resultId ||
-        !coordinator.decisionId ||
-        !coordinator.assessmentId
       )
         return false;
       if (input.onlyWhenDue) {
@@ -1096,6 +1084,7 @@ export async function finalizeNativeRun(input: {
   skipNativeResponsePresentation?: boolean;
   skipNativeReviewResponse?: boolean;
   skipCommittedRunProjection?: boolean;
+  skipNativeRecoveryNotices?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
   failpoint?: NativeStatusCommitFailpoint;
@@ -1161,7 +1150,7 @@ export async function finalizeNativeRun(input: {
         logger.warn({ err, runId: admittedRun.id }, "Slack conversation settlement deferred to reconciliation");
       });
     }
-    await resolveCommittedFinalizationRecovery(input.db, admittedRun, coordinator.issueId);
+    if (!input.skipNativeRecoveryNotices) await resolveCommittedNativeRecoveryNotices(input.db, { companyId: admittedRun.companyId, runId: admittedRun.id, issueId: coordinator.issueId });
     if (input.projectRunStatus) {
       const [projectedRun] = await input.db.select({
         id: heartbeatRuns.id, companyId: heartbeatRuns.companyId, agentId: heartbeatRuns.agentId,
@@ -1631,6 +1620,7 @@ export async function finalizeNativeRun(input: {
           .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
           .for("update").limit(1);
         if (!before) return null;
+        await notifyNativeRecoveryNotices(tx, { companyId: run.companyId, runId: run.id });
         await notifyNativeRunProjection(tx, { companyId: run.companyId, runId: run.id });
         await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
@@ -1667,7 +1657,7 @@ export async function finalizeNativeRun(input: {
           logger.warn({ err, runId: run.id }, "Slack conversation settlement deferred to reconciliation");
         });
       }
-      if (finalizationPhase === "committed") await resolveCommittedFinalizationRecovery(input.db, run, coordinator.issueId);
+      if (finalizationPhase === "committed" && !input.skipNativeRecoveryNotices) await resolveCommittedNativeRecoveryNotices(input.db, { companyId: run.companyId, runId: run.id, issueId: coordinator.issueId });
       if (input.projectRunStatus && updatedRun) await reconcileMuseNativeTerminalRun(input.db, updatedRun);
       return {
         ...coordinator,
