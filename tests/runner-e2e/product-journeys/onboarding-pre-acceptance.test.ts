@@ -17,6 +17,19 @@ function preAcceptanceReceipt(): OnboardingPreAcceptanceEvidence {
     taskCount: 1, attachmentCount: 1, documentCount: 0, nonPlanningDocumentCount: 0,
     firstTaskMatchesCanonicalParent: true, firstTaskStatus: "in_review", canonicalParentStatus: "in_review" };
 }
+function passedResult(): RunnerE2EResult {
+  const retained = result();
+  retained.status = "passed";
+  delete retained.error;
+  retained.runIds = ["run-1"];
+  Object.assign(retained.productJourney!, { outcome: "passed", campaignId: "campaign", attemptId: "attempt",
+    phases: [{ phase: "journey", outcome: "passed" }], resourceDisposition: "released",
+    checks: ["fresh-workspace", "ui-connection-and-native-agent", "first-task-complete", "downloadable-artifact-verified", "native-trace-verified"].map(id => ({ id, passed: true })),
+    deployment: { kind: "cloud", targetId: "qa", origin: "https://qa.example.test", commit: "a".repeat(40), cloudRelease: "release", runtimeImage: "image", configurationHash: "config" },
+    operations: { campaignId: "campaign", attemptId: "attempt", modelCostUsd: null, setupCostUsd: null, requestCount: 1,
+      feedback: { collection: "complete", complaints: 0, suggestions: 0 }, traceIds: ["trace-1"] } });
+  return retained;
+}
 describe("onboarding pre-acceptance retained evidence", () => {
   it("accepts historical results without pre-acceptance evidence and preserves optional receipts in reports", () => {
     const retained = result();
@@ -29,6 +42,24 @@ describe("onboarding pre-acceptance retained evidence", () => {
     for (const text of ["Onboarding pre-acceptance evidence", "awaiting-proposal", "attachment_present", "First task status", "Canonical parent status", "in_review", "Attachments", "Non-planning documents", "onboarding_work_before_acceptance"]) expect(output).toContain(text);
     expect(roundTrip.status).toBe("failed");
     expect(roundTrip.productJourney.outcome).toBe("failed");
+  });
+  it.each([
+    ["a passed result", passedResult],
+    ["another case", (): RunnerE2EResult => ({ ...result(), caseId: "task-properties",
+      executionId: "product-journeys.qa.browser.local.task-properties", profileId: "browser", provider: null, model: null, runtimeMode: "none" })],
+    ["another suite", (): RunnerE2EResult => ({ ...result(), suiteId: "first-task", executionId: "first-task.runner-codex.local.cloud-onboarding" })],
+  ] as const)("rejects a valid receipt on %s after accepting the same result without it", (_label, makeResult) => {
+    const retained = makeResult();
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    retained.productJourney!.onboardingPreAcceptance = preAcceptanceReceipt();
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.onboardingPreAcceptance");
+  });
+  it.each(["passed", "blocked", "unsupported"] as const)("rejects a valid receipt on a %s journey outcome after accepting the same result without it", outcome => {
+    const retained = result();
+    retained.productJourney!.outcome = outcome;
+    expect(() => validateRetainedRunnerResult(retained)).not.toThrow();
+    retained.productJourney!.onboardingPreAcceptance = preAcceptanceReceipt();
+    expect(() => validateRetainedRunnerResult(retained)).toThrow("result.productJourney.onboardingPreAcceptance");
   });
   it.each([
     ["raw bodies", (): unknown => ({ ...preAcceptanceReceipt(), body: "private-body-must-not-render" })],
