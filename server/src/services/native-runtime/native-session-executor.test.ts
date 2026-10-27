@@ -11426,6 +11426,23 @@ describe("runnerd provider runtime wiring", () => {
     });
   });
 
+  it.each(["isolated", "preconfigured"].flatMap(homeMode =>
+    [true, false].map(disableWebSearch => ({ homeMode, disableWebSearch })),
+  ))("pins Grok v10 permissions, effort and search policy at daemon startup: $homeMode $disableWebSearch", async ({ homeMode, disableWebSearch }) => {
+    const current = { ...execution, schema: "paperclip.native-execution-input.v10", homeMode,
+      provider: { kind: "acpx", agent: "grok", model: "grok-4.7", permissionMode: "approve-all",
+        grokEffort: "high", grokDisableWebSearch: disableWebSearch },
+      session: { ...execution.session, driverKind: "acpx_runtime" },
+    } as unknown as NativeExecutionInput;
+    await createRunnerdBackend({ db: leaseDb(current), execution: current,
+      runnerInstanceId: `grok-v10-pinned-${homeMode}-${disableWebSearch}` });
+    state.createBackend.mock.calls.at(-1)![1].codexTransportFactory!();
+    expect(state.createTransport.mock.calls.at(-1)![0]).toMatchObject({
+      provider: "acpx", acpxAgent: "grok", acpxPermissionMode: "approve-all",
+      acpxPermissionModePinned: true, grokEffort: "high", grokDisableWebSearch: disableWebSearch, homeMode,
+    });
+  });
+
   it("copies back and removes Grok credentials from the exact ACPX launch home", async () => {
     const priorHome = process.env.PAPERCLIP_HOME;
     const privateRoot = await realpath(isolatedStateDirectory);

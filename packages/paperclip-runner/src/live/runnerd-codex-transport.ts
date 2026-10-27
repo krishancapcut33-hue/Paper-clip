@@ -6778,6 +6778,7 @@ class DurablePrpCodexTransport implements CodexAppServerTransport {
       admittedGrokWebSearchPolicy(this.options.acpxAgent ?? "codex", this.options.grokDisableWebSearch, descriptor, providerIdentity);
       if (claudeEffort !== undefined) this.#evidence.claudeEffort = claudeEffort;
       if (grokEffort !== undefined) this.#evidence.grokEffort = grokEffort;
+      if (this.options.grokDisableWebSearch !== undefined) this.#evidence.grokDisableWebSearch = this.options.grokDisableWebSearch;
       const piThinkingLevel = admittedPiThinkingLevel(this.options.acpxAgent ?? "codex", this.options.piThinkingLevel, descriptor, providerIdentity);
       if (piThinkingLevel !== undefined) this.#evidence.piThinkingLevel = piThinkingLevel;
       this.#turnControls = parseAcpxTurnControlCapabilities(descriptor.turnControls, descriptor.agent);

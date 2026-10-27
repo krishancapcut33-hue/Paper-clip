@@ -89,7 +89,7 @@ describe("Copilot build-owned installation", () => {
   it("admits the current profile with environment launch preparation", () => {
     expect(QUALIFIED_ACPX_PROFILES.copilot.agentProfileVersion).toBe(66);
     expect(QUALIFIED_ACPX_PROFILES.copilot.qualificationStatus).toBeUndefined();
-    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:fee8a2ced89067039d6021fedbcd9d1f70ea4d314ce7c8d2a3eef89c6879199b");
+    expect(QUALIFIED_ACPX_PROFILES.copilot.commandDigest).toBe("sha256:0cddc219af25b741b7138f38faa7514dd5ee3427b1d3168e8a4bfbe5180983e8");
   });
 
   it("retains v65 history while binding the shared native Grok effort transport in v66", async () => {
