@@ -1,5 +1,5 @@
 {
-  "id": "617ad3d3-17db-4221-ab59-cf5eb6dc3638",
+  "id": "2a9439e3-4a2b-4a20-ab2b-2aee3db8cb03",
   "prevId": "a0fcd9b8-f125-4985-8795-f567466b9aef",
   "version": "7",
   "dialect": "postgresql",
@@ -47782,6 +47782,18 @@
           "primaryKey": false,
           "notNull": false
         },
+        "git_authorization_grant_id": {
+          "name": "git_authorization_grant_id",
+          "type": "uuid",
+          "primaryKey": false,
+          "notNull": false
+        },
+        "git_authorized_by_user_id": {
+          "name": "git_authorized_by_user_id",
+          "type": "text",
+          "primaryKey": false,
+          "notNull": false
+        },
         "pause_reason": {
           "name": "pause_reason",
           "type": "text",
@@ -47819,18 +47831,6 @@
           "primaryKey": false,
           "notNull": true,
           "default": "now()"
-        },
-        "deletion_claim_token": {
-          "name": "deletion_claim_token",
-          "type": "text",
-          "primaryKey": false,
-          "notNull": false
-        },
-        "deletion_claim_expires_at": {
-          "name": "deletion_claim_expires_at",
-          "type": "timestamp with time zone",
-          "primaryKey": false,
-          "notNull": false
         }
       },
       "indexes": {
@@ -47931,6 +47931,19 @@
             "id"
           ],
           "onDelete": "no action",
+          "onUpdate": "no action"
+        },
+        "projects_git_authorization_grant_id_connection_grants_id_fk": {
+          "name": "projects_git_authorization_grant_id_connection_grants_id_fk",
+          "tableFrom": "projects",
+          "tableTo": "connection_grants",
+          "columnsFrom": [
+            "git_authorization_grant_id"
+          ],
+          "columnsTo": [
+            "id"
+          ],
+          "onDelete": "set null",
           "onUpdate": "no action"
         }
       },
