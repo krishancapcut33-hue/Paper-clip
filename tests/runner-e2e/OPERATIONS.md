@@ -443,6 +443,8 @@ asynchronous lifecycle verification reaches ready. This wait uses the remaining
 attempt deadline, allows at most 45 seconds locally and the bounded attempt window
 for Daytona provisioning, and stops on an observed setup error
 or hold. The private `budgeted-setup.json` snapshot retains state transitions.
+Budgeted Daytona fixtures give the saved-account hello probe five minutes inside
+that attempt window; its former 90-second default could expire during cold startup.
 Only then does the case begin agent-phase accounting and create its task.
 Older evidence that advanced after fixture creation may label hello probes as
 agent cost. Its campaign totals still include those requests; retain that phase
