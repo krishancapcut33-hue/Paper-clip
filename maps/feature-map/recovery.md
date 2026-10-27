@@ -40,6 +40,9 @@ Agent access: [companion](../agent-access-map/recovery.md).
   one fresh isolated attempt, with recovered files attached rather than claiming
   native copyback. Real PostgreSQL/filesystem regressions cover board and inbound
   ownership, sibling holds, restart/race delivery and unchanged source records.
+  Later turns reuse the current canonical task directory. Real heartbeat tests
+  recompute selection and configuration; explicit Git, foreign/missing/symlink
+  paths and lost bindings still prevent provider execution.
   Native finalization deadline failures also retain the exact prepared source
   for the same stop-and-save workflow before Retry admits another executor.
   Retry reconstructs missing preservation for historical failures only from an

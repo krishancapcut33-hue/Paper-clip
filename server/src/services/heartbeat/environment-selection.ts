@@ -17,7 +17,7 @@ import {
   type ParsedExecutionWorkspaceMode,
 } from "../execution-workspace-policy.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../task-workspace-access.js";
-import { shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
+import { isBoundIsolatedTaskDirectory, shouldUseIsolatedTaskDirectory } from "../isolated-task-directory.js";
 import { readTaskDirectoryRetention } from "../isolated-task-directory-retention.js";
 import {
   findNativeChatWorkspaceScope,
@@ -471,7 +471,19 @@ export async function selectHeartbeatEnvironment(db: Db, input: HeartbeatEnviron
       preserveImplicitDefaultSettings: ["project", "task_default"].includes(taskWorkspaceIntent.source) });
   }
   const explicitTaskDirectory = !isDotRun && taskWorkspaceIntent?.selection.kind === "task_directory";
-  const useIsolatedTaskDirectory = !isDotRun && issueRef !== null && ((fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
+  const explicitDirectoryStrategies = [issueAssigneeOverrides?.adapterConfig?.workspaceStrategy,
+    projectExecutionWorkspacePolicy?.workspaceStrategy, issueExecutionWorkspaceSettings?.workspaceStrategy];
+  const reuseTaskDirectory = !isDotRun && !fresh && !nativeRecoveryExecutionWorkspaceId && issueId !== null && issueRef !== null &&
+    requestedShouldReuseExisting && requestedExecutionWorkspaceMode === "isolated_workspace" &&
+    !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId &&
+    taskWorkspaceIntent?.selection.kind !== "configured_source" &&
+    (taskWorkspaceIntent?.selection.kind !== "existing" || taskWorkspaceIntent.selection.workspaceId === issueRef.executionWorkspaceId) &&
+    explicitDirectoryStrategies.every(value => {
+      const strategy = parseObject(value);
+      return Object.keys(strategy).length === 0 || (Object.keys(strategy).length === 1 && strategy.type === "project_primary");
+    }) && await isBoundIsolatedTaskDirectory({ companyId: agent.companyId, issueId,
+      workspaceId: issueRef.executionWorkspaceId, workspace: reusableExistingExecutionWorkspace });
+  const useIsolatedTaskDirectory = !isDotRun && issueRef !== null && (reuseTaskDirectory || (fresh && !workspaceProjectContext?.hasWorkspace && !issueRef.projectWorkspaceId) || shouldUseIsolatedTaskDirectory({
     trustPreset: trustPreset.kind,
     environmentDriver: selectedEnvironmentForConfig?.driver ?? null,
     mode: requestedExecutionWorkspaceMode,
