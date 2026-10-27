@@ -97,6 +97,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
   let cleanup: (() => Promise<void>) | undefined;
   let claims!: RuntimeToolsTokenClaims;
   let runId!: string;
+  let issueId!: string;
 
   beforeAll(async () => {
     const tempDb = await startEmbeddedPostgresTestDatabase("paperclip-connection-intents-");
@@ -106,7 +107,7 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const companyId = randomUUID();
     const agentId = randomUUID();
     const goalId = randomUUID();
-    const issueId = randomUUID();
+    issueId = randomUUID();
     runId = randomUUID();
     await db.insert(companies).values({
       id: companyId,
@@ -199,6 +200,37 @@ describeEmbeddedPostgres("connectionIntentService", () => {
     const serialized = JSON.stringify(result);
     expect(serialized).not.toContain("responsible-user");
     expect(serialized).not.toContain(claims.sub);
+  });
+
+  it("returns actual advice-first single and multiple choices without creating setup", async () => {
+    vi.stubEnv("PAPERCLIP_VERCEL_CONNECT_ENABLED", "false");
+    vi.stubEnv("PAPERCLIP_VERCEL_CONNECT_ACCESS_TOKEN", "private-discovery-control");
+    try {
+      const before = await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId));
+      const service = connectionIntentService(db);
+      for (const query of ["Notion", "Compare Linear and Notion", "Connect Notion with Vercel Connect"]) {
+        const result = await service.search(claims, query);
+        expect(result.instruction).toMatch(/For setup advice or comparison, explain/);
+        expect(result.instruction).toMatch(/If the user explicitly requests setup or selects a method/);
+        expect(result.instruction).not.toContain("user already asked to connect");
+        expect(result.instruction).toContain("Task-bound credential-source selection is not supported");
+        expect(result.instruction).toContain("do not send a standalone setup link");
+        expect(result.instruction).toContain("Do not silently substitute ordinary OAuth");
+        expect(result.results.find(item => item.service === "notion")?.methods).toContainEqual(expect.objectContaining({
+          key: "mcp-oauth", whenToUse: "Use the provider-hosted connection for the quickest setup.",
+          setupPath: "/CONN/apps/connect?source=notion&method=mcp-oauth",
+          credentialSources: [expect.objectContaining({ source: "vercel_connect", available: false, reason: "Vercel Connect setup is disabled on this Paperclip instance." })],
+        }));
+        if (query.startsWith("Compare")) expect(result.results.some(item => item.service === "linear")).toBe(true);
+        expect(JSON.stringify(result)).not.toContain("private-discovery-control");
+      }
+      expect(await db.select().from(issueThreadInteractions).where(eq(issueThreadInteractions.issueId, issueId))).toEqual(before);
+      const explicit = await service.search(claims, "Connect Notion");
+      expect(explicit.instruction).toContain("call connection_request");
+      const request = await service.request(claims, "notion");
+      try { expect(request).toMatchObject({ state: "needs_user_action", service: "notion", interactionId: expect.any(String) }); }
+      finally { await db.delete(issueThreadInteractions).where(eq(issueThreadInteractions.id, request.interactionId!)); }
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it("discovers GitHub review bots independently from chat connectors", async () => {

@@ -28,9 +28,15 @@ export interface ConnectionSearchResultItem {
     key: string;
     label: string;
     auth: "oauth" | "api_key" | "none";
+    /** Reviewed catalog guidance; never provider-supplied next-step instructions. */
+    whenToUse?: string;
+    /** Optional, reviewed credential source choices with current setup readiness. */
+    credentialSources?: Array<{
+      source: "vercel_connect"; label: string; available: boolean; reason: string | null;
+    }>;
     /** AgentMail channel setup and tool methods support connection_request cards. */
     purpose?: "tool" | "channel" | "ai";
-    /** Company-scoped setup destination for methods with a separate setup flow. */
+    /** Company-scoped supported setup destination; tool methods also support the inline connection_request card. */
     setupPath?: string;
   }>;
   state: ConnectionAvailabilityState;

@@ -1,3 +1,5 @@
+import { connectionMethodDiscoveryMetadata, connectionSetupAdviceInstruction, credentialSourceSelectionInstruction } from "./connection-method-discovery.js";
+import { vercelConnectSetupAvailability } from "./vercel-connect.js";
 import { updateAgentConfigurationInTransaction } from "./agent-configuration-transaction.js";
 import { emailChannelService } from "./email-channels.js";
 import { emailConnectionService } from "./email-connections.js";
@@ -422,6 +424,7 @@ export function connectionIntentService(db: Db) {
     const serviceQuery = explicit?.serviceQuery ?? query;
     const preparedQuery = prepareConnectionSearch(serviceQuery);
     const inventory = await connectionInventory(run.companyId);
+    const credentialSourceAvailability = vercelConnectSetupAvailability();
     const candidates: Array<{ item: ConnectionSearchResultItem; score: number; nameScore: number }> = [];
     const authorizedCatalogs = new Map<string, Awaited<ReturnType<typeof indexedCatalog>>>();
     const discoveryMethods = (app: (typeof APP_STORE_DEFINITIONS)[number]) => getAvailableConnectionMethods(app)
@@ -442,6 +445,7 @@ export function connectionIntentService(db: Db) {
         app = { ...app, searchCapabilities: methods.map(method => `${method.whenToUse} ${method.label ?? ""} ${method.capabilityProfile?.description ?? ""}`).join(" "),
           methods: methods.map(method => ({ key: method.key, label: method.label ?? method.key, auth: method.auth,
             purpose: method.purpose ?? "tool",
+            ...connectionMethodDiscoveryMetadata(method, service, company.prefix, credentialSourceAvailability),
             ...(method.purpose === "channel" && method.provider ? {
               setupPath: `/${company.prefix}/apps/chat/connect?${new URLSearchParams({ provider: method.provider, purpose: "chat", agentId: agent.id })}`,
             } : method.purpose === "ai" ? { setupPath: `/${company.prefix}/apps/connect?${new URLSearchParams({ source: service })}` } : {}),
@@ -613,7 +617,7 @@ export function connectionIntentService(db: Db) {
 
     function discoverySuggestions(results: ConnectionSearchResultItem[]): ConnectionsSearchResult {
       return { version: 1, query, results: results.slice(0, 40),
-        instruction: "These are possible connection matches. Choose the relevant service and method using descriptions and purposes. For available or needs_user_action results, tool methods and AgentMail use connection_request to show the inline setup card; other channel or AI methods use setupPath. Use ready tools as installed; ready AI authentication applies to the next execution without reconnection. For an aggregator result, search its aggregator.targetService to obtain the provider-choice question and follow that instruction before requesting a connection. Respect unavailable states. Do not treat a search match as provider consent or app authorization." };
+        instruction: "These are possible connection matches. Choose the relevant service and method using descriptions and purposes. For setup advice or comparison, explain these methods and unavailable prerequisites first. If the user explicitly requests setup or selects a method, use connection_request for available or needs_user_action tool methods or AgentMail; other channel or AI methods use setupPath. Use ready tools as installed; ready AI authentication applies to the next execution without reconnection. For an aggregator result, search its aggregator.targetService to obtain the provider-choice question and follow that instruction before requesting a connection. Respect unavailable states. Do not treat a search match as provider consent or app authorization. " + credentialSourceSelectionInstruction };
     }
   }
 
@@ -621,20 +625,20 @@ export function connectionIntentService(db: Db) {
     return { version: 1, query, results, instruction: !results.length
       ? "No verified connection route was found. Explain that support could not be verified; do not invent a provider route or request unsupported services."
       : !suggestions && isRemoteMcpConnectorId(results[0]!.service) && results[0]!.state !== "unavailable"
-        ? `${results[0]!.name} is an external service. When the user explicitly names this provider, disclose that it handles the connection and requests to the requested app; no additional provider-choice question is necessary. ${results[0]!.state === "ready" ? aggregatorContinuationInstruction(results[0]!.service, "The requested app") : "Call connection_request with the returned service identifier and follow its instruction. Provider setup does not yet verify underlying app access."}`
+        ? `${results[0]!.name} is an external service. When the user explicitly names this provider, disclose that it handles the connection and requests to the requested app; no additional provider-choice question is necessary. ${results[0]!.state === "ready" ? aggregatorContinuationInstruction(results[0]!.service, "The requested app") : "For setup advice or comparison, explain this provider and its verified limits first. If the user explicitly requests setup or selects this method, call connection_request with the returned service identifier and follow its instruction. Provider setup does not yet verify underlying app access."}`
       : !suggestions && results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
-      : suggestions || results.length > 1 ? "These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For available or needs_user_action tool methods or AgentMail, call connection_request with the service identifier to present its setup card. For other available or needs_user_action channel or AI methods, share the method's setupPath. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support."
+      : suggestions || results.length > 1 ? "These are ranked connection matches. Choose the relevant service and method using their descriptions and purposes; extra query words need not match. For setup advice or comparison, explain these methods and unavailable prerequisites before starting setup. If the user explicitly requests setup or selects a method, use connection_request with the service identifier for available or needs_user_action tool methods or AgentMail, or share the method's setupPath for other channel or AI methods. Use ready tools as installed; ready AI authentication is available for the agent's next execution and does not need reconnection. Respect unavailable states and recorded user choices. Clarify only if the intended service is still ambiguous; unrelated matches are not evidence of support. " + credentialSourceSelectionInstruction
       : results[0]!.state === "ready" && results[0]!.methods.every(method => method.purpose === "ai")
         ? "AI authentication is available for this agent's next execution. Do not create another connection request or ask the user to reconnect."
       : results[0]!.service === "agentmail"
         ? results[0]!.state === "ready"
           ? "An active AgentMail inbox is assigned to you. Use agentmail_inboxes to read its address. Do not request another connection."
-          : "Call connection_request with service agentmail to show the inline API-key card. Do not send a setup link or ask for the key in chat. The card creates an inbox for this agent; wait for completion before claiming an email address."
+          : "For setup advice or comparison, explain AgentMail and its prerequisites first. If the user explicitly requests setup or selects AgentMail, call connection_request with service agentmail to show the inline API-key card. Do not send a setup link or ask for the key in chat. The card creates an inbox for this agent; wait for completion before claiming an email address."
       : results[0]!.methods.every(method => method.purpose && method.purpose !== "tool")
-        ? "Choose the method relevant to the task using its purpose and label. Share its setupPath with the user to open the existing channel or AI setup flow. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
+        ? "For setup advice or comparison, explain these methods and unavailable prerequisites first. Choose the method relevant to the task using its purpose and label. If the user explicitly requests setup or selects a method, share its setupPath to open the existing channel or AI setup flow. These methods do not use the tool connection_request card. Do not claim tools or an inbox are ready before setup finishes."
       : results[0]!.state === "ready" ? "Use the installed connection. Do not create another connection request."
       : results[0]!.state === "unavailable" ? "This connection is unavailable or administratively restricted. Explain the reason. Do not bypass it using another provider."
-      : "Call connection_request with the returned service identifier. The user already asked to connect: do not ask a generic confirmation or imitate the setup card. Follow the returned instruction." };
+      : connectionSetupAdviceInstruction };
   }
 
   async function providerSelections(companyId: string, issueId: string, agentId: string, userId: string, questionId: string) {
