@@ -942,5 +942,5 @@ in both the header and payload, but does not pin that worker-generated parent.
 Treat the attempt OTLP token as authority to submit trace attribution within
 this eval project. Keep it limited to the trusted harness/provider runtime;
 never expose it to test prompts or unrelated clients. The project check is not
-an attempt-isolation guarantee. Retained indexing checks verify the expected
-attempt traces after the run.
+an attempt-isolation guarantee. Indexing verification is a separate retained
+or scheduled check; the manual launcher alone does not perform it.
