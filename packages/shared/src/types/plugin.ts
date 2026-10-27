@@ -193,6 +193,8 @@ export interface SandboxProviderCapabilities {
 export interface PluginEnvironmentDriverDeclaration {
   /** Plugin-managed skill keys automatically included when this environment is selected. */
   skillKeys?: string[];
+  /** Leases require a saved agent and its lifecycle preparation, including during setup. */
+  requiresAgent?: boolean;
   /** Provides Runner execution, resource preparation, and PRP connections via environmentTask. */
   supportsTasks?: boolean;
   freshWorkspaceVersion?: 1;

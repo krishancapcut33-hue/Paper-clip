@@ -178,6 +178,7 @@ export type SandboxProviderCapabilitiesInput = z.infer<typeof sandboxProviderCap
 // (for example `supportsLoginPTY`) fails validation instead of dropping.
 export const pluginEnvironmentDriverDeclarationSchema = z.object({
   skillKeys: z.array(z.string().min(1).max(100)).max(100).optional(),
+  requiresAgent: z.boolean().optional(),
   supportsTasks: z.boolean().optional(),
   freshWorkspaceVersion: z.literal(1).optional(),
   warmTaskVersion: z.literal(1).optional(),
@@ -834,6 +835,9 @@ export const pluginManifestV1Schema = z.object({
     launchers: z.array(pluginLauncherDeclarationSchema).optional(),
   }).optional(),
 }).superRefine((manifest, ctx) => {
+  if (manifest.environmentDrivers?.some(driver => driver.requiresAgent) && !manifest.agentLifecycle) {
+    ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent-dependent environments require agent lifecycle participation", path: ["agentLifecycle"] });
+  }
   if (manifest.agentLifecycle && !manifest.capabilities.includes("agents.lifecycle.manage")) {
     ctx.addIssue({ code: z.ZodIssueCode.custom, message: "Agent lifecycle participation requires agents.lifecycle.manage", path: ["capabilities"] });
   }
