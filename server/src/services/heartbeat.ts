@@ -1,3 +1,4 @@
+import { registerAutomaticCompletionReviewWork } from "./native-runtime/automatic-completion-reviews.js";
 import { registerObsoletePolicyReviewWork } from "./native-runtime/obsolete-policy-reviews.js";
 import { registerCancelledWorkspacePreservationWork } from "./native-runtime/native-failed-workspace-recovery.js";
 import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
@@ -4075,6 +4076,8 @@ export function heartbeatService(
     triggerIssueMonitor,
 
     reportRunActivity: clearDetachedRunWarning,
+    registerAutomaticCompletionReviewWork: (coordinator: Parameters<typeof registerAutomaticCompletionReviewWork>[1], canRun: () => boolean) =>
+      registerAutomaticCompletionReviewWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerObsoletePolicyReviewWork: (coordinator: Parameters<typeof registerObsoletePolicyReviewWork>[1], canRun: () => boolean) =>
       registerObsoletePolicyReviewWork(db, coordinator, () => canRun() && readTaskDrain(new Date()) === null),
     registerCancelledWorkspacePreservationWork: (
