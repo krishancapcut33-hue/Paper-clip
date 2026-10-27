@@ -1084,6 +1084,7 @@ export async function finalizeNativeRun(input: {
   skipNativeResponsePresentation?: boolean;
   skipNativeReviewResponse?: boolean;
   skipCommittedRunProjection?: boolean;
+  skipExternalConversationSettlement?: boolean;
   skipNativeRecoveryNotices?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
@@ -1145,7 +1146,7 @@ export async function finalizeNativeRun(input: {
         issueId: coordinator.issueId,
         runId: admittedRun.id,
       });
-    if (input.projectRunStatus) {
+    if (input.projectRunStatus && !input.skipExternalConversationSettlement) {
       await settleExternalConversation(input.db, admittedRun.companyId, coordinator.issueId).catch((err) => {
         logger.warn({ err, runId: admittedRun.id }, "Slack conversation settlement deferred to reconciliation");
       });
@@ -1652,7 +1653,7 @@ export async function finalizeNativeRun(input: {
           issueId: coordinator.issueId,
           runId: run.id,
         });
-      if (input.projectRunStatus && finalizationPhase === "committed") {
+      if (input.projectRunStatus && finalizationPhase === "committed" && !input.skipExternalConversationSettlement) {
         await settleExternalConversation(input.db, run.companyId, coordinator.issueId).catch((err) => {
           logger.warn({ err, runId: run.id }, "Slack conversation settlement deferred to reconciliation");
         });
