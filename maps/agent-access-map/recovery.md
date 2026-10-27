@@ -500,12 +500,6 @@ Evidence: `source-only` — [legacy gates](../../server/src/services/recovery/le
 
 Verification: `not-run` — After confirmed cleanup one useful continuation consumes saved order; repeat sweep/reload no duplicate. Pause/budget/approval/unknown external outcome and reassignment prevent stale admission. Queued Stop leaves another routine cycle intact.
 
-Snapshot-only recovery does not grant agents a new Retry or execution API. The
-server's inbound owner reauthorizes its trusted, unchanged durable human request;
-board queues keep their separate owner. After all exact termination checks, a
-settled same-run recovery permits fresh isolation and verified snapshot
-attachments. Missing/changed authority or unknown termination remains deferred.
-
 Gaps: Legacy/native/channel runtimes separately qualify; preserve original undispatched-hold and callback regressions.
 
 ## `reconnect`
