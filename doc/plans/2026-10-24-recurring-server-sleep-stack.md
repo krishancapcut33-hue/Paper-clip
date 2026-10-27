@@ -1358,3 +1358,35 @@ Next separate owner: voice call-report reconciliation. Preserve the existing
 24-hour post-call refresh obligation, transcript ordering, task projection and
 provider diagnostics while removing scans with no eligible calls. Inspect
 completion semantics before treating a report marked available as fully settled.
+
+Slice 24 is published as [#17583](https://github.com/paperclipai/paperclip/pull/17583)
+at `9c38ddfe53`, based on #17580 `4f0364d269`. It is attached to this chat.
+CI/review are running; no merge. The next branch is
+`codex/sleep-25-voice-call-reports`, with its owner audit recorded separately.
+
+## Slice 25: voice call reports
+
+Report refresh now owns a scoped deadline worker. Terminal transitions, signed
+callbacks, and reply call-ended responses activate existing report/session rows.
+Attempts save the next retry before provider I/O, and callback/new-attempt fences
+prevent stale settlement. The existing 24-hour refresh obligation is preserved,
+including available reports. Empty/configured-idle/live/old history is quiet.
+This removes the last voice duty from recurring chat maintenance.
+
+Acceptance: 174 selected real-database/wiring cases, workspace typecheck and build
+pass. A new integration case exposed missing baseRevisionId on an existing guest
+transcript; the fix uses the document revision contract and preserves lock
+behavior. Full failure history and external-wake limits are in
+`2026-10-25-voice-call-report-sleep-audit.md`. Publication and remote checks follow.
+Parent #17583 has a Discord rollback/drain test failure to repair at its owner;
+parent #17580 has two new cleanup review findings. Neither is marked complete.
+The remaining chat duties, original ledger, #17490 E2E failure, and final
+master/stack reconciliation remain required. No stack merge is authorized.
+
+Slice 25 published as [#17586](https://github.com/paperclipai/paperclip/pull/17586).
+Parent Discord test settlement and denial-latency repairs are propagated. At the
+report tip, 41 Discord tests and 138 full voice/app tests pass; unchanged report,
+cleanup and retention workers had 37 passing cases. CI/reviews remain required.
+Next owner audit splits Teams unused-consent expiry from abandoned send/upload
+attempt recovery, preserving one reason per PR. Company deletion cleanup policy
+and the earlier E2E failure remain unresolved completion duties.
