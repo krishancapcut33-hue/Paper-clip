@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from "react";
-import type { AgentStatus, TaskInterruptionPresentation } from "@paperclipai/shared";
+import { isAgentStatusInvokable, type Agent, type TaskInterruptionPresentation } from "@paperclipai/shared";
 import type { IssueChatComment, IssueChatLinkedRun } from "@/lib/issue-chat-messages";
 import { CommentSubmissionUnknownError } from "@/lib/comment-submit-result";
 import { isTerminalIssueStatus } from "@/lib/liveIssueIds";
@@ -17,7 +17,7 @@ interface Submission {
 export function useRunnerSubmission({
   issueId,
   agentId,
-  agentStatus,
+  agent,
   blocked = false,
   comments,
   issueStatus,
@@ -28,7 +28,7 @@ export function useRunnerSubmission({
 }: {
   issueId: string | null;
   agentId: string | null;
-  agentStatus?: AgentStatus;
+  agent?: Partial<Pick<Agent, "status" | "orgChainHealth">>;
   blocked?: boolean;
   comments: readonly IssueChatComment[];
   issueStatus?: string;
@@ -44,8 +44,9 @@ export function useRunnerSubmission({
   const interruptionKey = JSON.stringify([
     interruption?.intentId, interruption?.state, interruption?.observedRunId,
   ]);
-  const startupBlocked = blocked || agentStatus === "paused" ||
-    agentStatus === "pending_approval" || agentStatus === "terminated";
+  const startupBlocked = blocked ||
+    (agent?.status !== undefined && !isAgentStatusInvokable(agent.status)) ||
+    agent?.orgChainHealth?.status === "invalid_org_chain";
   const savedComment = submission && comments.find(comment =>
     comment.clientRequestId === submission.clientRequestId && !comment.clientStatus);
   const acknowledgedAt = savedComment ? new Date(savedComment.createdAt).getTime() : null;

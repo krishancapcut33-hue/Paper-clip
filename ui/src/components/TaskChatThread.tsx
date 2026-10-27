@@ -2656,7 +2656,7 @@ export function TaskChatThread(props: TaskChatThreadProps) {
   } = useRunnerSubmission({
     issueId: issueId ?? null,
     agentId: issueAssigneeAgentId,
-    agentStatus: agentMap?.get(issueAssigneeAgentId ?? "")?.status,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
     blocked: Boolean(composerPause),
     comments,
     issueStatus,

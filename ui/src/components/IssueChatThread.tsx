@@ -6107,7 +6107,7 @@ export function IssueChatThread({
   } = useRunnerSubmission({
     issueId,
     agentId: issueAssigneeAgentId,
-    agentStatus: agentMap?.get(issueAssigneeAgentId ?? "")?.status,
+    agent: agentMap?.get(issueAssigneeAgentId ?? ""),
     blocked: Boolean(composerPause),
     comments,
     issueStatus,
