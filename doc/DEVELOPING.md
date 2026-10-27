@@ -1888,6 +1888,17 @@ TLS and protocol metadata. To use an isolated external database, set
 `PAPERCLIP_CONTINUATION_BENCHMARK_DATABASE_URL` to a disposable database ending
 in `_test`. The harness applies migrations there and adds synthetic fixtures.
 
+Continuation history reads select completed tool receipts and the typed
+conversation/workspace recovery fields used to choose the prior terminal run.
+Every completed receipt keeps its full result. Receipt order, company/agent/task
+scope, and the complete retained history stay unchanged. Saved results remain
+available to detail, recovery, and execution paths.
+Use `pnpm --filter @paperclipai/server exec tsx ../scripts/benchmark-continuation-history.ts --baseline-ref=<pre-fix-commit>`
+to compare generated SQL, complete continuation envelopes, and DataRow bytes.
+The benchmark includes a large required-receipt control. Its external database
+option is `PAPERCLIP_CONTINUATION_HISTORY_BENCHMARK_DATABASE_URL`, with the same
+disposable `_test` database restriction.
+
 Retry scheduling is in `server/src/services/heartbeat/retries.ts`. It owns bounded
 retry schedules, connection and workspace contention deferrals, shared-workspace
 holder checks, due retry promotion, and retry-now requests. `createHeartbeatRetries`
