@@ -1258,7 +1258,7 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
     withCredentialMutationLease, teamsFileRetryAfter, isShuttingDown: () => shuttingDown,
     get teamsFileUploadRequest() { return options.teamsFileUploadRequest; },
   });
-  const { enqueueInboundWakeupPublications, authorizeInboundWakePublication } = createInboundWakeNotices(db, { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange, isShuttingDown: () => shuttingDown });
+  const { enqueueInboundWakeupPublications, loadInboundWakeNoticeScopes, reconcileInboundWakeNotices, authorizeInboundWakePublication } = createInboundWakeNotices(db, { authorizeInboundWakeup, enqueueFailedChatRetryPublications, authorizeRetainedChatSourcePublication, isExternalActionAuthorizationChange, isShuttingDown: () => shuttingDown });
 
   async function authorizeRetainedChatSourcePublication(
     tx: DbOrTransaction,
@@ -3348,7 +3348,9 @@ export function chatChannelService(db: Db, options: ChatChannelServiceOptions) {
 
   async function processPublicationMaintenance(limit = 25) {
     scheduleGitHubMaintenance();
-    await enqueueInboundWakeupPublications();
+    // Normal inbound notices are commit-driven. Failed-run retries retain their
+    // separate maintenance owner until its own producer audit is complete.
+    await enqueueFailedChatRetryPublications(50);
     await reconcileTerminalConfirmationActions(limit);
     await processPendingInteractionWakeups(limit);
   }
@@ -3551,6 +3553,8 @@ return {
     reconcileProviderRuntimes,
     processPendingPublications,
     enqueueInboundWakeupPublications,
+    loadInboundWakeNoticeScopes,
+    reconcileInboundWakeNotices,
     schedulePendingPublications,
     processPendingDeliveries,
     processQueuedDeliveries: () => processPendingDeliveries(25, undefined, false),
