@@ -268,11 +268,11 @@ describe("project env routes", () => {
     );
   });
 
-  it.each([false, true])("rejects retained task workspaces before claiming deletion or stopping activity (cleanup: %s)", async (deleteFiles) => {
+  it.each([false, true].flatMap(deleteFiles => ["retained task workspaces", "linked issues", "cost records", "financial records"].map(dependency => ({ deleteFiles, dependency }))))("rejects $dependency before claiming deletion or stopping activity (cleanup: $deleteFiles)", async ({ deleteFiles, dependency }) => {
     const { conflict } = await import("../errors.js");
     const project = buildProject({ status: deleteFiles ? "backlog" : "deleting" });
     mockProjectService.getById.mockResolvedValue(project);
-    mockProjectService.assertDeletionAllowed.mockRejectedValue(conflict("This project still supplies access policy for retained task workspaces."));
+    mockProjectService.assertDeletionAllowed.mockRejectedValue(conflict(`This project has ${dependency}.`));
     const update = vi.fn();
     const transaction = vi.fn();
     const select = vi.fn();
@@ -281,7 +281,7 @@ describe("project env routes", () => {
     const result = await request(app).delete(`/api/projects/project-1?deleteFiles=${deleteFiles}`);
 
     expect(result.status).toBe(409);
-    expect(result.body.error).toContain("retained task workspaces");
+    expect(result.body.error).toContain(dependency);
     expect(mockProjectService.assertDeletionAllowed).toHaveBeenCalledWith(project);
     expect(update).not.toHaveBeenCalled();
     expect(transaction).not.toHaveBeenCalled();

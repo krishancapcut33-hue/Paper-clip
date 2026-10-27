@@ -13,6 +13,8 @@ import {
   projectGoals,
   goals,
   issues,
+  costEvents,
+  financeEvents,
   budgetPolicies,
   pluginManagedResources,
   plugins,
@@ -53,6 +55,15 @@ async function assertProjectDeletionAllowed(db: Db | ProjectTransaction, project
   const [retained] = await db.select({ id: executionWorkspaces.id }).from(executionWorkspaces)
     .where(and(eq(executionWorkspaces.companyId, project.companyId), eq(executionWorkspaces.projectId, project.id))).limit(1);
   if (retained) throw conflict("This project still supplies access policy for retained task workspaces. Archive the project or explicitly clean up its workspaces before deleting it.");
+  const [issue] = await db.select({ id: issues.id }).from(issues)
+    .where(and(eq(issues.companyId, project.companyId), eq(issues.projectId, project.id))).limit(1);
+  if (issue) throw conflict("This project still has linked issues. Move or delete its issues before deleting it, or archive the project.");
+  const [cost] = await db.select({ id: costEvents.id }).from(costEvents)
+    .where(and(eq(costEvents.companyId, project.companyId), eq(costEvents.projectId, project.id))).limit(1);
+  if (cost) throw conflict("This project has cost records that must be preserved. Archive the project instead of deleting it.");
+  const [finance] = await db.select({ id: financeEvents.id }).from(financeEvents)
+    .where(and(eq(financeEvents.companyId, project.companyId), eq(financeEvents.projectId, project.id))).limit(1);
+  if (finance) throw conflict("This project has financial records that must be preserved. Archive the project instead of deleting it.");
 }
 
 import { resolveManagedProjectWorkspaceDir, resolvePaperclipInstanceRoot } from "../home-paths.js";

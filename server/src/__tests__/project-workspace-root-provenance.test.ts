@@ -6,7 +6,7 @@ import path from "node:path";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
 import { eq } from "drizzle-orm";
 import { agents, authUsers, companies, companyMemberships, createDb, executionWorkspaceRepositoryAccess,
-  executionWorkspaces, issues, projects, projectWorkspaces, projectAccessMembers, principalPermissionGrants,
+  executionWorkspaces, issues, costEvents, financeEvents, projects, projectWorkspaces, projectAccessMembers, principalPermissionGrants,
   EMBEDDED_POSTGRES_TEST_TIMEOUT_MS } from "@paperclipai/db";
 import { projectService } from "../services/projects.js";
 import { assertTaskWorkspaceExecutionAccess, assertTaskWorkspaceSourceProjectAccess } from "../services/task-workspace-access.js";
@@ -109,6 +109,33 @@ const support = await getEmbeddedPostgresTestSupport();
     await db.delete(executionWorkspaces).where(eq(executionWorkspaces.id, workspace.id));
     await expect(service.assertDeletionAllowed(project)).resolves.toBeUndefined();
     await expect(service.remove(project.id)).resolves.toMatchObject({ id: project.id, fileCleanup: "not_requested" });
+  });
+
+  it.each(["issue", "cost", "finance"] as const)("rejects linked %s records before deletion and rechecks after preflight", async (kind) => {
+    const companyId = randomUUID();
+    await db.insert(companies).values({ id: companyId, name: "Linked records", issuePrefix: `L${companyId.slice(0, 6)}` });
+    const [project] = await db.insert(projects).values({ companyId, name: "Project with history" }).returning();
+    const removeManagedFiles = vi.fn();
+    const service = projectService(db, { captureWorkspaceUpdates: false, removeManagedFiles });
+    await expect(service.assertDeletionAllowed(project)).resolves.toBeUndefined();
+
+    if (kind === "issue") {
+      await db.insert(issues).values({ companyId, projectId: project.id, title: "Linked task" });
+    } else if (kind === "cost") {
+      await db.insert(costEvents).values({ companyId, projectId: project.id, usageKind: "decision",
+        provider: "test", model: "test", costCents: 1, occurredAt: new Date() });
+    } else {
+      await db.insert(financeEvents).values({ companyId, projectId: project.id, eventKind: "expense",
+        biller: "test", amountCents: 1, occurredAt: new Date() });
+    }
+
+    const message = kind === "issue" ? "linked issues" : kind === "cost" ? "cost records" : "financial records";
+    await expect(service.assertDeletionAllowed(project)).rejects.toThrow(message);
+    await expect(service.remove(project.id, { deleteFiles: true })).rejects.toThrow(message);
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    expect(await db.select().from(projects).where(eq(projects.id, project.id))).toMatchObject([{
+      status: project.status, deletionClaimToken: null,
+    }]);
   });
 
   it("can remove a configured folder that never existed without inventing provenance", async () => {
