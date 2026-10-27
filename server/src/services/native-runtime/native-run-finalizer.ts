@@ -1,3 +1,5 @@
+import { notifyNativeRunProjection } from "../native-run-projection-notifications.js";
+import { projectCommittedRun, recoveredExecutionFailureMetadata } from "./native-run-projection.js";
 import { notifyNativeResultCommit } from "../native-result-commit-notifications.js";
 import { notifyRetainedNativeSessionCleanup } from "../retained-native-session-cleanup-notifications.js";
 import { notifyNativeFinalizationWork } from "../native-finalization-notifications.js";
@@ -91,7 +93,6 @@ import {
 } from "../durable-chat-wakeup.js";
 import {
   isNativeRunnerOwnershipHeld,
-  nativeRunnerOwnershipNotHeldCondition,
 } from "./native-runner-ownership.js";
 
 function record(value: unknown): Record<string, unknown> {
@@ -135,12 +136,7 @@ function isCommittedAuditOnlyRouting(value: unknown) {
   );
 }
 
-/** Server-owned terminal conversion used by live finalization and read models. */
-export function projectNativeTerminalRunStatus(
-  terminalState: "succeeded" | "failed" | "cancelled" | "active",
-) {
-  return terminalState === "active" ? ("running" as const) : terminalState;
-}
+export { projectNativeTerminalRunStatus } from "./native-run-projection.js";
 
 /** Fact-based arbitration at the production finalization authority seam. */
 export function resolveNativeFinalizerStatus(
@@ -610,128 +606,6 @@ async function resolveCommittedFinalizationRecovery(db: Db, run: Pick<typeof hea
     companyId: run.companyId, sourceIssueId: issueId, actionId: action.id,
     status: "resolved", outcome: "restored", resolutionNote: "The accepted native result and workspace finalization committed successfully; this run needs no further finalization retry.",
   });
-}
-
-function recoveredExecutionFailureMetadata() {
-  // Read the row being updated so a concurrent cleanup diagnostic is retained.
-  return sql`case when ${heartbeatRuns.error} is not null or ${heartbeatRuns.errorCode} is not null
-    then jsonb_build_object('recoveredExecutionFailure', jsonb_build_object(
-      'schema', 'paperclip.recovered_execution_failure.v1',
-      'errorCode', ${heartbeatRuns.errorCode}, 'error', ${heartbeatRuns.error},
-      'observedAt', ${heartbeatRuns.updatedAt}
-    )) else '{}'::jsonb end`;
-}
-
-async function projectCommittedRun(input: {
-  db: Db;
-  run: Pick<typeof heartbeatRuns.$inferSelect, "id" | "companyId" | "status" | "finishedAt" | "runtimeMode" | "nativePhase" | "nativeIssueId" | "contextSnapshot">;
-  coordinator: typeof nativeRunFinalizations.$inferSelect;
-}) {
-  if (!input.coordinator.resultId) return;
-  const resultRow = await input.db
-    .select({ resultJson: nativeRunResults.resultJson })
-    .from(nativeRunResults)
-    .where(
-      and(
-        eq(nativeRunResults.id, input.coordinator.resultId),
-        eq(nativeRunResults.runId, input.run.id),
-        eq(nativeRunResults.companyId, input.run.companyId),
-      ),
-    )
-    .limit(1)
-    .then((rows) => rows[0] ?? null);
-  const terminalState = record(
-    record(resultRow?.resultJson).terminal,
-  ).runTerminalState;
-  if (!["succeeded", "failed", "cancelled"].includes(String(terminalState))) {
-    throw new Error("native_finalization_invalid");
-  }
-  const projectedStatus = projectNativeTerminalRunStatus(
-    terminalState as "succeeded" | "failed" | "cancelled",
-  );
-  const needsRepair = and(
-    eq(heartbeatRuns.id, input.run.id),
-    eq(heartbeatRuns.runtimeMode, "native"),
-    or(
-      inArray(heartbeatRuns.status, ["queued", "running", "failed"]),
-      and(
-        eq(heartbeatRuns.status, "succeeded"),
-        or(
-          isNotNull(heartbeatRuns.error),
-          isNotNull(heartbeatRuns.errorCode),
-          isNull(heartbeatRuns.finishedAt),
-          sql`${heartbeatRuns.nativePhase} is distinct from 'committed'`,
-          sql`${heartbeatRuns.resultJson}->>'finalizationPhase' is distinct from 'committed'`,
-          sql`${heartbeatRuns.resultJson}->>'nextAttemptAt' is not null`,
-          sql`${heartbeatRuns.resultJson}->>'failureCode' is not null`,
-          sql`${heartbeatRuns.resultJson}->>'originalFailureCode' is not null`,
-        ),
-      ),
-    ),
-    // Reconciliation revisits committed results periodically. Only repair
-    // a changed projection; rewriting an unchanged failed run would mint a
-    // fresh status delivery (and failure toast) on every sweep. Check the
-    // current row so concurrent replays cannot both queue the same repair.
-    or(
-      sql`${heartbeatRuns.status} is distinct from ${projectedStatus}`,
-      isNull(heartbeatRuns.finishedAt),
-      sql`${heartbeatRuns.nativePhase} is distinct from 'committed'`,
-      sql`${heartbeatRuns.resultJson}->>'finalizationPhase' is distinct from 'committed'`,
-      sql`${heartbeatRuns.resultJson}->>'nextAttemptAt' is not null`,
-      sql`${heartbeatRuns.resultJson}->>'failureCode' is not null`,
-      sql`${heartbeatRuns.resultJson}->>'originalFailureCode' is not null`,
-      ...(terminalState === "succeeded"
-        ? [isNotNull(heartbeatRuns.error), isNotNull(heartbeatRuns.errorCode)]
-        : []),
-    ),
-    nativeRunnerOwnershipNotHeldCondition(),
-  );
-  const [candidate] = await input.db.select({ id: heartbeatRuns.id }).from(heartbeatRuns).where(needsRepair).limit(1);
-  if (!candidate) return;
-  const now = new Date();
-  const [updatedRun] = await input.db.transaction(async transaction => {
-    const tx = transaction as unknown as Db;
-    await notifyRetainedNativeSessionCleanup(tx, { companyId: input.run.companyId, runId: input.run.id });
-    await notifyInstructionCollection(tx, { companyId: input.run.companyId, runId: input.run.id });
-    await notifyCancelledWorkspacePreservation(tx, { companyId: input.run.companyId, runId: input.run.id });
-    await notifyUnsafeWorkspaceExportRunChange(tx, input.run);
-    await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, input.run.companyId);
-    await notifyExecutionRunWork(tx);
-    await notifyChatRunMilestones(tx, { companyId: input.run.companyId, issueId: input.coordinator.issueId });
-    return tx
-      .update(heartbeatRuns)
-      .set({
-        executionStatusDeliveryId: randomUUID(),
-        status: projectedStatus,
-        finishedAt: input.run.finishedAt ?? now,
-        nativePhase: "committed",
-        nativePhaseUpdatedAt: now,
-        ...(terminalState === "succeeded"
-          ? {
-              error: null,
-              errorCode: null,
-              // Capture the row being updated, not the earlier admission read:
-              // cleanup may have recorded a new diagnostic in the meantime.
-              // Other result metadata and all physical-owner evidence stay put.
-              resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb)
-                || ${recoveredExecutionFailureMetadata()}
-                || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)`,
-            }
-          : { resultJson: sql`coalesce(${heartbeatRuns.resultJson}, '{}'::jsonb) || jsonb_build_object('finalizationPhase', 'committed', 'failureCode', null, 'originalFailureCode', null, 'nextAttemptAt', null)` }),
-        updatedAt: now,
-      })
-      .where(needsRepair)
-      .returning();
-  });
-  // Metadata repairs can preserve the terminal status. Only a genuine status
-  // transition should emit another terminal event. A failed run that leaves a
-  // pending retry still needs its first failure report.
-  if (updatedRun && updatedRun.status !== input.run.status) {
-    await emitAgentTaskRun(input.db, updatedRun);
-    void reportRunFailure(input.db, updatedRun);
-  } else if (updatedRun && isNewTerminalRunFailure(input.run, updatedRun)) {
-    void reportRunFailure(input.db, updatedRun);
-  }
 }
 
 async function materializeNativeReviewResponse(db: Db, runId: string, dbOrTx: Db = db) {
@@ -1221,6 +1095,7 @@ export async function finalizeNativeRun(input: {
   projectRunStatus?: boolean;
   skipNativeResponsePresentation?: boolean;
   skipNativeReviewResponse?: boolean;
+  skipCommittedRunProjection?: boolean;
   /** Workspace-only replay must not consume the provider recovery budget. */
   preserveProviderAttempt?: boolean;
   failpoint?: NativeStatusCommitFailpoint;
@@ -1271,7 +1146,7 @@ export async function finalizeNativeRun(input: {
         }),
       );
     }
-    if (input.projectRunStatus)
+    if (input.projectRunStatus && !input.skipCommittedRunProjection)
       await projectCommittedRun({ db: input.db, run: admittedRun, coordinator });
     if (input.projectRunStatus && !presentationAlreadyMaterialized)
       await materializeCommittedReviewResponse(input.db, input.runId);
@@ -1746,8 +1621,17 @@ export async function finalizeNativeRun(input: {
         })
         .where(eq(heartbeatRuns.id, run.id))
         .returning();
-      const [updatedRun] = await input.db.transaction(async transaction => {
+      const projection = await input.db.transaction(async transaction => {
         const tx = transaction as unknown as Db;
+        // A recovery worker can project after the status decision commits and
+        // before this live finalizer arrives. Observe that writer under the
+        // run lock before deciding whether another terminal event is owed.
+        const [before] = await tx.select({ status: heartbeatRuns.status, runtimeMode: heartbeatRuns.runtimeMode,
+          nativePhase: heartbeatRuns.nativePhase, finishedAt: heartbeatRuns.finishedAt })
+          .from(heartbeatRuns).where(and(eq(heartbeatRuns.id, run.id), eq(heartbeatRuns.companyId, run.companyId)))
+          .for("update").limit(1);
+        if (!before) return null;
+        await notifyNativeRunProjection(tx, { companyId: run.companyId, runId: run.id });
         await notifyRetainedNativeSessionCleanup(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyInstructionCollection(tx, { companyId: run.companyId, runId: run.id });
         if (input.projectRunStatus) await notifyCancelledWorkspacePreservation(tx, { companyId: run.companyId, runId: run.id });
@@ -1755,15 +1639,20 @@ export async function finalizeNativeRun(input: {
         if (input.projectRunStatus) await notifyDeliveryWork(tx, DELIVERY_QUEUES.accounting, run.companyId);
         await notifyExecutionRunWork(tx);
         await notifyChatRunMilestones(tx, { companyId: run.companyId, issueId: coordinator.issueId });
-        return projectRun(tx);
+        const [after] = await projectRun(tx);
+        return after ? { before, after } : null;
       });
+      const updatedRun = projection?.after;
       if (
         input.projectRunStatus &&
         !alreadyEmittedByCommittedDecision &&
-        updatedRun
+        projection && projection.after.status !== projection.before.status
       ) {
-        await emitAgentTaskRun(input.db, updatedRun);
-        void reportRunFailure(input.db, updatedRun);
+        await emitAgentTaskRun(input.db, projection.after);
+        void reportRunFailure(input.db, projection.after);
+      } else if (input.projectRunStatus && !alreadyEmittedByCommittedDecision && projection
+        && isNewTerminalRunFailure(projection.before, projection.after)) {
+        void reportRunFailure(input.db, projection.after);
       }
       if (input.projectRunStatus)
         await materializeCommittedReviewResponse(input.db, input.runId);
