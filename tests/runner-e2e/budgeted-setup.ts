@@ -1,3 +1,4 @@
+import type { RunnerEnvironmentId } from "./types.js";
 import type { Agent } from "../../packages/shared/src/types/agent.js";
 import { pollUntil, type RunnerApi } from "./api.js";
 import { beginEvalAgentPhase } from "./attempt-phase.js";
@@ -7,7 +8,7 @@ export type EvalSetupObservation = SetupState & { observedAt: string };
 
 export async function finishBudgetedEvalSetup(input: {
   executionId: string;
-  environmentId?: "local" | "daytona";
+  environmentId: RunnerEnvironmentId;
   agentId: string;
   companyId: string;
   deadlineAt: number;

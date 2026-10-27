@@ -21,7 +21,7 @@ it("keeps asynchronous hello probes in setup until the same agent is ready", asy
   const get = vi.fn().mockResolvedValueOnce({ ...ready, status: "paused", lifecycleState: "verifying", adapterConfig: { private: true } }).mockResolvedValue(ready);
   let saved: EvalSetupObservation[] = [];
   try {
-    await finishBudgetedEvalSetup({ executionId: identity.executionId, agentId: "agent", companyId: "company",
+    await finishBudgetedEvalSetup({ executionId: identity.executionId, environmentId: "local", agentId: "agent", companyId: "company",
       deadlineAt: Date.now() + 5_000, api: { get } as unknown as RunnerApi,
       observe: async observations => {
         expect((await readEvalAttemptPhase(f.file, identity)).phase).toBe("setup");
@@ -43,7 +43,7 @@ it.each([
 ] as const)("preserves setup attribution and the failed state when readiness is rejected: %s", async (state, reason) => {
   const f = await fixture(), observe = vi.fn(async () => {}), get = vi.fn().mockResolvedValue(state);
   try {
-    await expect(finishBudgetedEvalSetup({ executionId: identity.executionId, agentId: "agent", companyId: "company",
+    await expect(finishBudgetedEvalSetup({ executionId: identity.executionId, environmentId: "local", agentId: "agent", companyId: "company",
       deadlineAt: Date.now() + 5_000, api: { get } as unknown as RunnerApi, observe }, f.env)).rejects.toThrow(reason);
     expect(get).toHaveBeenCalledOnce();
     expect(observe).toHaveBeenCalledOnce();
@@ -54,7 +54,7 @@ it.each([
 it("does not start a readiness request after the attempt deadline", async () => {
   const f = await fixture(), get = vi.fn();
   try {
-    await expect(finishBudgetedEvalSetup({ executionId: identity.executionId, agentId: "agent", companyId: "company",
+    await expect(finishBudgetedEvalSetup({ executionId: identity.executionId, environmentId: "local", agentId: "agent", companyId: "company",
       deadlineAt: Date.now() - 1, api: { get } as unknown as RunnerApi, observe: async () => {} }, f.env)).rejects.toThrow("Timed out");
     expect(get).not.toHaveBeenCalled();
     expect((await readEvalAttemptPhase(f.file, identity)).phase).toBe("setup");
@@ -66,7 +66,7 @@ it("does not advance when saving readiness crosses the deadline", async () => {
   const deadlineAt = Date.now() + 5_000;
   const now = vi.spyOn(Date, "now");
   try {
-    await expect(finishBudgetedEvalSetup({ executionId: identity.executionId, agentId: "agent", companyId: "company",
+    await expect(finishBudgetedEvalSetup({ executionId: identity.executionId, environmentId: "local", agentId: "agent", companyId: "company",
       deadlineAt, api: { get } as unknown as RunnerApi,
       observe: async () => { now.mockReturnValue(deadlineAt); } }, f.env)).rejects.toThrow("Timed out saving");
     expect(get).toHaveBeenCalledOnce();
