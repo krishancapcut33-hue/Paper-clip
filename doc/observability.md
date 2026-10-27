@@ -323,7 +323,6 @@ attempt or owning phase:
 | `skills.inventory`, `.wait`, `.bundled`, `.releases`, `.folders`, `.local_sources` | Company skill reconciliation, waiting for an existing company refresh, and its bundled imports, release verification, folder, and local-source work beneath runtime skill preparation. Inventory children overlap their parent. |
 | `skills.cache.acquire`, `skills.rows`, `skills.version.read`, `skills.repository.read`, `skills.version.materialize`, `skills.version.verify` | Dedicated connection/transaction startup plus advisory-lock acquisition, authorized skill rows, frozen version and repository reads, and exact runtime materialization/validation. Lock acquisition ends before the protected work; version verification is inside materialization. Only bounded file counts are added. |
 | `skills.consume` | The caller's delivery and durable version-pinning callback while the cache lock remains held. |
-
 | `workspace_sync.prepare_host_current`, `.prepare_durable_seed`, `.prepare_adopt_remote` | Runtime preparation under the selected inbound mode, including snapshot and staging work. A warm mismatch may produce a second preparation; it is real repeated work. |
 | `workspace_sync.source_root`, `.repositories`, `.ignore_rules`, `.snapshot_git`, `.snapshot_baseline` | Physical source capture, managed repositories, ignore rules, Git metadata and baseline content snapshot. |
 | `workspace_sync.pack`, `.git_clone`, `.git_archive`, `.overlay_copy`, `.overlay_archive`, `.deleted_manifest` | Temporary shallow Git clone, its archive callback, selected working-tree overlay copy/archive, and the deleted-file manifest. The archive is inside the clone's lifetime; do not sum parent and child. |
@@ -346,7 +345,8 @@ attempt or owning phase:
 | `execution.realtime` | Synchronous live-event and plugin publication dispatch. It does not measure browser receipt or paint. |
 
 For bounded native OpenCode diagnosis, set
-`PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS=1` in the explicit Runner environment.
+`PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS=1` as an agent/environment variable.
+The existing configured-environment projection carries it into the native Runner.
 It defaults off. The Runner creates an authenticated loopback OTLP sink and enables
 the pinned OpenCode runtime's internal tracing. The sink discards logs, resource
 attributes, span attributes, events, and unknown span names. It retains only closed

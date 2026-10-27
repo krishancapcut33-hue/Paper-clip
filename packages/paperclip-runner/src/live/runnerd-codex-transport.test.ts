@@ -1,5 +1,6 @@
 import { bindRunnerLaunchResources, createRunnerProviderLaunch, runnerLaunchRequirementsDigest, type PreparedRunnerProviderLaunch, type RunnerProviderLaunchRequirements } from "./runner-provider-launch.js";
 import { coldAdmissionTimeoutMs, waitForRunnerCommand } from "./runnerd-codex-transport.js";
+import { configuredEnvironmentProjection } from "../configured-environment.js";
 import {
   chmod,
   cp,
@@ -2086,7 +2087,7 @@ it("preserves OpenCode runtime bindings when a durable runner is respawned", () 
       environment: {
         PATH: "/bin",
         OPENROUTER_API_KEY: "test-provider-key",
-        PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1",
+        ...configuredEnvironmentProjection({ PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }),
         OTEL_EXPORTER_OTLP_ENDPOINT: "https://must-not-reach-opencode.invalid",
         OTEL_EXPORTER_OTLP_HEADERS: "Authorization=private",
         HOME: "/host/home",
@@ -9073,7 +9074,7 @@ it.each([
     providerNodeCommand: providerNode,
     providerNodeCommandSha256: digest(providerNode),
     environment: { PATH: process.env.PATH, OPENROUTER_API_KEY: "fixture-key",
-      ...(supportsReasoning ? { PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" } : {}),
+      ...(supportsReasoning ? configuredEnvironmentProjection({ PAPERCLIP_OPENCODE_PERFORMANCE_DIAGNOSTICS: "1" }) : {}),
     },
   });
   const task = createCodexTaskEnvelope({
