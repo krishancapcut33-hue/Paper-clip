@@ -2,8 +2,9 @@
 
 import { act } from "react";
 import { createRoot } from "react-dom/client";
+import { renderToStaticMarkup } from "react-dom/server";
 import { afterEach, beforeEach, describe, expect, it } from "vitest";
-import { ApprovalPayloadRenderer, approvalLabel } from "./ApprovalPayload";
+import { ApprovalPayloadRenderer, approvalLabel, isRowResolvableApprovalType } from "./ApprovalPayload";
 import { ThemeProvider } from "../context/ThemeContext";
 
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -16,6 +17,29 @@ describe("approvalLabel", () => {
         title: "Reply with an ASCII frog",
       }),
     ).toBe("Board Approval: Reply with an ASCII frog");
+  });
+
+  it("labels a secret operation from its free-text title", () => {
+    // The board has to read what it is authorizing: the server executes a
+    // `secret_operation` the moment it is approved.
+    expect(
+      approvalLabel("secret_operation", {
+        op: "delete",
+        targetId: "7d2e9a41-6b3c-4f5d-8e19-2a4b6c8d0e1f",
+        title: "Delete the superseded gateway token",
+      }),
+    ).toBe("Secret Operation: Delete the superseded gateway token");
+  });
+});
+
+describe("isRowResolvableApprovalType", () => {
+  it("keeps secret operations and budget overrides out of one-click inbox rows", () => {
+    // An inbox row shows only the requester-chosen title, not the operation or
+    // target the server will execute on approval.
+    expect(isRowResolvableApprovalType("secret_operation")).toBe(false);
+    expect(isRowResolvableApprovalType("budget_override_required")).toBe(false);
+    expect(isRowResolvableApprovalType("hire_agent")).toBe(true);
+    expect(isRowResolvableApprovalType("request_board_approval")).toBe(true);
   });
 });
 
@@ -208,5 +232,49 @@ describe("ApprovalPayloadRenderer", () => {
     act(() => {
       root.unmount();
     });
+  });
+});
+
+describe("SecretOperation card", () => {
+  const TARGET = "7d2e9a41-6b3c-4f5d-8e19-2a4b6c8d0e1f";
+
+  function render(payload: Record<string, unknown>, hidePrimaryTitle = false) {
+    // Static render: the board must see what it authorizes, and this needs no
+    // effects or interaction.
+    return renderToStaticMarkup(
+      <ThemeProvider>
+        <ApprovalPayloadRenderer
+          type="secret_operation"
+          payload={payload}
+          hidePrimaryTitle={hidePrimaryTitle}
+        />
+      </ThemeProvider>,
+    );
+  }
+
+  it("shows operation, target and new name for a rename", () => {
+    const html = render({ op: "rename", targetId: TARGET, newName: "gateway-client-secret" });
+    expect(html).toContain("Operation");
+    expect(html).toContain("rename");
+    expect(html).toContain(TARGET);
+    expect(html).toContain("New name");
+    expect(html).toContain("gateway-client-secret");
+  });
+
+  it("shows operation and target but no new name for a delete", () => {
+    const html = render({ op: "delete", targetId: TARGET });
+    expect(html).toContain("delete");
+    expect(html).toContain(TARGET);
+    expect(html).not.toContain("New name");
+  });
+
+  it("keeps the operation fields when the title is hidden", () => {
+    const html = render(
+      { op: "rename", targetId: TARGET, newName: "gateway-client-secret", title: "Rename it" },
+      true,
+    );
+    expect(html).not.toContain("Rename it");
+    expect(html).toContain(TARGET);
+    expect(html).toContain("gateway-client-secret");
   });
 });

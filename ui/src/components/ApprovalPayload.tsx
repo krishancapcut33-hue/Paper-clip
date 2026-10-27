@@ -1,4 +1,4 @@
-import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck } from "lucide-react";
+import { UserPlus, Lightbulb, ShieldAlert, ShieldCheck, KeyRound } from "lucide-react";
 import { MarkdownBody } from "./MarkdownBody";
 import { formatCents } from "../lib/utils";
 
@@ -7,6 +7,7 @@ export const typeLabel: Record<string, string> = {
   approve_ceo_strategy: "CEO Strategy",
   budget_override_required: "Budget Override",
   request_board_approval: "Board Approval",
+  secret_operation: "Secret Operation",
 };
 
 function firstNonEmptyString(...values: unknown[]): string | null {
@@ -42,9 +43,18 @@ export const typeIcon: Record<string, typeof UserPlus> = {
   approve_ceo_strategy: Lightbulb,
   budget_override_required: ShieldAlert,
   request_board_approval: ShieldCheck,
+  secret_operation: KeyRound,
 };
 
 export const defaultTypeIcon = ShieldCheck;
+
+// Compact inbox rows show only the requester-chosen title, so types whose
+// approval has a server-side effect the row cannot show must open the full card.
+const ROW_UNRESOLVABLE_APPROVAL_TYPES = new Set(["budget_override_required", "secret_operation"]);
+
+export function isRowResolvableApprovalType(type: string): boolean {
+  return !ROW_UNRESOLVABLE_APPROVAL_TYPES.has(type);
+}
 
 function PayloadField({ label, value }: { label: string; value: unknown }) {
   if (!value) return null;
@@ -238,6 +248,41 @@ function BoardApprovalPayloadContent({ payload }: { payload: Record<string, unkn
   );
 }
 
+/**
+ * A `secret_operation` approval is executed by the server the moment it is
+ * approved, so the card has to state exactly what will happen. Only `op`,
+ * `targetId` and `newName` survive payload redaction — anything named like a
+ * secret is blanked before it reaches this component.
+ */
+export function SecretOperationPayload({
+  payload,
+  hideTitle = false,
+}: {
+  payload: Record<string, unknown>;
+  hideTitle?: boolean;
+}) {
+  const op = firstNonEmptyString(payload.op);
+  const targetId = firstNonEmptyString(payload.targetId);
+  const newName = firstNonEmptyString(payload.newName);
+  const rest = hideTitle ? { ...payload, title: undefined } : payload;
+
+  return (
+    <div className="space-y-3.5">
+      <div className="mt-4 rounded-lg border border-border/60 bg-background/60 px-3.5 py-3 text-sm">
+        <p className="text-(length:--text-micro) font-medium uppercase tracking-(--tracking-label) text-muted-foreground">
+          Operation on approval
+        </p>
+        <div className="mt-2 space-y-1.5">
+          <PayloadField label="Operation" value={op} />
+          <PayloadField label="Secret id" value={targetId} />
+          {op === "rename" && <PayloadField label="New name" value={newName} />}
+        </div>
+      </div>
+      <BoardApprovalPayloadContent payload={rest} />
+    </div>
+  );
+}
+
 export function ApprovalPayloadRenderer({
   type,
   payload,
@@ -251,6 +296,9 @@ export function ApprovalPayloadRenderer({
   if (type === "budget_override_required") return <BudgetOverridePayload payload={payload} />;
   if (type === "request_board_approval") {
     return <BoardApprovalPayload payload={payload} hideTitle={hidePrimaryTitle} />;
+  }
+  if (type === "secret_operation") {
+    return <SecretOperationPayload payload={payload} hideTitle={hidePrimaryTitle} />;
   }
   return <CeoStrategyPayload payload={payload} />;
 }
