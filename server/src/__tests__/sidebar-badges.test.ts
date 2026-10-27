@@ -1,6 +1,6 @@
 import { afterAll, beforeAll, describe, expect, it } from "vitest";
-import { eq } from "drizzle-orm";
-import { createDb, getEmbeddedPostgresTestSupport, issueAccessGrants, issues, startEmbeddedPostgresTestDatabase } from "@paperclipai/db";
+import { count, eq, inArray } from "drizzle-orm";
+import { agents, approvals, companies, createDb, getEmbeddedPostgresTestSupport, heartbeatRuns, issueAccessGrants, issues, startEmbeddedPostgresTestDatabase, type Db } from "@paperclipai/db";
 import { sidebarBadgeService } from "../services/sidebar-badges.js";
 import { authorizationService } from "../services/authorization.js";
 import { getHeartbeatRunReadDecisions } from "../services/heartbeat-run-privacy.js";
@@ -56,6 +56,44 @@ describePostgres("sidebar badge failure candidates", () => {
     expect(actual).toEqual({ inbox: approvals + failedRuns + joinRequests + (options?.unreadTouchedIssues ?? 0), approvals, failedRuns, joinRequests });
     return actual;
   }
+
+  it("rolls back all fixture rows when the final approval insert fails", async () => {
+    let companyIds: string[] = [];
+    let writtenRuns = 0;
+    function failLastInsert<T extends Pick<Db, "insert" | "select">>(connection: T): T {
+      return new Proxy(connection, { get(target, key) {
+        if (key !== "insert") return Reflect.get(target, key);
+        return (table: Parameters<Db["insert"]>[0]) => {
+          if (table === companies) return { values: (values: (typeof companies.$inferInsert)[]) => {
+            companyIds = values.map(row => row.id!);
+            fixtures.push({ ...fixture, companyId: companyIds[0]!, foreignCompanyId: companyIds[1]! });
+            return target.insert(companies).values(values);
+          }};
+          if (table === approvals) return { values: async (values: typeof approvals.$inferInsert) => {
+            const [row] = await target.select({ value: count() }).from(heartbeatRuns).where(inArray(heartbeatRuns.companyId, companyIds));
+            writtenRuns = row!.value;
+            return target.insert(approvals).values({ ...values, payload: null as never });
+          }};
+          return target.insert(table);
+        };
+      }});
+    }
+    const failingDb = new Proxy(failLastInsert(db), { get(target, key) {
+      if (key !== "transaction") return Reflect.get(target, key);
+      return (callback: Parameters<Db["transaction"]>[0]) => db.transaction(tx => callback(failLastInsert(tx)));
+    }});
+    await expect(seedSidebarFixture(failingDb)).rejects.toMatchObject({ cause: { code: "23502" } });
+    expect(companyIds).toHaveLength(2);
+    expect(writtenRuns).toBeGreaterThan(600);
+    const rows = await Promise.all([
+      db.select({ value: count() }).from(companies).where(inArray(companies.id, companyIds)),
+      db.select({ value: count() }).from(agents).where(inArray(agents.companyId, companyIds)),
+      db.select({ value: count() }).from(issues).where(inArray(issues.companyId, companyIds)),
+      db.select({ value: count() }).from(heartbeatRuns).where(inArray(heartbeatRuns.companyId, companyIds)),
+      db.select({ value: count() }).from(approvals).where(inArray(approvals.companyId, companyIds)),
+    ]);
+    expect(rows.map(([row]) => row!.value)).toEqual([0, 0, 0, 0, 0]);
+  });
 
   it.each([undefined, null, "", "user-1", "user-2", "local-board", "nobody"])("keeps the bounded latest run before Mine filtering for %s", async currentUserId => {
     await verify({ ...fixture.options, currentUserId });
