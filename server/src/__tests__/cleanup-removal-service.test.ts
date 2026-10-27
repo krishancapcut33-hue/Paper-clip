@@ -1,7 +1,7 @@
 import { createAgentLifecycle, configureAgentLifecycle } from "../services/agent-lifecycle.js";
 import { randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
-import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
+import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   activityLog,
   agents,
@@ -17,6 +17,8 @@ import {
   issueExecutionDecisions,
   issueReadStates,
   issues,
+  projects,
+  projectWorkspaces,
   routines,
 } from "@paperclipai/db";
 import {
@@ -25,6 +27,7 @@ import {
 } from "./helpers/embedded-postgres.js";
 import { agentService } from "../services/agents.ts";
 import { companyService } from "../services/companies.ts";
+import { projectService } from "../services/projects.ts";
 
 const embeddedPostgresSupport = await getEmbeddedPostgresTestSupport();
 const describeEmbeddedPostgres = embeddedPostgresSupport.supported ? describe : describe.skip;
@@ -57,6 +60,8 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await db.delete(heartbeatRuns);
     await db.delete(issues);
     await db.delete(routines);
+    await db.delete(projectWorkspaces);
+    await db.delete(projects);
     await db.delete(agents);
     await db.delete(companies);
   });
@@ -111,6 +116,28 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     });
 
     return { agentId, companyId, issueId, runId };
+  }
+
+  async function seedProjectFixture() {
+    const { companyId } = await seedFixture();
+    const projectId = randomUUID();
+    const workspaceCwd = `/tmp/paperclip-managed/${companyId}/${projectId}`;
+    await db.insert(projects).values({
+      id: projectId,
+      companyId,
+      name: "Disposable project",
+      status: "backlog",
+    });
+    await db.insert(projectWorkspaces).values({
+      id: randomUUID(),
+      companyId,
+      projectId,
+      name: "Primary",
+      sourceType: "local_path",
+      cwd: workspaceCwd,
+      isPrimary: true,
+    });
+    return { companyId, projectId, workspaceCwd };
   }
 
   it("removes agent-owned issue comments and run-linked activity before deleting the agent", async () => {
@@ -281,5 +308,77 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     await expect(db.select().from(routines).where(eq(routines.id, routineId))).resolves.toHaveLength(0);
     await expect(db.select().from(agents).where(eq(agents.id, agentId))).resolves.toHaveLength(0);
     await expect(db.select().from(companies).where(eq(companies.id, companyId))).resolves.toHaveLength(0);
+  });
+
+  it("deletes project-managed files only when explicitly requested", async () => {
+    const { companyId, projectId } = await seedProjectFixture();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    const removed = await projectService(db, { removeManagedFiles }).remove(projectId, {
+      deleteFiles: true,
+    });
+
+    expect(removeManagedFiles).toHaveBeenCalledWith({
+      companyId,
+      projectId,
+    });
+    expect(removed?.fileCleanup).toBe("succeeded");
+  });
+
+  it("does not delete project-managed files by default", async () => {
+    const { projectId } = await seedProjectFixture();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+
+    const removed = await projectService(db, { removeManagedFiles }).remove(projectId);
+
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    expect(removed?.fileCleanup).toBe("not_requested");
+  });
+
+  it.each([-1_000, 60_000])("does not let unclaimed deletion bypass a stored cleanup claim (expiry offset: %s)", async (expiryOffset) => {
+    const { projectId } = await seedProjectFixture();
+    await db
+      .update(projects)
+      .set({
+        status: "deleting",
+        deletionClaimToken: randomUUID(),
+        deletionClaimExpiresAt: new Date(Date.now() + expiryOffset),
+      })
+      .where(eq(projects.id, projectId));
+
+    await expect(projectService(db).remove(projectId)).rejects.toMatchObject({ status: 409 });
+    await expect(db.select().from(projects).where(eq(projects.id, projectId))).resolves.toHaveLength(1);
+  });
+
+  it("allows database-only deletion with a fresh recovery claim without deleting managed files", async () => {
+    const { projectId } = await seedProjectFixture();
+    const claimToken = randomUUID();
+    const removeManagedFiles = vi.fn().mockResolvedValue(undefined);
+    await db.update(projects).set({
+      status: "deleting",
+      deletionClaimToken: claimToken,
+      deletionClaimExpiresAt: new Date(Date.now() + 60_000),
+    }).where(eq(projects.id, projectId));
+
+    const removed = await projectService(db, { removeManagedFiles }).remove(projectId, {
+      deleteFiles: false,
+      deletionClaimToken: claimToken,
+    });
+
+    expect(removed?.fileCleanup).toBe("not_requested");
+    expect(removeManagedFiles).not.toHaveBeenCalled();
+    await expect(db.select().from(projects).where(eq(projects.id, projectId))).resolves.toHaveLength(0);
+  });
+
+  it("reports project cleanup failure after completing database deletion", async () => {
+    const { projectId } = await seedProjectFixture();
+    const removeManagedFiles = vi.fn().mockRejectedValue(new Error("permission denied"));
+
+    const removed = await projectService(db, { removeManagedFiles }).remove(projectId, {
+      deleteFiles: true,
+    });
+
+    expect(removed?.fileCleanup).toBe("failed");
+    await expect(db.select().from(projects).where(eq(projects.id, projectId))).resolves.toHaveLength(0);
   });
 });
