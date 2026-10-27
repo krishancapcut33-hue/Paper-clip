@@ -15,7 +15,7 @@ it.each(["low", "high"] as const)("transports and restores native Grok %s effort
     const reply = (id, result) => process.stdout.write(JSON.stringify({jsonrpc:"2.0",id,result})+"\n");
     readline.createInterface({input:process.stdin}).on("line", line => {
       const request = JSON.parse(line), params = request.params ?? {};
-      fs.appendFileSync(wirePath, JSON.stringify({method:request.method,meta:params._meta})+"\n");
+      fs.appendFileSync(wirePath, JSON.stringify({method:request.method,sessionId:params.sessionId,meta:params._meta})+"\n");
       if (request.method === "initialize") return reply(request.id, {protocolVersion:1,agentCapabilities:{loadSession:true},authMethods:[]});
       if (["session/new","session/load","session/resume"].includes(request.method)) {
         const previous = fs.existsSync(statePath) ? JSON.parse(fs.readFileSync(statePath,"utf8")) : {};
@@ -27,6 +27,12 @@ it.each(["low", "high"] as const)("transports and restores native Grok %s effort
           _meta:{"x.ai/sessionConfig":{options:[{id:model,category:"model",selected:true},{id:effort,category:"mode",selected:true}]}}});
       }
       if (request.method === "_x.ai/session/info") return reply(request.id, {result:{sessionId:params.sessionId}});
+      if (request.method === "session/prompt") {
+        process.stdout.write(JSON.stringify({jsonrpc:"2.0",method:"session/update",params:{sessionId:params.sessionId,
+          update:{sessionUpdate:"agent_message_chunk",content:{type:"text",text:"GROK_RESTORED_TURN_OK"}}}})+"\n");
+        return reply(request.id,{stopReason:"end_turn"});
+      }
+
       process.stdout.write(JSON.stringify({jsonrpc:"2.0",id:request.id,error:{code:-32601,message:"Unsupported native method"}})+"\n");
     });
   `);
@@ -58,11 +64,24 @@ it.each(["low", "high"] as const)("transports and restores native Grok %s effort
     expect(admission.isReady()).toBe(false);
     await runtime.requestExtension({ handle, method: "_x.ai/session/info", params: { sessionId: handle.backendSessionId }, sessionMode: "persistent" });
     admission.assertReady();
+    const turn = runtime.startTurn({ handle, text: "Verify the restored fixture", mode: "prompt", requestId: "grok-cold-turn", timeoutMs: 5_000 });
+    const output: string[] = [];
+    const drain = (async () => {
+      for await (const event of turn.events) if (event.type === "text_delta") output.push(event.text);
+    })();
+    const result = await turn.result;
+    await drain;
+    expect(result.status).toBe("completed");
+    expect(output.join("")).toBe("GROK_RESTORED_TURN_OK");
+    admission.assertReady();
     const wire = (await readFile(wirePath, "utf8")).trim().split("\n").map(line => JSON.parse(line));
     const opens = wire.filter(request => ["session/new", "session/load", "session/resume"].includes(request.method));
-    expect(opens.map(request => request.method)).toEqual(["session/new", "session/load"]);
+    expect(opens.map(request => request.method)).toEqual(["session/new", "session/load", "session/load"]);
     for (const request of opens) expect(request.meta).toMatchObject({ modelId: model, reasoningEffort: effort });
-    expect(wire.some(request => request.method === "session/set_config_option" || request.method === "session/prompt")).toBe(false);
+    expect(wire.filter(request => request.method === "session/prompt")).toEqual([
+      { method: "session/prompt", sessionId: originalSession },
+    ]);
+    expect(wire.some(request => request.method === "session/set_config_option")).toBe(false);
   } finally {
     if (handle) await runtime.close({ handle, reason: "native metadata test complete", discardPersistentState: false });
     await rm(root, { recursive: true, force: true });
