@@ -2,7 +2,7 @@
   "schemaVersion": 1,
   "packageName": "@paperclipai/skills-catalog",
   "packageVersion": "0.3.1",
-  "generatedAt": "2026-10-06T01:21:47.421Z",
+  "generatedAt": "2026-10-28T06:16:36.897Z",
   "skills": [
     {
       "id": "paperclipai:bundled:docs:doc-maintenance",
@@ -557,6 +557,73 @@
         }
       ],
       "contentHash": "sha256:276d85e98a4732f278204e26438aa95fde158dd2d15c1e427c4c7c7d492e769d"
+    },
+    {
+      "id": "paperclipai:optional:paperclip-operations:switch-agent-models",
+      "key": "paperclipai/optional/paperclip-operations/switch-agent-models",
+      "kind": "optional",
+      "category": "paperclip-operations",
+      "slug": "switch-agent-models",
+      "name": "switch-agent-models",
+      "description": "Repoint a company's agents at a different model in bulk: resolve what each agent actually accepts, plan without writing, apply with a snapshot, verify the responses, and roll back. Use when a quota runs out or a provider changes.",
+      "path": "catalog/optional/paperclip-operations/switch-agent-models",
+      "entrypoint": "SKILL.md",
+      "trustLevel": "scripts_executables",
+      "compatibility": "compatible",
+      "defaultInstall": false,
+      "recommendedForRoles": [
+        "general",
+        "manager"
+      ],
+      "requires": [
+        "python3"
+      ],
+      "tags": [
+        "agents",
+        "models",
+        "providers",
+        "bulk-edit",
+        "rollback"
+      ],
+      "files": [
+        {
+          "path": "SKILL.md",
+          "kind": "skill",
+          "sizeBytes": 4710,
+          "sha256": "4bfb23ada743def8a371e846e9e85339dedbc807137d4669bdb032e008e2ec0a"
+        },
+        {
+          "path": "examples/mixed-company-switch.md",
+          "kind": "markdown",
+          "sizeBytes": 2891,
+          "sha256": "3ce04156283fff478d810aae87585b83c7a9e81a78a387cf70f44c7ba33eabd7"
+        },
+        {
+          "path": "examples/rollback-after-bad-switch.md",
+          "kind": "markdown",
+          "sizeBytes": 1700,
+          "sha256": "ef43920db0cf4319fe2243c99dfc7d33ee57f93c4a1e2e8dff78a5360c888f8f"
+        },
+        {
+          "path": "references/model-resolution.md",
+          "kind": "reference",
+          "sizeBytes": 2720,
+          "sha256": "3fe09a7547f898bb50f6635a2bf5117c014bcb673641b641f0acb687f8fa68da"
+        },
+        {
+          "path": "scripts/__pycache__/switch_models.cpython-314.pyc",
+          "kind": "script",
+          "sizeBytes": 35206,
+          "sha256": "4550a7c2c032f8fd3a75def871acc073ff0870fc240c85c18a370be10f440caf"
+        },
+        {
+          "path": "scripts/switch_models.py",
+          "kind": "script",
+          "sizeBytes": 17476,
+          "sha256": "f0d155dfbcb250ff9a8745eefcd405e434e9ba1500b8cb8d4769d0b2bc10e0b6"
+        }
+      ],
+      "contentHash": "sha256:fc93850173b1986a4d637d898ed92d8029bfa128d0dbabb552205c8ae639a70e"
     },
     {
       "id": "paperclipai:optional:product:design-critique",
