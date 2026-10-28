@@ -1504,6 +1504,15 @@ The older #17490 E2E cancellation failure remains unresolved. The entire origina
 inventory stays in scope, with voice the next separate reason after receivers.
 
 
+Receiver discovery is published and attached as [#17572](https://github.com/paperclipai/paperclip/pull/17572)
+at 643f4766227e15006b684d2cc7bea7ddd5cc2147, based on #17557. Its live CI run is
+40173962833; security and reviews are pending. All 218 selected local cases,
+workspace types and build pass. The next audit splits voice into five separate
+reasons: live-session recovery, reply push, inbound admission expiry/provider
+cleanup, inbound history retention, and call reports. See
+[the voice owner audit](2026-10-25-voice-maintenance-sleep-audit.md).
+Branch codex/sleep-21-voice-session-recovery starts with the first reason; the
+other four remain explicit required slices. No voice migration is implemented yet.
 ## Receiver review repair
 
 The real company-removal producer regression reproduced two inventory reads for
@@ -1519,6 +1528,15 @@ full-refresh failure/backoff case. Server typecheck and build pass. Prior broad
 consumer/workspace verification remains recorded above; these 45 overlap that
 coverage and are not an additional unique total. Publication requires fresh
 remote CI and review. The full migration inventory remains outstanding.
+
+
+Voice recovery checkpoint: receiver repair `1604a9fcba` is published to #17572
+and incorporated into the unpublished voice child. The complete 93-case voice
+suite, eight new recovery lifecycle tests, and 16 startup wiring cases pass.
+See the voice audit for precise coverage and remaining work. Receiver CI
+40175242445 is live with no failures at inspection; no final acceptance or merge
+is claimed. All remaining reasons, older #17490 failure, and final master
+reconciliation stay in scope.
 ## Acceptance follow-up after the plugin parent merged (October 27)
 
 Eighteen preceding sleep PRs are merged through plugin scheduling #17518 at
@@ -1545,6 +1563,19 @@ for exact evidence and the older CI runner-loss failure. Fresh CI/reviews and
 parent landing are still required. The original remaining-duty inventory is unchanged.
 
 
+## Voice inventory amplification acceptance, October 27
+
+The voice recovery slice keeps the original single-duty scope and adds the
+normalized health-observation notification contract. Five real metadata writes
+and one health check over 205 future calls previously selected 1,230 call rows;
+they now select zero and preserve the saved deadline. Startup and changed-parent
+reconstruction use bounded pages and retain concurrent wakes.
+
+The updated [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#voice-session-inventory-amplification-repair-october-27)
+records all 725 distinct targeted passing cases, typecheck, build, failed attempts
+and guarded regressions. This is worker acceptance, not deployed sleep proof.
+Fresh exact-head review and CI remain required before the voice PR can merge.
+
 ## Discord registration landing compatibility, October 27
 
 Company deletion has landed. The Discord command slice retains only its original
@@ -1559,3 +1590,31 @@ Receiver discovery keeps its 27-file scope on Discord parent `547fdf2139` and
 preserves current master queue declarations. All 131 targeted cases, server
 typecheck and build pass. See the [receiver audit](2026-10-25-chat-receiver-discovery-sleep-audit.md#landed-foundation-integration-acceptance-october-27).
 Fresh exact-head review, CI and parent landing remain required.
+
+
+## Voice integration with landed foundations, October 27
+
+The bounded voice repair now includes receiver `6e88ca0201` and retains its
+22-file scope. All 725 targeted cases, production typecheck and server build pass
+again. The [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#landed-foundation-acceptance-october-27)
+records exact scope, database setup, the initial partial tool-access run and
+remaining remote gates.
+
+
+## Voice trusted-policy checkout repair, October 27
+
+Receiver `ab39569250` supplies the landed policy checker now required by trusted
+CI. Voice server/package code and tests remain identical to the 725-case tested
+head. The policy checker and its Node tests pass. The [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#trusted-policy-checkout-compatibility-october-27)
+keeps the four old failed gates, including the independent runner shutdown,
+separate from current local evidence. Fresh review and CI remain required.
+
+
+## Voice review follow-up, October 28
+
+Voice recovery isolates a failed broad inventory retry from ready exact hints
+and cached due calls, while retaining on-use authority checks and exact-scope
+fences. The generation test uses controlled scheduler turns instead of elapsed
+SQL time. All 210 current targeted cases, production typecheck and server build
+pass; guarded mutations catch both regressions. The [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#wildcard-failure-and-deterministic-generation-acceptance-october-28)
+keeps the actual CI assertion failure and earlier failed attempts separate.

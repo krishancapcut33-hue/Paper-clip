@@ -1,3 +1,7 @@
+import { toolAccessService } from "../services/tool-access.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
+import { idleWorkSnapshot } from "../services/task-admission.js";
+import { resolveExternalTestDatabaseUrl } from "./helpers/external-test-database.js";
 import express from "express";
 import request from "supertest";
 import { errorHandler } from "../middleware/error-handler.js";
@@ -11,7 +15,7 @@ import { VOICE_RESULT_NOTIFICATION } from "@paperclipai/shared";
 import { createHash, createHmac, randomUUID } from "node:crypto";
 import { eq } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it, vi } from "vitest";
-import { chatActions, instanceUserRoles, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
+import { applyPendingMigrations, chatActions, instanceUserRoles, principalPermissionGrants, environments, chatVoiceInboundCalls, chatVoicePhoneLines, chatVoiceReports, heartbeatRuns, toolProfileBindings, chatVoiceCallbacks, agentWakeupRequests, issueThreadInteractions, issueQuestionResponseDeliveries, issueComments, agents, chatConversations, chatDeliveries, chatEndpoints, chatPublications, chatVoiceReplies, chatVoiceSessions, chatVoiceToolCalls, companies, companyMemberships, companySecrets, connectionGrants, connectionGrantMembers, createDb, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS, issues, toolApplications, toolConnections, toolConnectionInstalls } from "@paperclipai/db";
 import { configureSpekoSessionTools } from "../services/voice/speko-tool-setup.js";
 import { instanceSettingsService } from "../services/instance-settings.js";
 import { chatChannelService } from "../services/chat-channels.js";
@@ -28,15 +32,17 @@ import { buildPaperclipRuntimeMcpServers } from "../services/heartbeat.js";
 import { createToolGatewayService } from "../services/tool-gateway.js";
 import { initializeRunIdentity } from "../services/run-identity.js";
 import { syncSpekoVoiceTools, spekoToolsForSession, executeSpekoVoiceTool } from "../services/voice/speko-agent-tools.js";
-const support = await getEmbeddedPostgresTestSupport();
+const external = resolveExternalTestDatabaseUrl("PAPERCLIP_VOICE_TEST_DATABASE_URL");
+const support = external ? { supported: true } : await getEmbeddedPostgresTestSupport();
 (support.supported ? describe : describe.skip)("durable Speko voice sessions", () => {
   let db: ReturnType<typeof createDb>;
-  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>>;
+  let database: Awaited<ReturnType<typeof startEmbeddedPostgresTestDatabase>> | undefined;
   beforeAll(async () => {
-    database = await startEmbeddedPostgresTestDatabase("paperclip-speko-store-");
-    db = createDb(database.connectionString);
+    if (!external) database = await startEmbeddedPostgresTestDatabase("paperclip-speko-store-");
+    if (external) await applyPendingMigrations(external);
+    db = createDb(external ?? database!.connectionString, { idleTimeoutSeconds: 0, maxLifetimeSeconds: 0 });
   }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
-  afterAll(async () => { await database?.cleanup(); });
+  afterAll(async () => { await db?.$client.end({ timeout: 1 }); await database?.cleanup(); });
 
   async function fixture() {
     const companyId = randomUUID(), endpointId = randomUUID(), agentId = randomUUID(), applicationId = randomUUID(), connectionId = randomUUID(), issueId = randomUUID(), conversationId = randomUUID(), callerId = randomUUID();
@@ -66,6 +72,93 @@ const support = await getEmbeddedPostgresTestSupport();
     }
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
+
+  it.each(["hangup", "revocation", "feature disable", "endpoint pause", "connection disable", "task reassignment"] as const)("wakes live recovery from a real start and settles after %s", async reason => {
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const f = await nativeServiceFixture();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const settle = async (terminal = false) => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+      if (terminal) expect(coordinator.nextWakeAt()).toBeNull();
+      else expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+    });
+    const quiet = async () => {
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); writes.mockRestore(); }
+    };
+    try {
+      await f.service.registerRecoveryWork(coordinator, () => true).ready;
+      await settle(true); await quiet();
+      const started = await f.service.start(f.input); await settle();
+      expect(f.transport.createBrowserSession).toHaveBeenCalledOnce();
+      expect(f.transport.inspectSession).not.toHaveBeenCalled();
+      if (reason === "hangup") f.transport.inspectSession.mockResolvedValue({ status: "ended", endedAt: new Date().toISOString() });
+      if (reason === "revocation") await db.update(companyMemberships).set({ status: "removed" }).where(eq(companyMemberships.principalId, f.callerId));
+      if (reason === "feature disable") await instanceSettingsService(db).updateExperimental({ enableChatConnectors: false });
+      if (reason === "endpoint pause") {
+        const chat = chatChannelService(db, { heartbeat: { wakeup: vi.fn() } });
+        try { await chat.configure(f.endpointId, { action: "pause" }, f.callerId); }
+        finally { await chat.shutdown(); }
+      }
+      if (reason === "connection disable") await toolAccessService(db).updateConnection(f.connectionId, { enabled: false });
+      if (reason === "task reassignment") await db.update(issues).set({ assigneeAgentId: null }).where(eq(issues.id, f.issueId));
+      if (["hangup", "revocation", "task reassignment"].includes(reason)) await vi.advanceTimersByTimeAsync(31_000);
+      await settle(true);
+      const [row] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, started.session.id));
+      expect(row.state).toBe("ended");
+      if (reason !== "hangup") expect(f.transport.endSession).toHaveBeenCalledOnce();
+      await quiet(); expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); f.service.unregisterAgentTools(); vi.useRealTimers(); }
+  });
+
+  it("retires uncertain creation at its saved grace deadline without creating another provider call", async () => {
+    await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
+    const f = await nativeServiceFixture();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      await f.service.registerRecoveryWork(coordinator, () => true).ready;
+      f.transport.createBrowserSession.mockRejectedValue(new SpekoProviderError("provider_unavailable", true));
+      await expect(f.service.start({ ...f.input, maxDurationSeconds: 30 })).rejects.toMatchObject({ status: 409 });
+      const row = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.idempotencyKey, f.input.idempotencyKey)).then(rows => rows[0]);
+      const deadline = row.expiresAt.getTime() + 120_001;
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBe(deadline); });
+      const reads = vi.spyOn(db, "select");
+      try { await vi.advanceTimersByTimeAsync(100_000); expect(reads).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); }
+      await vi.advanceTimersByTimeAsync(deadline - Date.now());
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(coordinator.nextWakeAt()).toBeNull(); });
+      expect((await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, row.id)))[0].state).toBe("expired");
+      expect(f.transport.createBrowserSession).toHaveBeenCalledOnce(); expect(f.transport.endSession).not.toHaveBeenCalled();
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); f.service.unregisterAgentTools(); vi.useRealTimers(); }
+  });
+
+  it("recovers a real guest session and settles from its signed lifecycle event", async () => {
+    const f = await inboundFixture(true);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const settle = async () => vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+    try {
+      await f.service.registerRecoveryWork(coordinator, () => true).ready;
+      expect(coordinator.nextWakeAt()).toBeNull();
+      await f.tool("submit_request", { text: "Help draft a public question" });
+      await settle(); expect(coordinator.nextWakeAt()).toBeGreaterThan(Date.now());
+      await vi.advanceTimersByTimeAsync(31_000); await settle();
+      expect(f.transport.inspectSession).toHaveBeenCalledWith(f.event.session_id);
+      expect(f.transport.endSession).not.toHaveBeenCalled();
+      const ended = f.sign({ type: "call.status", call_id: f.event.call_id, status: "ended" });
+      await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+      await settle(); expect(coordinator.nextWakeAt()).toBeNull();
+      const reads = vi.spyOn(db, "select"), writes = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(writes).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); writes.mockRestore(); }
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); f.service.unregisterAgentTools(); vi.useRealTimers(); }
+  });
 
   it("reports signing-secret presence for interrupted setup without returning credential refs", async () => {
     const f = await fixture();
