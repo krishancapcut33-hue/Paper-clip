@@ -59,6 +59,40 @@ A managed home is created empty, so the adapter must provision auth into it befo
 - **Genuine external overrides** (a `CODEX_HOME` outside the Paperclip-managed company tree) are treated as self-managed and are never seeded or overwritten.
 - **Fail-fast guard:** if a managed home ends up with no usable `auth.json` and no configured API key, the run fails with an explicit `adapter_failed` ("no Codex credentials provisioned for managed home …") rather than emitting an unauthenticated request.
 
+### Custom providers in isolated API-key homes
+
+For the Legacy CLI runner, `PAPERCLIP_CODEX_PROVIDERS` also applies to the
+server-assigned home for the current agent when its resolved `OPENAI_API_KEY`
+is nonempty. The existing provider merge preserves the selected model and
+replaces conflicting provider definitions rather than inheriting stale auth or
+headers from them. It does not introduce a CLI profile requirement or change
+session storage.
+
+This path uses the existing cross-process directory lock with nonblocking
+acquisition before auth seeding and configuration preparation. It applies to
+canonical per-agent API-key homes even when the provider book is absent:
+
+- **Remote execution:** prepare and snapshot the curated home while holding
+  the lock, then restore the host configuration and release the lock before
+  launching Codex. Remote runs can overlap using their separate snapshots.
+- **Local execution:** retain the lock through process completion and
+  configuration cleanup. An overlapping invocation for the same home fails
+  immediately with `codex_home_busy`, before changing that home's configuration
+  or credentials and before starting provider work. The adapter does not wait
+  or add a retry mechanism; existing host recovery policy remains unchanged.
+- Remote preparation also fails fast if another preparation or local run owns
+  the home. Runs for different homes remain independent.
+- The lock is OS-owned, not age-based; a contender cannot steal it. Cleanup
+  restores configuration before releasing ownership. Existing interrupted-run
+  backup and managed-block recovery remain in use.
+- This adds no cancellation queue and does not change the existing host Stop
+  or process-signalling behavior.
+
+The pre-existing default-home and generated-skill-home paths are unchanged.
+An explicit external home, subscription-only home, account-cache home, another
+agent's home, or arbitrary company subdirectory does not opt into this new
+API-key routing path.
+
 ### Auth ownership and precedence
 
 `codex_local` is host-owns-auth when Paperclip owns the effective

@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from "node:fs/promises";
+import fs, { mkdir, mkdtemp, readdir, readFile, realpath, rm, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 import { afterEach, describe, expect, it, vi } from "vitest";
@@ -12,8 +12,9 @@ const {
   runSshCommand,
   syncDirectoryToSsh,
   startAdapterExecutionTargetPaperclipBridge,
+  beforeStageCodexHome,
 } = vi.hoisted(() => ({
-  runChildProcess: vi.fn(async () => ({
+  runChildProcess: vi.fn<typeof import("@paperclipai/adapter-utils/server-utils").runChildProcess>(async () => ({
     exitCode: 1,
     signal: null,
     timedOut: false,
@@ -27,7 +28,8 @@ const {
   prepareWorkspaceForSshExecution: vi.fn(async () => ({ gitBacked: false })),
   restoreWorkspaceFromSshExecution: vi.fn(async () => undefined),
   runSshCommand: vi.fn(async () => ({ stdout: Buffer.from("{}").toString("base64"), stderr: "" })),
-  syncDirectoryToSsh: vi.fn(async () => undefined),
+  syncDirectoryToSsh: vi.fn(async (_input: { localDir: string }): Promise<void> => undefined),
+  beforeStageCodexHome: vi.fn(async (_options: { runId?: string }): Promise<void> => undefined),
   startAdapterExecutionTargetPaperclipBridge: vi.fn(async () => ({
     env: {
       PAPERCLIP_API_URL: "http://127.0.0.1:4310",
@@ -73,14 +75,27 @@ vi.mock("@paperclipai/adapter-utils/execution-target", async () => {
   };
 });
 
+vi.mock("./codex-home.js", async () => {
+  const actual = await vi.importActual<typeof import("./codex-home.js")>("./codex-home.js");
+  return {
+    ...actual,
+    stageCodexHomeForSync: async (...args: Parameters<typeof actual.stageCodexHomeForSync>) => {
+      await beforeStageCodexHome(args[1] ?? {});
+      return actual.stageCodexHomeForSync(...args);
+    },
+  };
+});
+
 import { createPromptContextFixture } from "@paperclipai/adapter-utils/test-fixtures/prompt-context";
 import { execute } from "./execute.js";
+import { prepareCodexRuntimeConfig } from "./runtime-config.js";
 
 describe("codex remote execution", () => {
   const cleanupDirs: string[] = [];
 
   afterEach(async () => {
     vi.clearAllMocks();
+    vi.unstubAllEnvs();
     while (cleanupDirs.length > 0) {
       const dir = cleanupDirs.pop();
       if (!dir) continue;
@@ -215,6 +230,395 @@ describe("codex remote execution", () => {
       remoteDir: managedRemoteWorkspace,
     }));
   });
+
+  it.each([
+    ["default", true],
+    ["isolated-api-key", true],
+    ["isolated-subscription", false],
+    ["external", false],
+    ["account-cache", false],
+    ["other-agent", false],
+    ["other-company", false],
+    ["user-managed", false],
+  ] as const)("merges provider routing only into eligible homes: %s", async (kind, shouldMerge) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-routing-"));
+    cleanupDirs.push(rootDir);
+    const paperclipHome = path.join(rootDir, "paperclip");
+    const companyRoot = path.join(paperclipHome, "instances", "default", "companies", "company-1");
+    const workspaceDir = path.join(rootDir, "workspace");
+    const homes = {
+      default: path.join(companyRoot, "codex-home"),
+      "isolated-api-key": path.join(companyRoot, "agents", "agent-1", "codex-home"),
+      "isolated-subscription": path.join(companyRoot, "agents", "agent-1", "codex-home"),
+      external: path.join(rootDir, "external-home"),
+      "account-cache": path.join(companyRoot, "codex-auth-cache", "fixture-account"),
+      "other-agent": path.join(companyRoot, "agents", "agent-2", "codex-home"),
+      "other-company": path.join(companyRoot, "..", "company-2", "agents", "agent-1", "codex-home"),
+      "user-managed": path.join(companyRoot, "custom-home"),
+    };
+    const home = homes[kind];
+    const originalConfig = 'model = "original-model"\n';
+    const originalAuth = JSON.stringify({
+      tokens: { account_id: "fixture-account", access_token: "fixture-access", refresh_token: "fixture-refresh" },
+    });
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(path.join(home, "config.toml"), originalConfig);
+    await writeFile(path.join(home, "auth.json"), originalAuth, { mode: 0o600 });
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("CODEX_HOME", path.join(rootDir, "empty-shared-home"));
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("PAPERCLIP_CODEX_PROVIDERS", JSON.stringify({
+      providers: { gateway: {
+        name: "Fixture gateway", base_url: "https://gateway.example/v1",
+        env_key: "OPENAI_API_KEY", wire_api: "responses",
+      } },
+      model_provider: "gateway",
+    }));
+    let stagedConfig = "";
+    let stagedAuth = "";
+    syncDirectoryToSsh.mockImplementationOnce(async ({ localDir }) => {
+      stagedConfig = await readFile(path.join(localDir, "config.toml"), "utf8");
+      stagedAuth = await readFile(path.join(localDir, "auth.json"), "utf8");
+    });
+
+    await execute({
+      runId: "run-provider-routing",
+      agent: {
+        id: "agent-1", companyId: "company-1", name: "CodexCoder",
+        adapterType: "codex_local", adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli", command: "codex", model: "gateway/custom-model",
+        env: {
+          ...(kind === "default" ? {} : { CODEX_HOME: home }),
+          OPENAI_API_KEY: kind === "isolated-subscription" ? "" : "fixture-api-key",
+        },
+      },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+        privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      } },
+      onLog: async () => {},
+    });
+
+    expect(stagedConfig.includes('[model_providers.gateway]')).toBe(shouldMerge);
+    expect(stagedConfig).toContain('model = "original-model"');
+    expect(stagedConfig).not.toContain("fixture-api-key");
+    if (shouldMerge) {
+      expect(stagedConfig).toContain('model_provider = "gateway"');
+      expect(stagedConfig).toContain('base_url = "https://gateway.example/v1"');
+      expect(stagedConfig).toContain('env_key = "OPENAI_API_KEY"');
+      expect(stagedConfig).toContain('wire_api = "responses"');
+    }
+    const call = runChildProcess.mock.calls[0] as unknown as [string, string, string[]];
+    expect(call[2]).toContain("gateway/custom-model");
+    expect(await readFile(path.join(home, "config.toml"), "utf8")).toBe(originalConfig);
+    expect(await readFile(path.join(home, "auth.json"), "utf8")).toBe(stagedAuth);
+    if (kind === "isolated-api-key") {
+      expect(JSON.parse(stagedAuth)).toEqual({ OPENAI_API_KEY: "fixture-api-key" });
+    }
+    if (kind === "account-cache" || kind === "isolated-subscription") {
+      expect(stagedAuth).toBe(originalAuth);
+    }
+  });
+
+  it.each(["first-exits-before-staging", "both-running"] as const)("isolates overlapping remote routing snapshots: %s", async (order) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-overlap-"));
+    cleanupDirs.push(rootDir);
+    const paperclipHome = path.join(rootDir, "paperclip");
+    const workspaceDir = path.join(rootDir, "workspace");
+    const home = path.join(paperclipHome, "instances", "default", "companies", "company-1", "agents", "agent-1", "codex-home");
+    const originalConfig = 'approval_policy = "never"\n';
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(path.join(home, "config.toml"), originalConfig);
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("CODEX_HOME", path.join(rootDir, "empty-shared-home"));
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("PAPERCLIP_CODEX_PROVIDERS", "");
+    const barrier = () => {
+      let release!: () => void;
+      const promise = new Promise<void>((resolve) => { release = resolve; });
+      return { promise, release };
+    };
+    const firstLaunched = barrier();
+    const finishFirst = barrier();
+    const secondPrepared = barrier();
+    const stageSecond = barrier();
+    const secondLaunched = barrier();
+    const finishSecond = barrier();
+    const stagedHomes: string[] = [];
+    const stagedConfigs: string[] = [];
+    const stage = async ({ localDir }: { localDir: string }) => {
+      stagedHomes.push(localDir);
+      stagedConfigs.push(await readFile(path.join(localDir, "config.toml"), "utf8"));
+    };
+    syncDirectoryToSsh.mockImplementationOnce(stage).mockImplementationOnce(stage);
+    beforeStageCodexHome.mockImplementationOnce(async () => {}).mockImplementationOnce(async () => {
+      secondPrepared.release();
+      await stageSecond.promise;
+    });
+    const finished = {
+      exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "",
+      pid: 123, startedAt: new Date().toISOString(),
+    };
+    runChildProcess.mockImplementationOnce(async () => {
+      firstLaunched.release();
+      await finishFirst.promise;
+      return finished;
+    }).mockImplementationOnce(async () => {
+      secondLaunched.release();
+      await finishSecond.promise;
+      return finished;
+    });
+    const run = (suffix: string) => execute({
+      runId: `run-overlap-${suffix}`,
+      agent: {
+        id: "agent-1", companyId: "company-1", name: "CodexCoder",
+        adapterType: "codex_local", adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli", command: "codex", model: "gateway/custom-model",
+        env: {
+          CODEX_HOME: home, OPENAI_API_KEY: "fixture-api-key",
+          PAPERCLIP_CODEX_PROVIDERS: JSON.stringify({
+            providers: { gateway: {
+              base_url: `https://${suffix}.example/v1`, env_key: "OPENAI_API_KEY", wire_api: "responses",
+            } },
+            model_provider: "gateway",
+          }),
+        },
+      },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+        privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      } },
+      onLog: async () => {},
+    });
+    const first = run("first");
+    await firstLaunched.promise;
+    const second = run("second");
+    try {
+      await secondPrepared.promise;
+      if (order === "first-exits-before-staging") {
+        finishFirst.release();
+        await first;
+        stageSecond.release();
+        await secondLaunched.promise;
+      } else {
+        stageSecond.release();
+        await secondLaunched.promise;
+        expect(runChildProcess).toHaveBeenCalledTimes(2);
+        expect(await readFile(path.join(stagedHomes[0], "config.toml"), "utf8")).toBe(stagedConfigs[0]);
+      }
+      finishSecond.release();
+      await second;
+      if (order === "both-running") {
+        expect(await readFile(path.join(stagedHomes[0], "config.toml"), "utf8")).toBe(stagedConfigs[0]);
+        finishFirst.release();
+        await first;
+      }
+      expect(stagedConfigs[0]).toContain('base_url = "https://first.example/v1"');
+      expect(stagedConfigs[1]).toContain('base_url = "https://second.example/v1"');
+      expect(await readFile(path.join(home, "config.toml"), "utf8")).toBe(originalConfig);
+      expect(JSON.parse(await readFile(path.join(home, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "fixture-api-key" });
+      for (const stagedHome of stagedHomes) {
+        await expect(readdir(stagedHome)).rejects.toMatchObject({ code: "ENOENT" });
+      }
+    } finally {
+      finishFirst.release();
+      stageSecond.release();
+      finishSecond.release();
+      await Promise.allSettled([first, second]);
+    }
+  });
+
+  it.each(["seed", "staging", "cleanup"] as const)("releases the isolated home after %s failure and recovers legacy routing", async (failure) => {
+    const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-lease-failure-"));
+    cleanupDirs.push(rootDir);
+    const paperclipHome = path.join(rootDir, "paperclip");
+    const workspaceDir = path.join(rootDir, "workspace");
+    const home = path.join(paperclipHome, "instances", "default", "companies", "company-1", "agents", "agent-1", "codex-home");
+    const originalConfig = 'approval_policy = "never"\n';
+    await mkdir(workspaceDir, { recursive: true });
+    await mkdir(home, { recursive: true });
+    await writeFile(path.join(home, "config.toml"), originalConfig);
+    vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+    vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+    vi.stubEnv("CODEX_HOME", path.join(rootDir, "empty-shared-home"));
+    vi.stubEnv("OPENAI_API_KEY", "");
+    vi.stubEnv("PAPERCLIP_CODEX_PROVIDERS", "");
+    const providers = JSON.stringify({
+      providers: { gateway: { base_url: "https://gateway.example/v1", env_key: "OPENAI_API_KEY", wire_api: "responses" } },
+      model_provider: "gateway",
+    });
+    await prepareCodexRuntimeConfig({ env: { PAPERCLIP_CODEX_PROVIDERS: providers }, codexHome: home });
+    let failOnce = true;
+    const realRemove = fs.rm;
+    const remove = failure === "cleanup" ? vi.spyOn(fs, "rm").mockImplementation(async (...args) => {
+      if (failOnce && String(args[0]).endsWith("config.toml.paperclip-backup")) {
+        failOnce = false;
+        throw new Error("fixture failure");
+      }
+      return realRemove(...args);
+    }) : null;
+    if (failure === "staging") beforeStageCodexHome.mockRejectedValueOnce(new Error("fixture failure"));
+    const run = (suffix: string) => execute({
+      runId: `run-failure-${suffix}`,
+      agent: {
+        id: "agent-1", companyId: "company-1", name: "CodexCoder",
+        adapterType: "codex_local", adapterConfig: {},
+      },
+      runtime: { sessionId: null, sessionParams: null, sessionDisplayId: null, taskKey: null },
+      config: {
+        engine: "cli", command: "codex", model: "gateway/custom-model",
+        env: { CODEX_HOME: home, OPENAI_API_KEY: "fixture-key", PAPERCLIP_CODEX_PROVIDERS: providers },
+      },
+      context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+      executionTransport: { remoteExecution: {
+        host: "127.0.0.1", port: 2222, username: "fixture",
+        remoteWorkspacePath: "/remote/workspace", remoteCwd: "/remote/workspace",
+        privateKey: "PRIVATE KEY", knownHosts: "[127.0.0.1]:2222 ssh-ed25519 AAAA",
+        strictHostKeyChecking: true,
+      } },
+      onLog: async () => {
+        if (failure === "seed" && failOnce) {
+          failOnce = false;
+          throw new Error("fixture failure");
+        }
+      },
+    });
+    try {
+      await expect(run("failed")).rejects.toThrow("fixture failure");
+      expect(runChildProcess).not.toHaveBeenCalled();
+      await run("retry");
+      expect(runChildProcess).toHaveBeenCalledTimes(1);
+      expect(await readFile(path.join(home, "config.toml"), "utf8")).toBe(originalConfig);
+      await expect(readFile(path.join(home, "config.toml.paperclip-backup"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+    } finally {
+      remove?.mockRestore();
+    }
+  });
+
+  it.each([["success", true], ["success", false], ["process-error", true], ["signal", true]] as const)(
+    "fails local contention before mutation and preserves resume state: %s, providers=%s",
+    async (outcome, withProviders) => {
+      const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-local-overlap-"));
+      cleanupDirs.push(rootDir);
+      const paperclipHome = path.join(rootDir, "paperclip");
+      const workspaceDir = path.join(rootDir, "workspace");
+      const home = path.join(paperclipHome, "instances", "default", "companies", "company-1", "agents", "agent-1", "codex-home");
+      const originalConfig = 'model = "original-model"\n[model_providers.gateway]\nauth = { command = ["stale-command"] }\nhttp_headers = { Authorization = "stale-header" }\n';
+      await mkdir(workspaceDir, { recursive: true });
+      await mkdir(path.join(home, "sessions"), { recursive: true });
+      await writeFile(path.join(home, "config.toml"), originalConfig);
+      await writeFile(path.join(home, "sessions", "fixture.jsonl"), "saved session\n");
+      vi.stubEnv("PAPERCLIP_HOME", paperclipHome);
+      vi.stubEnv("PAPERCLIP_INSTANCE_ID", "default");
+      vi.stubEnv("CODEX_HOME", path.join(rootDir, "empty-shared-home"));
+      vi.stubEnv("OPENAI_API_KEY", "");
+      vi.stubEnv("PAPERCLIP_CODEX_PROVIDERS", "");
+      let announceFirst!: () => void;
+      let finishFirst!: () => void;
+      const firstLaunched = new Promise<void>((resolve) => { announceFirst = resolve; });
+      const firstCanFinish = new Promise<void>((resolve) => { finishFirst = resolve; });
+      const launches: Array<{ args: string[]; home: string; config: string; auth: unknown }> = [];
+      const capture = async (args: string[], env: Record<string, string>) => {
+        const launchedHome = env.CODEX_HOME;
+        launches.push({
+          args, home: launchedHome,
+          config: await readFile(path.join(launchedHome, "config.toml"), "utf8"),
+          auth: JSON.parse(await readFile(path.join(launchedHome, "auth.json"), "utf8")),
+        });
+      };
+      const finished = {
+        exitCode: 0, signal: null, timedOut: false, stdout: "", stderr: "",
+        pid: 123, startedAt: new Date().toISOString(),
+      };
+      runChildProcess.mockImplementationOnce(async (_id, _command, args, options) => {
+        await capture(args, options.env);
+        announceFirst();
+        await firstCanFinish;
+        if (outcome === "process-error") throw new Error("fixture process failure");
+        return outcome === "signal" ? { ...finished, exitCode: null, signal: "SIGTERM" } : finished;
+      }).mockImplementationOnce(async (_id, _command, args, options) => {
+        await capture(args, options.env);
+        return finished;
+      });
+      const run = (suffix: string) => execute({
+        runId: `run-local-${suffix}`,
+        agent: {
+          id: "agent-1", companyId: "company-1", name: "CodexCoder",
+          adapterType: "codex_local", adapterConfig: {},
+        },
+        runtime: {
+          sessionId: "fixture-session", sessionParams: { sessionId: "fixture-session", cwd: workspaceDir },
+          sessionDisplayId: "fixture-session", taskKey: null,
+        },
+        config: {
+          engine: "cli", command: "codex", model: "gateway/custom-model",
+          env: {
+            CODEX_HOME: home, OPENAI_API_KEY: `fixture-key-${suffix}`,
+            PAPERCLIP_CODEX_PROVIDERS: withProviders ? JSON.stringify({
+              providers: { gateway: {
+                base_url: `https://${suffix}.example/v1`, env_key: "OPENAI_API_KEY", wire_api: "responses",
+              } },
+              model_provider: "gateway",
+            }) : "",
+          },
+        },
+        context: { paperclipWorkspace: { cwd: workspaceDir, source: "project_primary" } },
+        onLog: async () => {},
+      });
+      const first = run("first").then(() => null, (error: Error) => error);
+      await firstLaunched;
+      try {
+        const activeConfig = await readFile(path.join(home, "config.toml"), "utf8");
+        const activeFiles = await readdir(home);
+        expect(await run("second")).toMatchObject({
+          errorCode: "codex_home_busy",
+          executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+        });
+        expect(runChildProcess).toHaveBeenCalledTimes(1);
+        expect(await readFile(path.join(home, "config.toml"), "utf8")).toBe(activeConfig);
+        expect(await readdir(home)).toEqual(activeFiles);
+        expect(JSON.parse(await readFile(path.join(home, "auth.json"), "utf8"))).toEqual({ OPENAI_API_KEY: "fixture-key-first" });
+        finishFirst();
+        expect((await first)?.message ?? null).toBe(outcome === "process-error" ? "fixture process failure" : null);
+        await run("after");
+        expect(launches).toHaveLength(2);
+        if (withProviders) {
+          expect(launches[0].config).toContain('base_url = "https://first.example/v1"');
+          expect(launches[1].config).toContain('base_url = "https://after.example/v1"');
+        }
+        expect(launches[1].auth).toEqual({ OPENAI_API_KEY: "fixture-key-after" });
+        for (const launch of launches) {
+          expect(launch.home).toBe(await realpath(home));
+          if (withProviders) expect(launch.config).not.toMatch(/stale-command|stale-header|fixture-key/);
+          else expect(launch.config).toBe(originalConfig);
+          expect(launch.args).toEqual(expect.arrayContaining(["gateway/custom-model", "resume", "fixture-session"]));
+          expect(launch.args.join(" ")).not.toContain("fixture-key");
+        }
+        expect(await readFile(path.join(home, "config.toml"), "utf8")).toBe(originalConfig);
+        expect(await readFile(path.join(home, "sessions", "fixture.jsonl"), "utf8")).toBe("saved session\n");
+        await expect(readFile(path.join(home, "config.toml.paperclip-backup"), "utf8")).rejects.toMatchObject({ code: "ENOENT" });
+      } finally {
+        finishFirst();
+        await first;
+      }
+    },
+  );
 
   it("stages only the allowlist into the home asset: keeps config.toml/skills/auth, drops session+sqlite state, no exclude", async () => {
     const rootDir = await mkdtemp(path.join(os.tmpdir(), "paperclip-codex-allowlist-"));

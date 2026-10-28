@@ -125,6 +125,27 @@ The assigned secret must reach shell tools; an unassigned host token and Codex's
 own login keys must remain unavailable. Verify the same delivery without an
 agent identity. Shell-policy metadata must contain names rather than values.
 
+For Legacy Codex CLI with its own `OPENAI_API_KEY`, the server-assigned per-agent
+home also receives `PAPERCLIP_CODEX_PROVIDERS`. The existing whole-provider merge
+keeps model selection, isolated authentication, and session storage. A directory
+lock covers seeding and configuration: remote runs snapshot, restore, and release
+before launch; local runs hold ownership through process completion and cleanup.
+Contending preparation fails immediately with `codex_home_busy`, without changing
+home configuration or credentials or starting provider work. This also applies
+when the provider book is absent; there is no wait or cancellation queue and no
+new retry mechanism. Existing host recovery policy remains unchanged.
+Default-company-home and generated-skill-home behavior is unchanged. External,
+subscription-only, account-cache, other-agent, and arbitrary company homes do not
+opt into this API-key path.
+The [execution regression](../../packages/adapters/codex-local/src/server/execute.remote.test.ts)
+checks overlapping remote runs, fail-fast local contention, resume arguments,
+auth ownership, process/setup/cleanup failures, and legacy backup recovery through
+the actual adapter and filesystem with mocked SSH and process execution.
+The [directory-lock suite](../../packages/adapter-utils/src/directory-merge-lock.test.ts)
+also exercises cross-process ownership and shared nonblocking acquisition.
+Neither suite invokes a model, proves live gateway authentication, or claims an
+end-to-end host Stop fix.
+
 Choose Codex as the harness; the UI displays its name/icon for both runners.
 Advanced identifies the automatic default and offers Paperclip Runner or Legacy.
 New Codex agents default to the native runner on supported macOS or GNU/Linux

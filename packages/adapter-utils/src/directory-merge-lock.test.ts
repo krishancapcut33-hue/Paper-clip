@@ -7,7 +7,7 @@ import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { promisify } from "node:util";
 import { afterEach, describe, expect, it, vi } from "vitest";
-import { withDirectoryMergeLock, WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "./workspace-restore-merge.js";
+import { tryAcquireDirectoryMergeLease, withDirectoryMergeLock, WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE } from "./workspace-restore-merge.js";
 
 describe("directory merge lock process lifetime", () => {
   // Load tsx as an --import hook, not tsx's own CLI entry point. The CLI entry
@@ -111,6 +111,41 @@ describe("directory merge lock process lifetime", () => {
     const { target, env } = await fixture();
     await expect(withDirectoryMergeLock(target, async () => { throw new Error("operation failed"); }, env)).rejects.toThrow("operation failed");
     await expect(withDirectoryMergeLock(target, async () => "next", env)).resolves.toBe("next");
+  });
+
+  it("fails fast on contention and releases only its own lease", async () => {
+    const { target, env } = await fixture();
+    const held = await tryAcquireDirectoryMergeLease(target, env);
+    expect(held).not.toBeNull();
+    try {
+      expect(await tryAcquireDirectoryMergeLease(target, env)).toBeNull();
+      await expect(withDirectoryMergeLock(target, async () => undefined, env, undefined, 0)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
+    } finally {
+      await held!.release();
+    }
+    const next = await tryAcquireDirectoryMergeLease(target, env);
+    expect(next).not.toBeNull();
+    try {
+      await held!.release();
+      expect(await tryAcquireDirectoryMergeLease(target, env)).toBeNull();
+    } finally {
+      await next!.release();
+    }
+  });
+
+  it("returns the canonical locked directory and shares ownership with the callback API", async () => {
+    const { target, env } = await fixture();
+    const alias = `${target}-alias`;
+    await symlink(target, alias, process.platform === "win32" ? "junction" : "dir");
+    const held = await tryAcquireDirectoryMergeLease(alias, env);
+    expect(held).not.toBeNull();
+    try {
+      expect(held!.canonicalTargetDir).toBe(await realpath(target));
+      expect(await tryAcquireDirectoryMergeLease(target, env)).toBeNull();
+      await expect(withDirectoryMergeLock(target, async () => undefined, env, undefined, 0)).rejects.toMatchObject({ code: WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE });
+    } finally {
+      await held!.release();
+    }
   });
 
   it("keeps the OS lock when a same-process contender closes its connection", async () => {

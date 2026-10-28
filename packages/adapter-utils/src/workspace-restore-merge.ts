@@ -517,6 +517,20 @@ async function resolveDirectoryMergeLockRoot(env: NodeJS.ProcessEnv = process.en
   return lockRoot;
 }
 
+export async function tryAcquireDirectoryMergeLease(
+  targetDir: string,
+  env: NodeJS.ProcessEnv = process.env,
+): Promise<{ canonicalTargetDir: string; release: () => Promise<void> } | null> {
+  const canonicalTargetDir = await fs.realpath(targetDir);
+  try {
+    const release = await acquireCanonicalDirectoryMergeLease(canonicalTargetDir, env, undefined, 0);
+    return { canonicalTargetDir, release };
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === WORKSPACE_RESTORE_LOCK_TIMEOUT_CODE) return null;
+    throw error;
+  }
+}
+
 export async function withDirectoryMergeLock<T>(
   targetDir: string,
   fn: (canonicalTargetDir: string) => Promise<T>,
@@ -566,6 +580,17 @@ export async function tryWithDirectoryMergeLock<T>(targetDir: string, fn: () => 
   }
 }
 
+async function acquireCanonicalDirectoryMergeLease(
+  canonicalTargetDir: string,
+  env: NodeJS.ProcessEnv,
+  diagnosticOperation?: DirectoryMergeLockOperation,
+  waitMs: number = LOCK_WAIT_MS,
+): Promise<() => Promise<void>> {
+  const lockRoot = await resolveDirectoryMergeLockRoot(env);
+  const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
+  return acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs);
+}
+
 async function withCanonicalDirectoryMergeLock<T>(
   canonicalTargetDir: string,
   fn: (canonicalTargetDir: string) => Promise<T>,
@@ -573,9 +598,7 @@ async function withCanonicalDirectoryMergeLock<T>(
   diagnosticOperation?: DirectoryMergeLockOperation,
   waitMs: number = LOCK_WAIT_MS,
 ): Promise<T> {
-  const lockRoot = await resolveDirectoryMergeLockRoot(env);
-  const lockKey = createHash("sha256").update(canonicalTargetDir).digest("hex");
-  const releaseLock = await acquireDirectoryMergeLock(path.join(lockRoot, `${lockKey}.lock`), diagnosticOperation, waitMs);
+  const releaseLock = await acquireCanonicalDirectoryMergeLease(canonicalTargetDir, env, diagnosticOperation, waitMs);
   try {
     return await fn(canonicalTargetDir);
   } finally {

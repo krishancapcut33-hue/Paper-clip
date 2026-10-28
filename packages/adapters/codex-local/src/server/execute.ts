@@ -2,6 +2,7 @@ import { asStringArray } from "@paperclipai/adapter-utils/server-utils";
 import { applyObservabilityEnvironment } from "@paperclipai/adapter-utils/agent-observability";
 import { prepareCodexObservabilityProfile, selectedCodexProfile, replaceCodexProfileArgs, disableCodexObservabilityArgs } from "@paperclipai/adapter-utils/codex-observability-profile";
 import { createProviderStoppedBoundary } from "@paperclipai/adapter-utils/provider-stopped-boundary";
+import { tryAcquireDirectoryMergeLease } from "@paperclipai/adapter-utils/workspace-restore-merge";
 import { createUsageCheckpointLog } from "@paperclipai/adapter-utils/usage-checkpoint";
 import { createHash } from "node:crypto";
 import fs from "node:fs/promises";
@@ -700,6 +701,12 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   const configuredHomeIsManaged =
     configuredCodexHome != null &&
     isManagedCodexHomePath(process.env, agent.companyId, configuredCodexHome);
+  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
+  const requestedCodexHome = configuredCodexHome ?? defaultCodexHome;
+  const configuredHomeIsAgentKeyHome =
+    configuredHomeIsManaged &&
+    configuredOpenAiApiKey !== null &&
+    configuredCodexHome === path.resolve(defaultCodexHome, "..", "agents", agent.id, "codex-home");
   // Identity-anchored cache vend (host to sandbox). Before the managed home is
   // seeded from the shared source `auth.json`, refresh the shared credential with
   // a strictly-newer cached copy of the SAME identity. The vend reads the host
@@ -707,7 +714,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
   // holds no credential it does nothing (no random pick). This keeps the change
   // additive: the managed home still symlinks the shared `auth.json`, now at its
   // freshest same-identity copy. The off-switch (default on) skips the vend.
-  if (!config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
+  if (!configuredHomeIsAgentKeyHome && !config.managedAiConnection && isCodexAuthCacheEnabled(process.env)) {
     const sharedHomeAuthPath = path.join(resolveSharedCodexHomeDir(process.env), "auth.json");
     // This caller reads `process.env` directly and holds no separate `env`
     // object, so `selectVendCredential` falls back to its own `process.env`
@@ -726,66 +733,69 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       void error;
     });
   }
-  if (configuredCodexHome == null) {
-    await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
-      apiKey: configuredOpenAiApiKey,
-    });
+  await fs.mkdir(requestedCodexHome, { recursive: true });
+  const configLease = configuredHomeIsAgentKeyHome
+    ? await tryAcquireDirectoryMergeLease(requestedCodexHome)
+    : null;
+  if (configuredHomeIsAgentKeyHome && !configLease) {
+    return {
+      exitCode: 1, signal: null, timedOut: false,
+      errorCode: "codex_home_busy",
+      errorMessage: "Another Codex run is using this agent's managed home; no provider was started.",
+      executionRecovery: { kind: "bootstrap", providerWorkStarted: false },
+    };
   }
-  if (configuredHomeIsManaged && configuredCodexHome) {
-    const seedEnv = runtimeSkillDigest ? {
-      ...process.env, CODEX_HOME: runtimeCredentialHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
-    } : process.env;
-    await seedManagedCodexHome(configuredCodexHome, seedEnv, onLog, {
-      apiKey: configuredOpenAiApiKey,
-    });
-  }
-  const defaultCodexHome = resolveManagedCodexHomeDir(process.env, agent.companyId);
-  const effectiveCodexHome = configuredCodexHome ?? defaultCodexHome;
-  await fs.mkdir(effectiveCodexHome, { recursive: true });
-
-  // Never launch a managed CODEX_HOME with no credentials. Without auth.json
-  // and with OPENAI_API_KEY="" the provider rejects every request with
-  // "401 Missing bearer"; fail fast with a clear adapter error instead of
-  // emitting unauthenticated calls. External overrides manage their own auth.
-  // This is the execute-time backstop for the control plane's pre-dispatch
-  // configuration-incomplete gate (see server heartbeat); both decide host
-  // readiness through the same `evaluateCodexCredentialReadiness` predicate,
-  // and sandbox targets are additionally allowed to supply their own login
-  // (the pre-dispatch gate defers sandbox-destined runs here for exactly that
-  // probe).
-  await assertCodexCredentialsLaunchable({
-    runId,
-    companyId: agent.companyId,
-    configuredCodexHome,
-    configuredApiKey: configuredOpenAiApiKey,
-    effectiveCodexHome,
-    target: executionTarget,
-    cwd,
-    onLog,
-  });
-  // Merge custom model providers (PAPERCLIP_CODEX_PROVIDERS) into the managed
-  // CODEX_HOME's config.toml BEFORE the home is shipped to a remote execution
-  // target, so both local and sandboxed Codex processes pick up the routing.
-  // A caller-owned home stays untouched. A generated skill home receives the
-  // configured provider routing even when it seeds credentials from that home.
-  const envConfigStrings = Object.fromEntries(
-    Object.entries(envConfig).filter(
-      (entry): entry is [string, string] => typeof entry[1] === "string",
-    ),
-  );
-  const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
-    env: envConfigStrings,
-    codexHome: configuredCodexHome && !runtimeSkillDigest ? null : effectiveCodexHome,
-  });
-  // Curated allowlist dir staged for the remote `home` asset (see below). Held
-  // here so the outer `finally` can remove it on every exit path (teardown and
-  // error), never only the happy path.
+  const effectiveCodexHome = configLease?.canonicalTargetDir ?? requestedCodexHome;
+  let restoreRuntimeConfig: (() => Promise<void>) | undefined;
+  let runtimeConfigReleased = false;
+  const releaseRuntimeConfig = async () => {
+    if (runtimeConfigReleased) return;
+    runtimeConfigReleased = true;
+    try {
+      await restoreRuntimeConfig?.();
+    } finally {
+      await configLease?.release();
+    }
+  };
   let stagedCodexHomeDir: string | null = null;
   let observabilityProfile: Awaited<ReturnType<typeof prepareCodexObservabilityProfile>> | null = null;
   let observabilityPreparationFailed = false;
   try {
+    if (configuredCodexHome == null) {
+      await prepareManagedCodexHome(process.env, onLog, agent.companyId, {
+        apiKey: configuredOpenAiApiKey,
+      });
+    }
+    if (configuredHomeIsManaged && configuredCodexHome) {
+      const seedEnv = runtimeSkillDigest ? {
+        ...process.env, CODEX_HOME: runtimeCredentialHome ?? resolveManagedCodexHomeDir(process.env, agent.companyId),
+      } : process.env;
+      await seedManagedCodexHome(configuredHomeIsAgentKeyHome ? effectiveCodexHome : configuredCodexHome, seedEnv, onLog, {
+        apiKey: configuredOpenAiApiKey,
+      });
+    }
+    await assertCodexCredentialsLaunchable({
+      runId,
+      companyId: agent.companyId,
+      configuredCodexHome,
+      configuredApiKey: configuredOpenAiApiKey,
+      effectiveCodexHome,
+      target: executionTarget,
+      cwd,
+      onLog,
+    });
+    const envConfigStrings = Object.fromEntries(
+      Object.entries(envConfig).filter(
+        (entry): entry is [string, string] => typeof entry[1] === "string",
+      ),
+    );
+    const preparedRuntimeConfig = await prepareCodexRuntimeConfig({
+      env: envConfigStrings,
+      codexHome: configuredCodexHome && !runtimeSkillDigest && !configuredHomeIsAgentKeyHome ? null : effectiveCodexHome,
+    });
+    restoreRuntimeConfig = preparedRuntimeConfig.cleanup;
     if (ctx.observability) {
-      if (isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
+      if (configuredHomeIsAgentKeyHome || isManagedCodexHomePath(process.env, agent.companyId, effectiveCodexHome)) {
         try {
           observabilityProfile = await prepareCodexObservabilityProfile({ home: effectiveCodexHome, runId,
             launch: ctx.observability, sourceProfile: selectedCodexProfile(buildCodexExecArgs(config).args) });
@@ -856,6 +866,7 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
           // large runtime state (`sessions/`, `*.sqlite`, `plugins/`, …) that the
           // 4-name denylist missed and that a sandbox run never needs.
           stagedCodexHomeDir = await stageCodexHomeForSync(effectiveCodexHome, { runId, additionalFiles: observabilityProfile ? [observabilityProfile.filename] : [] });
+          if (configuredHomeIsAgentKeyHome) await releaseRuntimeConfig();
           return await prepareAdapterExecutionTargetRuntime({
             runId,
             target: executionTarget,
@@ -1702,28 +1713,20 @@ export async function execute(ctx: AdapterExecutionContext): Promise<AdapterExec
       }
     }
   } finally {
-    // Remove the staged CODEX_HOME allowlist temp dir on every exit path
-    // (teardown AND error), never only the happy path. Cleanup failure is
-    // logged, not fatal — a leaked temp dir must not crash the run.
-    if (stagedCodexHomeDir) {
-      await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
-        await onLog(
-          "stderr",
-          `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
-            error instanceof Error ? error.message : String(error)
-          }\n`,
-        );
-      });
+    try {
+      if (stagedCodexHomeDir) {
+        await fs.rm(stagedCodexHomeDir, { recursive: true, force: true }).catch(async (error) => {
+          await onLog(
+            "stderr",
+            `[paperclip] Failed to remove staged Codex home "${stagedCodexHomeDir}": ${
+              error instanceof Error ? error.message : String(error)
+            }\n`,
+          );
+        });
+      }
+      await observabilityProfile?.cleanup();
+    } finally {
+      await releaseRuntimeConfig();
     }
-    // Restore the managed config.toml so PAPERCLIP_CODEX_PROVIDERS changes
-    // (or removal) between runs never leave stale provider routing behind. This
-    // finally starts the moment prepareCodexRuntimeConfig returns, so a throw
-    // anywhere in the remaining setup (skill injection, remote runtime
-    // preparation, command building) restores the original config.toml too.
-    // If the process dies before reaching this, the next
-    // prepareCodexRuntimeConfig restores the original from the pre-run backup
-    // written at prepare time.
-    await observabilityProfile?.cleanup();
-    await preparedRuntimeConfig.cleanup();
   }
 }
