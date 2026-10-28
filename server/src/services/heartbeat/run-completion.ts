@@ -538,6 +538,10 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
 
     const cacheAdjustedCostUsd = adapterResult.costUsdExact != null && adapterResult.cacheAdjustedCostUsd == null
       ? null : resolveCacheAdjustedCostUsd(adapterResult);
+    const sessionReused = adapterResult.sessionReused ?? (
+      runtimeForAdapter.sessionId != null ||
+      runtimeForAdapter.sessionDisplayId != null
+    );
     const usageJson: Record<string, unknown> = {
       accountingReceiptReady: adapterResult.usageComplete !== false,
       costUsdExact: adapterResult.costUsdExact ?? null,
@@ -552,6 +556,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
             rawOutputTokens: rawUsage.outputTokens,
           }
         : {}),
+      ...(typeof adapterResult.contextTokens === "number" && Number.isFinite(adapterResult.contextTokens) && adapterResult.contextTokens >= 0
+        ? { contextTokens: adapterResult.contextTokens }
+        : {}),
       ...(sessionUsageResolution.derivedFromSessionTotals
         ? { usageSource: "session_delta" }
         : adapterResult.usageBasis === "per_run"
@@ -565,13 +572,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
               nextSessionState.legacySessionId,
           }
         : {}),
-      sessionReused:
-        runtimeForAdapter.sessionId != null ||
-        runtimeForAdapter.sessionDisplayId != null,
+      sessionReused,
       taskSessionReused: taskSessionForRun != null,
-      freshSession:
-        runtimeForAdapter.sessionId == null &&
-        runtimeForAdapter.sessionDisplayId == null,
+      freshSession: !sessionReused,
       sessionRotated: sessionCompaction.rotate,
       sessionRotationReason: sessionCompaction.reason,
       configFreshness: configFreshnessResultMetadata,
@@ -635,6 +638,9 @@ export function createHeartbeatRunCompletion(db: Db, dependencies: HeartbeatRunC
       resultJson: persistedResultJson,
       sessionIdAfter:
         nextSessionState.displayId ?? nextSessionState.legacySessionId,
+      sessionIdBefore: adapterResult.sessionIdBefore !== undefined
+        ? adapterResult.sessionIdBefore
+        : run.sessionIdBefore ?? runtimeForAdapter.sessionDisplayId ?? runtimeForAdapter.sessionId,
       stdoutExcerpt: output.stdoutExcerpt,
       stderrExcerpt: output.stderrExcerpt,
       logBytes: logSummary?.bytes,
