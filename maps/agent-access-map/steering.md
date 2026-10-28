@@ -33,6 +33,10 @@ Compact task run reads retain `wakeupRequestId` and `queuedCommentSourceWakeIds`
 to identify consumed input queues, including coalesced requests. These receipt
 fields follow the existing task/run read checks and grant no queue mutation authority.
 
+The UI can place a queued turn's starting input in history without recording
+consumption. Drain release and expiry only reconsider existing queued runs under
+normal admission authority. They grant no new agent control or replay authority.
+
 Accepted deferred requests remain pending while their recipient agent is paused.
 Resume uses the normal admission checks. This grants no new pause, resume, queue
 mutation, or execution authority to an agent.

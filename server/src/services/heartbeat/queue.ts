@@ -1908,6 +1908,14 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
       });
     }
 
+    await resumeQueuedRunsAfterDrain();
+  }
+
+  // Release admission promptly without first scanning unrelated recovery work.
+  // Every run still passes the ordinary per-agent claim and dispatch gates.
+  async function resumeQueuedRunsAfterDrain() {
+    if ((await getSchedulingSuppression()).suppressed) return;
+    const cutoff = await getWorktreeExecutionCutoff();
     const queuedRuns = await db
       .select({ agentId: heartbeatRuns.agentId })
       .from(heartbeatRuns)
@@ -4941,6 +4949,7 @@ export function createHeartbeatQueue(db: Db, dependencies: HeartbeatQueueDepende
     withChatControlRecoveryGate,
     trackWakeup,
     resumeQueuedRuns,
+    resumeQueuedRunsAfterDrain,
     parseHeartbeatPolicy,
     claimDueTimerHeartbeat,
   };

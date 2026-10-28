@@ -326,6 +326,15 @@ continues automatically when the workspace is available. Internal scheduling
 attempts remain in the run log without conversation cancellation markers,
 cancellation toasts, or manual Retry controls. Users can keep sending instructions.
 
+An instance admission drain keeps accepted new turns queued and displays
+**Waiting for maintenance**. Ending the audited drain requests admission for
+these existing runs immediately. The drain's actual expiry deadline also wakes
+admission. Neither path waits for a general recovery scan or creates a new wake
+request. The ordinary claim and dispatch checks still enforce company status,
+identity, budgets, pauses, ownership, and concurrency. A restarted server restores
+queued work through startup recovery. A failed admission request leaves its
+durable rows available for existing recovery.
+
 The legacy remote ACP process-session relay runs on the control-plane host. Its
 launch command uses the host's absolute Node executable even when the adapter's
 launch environment is sanitized for a remote sandbox; the sandbox PATH remains

@@ -1224,7 +1224,7 @@ describe("TaskChatThread runtime transcript selection", () => {
       expect(container.querySelector('[data-testid="task-chat-agent-identity"]')).toBe(identity);
       expect(container.querySelector('[data-testid="task-chat-runner-identity-row"]')).toBe(header);
       expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')).toBe(activity);
-      expect(activity?.textContent).toBe("Thinking");
+      expect(activity?.textContent).toBe(startup.status === "queued" ? "Queued" : "Thinking");
       expect(container.querySelector('[data-testid="task-chat-live-run-pill"]')).toBeNull();
       expect(container.textContent).not.toContain("run started");
     }

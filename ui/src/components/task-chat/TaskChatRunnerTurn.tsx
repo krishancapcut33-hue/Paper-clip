@@ -156,7 +156,8 @@ export function TaskChatRunnerTurn({
 }) {
   const terminal = isTerminalRunStatus(status);
   const waitingLabel = !terminal && execution?.phase === "waiting_for_provider" ? execution.label
-    : !runId && !terminal ? preparationLabel ?? null : null;
+    : !runId && !terminal ? preparationLabel ?? null
+    : status === "queued" ? execution?.label ?? "Queued" : null;
   const yielded = items.some(
     (item) =>
       item.kind === "protocol" &&

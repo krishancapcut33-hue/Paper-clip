@@ -1,10 +1,24 @@
 import { randomUUID } from "node:crypto";
+import { createWorkScheduler } from "./work-scheduler.js";
 
 export type TaskDrainState = { startedAt: Date; expiresAt: Date | null; ownerId?: string };
 let taskDrainState: TaskDrainState | null = null;
+const drainDeadlines = createWorkScheduler();
+const expiryListeners = new Set<() => void>();
+
+export function onTaskDrainExpired(listener: () => void): () => void {
+  expiryListeners.add(listener);
+  return () => { expiryListeners.delete(listener); };
+}
 
 export function readTaskDrain(now: Date): TaskDrainState | null {
-  if (taskDrainState?.expiresAt && taskDrainState.expiresAt.getTime() <= now.getTime()) taskDrainState = null;
+  if (taskDrainState?.expiresAt && taskDrainState.expiresAt.getTime() <= now.getTime()) {
+    taskDrainState = null;
+    drainDeadlines.cancel("task-drain");
+    for (const listener of expiryListeners) {
+      try { listener(); } catch (error) { process.emitWarning(`Task drain expiry notification failed: ${String(error)}`); }
+    }
+  }
   return taskDrainState;
 }
 
@@ -14,7 +28,13 @@ export function computeTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle"
     ...(opts.purpose === "idle" ? { ownerId: randomUUID() } : {}) };
 }
 
-export function applyTaskDrain(drain: TaskDrainState): void { taskDrainState = drain; }
+export function applyTaskDrain(drain: TaskDrainState): void {
+  taskDrainState = drain;
+  drainDeadlines.cancel("task-drain");
+  if (drain.expiresAt) drainDeadlines.schedule("task-drain", drain.expiresAt.getTime(), () => {
+    readTaskDrain(new Date());
+  });
+}
 export function startTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" } = {}): TaskDrainState {
   const drain = computeTaskDrain(opts);
   applyTaskDrain(drain);
@@ -23,6 +43,7 @@ export function startTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" }
 export function stopTaskDrain(): { wasActive: boolean } {
   const wasActive = readTaskDrain(new Date()) !== null;
   taskDrainState = null;
+  drainDeadlines.cancel("task-drain");
   return { wasActive };
 }
 export function isIdleTaskDrainActive(): boolean { return Boolean(readTaskDrain(new Date())?.ownerId); }
