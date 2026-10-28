@@ -1247,6 +1247,7 @@ function buildIssueBlockerDiagnosticsResponse(input: {
     isDependencyReady: boolean;
     unresolvedBlockerIssueIds: string[];
     pendingFinalizeBlockerIssueIds: string[];
+    failedFinalizeBlockerIssueIds: string[];
   };
   truncated: boolean;
   maxBlockers?: number;
@@ -1264,6 +1265,9 @@ function buildIssueBlockerDiagnosticsResponse(input: {
   const pendingFinalizeIds = new Set(
     input.readiness.pendingFinalizeBlockerIssueIds,
   );
+  const failedFinalizeIds = new Set(
+    input.readiness.failedFinalizeBlockerIssueIds,
+  );
 
   const blockers: IssueBlockerDiagnosticNode[] = input.visibleBlockers.map(
     (blockerRow) => {
@@ -1276,6 +1280,7 @@ function buildIssueBlockerDiagnosticsResponse(input: {
       if (blocker.status === "cancelled")
         flags.push("cancelled_blocker_in_set");
       if (isPendingFinalize) flags.push("workspace_finalize_pending");
+      if (failedFinalizeIds.has(blocker.id)) flags.push("workspace_finalize_failed");
 
       return {
         ...blocker,
@@ -1862,6 +1867,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
       isDependencyReady: boolean;
       unresolvedBlockerIssueIds: string[];
       pendingFinalizeBlockerIssueIds: string[];
+      failedFinalizeBlockerIssueIds: string[];
     }
   >;
   wakeRequestsByIssueId: Map<string, IssueSubtreeDiagnosticWakeRequestRow[]>;
@@ -1898,6 +1904,7 @@ function buildIssueSubtreeDiagnosticsResponse(input: {
         isDependencyReady: true,
         unresolvedBlockerIssueIds: [],
         pendingFinalizeBlockerIssueIds: [],
+        failedFinalizeBlockerIssueIds: [],
       },
       truncated: input.truncatedBlockerIssueIds.has(node.id),
       maxBlockers: input.caps.maxBlockersPerNode,
