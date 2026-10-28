@@ -1,3 +1,4 @@
+import { writeToolConnectionHealthChange } from "./tool-connection-health-notifications.js";
 import { writeApprovalChange } from "./approval-work-notifications.js";
 import { toolReviewProjectionService } from "./tool-review-projection.js";
 import { toolReviewInterruptionService } from "./tool-review-interruption.js";
@@ -3882,7 +3883,7 @@ export function createToolGatewayService(
     message: string | null,
   ) {
     const now = new Date();
-    await db
+    await writeToolConnectionHealthChange(db, connection, tx => tx
       .update(toolConnections)
       .set({
         healthStatus: status,
@@ -3892,7 +3893,7 @@ export function createToolGatewayService(
         lastError: status === "ok" ? null : message,
         updatedAt: now,
       })
-      .where(eq(toolConnections.id, connection.id));
+      .where(eq(toolConnections.id, connection.id)));
   }
 
   function grantRefForCredential(

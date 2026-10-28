@@ -18,7 +18,7 @@ export const DELIVERY_QUEUES = {
   decisionContinuation: "decision-continuation",
 
   decisionArchiveDelivery: "decision-archive-delivery",
-
+  toolConnectionHealth: "tool-connection-health",
   toolReviewProjection: "tool-review-projection",
   toolReviewInterruption: "tool-review-interruption",
   toolReviewRecovery: "tool-review-recovery",
@@ -62,6 +62,7 @@ export const DELIVERY_QUEUES = {
   gitRestorePoints: "git-restore-points",
   nativeWorkspaceSyncRetention: "native-workspace-sync-retention",
   question: "question-responses",
+  pluginSchedules: "plugin-schedules",
   pluginLifecycle: "plugin-resource-lifecycle",
   toolAction: "tool-action-receipts",
   terminalWorkspaces: "terminal-workspaces",
