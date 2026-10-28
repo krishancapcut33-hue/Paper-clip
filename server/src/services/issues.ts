@@ -10029,7 +10029,6 @@ export function issueService(db: Db) {
       ).enableIsolatedWorkspaces;
       if (!isolatedWorkspacesEnabled) {
         delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
       if (data.assigneeAgentId && data.assigneeUserId) {
@@ -11042,7 +11041,6 @@ export function issueService(db: Db) {
       // the feature gate; only the internal shared-workspace binding bypasses it.
       if (!isolatedWorkspacesEnabled && !options.bindRuntimeSharedWorkspace) {
         delete issueData.executionWorkspaceId;
-        delete issueData.executionWorkspacePreference;
         delete issueData.executionWorkspaceSettings;
       }
 
