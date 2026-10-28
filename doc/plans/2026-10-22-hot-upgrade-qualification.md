@@ -1599,3 +1599,19 @@ streaming SQL for both output volumes. These are component correctness and cost
 receipts; they do not establish production capacity or hosted active-agent and
 A/B upgrade acceptance. All previously retained failures and hosted limits still
 apply. The retargeted qualification head needs fresh CI and reviews.
+
+
+The first post-retarget local batch has four failures and 133 passes across
+12 files. All four are in the inherited report-lock test: master #17811 commits
+the exact already-approved output lock (`c7f230…b798`), while the fixture insists
+HEAD must equal the approved input (`893496…bab4d`). The production helper already
+accepts that output unchanged; its policy and patch need no change. The fixture
+now checks current HEAD against the two pinned hashes, exercises the real
+committed-lock path, and reconstructs the pinned input with the reviewed reverse
+patch so its existing unknown-lock, changed-patch and wrong-output failures still
+execute. No production validation, dependency, pinned hash or patch changes.
+The initial batch selected the one-case process-preservation fixture instead of
+the deterministic preservation suite. The corrected batch explicitly includes
+both preservation suites and passes all 158 cases across 13 files. The earlier
+146-case receipt retains its own source and selection; these counts do not imply
+identical test inventories. E2E typecheck also passes after master integration.

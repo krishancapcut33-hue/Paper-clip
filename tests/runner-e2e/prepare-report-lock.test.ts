@@ -14,10 +14,22 @@ it.each(['valid', 'unknown-lock', 'changed-patch', 'wrong-output'])(
     try {
       await mkdir(relative, { recursive: true });
       for (const file of ['report-lock.json', 'report-lock.patch']) await copyFile(path.join(here, file), path.join(relative, file));
-      const input = execFileSync('git', ['show', 'HEAD:pnpm-lock.yaml'], { cwd: path.resolve(here, '../..') });
+      const committed = execFileSync('git', ['show', 'HEAD:pnpm-lock.yaml'], { cwd: path.resolve(here, '../..') });
       const policy = JSON.parse(await readFile(path.join(relative, 'report-lock.json'), 'utf8'));
-      expect(createHash('sha256').update(input).digest('hex')).toBe(policy.inputSha256);
+      const committedHash = createHash('sha256').update(committed).digest('hex');
+      expect([policy.inputSha256, policy.outputSha256]).toContain(committedHash);
       const lock = path.join(root, 'pnpm-lock.yaml');
+      await writeFile(lock, committed);
+      if (variant === 'valid') {
+        expect(await prepareReportLock(root)).toBe(committedHash === policy.outputSha256 ? 'already-reviewed' : 'reviewed-correction');
+        expect(createHash('sha256').update(await readFile(lock)).digest('hex')).toBe(policy.outputSha256);
+        await writeFile(lock, committed);
+      }
+      if (committedHash === policy.outputSha256) {
+        execFileSync('git', ['apply', '--reverse', path.join(relative, 'report-lock.patch')], { cwd: root });
+      }
+      const input = await readFile(lock);
+      expect(createHash('sha256').update(input).digest('hex')).toBe(policy.inputSha256);
       await writeFile(lock, variant === 'unknown-lock' ? 'unknown\n' : input);
       if (variant === 'changed-patch') await writeFile(path.join(relative, 'report-lock.patch'), 'changed');
       if (variant === 'wrong-output') { policy.outputSha256 = '0'.repeat(64); await writeFile(path.join(relative, 'report-lock.json'), JSON.stringify(policy)); }
