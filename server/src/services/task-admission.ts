@@ -1,20 +1,45 @@
 import { randomUUID } from "node:crypto";
-import { createWorkScheduler } from "./work-scheduler.js";
+import type { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { DELIVERY_QUEUES } from "./delivery-work-notifications.js";
 
 export type TaskDrainState = { startedAt: Date; expiresAt: Date | null; ownerId?: string };
 let taskDrainState: TaskDrainState | null = null;
-const drainDeadlines = createWorkScheduler();
 const expiryListeners = new Set<() => void>();
+const changeListeners = new Set<() => void>();
 
-export function onTaskDrainExpired(listener: () => void): () => void {
-  expiryListeners.add(listener);
-  return () => { expiryListeners.delete(listener); };
+function notifyDrainChanged() {
+  for (const listener of changeListeners) listener();
+}
+
+// The shared coordinator owns this process-local deadline and its shutdown.
+// Reading admission can also establish expiry, so both paths notify the same
+// listener. No database scan or recurring timer is needed while idle.
+export function registerTaskDrainExpiryWork(
+  coordinator: ReturnType<typeof createDeliveryWorkCoordinator>,
+  onExpired: () => void,
+) {
+  const worker = coordinator.register(DELIVERY_QUEUES.taskDrainExpiry, {
+    retryMs: 1000,
+    runDuringDrain: true,
+    run: async () => { readTaskDrain(new Date()); },
+    hasPending: async () => false,
+    nextRunAt: () => taskDrainState?.expiresAt?.getTime() ?? null,
+  });
+  expiryListeners.add(onExpired);
+  changeListeners.add(worker.wake);
+  return {
+    ready: worker.ready,
+    async stop() {
+      changeListeners.delete(worker.wake);
+      expiryListeners.delete(onExpired);
+      await worker.stop();
+    },
+  };
 }
 
 export function readTaskDrain(now: Date): TaskDrainState | null {
   if (taskDrainState?.expiresAt && taskDrainState.expiresAt.getTime() <= now.getTime()) {
     taskDrainState = null;
-    drainDeadlines.cancel("task-drain");
     for (const listener of expiryListeners) {
       try { listener(); } catch (error) { process.emitWarning(`Task drain expiry notification failed: ${String(error)}`); }
     }
@@ -30,10 +55,7 @@ export function computeTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle"
 
 export function applyTaskDrain(drain: TaskDrainState): void {
   taskDrainState = drain;
-  drainDeadlines.cancel("task-drain");
-  if (drain.expiresAt) drainDeadlines.schedule("task-drain", drain.expiresAt.getTime(), () => {
-    readTaskDrain(new Date());
-  });
+  notifyDrainChanged();
 }
 export function startTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" } = {}): TaskDrainState {
   const drain = computeTaskDrain(opts);
@@ -43,7 +65,7 @@ export function startTaskDrain(opts: { ttlMs?: number | null; purpose?: "idle" }
 export function stopTaskDrain(): { wasActive: boolean } {
   const wasActive = readTaskDrain(new Date()) !== null;
   taskDrainState = null;
-  drainDeadlines.cancel("task-drain");
+  notifyDrainChanged();
   return { wasActive };
 }
 export function isIdleTaskDrainActive(): boolean { return Boolean(readTaskDrain(new Date())?.ownerId); }

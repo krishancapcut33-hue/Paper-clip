@@ -35,7 +35,7 @@ describe("TaskChatRunnerTurn", () => {
   const render = (
     items: TaskChatItem[],
     status = "running",
-    runId = "run-1",
+    runId: string | null = "run-1",
     onRuntimeRequestDecision?: (
       item: TaskChatRuntimeRequestItem,
       decision: TaskChatRuntimeRequestDecision,
@@ -43,6 +43,7 @@ describe("TaskChatRunnerTurn", () => {
     suppressFinal = false,
     continuedAfterSteering = false,
     execution?: ExecutionProjection,
+    preparationLabel?: string,
   ) =>
     act(() =>
       root.render(
@@ -55,6 +56,7 @@ describe("TaskChatRunnerTurn", () => {
               items={items}
               status={status}
               execution={execution}
+              preparationLabel={preparationLabel}
               startedAtMs={Date.now() - 2_000}
               suppressFinal={suppressFinal}
               continuedAfterSteering={continuedAfterSteering}
@@ -72,6 +74,18 @@ describe("TaskChatRunnerTurn", () => {
     expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Queued");
     expect(container.textContent).not.toContain("Working");
     expect(container.textContent).not.toContain("Thinking");
+  });
+
+  it("shows queued startup before a run ID or preparation label exists", () => {
+    render([], "queued", null);
+    expect(container.querySelector('[data-testid="task-chat-turn-status-header"]')?.textContent).toContain("Queued");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Queued");
+    expect(container.textContent).not.toContain("Thinking");
+  });
+
+  it("preserves a specific preparation label before a run ID exists", () => {
+    render([], "queued", null, undefined, false, false, undefined, "Preparing workspace");
+    expect(container.querySelector('[data-testid="task-chat-current-activity-label"]')?.textContent).toBe("Preparing workspace");
   });
 
   it("shows the server's maintenance wait while admission is held", () => {

@@ -46,7 +46,7 @@ import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js"
 import { registerScheduledWork } from "./services/scheduled-work.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
 import { registerTerminalWorkspaceWork, TERMINAL_WORKSPACE_RETRY_MS } from "./services/terminal-workspace-work.js";
-import { isIdleTaskDrainActive, beginIdleTrackedWork, trackIdleWork, onTaskDrainExpired } from "./services/task-admission.js";
+import { isIdleTaskDrainActive, beginIdleTrackedWork, trackIdleWork, registerTaskDrainExpiryWork } from "./services/task-admission.js";
 import { markIdleStartupComplete, registerIdleLocalWorkProbe } from "./services/idle-local-work.js";
 import { clearIdleBackupWakeRequired, idleBackupWakeMarker, markIdleBackupWakeRequired, verifyIdleDatabaseBackup } from "./services/idle-database-backup.js";
 import { cloudWarmStandbyServerOptions } from "./middleware/cloud-warm-standby.js";
@@ -1368,13 +1368,13 @@ async function startServerWithDatabaseTeardown(
   if (config.nativeHarnessBackupExpirationEnabled) {
     nativeHarnessBackupExpiration.registerCheckpointExpiration(deliveryWork);
   }
-  const unsubscribeTaskDrainExpiry = onTaskDrainExpired(() => {
+  const taskDrainExpiryWork = registerTaskDrainExpiryWork(deliveryWork, () => {
     if (heartbeatSchedulerStopped || isWarmStandby()) return;
     trackHeartbeatSchedulerWork(accountingHeartbeat.resumeQueuedRunsAfterDrain().catch(err => {
       logger.error({ err }, "failed to resume queued work after task drain expiry");
     }));
   });
-  server.on("close", unsubscribeTaskDrainExpiry);
+  server.on("close", () => { void taskDrainExpiryWork.stop(); });
   const executionSchedule = executionControlSchedule(db);
   const workspaceRecoveryRuntime = environmentRuntimeService(db, { pluginWorkerManager });
   const workspaceRecoveryWork = registerWorkspaceRecoveryWork(db, deliveryWork, workspaceRecoveryRuntime,
@@ -2129,7 +2129,7 @@ async function startServerWithDatabaseTeardown(
   ) => {
     await systemdNotify(["--stopping", `--status=Stopping after ${signal}`]);
     heartbeatSchedulerStopped = true;
-    unsubscribeTaskDrainExpiry();
+    await taskDrainExpiryWork.stop();
     clearInterval(skillVersionRetentionInterval);
     clearTimeout(skillVersionRetentionStartup);
     clearTimeout(skillVersionRetentionContinuation);

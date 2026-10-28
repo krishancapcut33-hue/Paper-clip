@@ -2,7 +2,8 @@ import { randomUUID } from "node:crypto";
 import { existsSync, mkdtempSync, readFileSync, rmSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
-import { onTaskDrainExpired } from "../services/task-admission.js";
+import { registerTaskDrainExpiryWork } from "../services/task-admission.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { eq, sql } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it } from "vitest";
 import {
@@ -308,10 +309,12 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
     });
     await heartbeat.drainActiveRunExecutions();
     const [queued] = await db.select({ id: heartbeatRuns.id }).from(heartbeatRuns);
-    let unsubscribe = () => {};
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true,
+      onError: error => { throw error; } });
+    let worker: ReturnType<typeof registerTaskDrainExpiryWork> | undefined;
     try {
       await new Promise<void>((resolve, reject) => {
-        unsubscribe = onTaskDrainExpired(() => {
+        worker = registerTaskDrainExpiryWork(coordinator, () => {
           void heartbeat.resumeQueuedRunsAfterDrain().then(resolve, reject);
         });
         startTaskDrain({ ttlMs: 5 });
@@ -319,7 +322,7 @@ describeEmbeddedPostgres("heartbeat task-drain admission release", () => {
       await heartbeat.drainActiveRunExecutions();
       const [run] = await db.select({ status: heartbeatRuns.status }).from(heartbeatRuns).where(eq(heartbeatRuns.id, queued!.id));
       expect(run?.status).toBe("succeeded");
-    } finally { unsubscribe(); }
+    } finally { await worker?.stop(); await coordinator.stop(); }
   }, 20_000);
 
   it("keeps a wake that arrives during a task drain queued and runs it once the drain lifts", async () => {

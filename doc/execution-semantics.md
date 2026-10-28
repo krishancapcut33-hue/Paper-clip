@@ -328,8 +328,9 @@ cancellation toasts, or manual Retry controls. Users can keep sending instructio
 
 An instance admission drain keeps accepted new turns queued and displays
 **Waiting for maintenance**. Ending the audited drain requests admission for
-these existing runs immediately. The drain's actual expiry deadline also wakes
-admission. Neither path waits for a general recovery scan or creates a new wake
+these existing runs immediately. The shared delivery coordinator owns the drain's
+actual expiry deadline and cancels it on shutdown; expiry also wakes admission.
+Neither path waits for a general recovery scan or creates a new wake
 request. The ordinary claim and dispatch checks still enforce company status,
 identity, budgets, pauses, ownership, and concurrency. A restarted server restores
 queued work through startup recovery. A failed admission request leaves its
