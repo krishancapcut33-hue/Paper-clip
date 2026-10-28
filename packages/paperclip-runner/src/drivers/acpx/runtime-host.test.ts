@@ -21,6 +21,7 @@ import {
 } from "../../contracts/runtime-context.js";
 import { releaseMaterializedNativeRuntimeSkills } from "../runtime-context-materializer.js";
 import { openCodexAcpxRuntime } from "./codex-runtime-adapter.js";
+import { acpxSidecarErrorCode } from "../../cli/acpx-sidecar-input.js";
 import { stageManagedCodexCredential } from "./codex-credentials.js";
 import type {
   VerifiedAcpxCommandLease,
@@ -202,6 +203,21 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it.each(["installation", "sandbox", "credential", "runtime"] as const)("retains the failed %s admission stage through the sidecar boundary", async stage => {
+    const fixture = await hostFixture();
+    const failure = new Error("private-token-canary");
+    const openRuntime = vi.fn(async () => { throw failure; });
+    const dependencies = fixture.dependencies({ openRuntime });
+    if (stage === "installation") dependencies.verifyInstallation = async () => { throw failure; };
+    if (stage === "sandbox") dependencies.prepareSandbox = async () => { throw failure; };
+    if (stage === "credential") dependencies.stageCredential = async () => { throw failure; };
+    const rejected = await AcpxRuntimeHost.open({ ...fixture.options, agent: "codex", model: "gpt-5.6-sol",
+      permissionMode: "approve-all", environment: { OPENAI_API_KEY: "synthetic-test-key" } }, dependencies).catch(error => error);
+    expect(rejected).toBe(failure);
+    expect(acpxSidecarErrorCode(rejected)).toBe(`ACPX_ADMISSION_${stage.toUpperCase()}`);
+    if (stage !== "runtime") expect(openRuntime).not.toHaveBeenCalled();
+    if (stage === "runtime") expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
   it("rejects preconfigured Codex before admission resources or runtime launch", async () => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn(), prepareSandbox = vi.fn();

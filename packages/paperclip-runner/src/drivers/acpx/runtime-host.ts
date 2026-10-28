@@ -1,4 +1,5 @@
 import { resolveGrokDisableWebSearch } from "./grok-web-search.js";
+import { recordAcpxAdmissionFailure, type ACPX_ADMISSION_CODES } from "./admission-diagnostics.js";
 import { composeCopilotSystemInstructions } from "./copilot-profile.js";
 import { resolveClaudeEffort } from "./claude-effort.js";
 import { resolveGrokEffort } from "./grok-effort.js";
@@ -384,7 +385,7 @@ export class AcpxRuntimeHost {
             ? { providerPolicy: options.providerPolicy } : {}),
         }),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "binding"); });
     if (options.expectedIdentity) {
       verifyExpectedAcpxIdentity(options.expectedIdentity, binding, null);
     }
@@ -405,7 +406,7 @@ export class AcpxRuntimeHost {
           profile,
         ),
       dependencies.retainAdmissionCleanup,
-    );
+    ).catch(error => { throw recordAcpxAdmissionFailure(error, "installation"); });
     if (installation.commandDigest !== profile.commandDigest) {
       throw new Error("Verified ACPX installation does not match its profile");
     }
@@ -451,6 +452,7 @@ export class AcpxRuntimeHost {
       retainedRejectedRuntimeAdmissions.add(retained);
       retainRuntimeHostCleanup(ownedCleanup);
     };
+    let admissionStage: keyof typeof ACPX_ADMISSION_CODES = "sandbox";
     try {
       const sandbox = await runAbortableAdmissionStage(
         options.signal,
@@ -473,6 +475,7 @@ export class AcpxRuntimeHost {
           }),
         dependencies.retainAdmissionCleanup,
       );
+      admissionStage = "credential";
       if (options.agent === "codex" && !preconfigured) {
         credential = await acquireAbortableAdmissionResource({
           signal: options.signal,
@@ -508,6 +511,7 @@ export class AcpxRuntimeHost {
         });
       }
       options.signal?.throwIfAborted();
+      admissionStage = "configuration";
       const configurationLifetime = credential;
       await runAbortableAdmissionStage(
         options.signal,
@@ -570,6 +574,7 @@ export class AcpxRuntimeHost {
           PAPERCLIP_PI_READ_ROOTS: JSON.stringify([...(options.providerPolicy?.readRoots ?? []), ...skills.readRoots]),
         });
       }
+      admissionStage = "skills";
       if (!preconfigured && (options.agent === "claude" || options.agent === "grok")) {
         // The lifetime lease proves the previous provider has stopped. Refresh
         // the assigned snapshot before every launch, including durable resume;
@@ -582,6 +587,7 @@ export class AcpxRuntimeHost {
         );
         options.signal?.throwIfAborted();
       }
+      admissionStage = "command";
       command = await acquireAbortableAdmissionResource({
         signal: options.signal,
         acquire: () => installation.openCommand({ signal: options.signal }),
@@ -595,6 +601,7 @@ export class AcpxRuntimeHost {
         signal => installation.openCommand({ signal }),
       );
       command = commandOwner.command;
+      admissionStage = "tool_bridge";
       toolBridge = options.semanticTools
         ? await acquireAbortableAdmissionResource({
             signal: options.signal,
@@ -613,6 +620,7 @@ export class AcpxRuntimeHost {
       if (admittedLifetime === null) {
         throw new Error("ACPX provider lifetime lease is unavailable");
       }
+      admissionStage = "runtime";
       runtime = await acquireAbortableAdmissionResource({
         signal: options.signal,
         acquire: async () => {
@@ -683,6 +691,7 @@ export class AcpxRuntimeHost {
           });
         },
       });
+      admissionStage = "identity";
       const runtimeIdentity = await runAbortableAdmissionStage(
         options.signal,
         () =>
@@ -733,6 +742,7 @@ export class AcpxRuntimeHost {
           : [],
       });
     } catch (error) {
+      recordAcpxAdmissionFailure(error, admissionStage);
       error = classifyAcpxProfileError(options.agent, error) ?? error;
       const cleanup = cleanupRuntimeResources(
         runtime,

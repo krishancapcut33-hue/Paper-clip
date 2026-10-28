@@ -47,7 +47,7 @@ pub(crate) fn acpx_release_profile(agent: &str) -> Option<AcpxReleaseProfile> {
             agent_runtime_package: None,
             agent_runtime_version: None,
             command_digest:
-                "sha256:5444547ca83543bc899ae5a8a2e895c19a86559339e60a1970786ce900742719",
+                "sha256:6326444af8fd447032ca8ad10ce3a1280af9aeeddacd563cf48b430202dbbefd",
             requires_provider_policy: true,
         },
         "claude" => AcpxReleaseProfile {
