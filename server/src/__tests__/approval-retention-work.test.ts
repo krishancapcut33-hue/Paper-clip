@@ -145,6 +145,17 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect((await db.select().from(approvals).where(eq(approvals.id, other.id)))[0].status).toBe("pending");
   });
 
+  it("rounds a submillisecond approval deadline up to the next scheduler millisecond", async () => {
+    const row = await create(), floor = Date.now() + 120_000;
+    const activity = new Date(floor - delay).toISOString();
+    await db.execute(sql`update approvals set updated_at = ${activity}::timestamptz + interval '456 microseconds' where id = ${row.id}`);
+    const service = approvalRetentionService(db);
+    expect(await service.next()).toBe(floor + 1);
+    expect(await service.sweep(new Date(floor))).toEqual({ archived: 0 });
+    expect(await state(row.id)).toBeNull();
+    expect(await service.sweep(new Date(floor + 1))).toEqual({ archived: 1 });
+  });
+
   it("recovers old unseen approvals on startup and leaves completed history quiet", async () => {
     const due = await create(old()), completed = await create(old());
     await approvalRecords(db).resolveApproval(completed.id, "approved", "board-user", null);
@@ -332,6 +343,26 @@ const delay = DEFAULT_DECISION_ARCHIVE_DAYS * 86_400_000;
     expect(await service.next()).not.toBeNull();
     await db.execute(sql`drop trigger approval_retention_fail on decision_retention`);
     expect(await service.sweep()).toEqual({ archived: 1 }); expect(await service.next()).toBeNull();
+  });
+
+  it("retries a failed approval while newer overdue pages keep arriving", async () => {
+    const at = old();
+    const [failed] = await db.insert(approvals).values({ companyId, type: "request_board_approval",
+      payload: { retentionTestFailure: true }, createdAt: at, updatedAt: at }).returning();
+    const append = async (offset: number) => db.insert(approvals).values(Array.from({ length: 100 }, (_, i) => ({
+      companyId, type: "request_board_approval", payload: {}, createdAt: at,
+      updatedAt: new Date(at.getTime() + offset + i),
+    })));
+    await append(1); await failArchives();
+    const service = approvalRetentionService(db);
+    await expect(service.sweep()).rejects.toThrow("Failed query");
+    await append(1000); await service.sweep();
+    await append(2000);
+    await db.execute(sql`drop trigger approval_retention_fail on decision_retention`);
+    await service.sweep();
+    expect((await state(failed.id))?.archivedAt).toBeInstanceOf(Date);
+    while (await service.next() !== null) await service.sweep();
+    expect(await service.next()).toBeNull();
   });
 
   it("reconstructs startup obligations while paused and performs no passive SQL", async () => {
