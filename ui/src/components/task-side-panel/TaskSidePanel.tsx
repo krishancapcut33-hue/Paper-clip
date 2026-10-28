@@ -104,6 +104,7 @@ export interface TaskSidePanelProps {
   openBrowserId?: string | null;
   onBrowserOpened?: () => void;
   accountScope: string;
+  canDeleteDocuments?: boolean;
   childIssues?: Issue[];
   issueLinkState?: unknown;
   onAddSubIssue?: () => void;
@@ -254,6 +255,7 @@ export function TaskSidePanel({
   onBrowserOpened,
   issue,
   accountScope,
+  canDeleteDocuments = false,
   childIssues = [],
   issueLinkState,
   onAddSubIssue,
@@ -819,12 +821,26 @@ export function TaskSidePanel({
     }}><IssuePropertiesArtifactsTab issue={issue} onOpenDocument={openDocument} uploadState={artifactUploads} /></TextAttachmentContext.Provider>;
   } else if (activeTab.payload.kind === "issue-document") {
     content = activeTab.payload.documentKey === "plan" ? (
-      <IssuePropertiesPlansTab issue={issue} inline={inline} />
+      <IssuePropertiesPlansTab
+        issue={issue}
+        inline={inline}
+        canDeleteDocuments={canDeleteDocuments}
+        onDeleted={(deletedDocumentKey) => {
+          markInteracted();
+          controller.closeTab(`document:${deletedDocumentKey}`);
+        }}
+      />
     ) : (
       <TaskDocumentPanel
+        key={activeTab.payload.documentKey}
         issueId={issue.id}
         documentKey={activeTab.payload.documentKey}
         initialDocument={documentByKey.get(activeTab.payload.documentKey)}
+        canDeleteDocuments={canDeleteDocuments}
+        onDeleted={(deletedDocumentKey) => {
+          markInteracted();
+          controller.closeTab(`document:${deletedDocumentKey}`);
+        }}
       />
     );
   } else if (activeTab.payload.kind === "attachment") {
