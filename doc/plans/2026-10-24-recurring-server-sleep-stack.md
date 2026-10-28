@@ -1537,6 +1537,26 @@ See the voice audit for precise coverage and remaining work. Receiver CI
 40175242445 is live with no failures at inspection; no final acceptance or merge
 is claimed. All remaining reasons, older #17490 failure, and final master
 reconciliation stay in scope.
+
+
+Live voice recovery is [#17576](https://github.com/paperclipai/paperclip/pull/17576),
+head 8f5e861dbd, based on #17572. All 837 selected tests, workspace typecheck and
+build pass; remote checks and review remain required. The full local test command
+was stopped after repeated embedded PostgreSQL setup failures, not counted as a
+pass. Slice 22 owns voice reply delivery and begins with the multipart/outcome
+policy and publication-settlement producer audit. See
+[reply delivery audit](2026-10-25-voice-reply-delivery-sleep-audit.md).
+
+Slice 22 now implements voice reply delivery from committed changes and saved
+retry/dispatch deadlines. The periodic reply scan and pre-publication direct push
+are removed. Real normal/operator publication tests prove the final-commit wake;
+turning that notification off reproduces zero delivered replies. The branch has
+786 selected passing tests across isolated voice, recovery, startup, and shared
+consumers, plus workspace typecheck/build. See the reply audit for retained
+fixture failures and local full-suite infrastructure limitations. Publication and
+latest-head review/check acceptance remain outstanding. Inbound admission cleanup,
+inbound history retention, and call reports remain separate next slices.
+
 ## Acceptance follow-up after the plugin parent merged (October 27)
 
 Eighteen preceding sleep PRs are merged through plugin scheduling #17518 at
@@ -1601,6 +1621,15 @@ records exact scope, database setup, the initial partial tool-access run and
 remaining remote gates.
 
 
+## Reply delivery preserves bounded parent reconstruction, October 27
+
+The reply child includes voice recovery `712f3862b5`. Its existing shared-worker
+extraction now supports the parent's paged result contract. The real inherited
+205-call regression fails before repair and passes afterward; all 445 distinct
+targeted cases, production typecheck and server build pass. The [reply audit](2026-10-25-voice-reply-delivery-sleep-audit.md#current-parent-paging-contract-acceptance-october-27)
+records the 31-file scope and effects on the four existing shared consumers.
+Current-head review, CI and parent landing remain required.
+
 ## Voice trusted-policy checkout repair, October 27
 
 Receiver `ab39569250` supplies the landed policy checker now required by trusted
@@ -1618,3 +1647,14 @@ fences. The generation test uses controlled scheduler turns instead of elapsed
 SQL time. All 210 current targeted cases, production typecheck and server build
 pass; guarded mutations catch both regressions. The [voice audit](2026-10-25-voice-maintenance-sleep-audit.md#wildcard-failure-and-deterministic-generation-acceptance-october-28)
 keeps the actual CI assertion failure and earlier failed attempts separate.
+
+
+## Reply publication inventory acceptance, October 28
+
+Reply delivery now scopes final publication wakes to the actual conversation and
+returns at most 100 identity rows per refresh. Five real publications previously
+selected 1,065/1,060 rows across unrelated calls; both paths pass the same 125-row
+budget after repair. The [reply audit](2026-10-25-voice-reply-delivery-sleep-audit.md#publication-inventory-and-paging-acceptance-october-28)
+records restart, denial-cursor and guarded-mutation coverage. All 449 current
+targeted cases, server typecheck/build and the policy check pass on parent
+`ad79c7e805`. Fresh exact-head review, CI and parent landing remain required.

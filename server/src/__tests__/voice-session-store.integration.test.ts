@@ -1,3 +1,9 @@
+import * as voiceReplyNotifications from "../services/voice/voice-reply-notifications.js";
+import { voiceReplySchedule } from "../services/voice/voice-reply-schedule.js";
+import { registerVoiceReplyWork } from "../services/voice/voice-reply-work.js";
+import { pushVoiceReplies } from "../services/voice/voice-reply-push.js";
+import { notifyVoiceReplies } from "../services/voice/voice-reply-notifications.js";
+import { DELIVERY_QUEUES, subscribeDeliveryWork } from "../services/delivery-work-notifications.js";
 import { toolAccessService } from "../services/tool-access.js";
 import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { idleWorkSnapshot } from "../services/task-admission.js";
@@ -72,6 +78,50 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
+
+  it("restores blocked replies through the production live-call recovery wiring", async () => {
+    const f = await pushFixture();
+    await db.update(companyMemberships).set({ status: "suspended" }).where(eq(companyMemberships.principalId, f.callerId));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const settle = () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
+    try {
+      // Reply denial is remembered by the service's own schedule. No test calls
+      // authorityAvailable: only production recovery may reactivate this reply.
+      await f.service.registerReplyWork(coordinator, () => true).ready;
+      await settle();
+      expect(coordinator.nextWakeAt()).toBeNull();
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      await db.update(companyMemberships).set({ status: "active" }).where(eq(companyMemberships.principalId, f.callerId));
+      await f.service.registerRecoveryWork(coordinator, () => true).ready;
+      await vi.advanceTimersByTimeAsync(31_000);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      expect(f.transport.inspectSession).toHaveBeenCalled();
+      expect(f.transport.endSession).not.toHaveBeenCalled();
+      // Repeated healthy inspections do not republish the delivered answer.
+      await vi.advanceTimersByTimeAsync(31_000); await settle();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      f.transport.inspectSession.mockResolvedValue({ status: "ended", endedAt: new Date().toISOString() });
+      await vi.advanceTimersByTimeAsync(31_000); await settle();
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(coordinator.nextWakeAt()).toBeNull();
+        expect(idleWorkSnapshot().active).toBe(0);
+      }, { timeout: 5000 });
+      const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(120_000); expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); transactions.mockRestore(); }
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); vi.useRealTimers(); }
+  });
 
   it.each(["hangup", "revocation", "feature disable", "endpoint pause", "connection disable", "task reassignment"] as const)("wakes live recovery from a real start and settles after %s", async reason => {
     await instanceSettingsService(db).updateExperimental({ enableChatConnectors: true });
@@ -657,6 +707,304 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     const push = () => f.service.pushReplies(25, f.companyId, f.endpointId);
     return {...f, session, publication, push};
   }
+  function replyInventoryReads() {
+    const counts: number[] = [], select = db.select.bind(db);
+    const measurement = vi.spyOn(db, "select").mockImplementation((...args) => {
+      const selection = select(...args), from = selection.from.bind(selection);
+      vi.spyOn(selection, "from").mockImplementation(table => {
+        const query = from(table);
+        if ((table === chatVoiceSessions || table === chatActions) && args[0] && "connectionId" in args[0]) {
+          const execute = query.execute.bind(query);
+          vi.spyOn(query, "execute").mockImplementation(async () => {
+            const rows = await execute(); counts.push(rows.length); return rows;
+          });
+        }
+        return query;
+      });
+      return selection;
+    });
+    return { counts, stop: () => measurement.mockRestore() };
+  }
+  async function replyWorker(f: Awaited<ReturnType<typeof pushFixture>>, canRun = () => true, existing?: ReturnType<typeof voiceReplySchedule>) {
+    const service = existing ?? voiceReplySchedule(db, { store: f.store, push: sessionId => pushVoiceReplies(db, {
+      store: f.store, credentials: f.credentials, provider: () => f.transport, limit: 1, sessionId, recoverDispatches: false,
+    }) });
+    const onError = vi.fn();
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun, canReconcile: () => true, onError });
+    // This shared integration database retains unrelated fixtures. Scope startup
+    // to this company's real records so they cannot dispatch another test's work.
+    const load = service.load;
+    service.load = (scope, signal) => load(scope ?? { kind: "company", id: f.companyId }, signal);
+    await registerVoiceReplyWork(coordinator, service, canRun).ready;
+    const settled = () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000);
+      expect(idleWorkSnapshot().active).toBe(0);
+      expect(coordinator.nextWakeAt()).toBeNull();
+    }, { timeout: 5000 });
+    const quiet = async (ms = 120_000) => {
+      const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(ms); expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); transactions.mockRestore(); }
+    };
+    return { coordinator, onError, settled, quiet, service };
+  }
+  it("schedules phone replies only after publication and becomes quiet after acceptance", async () => {
+    const f = await pushFixture();
+    await db.update(chatPublications).set({ state: "streaming" }).where(eq(chatPublications.id, f.publication.id));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    try {
+      await worker.settled(); await worker.quiet(); expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      await db.transaction(async tx => {
+        await notifyVoiceReplies(tx, { kind: "endpoint", id: f.endpointId });
+        await tx.update(chatPublications).set({ state: "published" }).where(eq(chatPublications.id, f.publication.id));
+      });
+      await worker.settled();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      expect((await db.select().from(chatVoiceReplies).where(eq(chatVoiceReplies.sessionId, f.session.id)))[0].deliveredAt).not.toBeNull();
+      await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it("schedules phone reply retries at the saved rate-limit deadline without early database scans", async () => {
+    const f = await pushFixture();
+    f.transport.sendCallMessage.mockRejectedValueOnce(new SpekoProviderError("rate_limited", false, 429));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    let worker = await replyWorker(f);
+    try {
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); expect(worker.coordinator.nextWakeAt()).toBeGreaterThan(Date.now() + 5000); });
+      const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+      expect(action.status).toBe("retry"); expect(worker.coordinator.nextWakeAt()).toBe(action.result!.retryAt);
+      await worker.coordinator.stop(); worker = await replyWorker(f);
+      expect(worker.coordinator.nextWakeAt()).toBe(action.result!.retryAt);
+      await worker.quiet(2000); expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      await vi.advanceTimersByTimeAsync(Number(action.result!.retryAt) - Date.now()); await worker.settled();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it("schedules abandoned phone dispatch recovery even after its session has ended", async () => {
+    const f = await pushFixture(); await f.push();
+    const [action] = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+    await db.update(chatActions).set({ status: "dispatching", result: null, updatedAt: new Date(Date.now() - 60_000) }).where(eq(chatActions.id, action.id));
+    await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date() }).where(eq(chatVoiceSessions.id, f.session.id));
+    f.transport.sendCallMessage.mockClear();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    try {
+      await worker.settled();
+      expect((await db.select().from(chatActions).where(eq(chatActions.id, action.id)))[0]).toMatchObject({ status: "unknown", result: { errorCode: "message_delivery_unknown" } });
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled(); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it("schedules the first new phone reply from the real enqueue producer after nested commit", async () => {
+    const f = await pushFixture(); await f.push();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    try {
+      await worker.settled(); await worker.quiet();
+      const before = f.transport.sendCallMessage.mock.calls.length;
+      await expect(db.transaction(async tx => {
+        const [publication] = await tx.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+          conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: { text: "Rolled back" } }).returning();
+        await voiceSessionStore(tx as unknown as typeof db, { allowLocalBoard: false }).enqueuePublication(f.companyId, publication.id);
+        await vi.advanceTimersByTimeAsync(2000); expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(before);
+        throw new Error("rollback publication");
+      })).rejects.toThrow("rollback publication");
+      await worker.settled(); await worker.quiet(2000); expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(before);
+      await db.transaction(async tx => {
+        const [publication] = await tx.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+          conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: { text: "Committed answer" } }).returning();
+        await voiceSessionStore(tx as unknown as typeof db, { allowLocalBoard: false }).enqueuePublication(f.companyId, publication.id);
+        await vi.advanceTimersByTimeAsync(2000); expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(before);
+      });
+      await worker.settled(); expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(before + 1);
+      expect(f.transport.sendCallMessage.mock.calls.at(-1)?.[1]).toBe("Committed answer");
+      await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it("schedules the next phone answer when real get_updates consumes its question barrier", async () => {
+    const f = await pushFixture(), interactionId = randomUUID();
+    await db.insert(issueThreadInteractions).values({ id: interactionId, companyId: f.companyId, issueId: f.issueId,
+      kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "addressee_only",
+      payload: { version: 1, questions: [{ id: "color", prompt: "Which color?", selectionMode: "single", required: true, options: [{ id: "cobalt", label: "Cobalt" }] }] } });
+    await db.update(chatPublications).set({ payload: { text: "Which color?", interactionId } }).where(eq(chatPublications.id, f.publication.id));
+    const [later] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: { text: "Later answer" } }).returning();
+    await f.store.enqueuePublication(f.companyId, later.id);
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    try {
+      await worker.settled(); expect(f.transport.sendCallMessage).toHaveBeenCalledOnce(); await worker.quiet();
+      const token = f.transport.createBrowserSession.mock.calls[0]![0].toolToken;
+      const toolId = randomUUID(), { sessionId: providerSessionId } = await f.transport.createBrowserSession.mock.results[0]!.value;
+      const envelope = { session_id: providerSessionId, tool_call_id: toolId, idempotency_key: `${providerSessionId}:${toolId}`, tool: "get_updates" as const, args: { cursor: 0 } };
+      expect(await f.store.runTool({ ...f.toolInput("get_updates", { cursor: 0 }), sessionId: f.session.id, token,
+        envelope, webhookId: toolId, fingerprint: createHash("sha256").update(JSON.stringify(envelope)).digest("hex") })).toMatchObject({ updates: [{ question: { interactionId } }] });
+      await worker.settled(); expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2);
+      expect(f.transport.sendCallMessage.mock.calls.at(-1)?.[1]).toBe("Later answer");
+      await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it("preserves a newly committed phone reply through drain without passive SQL", async () => {
+    const f = await pushFixture(); await f.push();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    let enabled = true;
+    const worker = await replyWorker(f, () => enabled);
+    try {
+      await worker.settled(); enabled = false;
+      const [publication] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+        conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(), state: "published", payload: { text: "After resume" } }).returning();
+      await f.store.enqueuePublication(f.companyId, publication.id);
+      await vi.waitFor(async () => { await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0); });
+      const drained = idleWorkSnapshot();
+      await worker.quiet(60_000); expect(idleWorkSnapshot()).toEqual(drained); expect(f.transport.sendCallMessage).toHaveBeenCalledOnce();
+      enabled = true; await worker.settled();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(2); expect(f.transport.sendCallMessage.mock.calls.at(-1)?.[1]).toBe("After resume");
+      await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it.each(["normal publication", "operator resolution"] as const)("bounds inventory reads for repeated actual %s with unrelated calls and dispatches", async path => {
+    const f = await pushFixture(); await f.push();
+    const [source] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, f.session.id));
+    const identities = Array.from({ length: 105 }, () => ({ id: randomUUID(), conversationId: randomUUID() }));
+    await db.insert(chatConversations).values(identities.map(row => ({ id: row.conversationId, companyId: f.companyId,
+      endpointId: f.endpointId, issueId: f.issueId, externalConversationId: row.conversationId,
+      externalThreadId: row.conversationId, externalLabel: "Unrelated call", isDirectMessage: true })));
+    await db.insert(chatVoiceSessions).values(identities.map(row => ({ ...source, ...row, callerId: row.id,
+      providerSessionId: row.id, idempotencyKey: row.id, requestFingerprint: row.id })));
+    await db.insert(chatActions).values(identities.map(row => ({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: row.conversationId, kind: "speko_voice_reply_push", providerActionId: row.id, status: "dispatching",
+      payload: { sessionId: row.id, replyId: randomUUID() }, updatedAt: new Date(Date.now() + 3_600_000) })));
+    const chat = chatChannelService(db, { heartbeat: { wakeup: vi.fn() } });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    let stopMeasurement: (() => void) | undefined;
+    try {
+      const settle = () => vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(worker.coordinator.nextWakeAt()).toBeGreaterThan(Date.now() + 60_000);
+      }, { timeout: 5000 });
+      await settle(); await worker.quiet(2000);
+      const reads = replyInventoryReads(), counts = reads.counts;
+      stopMeasurement = reads.stop;
+      const before = f.transport.sendCallMessage.mock.calls.length;
+      for (let index = 0; index < 5; index++) {
+        const [publication] = await db.insert(chatPublications).values({ companyId: f.companyId, endpointId: f.endpointId,
+          conversationId: f.conversationId, issueId: f.issueId, idempotencyKey: randomUUID(),
+          state: path === "normal publication" ? "pending" : "delivery_unknown", payload: { text: `Answer ${index}` } }).returning();
+        if (path === "normal publication") await chat.processPendingPublications(25, { maintenance: false });
+        else await chat.resolvePublication(f.endpointId, publication.id, "mark_delivered", f.callerId);
+        await settle();
+        expect(f.transport.sendCallMessage).toHaveBeenCalledTimes(before + index + 1);
+      }
+      expect(counts.reduce((sum, count) => sum + count, 0)).toBeLessThanOrEqual(5 * 25);
+      stopMeasurement(); stopMeasurement = undefined;
+      await worker.quiet(2000); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { stopMeasurement?.(); await worker.coordinator.stop(); await chat.shutdown(); vi.useRealTimers(); }
+  });
+  it.each(["normal publication", "operator resolution"] as const)("wakes phone delivery from actual %s after its early enqueue has gone idle", async path => {
+    const f = await pushFixture();
+    await db.update(chatPublications).set({ state: path === "normal publication" ? "pending" : "delivery_unknown" })
+      .where(eq(chatPublications.id, f.publication.id));
+    const chat = chatChannelService(db, { heartbeat: { wakeup: vi.fn() } });
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const worker = await replyWorker(f);
+    let release!: () => void, reached!: () => void;
+    const barrier = new Promise<void>(resolve => { release = resolve; });
+    const entered = new Promise<void>(resolve => { reached = resolve; });
+    const notify = voiceReplyNotifications.notifyVoicePublication;
+    const notification = vi.spyOn(voiceReplyNotifications, "notifyVoicePublication").mockImplementationOnce(async (...args) => {
+      reached(); await barrier; return notify(...args);
+    });
+    let publishing: Promise<unknown> | undefined;
+    try {
+      await worker.settled(); await worker.quiet(2000);
+      publishing = path === "normal publication"
+        ? chat.processPendingPublications(25, { maintenance: false })
+        : chat.resolvePublication(f.endpointId, f.publication.id, "mark_delivered", f.callerId);
+      await Promise.race([entered, publishing.then(() => { throw new Error("Publication ended before its final commit boundary"); })]);
+      // Hold the real final publication transaction before its voice intent.
+      // An earlier enqueue wake can fully drain while the row is not published.
+      await vi.advanceTimersByTimeAsync(2000);
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      expect(worker.coordinator.nextWakeAt()).toBeNull();
+      release(); await publishing; await worker.settled();
+      expect((await db.select().from(chatPublications).where(eq(chatPublications.id, f.publication.id)))[0].state).toBe("published");
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce(); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally {
+      release(); await publishing; notification.mockRestore(); await worker.coordinator.stop(); await chat.shutdown(); vi.useRealTimers();
+    }
+  });
+  it("bounds abandoned-dispatch pages and reconstructs the same service after a partial-scan restart", async () => {
+    const f = await pushFixture();
+    await db.update(chatVoiceSessions).set({ state: "ended", endedAt: new Date() }).where(eq(chatVoiceSessions.id, f.session.id));
+    await db.insert(chatActions).values(Array.from({ length: 105 }, () => ({ companyId: f.companyId, endpointId: f.endpointId,
+      conversationId: f.conversationId, kind: "speko_voice_reply_push", providerActionId: randomUUID(), status: "dispatching",
+      payload: { sessionId: f.session.id, replyId: randomUUID() }, updatedAt: new Date(Date.now() + 60_000) })));
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const reads = replyInventoryReads();
+    let worker: Awaited<ReturnType<typeof replyWorker>> | undefined;
+    try {
+      worker = await replyWorker(f);
+      expect(reads.counts.reduce((sum, count) => sum + count, 0)).toBe(100);
+      expect(worker.onError).not.toHaveBeenCalled();
+      const service = worker.service;
+      await worker.coordinator.stop();
+      const beforeRestart = reads.counts.length;
+      worker = await replyWorker(f, () => true, service);
+      expect(reads.counts.slice(beforeRestart).reduce((sum, count) => sum + count, 0)).toBe(100);
+      await vi.waitFor(async () => {
+        await vi.advanceTimersByTimeAsync(1000);
+        expect(idleWorkSnapshot().active).toBe(0);
+        expect(worker!.coordinator.nextWakeAt()).toBeGreaterThan(Date.now() + 60_000);
+      });
+      expect(Math.max(...reads.counts)).toBeLessThanOrEqual(100);
+      reads.stop(); await worker.quiet(1000);
+      await vi.advanceTimersByTimeAsync(worker.coordinator.nextWakeAt()! - Date.now());
+      await worker.settled();
+      const actions = await db.select().from(chatActions).where(eq(chatActions.endpointId, f.endpointId));
+      expect(actions).toHaveLength(105); expect(actions.every(action => action.status === "unknown")).toBe(true);
+      expect(f.transport.sendCallMessage).not.toHaveBeenCalled(); reads.stop(); await worker.quiet(); expect(worker.onError).not.toHaveBeenCalled();
+    } finally { reads.stop(); await worker?.coordinator.stop(); vi.useRealTimers(); }
+  });
+  it("preserves a blocked call first observed behind an in-progress reconstruction cursor", async () => {
+    const f = await pushFixture(); await f.push();
+    const [source] = await db.select().from(chatVoiceSessions).where(eq(chatVoiceSessions.id, f.session.id));
+    await db.insert(chatVoiceSessions).values(Array.from({ length: 105 }, () => {
+      const id = `8${randomUUID().slice(1)}`;
+      return { ...source, id, callerId: id, providerSessionId: id, idempotencyKey: id, requestFingerprint: id };
+    }));
+    const service = voiceReplySchedule(db, { store: f.store, push: vi.fn() });
+    const scope = { kind: "company", id: f.companyId } as const;
+    expect((await service.load(scope)).complete).toBe(false);
+    const id = `00000000-0000-0000-0000-${randomUUID().slice(-12)}`;
+    await db.insert(chatVoiceSessions).values({ ...source, id, callerId: id, providerSessionId: id,
+      idempotencyKey: id, requestFingerprint: id });
+    const { rows } = await service.load({ kind: "session", id });
+    expect(rows).toHaveLength(1);
+    await expect(db.transaction(tx => f.store.authorizeSession(tx, f.companyId, id))).rejects.toMatchObject({ status: 403 });
+    expect(await service.check(rows[0])).toBeNull();
+    while (!(await service.load(scope)).complete) {}
+    const wake = vi.fn(), unsubscribe = subscribeDeliveryWork(db, DELIVERY_QUEUES.voiceReplies, wake);
+    try {
+      await db.transaction(tx => service.authorityAvailable(tx, id));
+      await vi.waitFor(() => expect(wake).toHaveBeenCalledOnce());
+    } finally { unsubscribe(); }
+  });
+  it("retains phone reply work after a failed state read and retries without intervening scans", async () => {
+    const f = await pushFixture();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const transaction = vi.spyOn(db, "transaction").mockRejectedValueOnce(new Error("reply database unavailable"));
+    const worker = await replyWorker(f);
+    transaction.mockRestore();
+    try {
+      expect(worker.onError).toHaveBeenCalledOnce(); expect(f.transport.sendCallMessage).not.toHaveBeenCalled();
+      const retryAt = worker.coordinator.nextWakeAt()!;
+      expect(retryAt).toBeGreaterThan(Date.now() + 20_000); await worker.quiet(10_000);
+      await vi.advanceTimersByTimeAsync(retryAt - Date.now()); await worker.settled();
+      expect(f.transport.sendCallMessage).toHaveBeenCalledOnce(); expect(worker.onError).toHaveBeenCalledOnce(); await worker.quiet();
+    } finally { transaction.mockRestore(); await worker.coordinator.stop(); vi.useRealTimers(); }
+  });
   it("notifies phone questions once and waits for authorized retrieval before later answers", async () => {
     const f = await pushFixture(), interactionId = randomUUID();
     await db.insert(issueThreadInteractions).values({id: interactionId, companyId: f.companyId, issueId: f.issueId, kind: "ask_user_questions", status: "pending", addresseeUserId: f.callerId, effectiveResolverPolicy: "addressee_only", payload: {version: 1, questions: [{id: "color", prompt: "Which color?", selectionMode: "single", required: true, options: [{id: "cobalt", label: "Cobalt"}]}]}});

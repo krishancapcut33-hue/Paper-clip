@@ -32,3 +32,21 @@ and repair those at their own parent PRs as a separate propagation pass. Do not
 report all stack drain behavior fixed from the voice test alone. The company
 inbound cleanup/deletion policy, older E2E failure, current chat milestone audit,
 and full original inventory remain outstanding.
+
+
+## Shared-worker propagation in slice 22
+
+Slice 22 extracts voice recovery into scoped-deadline-work. The merge keeps that
+extraction and applies the predicate in the shared dispatcher, covering both
+voice session recovery and reply delivery. The phone-reply drain test now also
+checks zero active work and an unchanged idle snapshot during a further minute,
+then verifies the saved reply sends on resume without another producer.
+
+- /tmp/sleep22-shared-drain-tests.log: 11 recovery cases pass.
+- /tmp/sleep22-shared-drain-acceptance.log: all 108 voice integration cases pass.
+- /tmp/sleep22-reply-drain-tests.log: the strengthened reply drain case passes
+  on a separate fresh database after the full suite run.
+- /tmp/sleep22-shared-drain-typecheck.log: production server types pass.
+
+All later shared-worker consumers inherit this repair through the stack. Their
+combined-tip checks and PR checks still need fresh verification after propagation.
