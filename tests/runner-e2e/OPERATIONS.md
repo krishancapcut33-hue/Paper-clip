@@ -512,6 +512,11 @@ existing Braintrust subscription with a reference to that policy and current
 plan evidence. Any newly incurred subscription or capacity charge needs its own
 incremental allocation; the existing fee must remain visible separately.
 
+Unscheduled local controllers use `runner: "local"` to retain their actual
+execution origin. The same component, cap, expiry and receipt rules apply. This
+label supplies no default zero charge and releases no reservation. Scheduled
+allowances still require `github-hosted`; a local allowance fails that gate.
+
 The catalog checks that this allowance matches the selected runner, covers at
 least the next four hours, and leaves room for a full conservative model-request
 reservation. This happens before the build and test runners start. The workflow passes
