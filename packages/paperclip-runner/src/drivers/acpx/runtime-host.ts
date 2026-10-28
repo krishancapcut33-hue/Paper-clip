@@ -526,7 +526,9 @@ export class AcpxRuntimeHost {
         },
       );
       options.signal?.throwIfAborted();
+      admissionStage = "credential";
       assertAcpxProfileEnvironment(options.agent, sandbox.launchEnvironment);
+      admissionStage = "configuration";
       let launchEnvironment = sandbox.launchEnvironment;
       // This copy is registered by the authenticated controller for its company,
       // agent and run. Environment/config values cannot widen the grant. Each

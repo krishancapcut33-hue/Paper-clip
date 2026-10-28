@@ -203,6 +203,28 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it.each(["copilot", "cursor"] as const)("reports missing %s credentials as credential admission", async agent => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => runtimePort());
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent, model:"gpt-5.6-sol",
+      permissionMode:"approve-all",environment:{} }, fixture.dependencies({openRuntime})).catch(error => error);
+    expect(failure).toMatchObject({code:agent === "copilot" ? "COPILOT_AUTH_REQUIRED" : "CURSOR_CREDENTIALS_MISSING"});
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_CREDENTIAL");
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
+  it("retains binding admission when the selected workspace is missing", async () => {
+    const fixture = await hostFixture();
+    await rm(fixture.options.workingDirectory,{recursive:true});
+    const openRuntime = vi.fn(async () => runtimePort());
+    const dependencies = fixture.dependencies({openRuntime});
+    const verifyInstallation = vi.fn(dependencies.verifyInstallation!);
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options,agent:"codex",model:"gpt-5.6-sol",
+      permissionMode:"approve-all" }, {...dependencies,verifyInstallation}).catch(error => error);
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_BINDING");
+    expect(verifyInstallation).not.toHaveBeenCalled();
+    expect(openRuntime).not.toHaveBeenCalled();
+  });
   it("retains the admission stage when provider classification replaces the error", async () => {
     const fixture = await hostFixture();
     const openRuntime = vi.fn(async () => { throw new Error("Unauthorized private-token-canary"); });
