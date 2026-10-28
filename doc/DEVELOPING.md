@@ -802,6 +802,13 @@ the development server's unbundled module graph on each navigation. Browser
 assertion deadlines and retries remain unchanged. Use `pnpm dev` separately when
 verifying Vite/HMR behavior.
 
+The Agent Chat shared fixture restores its original instance experimental settings
+even when live-run cleanup fails. A failed cancellation still fails the test; it
+is not retried or ignored. Run
+`pnpm test:e2e tests/e2e/agent-chat-projects.spec.ts --grep "fixture restore"`
+to check both successful cancellation and an HTTP 500 response without leaking
+experimental settings into the following tests.
+
 For normal issue work, start with the smallest targeted check that proves the change. Reserve repo-wide typecheck/build/test runs for PR-ready handoff or changes broad enough that narrow checks do not cover the risk.
 
 #### Embedded Postgres template cache
