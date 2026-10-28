@@ -105,6 +105,7 @@ import { unadmittedChatWakeupCondition } from "../durable-chat-wakeup.js";
 import { issueRecoveryActionService } from "../issue-recovery-actions.js";
 import { hasUnverifiedNativeWorkspaceFinalizationOwner } from "../native-runtime/native-workspace-finalization-recovery-state.js";
 import {
+  isSuppressedLegacyDispositionDispatch,
   legacyExecutionNeedsReconciliationWithEvidence,
   legacyReconciliationRunFields,
   terminalizeLegacyExecution,
@@ -2041,6 +2042,7 @@ export function recoveryService(
           });
           return null;
         }
+        if (isSuppressedLegacyDispositionDispatch(predecessor)) return null;
         if (deps.scheduleRecoveryRetry) {
           const retry = await deps.scheduleRecoveryRetry(predecessor.id);
           if (retry) return retry;
@@ -4838,6 +4840,10 @@ export function recoveryService(
           });
           result.escalated += 1;
           result.issueIds.push(issue.id);
+          continue;
+        }
+        if (source && isSuppressedLegacyDispositionDispatch(source)) {
+          result.skipped += 1;
           continue;
         }
       }
