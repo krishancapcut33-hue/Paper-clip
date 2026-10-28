@@ -6,6 +6,7 @@ import { eq } from "drizzle-orm";
 import { afterAll, afterEach, beforeAll, describe, expect, it, vi } from "vitest";
 import {
   applyPendingMigrations,
+  EMBEDDED_POSTGRES_TEST_TIMEOUT_MS,
   chatEndpoints,
   chatConversations,
   chatPublications,
@@ -54,7 +55,7 @@ describeEmbeddedPostgres("cleanup removal services", () => {
     if (external) await applyPendingMigrations(external);
     db = createDb(external ?? tempDb!.connectionString);
     configureAgentLifecycle(db, { requiredPluginIds: async () => [], runPlugin: async () => "complete", runHost: async () => "complete" });
-  }, 30_000);
+  }, EMBEDDED_POSTGRES_TEST_TIMEOUT_MS);
 
   afterEach(async () => {
     vi.restoreAllMocks();
