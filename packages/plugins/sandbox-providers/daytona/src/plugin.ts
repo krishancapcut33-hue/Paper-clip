@@ -308,7 +308,7 @@ function parseDriverConfig(raw: Record<string, unknown>): DaytonaDriverConfig {
     autoStopInterval: parseOptionalInteger(raw.autoStopInterval) ?? DEFAULT_AUTO_STOP_INTERVAL_MINUTES,
     autoArchiveInterval: parseOptionalInteger(raw.autoArchiveInterval) ?? DEFAULT_AUTO_ARCHIVE_INTERVAL_MINUTES,
     autoDeleteInterval: parseOptionalInteger(raw.autoDeleteInterval) ?? DEFAULT_AUTO_DELETE_INTERVAL_MINUTES,
-    ttlMinutes: raw.ttlMinutes == null ? null : Number(raw.ttlMinutes),
+    ttlMinutes: raw.ttlMinutes == null || raw.ttlMinutes === "" ? null : Number(raw.ttlMinutes),
     reuseLease: raw.reuseLease === true,
     archiveOnRelease: raw.archiveOnRelease === true,
   };
@@ -1021,7 +1021,7 @@ async function createSandbox(
     idleActivity.observe(allocation, providerActivityKey(params, config, sandbox.id));
     if (config.ttlMinutes != null) {
       cleanup.observedProviderLeaseId = sandbox.id;
-      await sandbox.refreshData();
+      await withLivenessTimeout("sandbox.refreshData", config.livenessTimeoutMs, () => sandbox.refreshData());
       const expiry = Date.parse(sandbox.autoDestroyAt ?? "");
       const nowMs = Date.now();
       if (!Number.isFinite(expiry) || expiry <= nowMs || expiry > nowMs + config.ttlMinutes * 60_000) {

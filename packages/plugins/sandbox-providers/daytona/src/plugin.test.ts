@@ -1344,6 +1344,51 @@ describe("Daytona sandbox provider plugin", () => {
     expect(sandbox.setTtl).not.toHaveBeenCalled();
   });
 
+  it("treats a cleared creation ttl as unset", async () => {
+    process.env.DAYTONA_API_KEY = "host-key";
+    const config = { image: "node:20", ttlMinutes: "", reuseLease: false };
+    expect(await plugin.definition.onEnvironmentValidateConfig?.({ driverKey: "daytona", config }))
+      .toMatchObject({ ok: true, normalizedConfig: { ttlMinutes: null } });
+    const sandbox = createMockSandbox();
+    mockCreate.mockResolvedValue(sandbox);
+    const lease = await plugin.definition.onEnvironmentAcquireLease?.({
+      driverKey: "daytona", companyId: "company-1", environmentId: "env-1", runId: "run-1", config,
+    });
+    expect(mockCreate.mock.calls[0][0]).not.toHaveProperty("ttlMinutes");
+    expect(lease?.expiresAt ?? null).toBeNull();
+  });
+
+  it.each(["acquire", "probe", "interactive"])("bounds a stalled creation expiry read for %s", async mode => {
+    vi.useFakeTimers();
+    process.env.DAYTONA_API_KEY = "host-key";
+    const sandbox = createMockSandbox({ autoDestroyAt: new Date(Date.now() + 60_000).toISOString() });
+    let finishRead: (() => void) | undefined;
+    sandbox.refreshData.mockImplementation(() => new Promise<void>(resolve => { finishRead = resolve; }));
+    mockCreate.mockImplementation(async params => Object.assign(sandbox, { name: params.name, labels: params.labels }));
+    mockGet.mockResolvedValue(sandbox);
+    const params = { driverKey: "daytona", companyId: "company-1", environmentId: "env-1", runId: "run-1", sessionId: "setup-1",
+      config: { image: "node:20", ttlMinutes: 1, timeoutMs: 60_000, livenessTimeoutMs: 5, reuseLease: false } };
+    const pending = mode === "probe" ? plugin.definition.onEnvironmentProbe!(params)
+      : mode === "interactive" ? plugin.definition.onEnvironmentStartInteractiveSetup!(params)
+      : plugin.definition.onEnvironmentAcquireLease!(params);
+    let settled = false;
+    const observed = pending.then(value => ({ value, error: null }), error => ({ value: null, error }));
+    void observed.then(() => { settled = true; });
+    try {
+      await vi.advanceTimersByTimeAsync(20);
+      expect(settled).toBe(true);
+      const result = await observed;
+      expect(result.error?.message ?? (result.value as { metadata?: { error?: string } })?.metadata?.error)
+        .toContain("did not respond within 5 ms");
+      expect(sandbox.delete).toHaveBeenCalled();
+      expect(sandbox.process.executeCommand).not.toHaveBeenCalled();
+    } finally {
+      finishRead?.();
+      await observed;
+      vi.useRealTimers();
+    }
+  });
+
   it.each([0, -1, 1.5, "invalid", Infinity])("rejects invalid creation ttl %s before allocation", async ttlMinutes => {
     process.env.DAYTONA_API_KEY = "host-key";
     const config = { image: "node:20", ttlMinutes, reuseLease: false };
