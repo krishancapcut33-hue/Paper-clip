@@ -1714,3 +1714,11 @@ the deterministic preservation suite. The corrected batch explicitly includes
 both preservation suites and passes all 158 cases across 13 files. The earlier
 146-case receipt retains its own source and selection; these counts do not imply
 identical test inventories. E2E typecheck also passes after master integration.
+
+
+After the server squash merge and qualification retarget, the transcript slice
+again passes 50 focused server cases, 91 focused UI cases, both typechecks and
+token gates. Runner vendor preparation rebuilds the current master inputs before
+those tests. No new browser journey or hosted experiment is claimed. The old
+browser receipts remain attributed to their source; new-head CI and reviews are
+still required before the transcript slice can merge.
