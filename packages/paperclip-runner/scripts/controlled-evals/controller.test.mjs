@@ -22,6 +22,28 @@ import { aggregateProtocolEvalCampaign, sanitizeProtocolEvalRuns } from '../runn
 
 import { childScript, fixture, success } from './controller-fixture.mjs';
 
+test('expected ACPX profile reaches the child before it can dispatch a model request', async t => {
+  const profile = { agent: 'claude', agentRuntimeVersion: '0.3.286' };
+  for (const stale of [false, true]) {
+    const f = await fixture(t, { providerProfile: 'claude', builtAcpxProfile: profile, requests: 1 });
+    let calls = 0;
+    const result = await runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: f.environment,
+      expectedAcpxProfile: { ...profile, ...(stale ? { agentRuntimeVersion: '0.3.263' } : {}) },
+      transport: async () => { calls++; return success('anthropic'); } });
+    assert.equal(calls, stale ? 0 : 1);
+    assert.equal(result.code === 0, !stale);
+    assert.equal(result.report.accounting.requests.length, stale ? 0 : 1);
+  }
+});
+
+test('malformed profile arguments fail before opening controlled evidence', async t => {
+  const f = await fixture(t, { providerProfile: 'claude' });
+  for (const expectedAcpxProfile of [null, [], 'profile', { overflow: 'x'.repeat(4097) }]) {
+    await assert.rejects(runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: {}, expectedAcpxProfile }), /Expected ACPX profile/);
+  }
+  await assert.rejects(stat(f.manifest.outputDirectory), { code: 'ENOENT' });
+});
+
 test('real child requests reserve before dispatch, stop at the cap and retain only controller credentials', async t => {
   const f = await fixture(t);
   let calls = 0;
