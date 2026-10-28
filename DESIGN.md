@@ -93,6 +93,10 @@ Saving the human comment does not end startup feedback. Keep the identity mounte
 until its run appears or a newer execution outcome ends admission.
 Runtime discovery must not replace the turn with a generic spinner or a
 "run started" receipt. Queued and running headers use the same spacing.
+Show a saved opening channel message in conversation history while its first
+assigned run waits to start. Keep the queued run status visible. This does not
+mean the provider has consumed the message. Follow-ups, retries, batches and
+explicit execution waits keep their pending-message controls.
 
 Stream the provider's final reply as the conversational answer. Completion-tool
 reports remain inspectable run data while work continues. Use their summary as
