@@ -941,6 +941,14 @@ pnpm test:e2e:runner:models:update
 
 ## Daytona image
 
+The ephemeral Daytona fixture requests a 60-minute wall-clock lifetime at creation.
+The provider destroys each sandbox at that expiry in any state. This bound includes
+room for each declared attempt and the acquisition budget. It supplements the
+fixture's inactivity cleanup and remains in force after a controller crash.
+The provider must confirm the expiry before setup can use the sandbox. Cost reports
+still require lifecycle evidence and preserve uncertain cleanup or charges.
+
+
 Use the immutable digest printed by the `Publish verified Daytona image` job,
 or publish the current source locally:
 

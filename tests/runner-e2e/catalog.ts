@@ -538,6 +538,7 @@ export const runnerEnvironments: readonly EnvironmentFixture[] = [
           autoStopInterval: 5,
           autoArchiveInterval: 15,
           autoDeleteInterval: 60,
+          ttlMinutes: 60,
           timeoutMs: 300_000,
           livenessTimeoutMs: 30_000,
         },
