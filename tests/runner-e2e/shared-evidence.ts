@@ -45,4 +45,3 @@ export async function copySharedEvidence(privateRoot: string, casePrivateDir: st
     await writeFile(path.join(snapshots, entry.name), `${JSON.stringify(sanitizeJson(receipt, secrets), null, 2)}\n`, { mode: 0o600 });
   }
 }
-
