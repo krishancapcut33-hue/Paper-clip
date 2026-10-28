@@ -11,11 +11,13 @@ Eval audit, and remaining activation gaps.
 
 ## Supported admission
 
-The initial path admits local `core-compatibility` and `feedback-persistence` cells for `runner-codex`,
-`runner-acpx-claude`, `legacy-codex`, and `legacy-claude`. Each cell must have one
-provider credential and an exact priced model. Other suites, remote environments,
-subscription profiles, hosted tools, multimodal inputs, premium service modes,
-and separate judges fail admission. This whitelist is implementation scope, not
+The bounded path admits local `core-compatibility` and `feedback-persistence` cells
+for `runner-codex`, `runner-acpx-claude`, `legacy-codex`, and `legacy-claude`.
+Daytona admits the two native profiles in those suites when the manifest declares
+`remoteGateway: "cloudflare"`. Each cell needs one exact priced model and its
+provider credential; Daytona also needs its provider key. Other suites and remote
+routes, subscription profiles, hosted tools, multimodal inputs, premium service
+modes, and separate judges fail admission. This whitelist is implementation scope, not
 evidence that every admitted harness has passed live qualification.
 
 Before creating the journal or requesting credentials, manifest validation checks
@@ -899,8 +901,9 @@ launch manifests must use the adopted cap. The migration cannot extend an expire
 deadline, change an existing cap, or replenish an allowance. An interrupted append
 remains an accounting failure and must be recovered before more paid work.
 
-The explicit local `feedback-persistence` native Claude/Codex cells also accept
-an operations manifest. They use the same metered connection, prices, campaign
+The explicit `feedback-persistence` native Claude/Codex cells on local and Daytona
+execution also accept an operations manifest. Remote cells require the Cloudflare
+gateway declaration and immutable image. They use the same metered connection, prices, campaign
 journal, setup boundary, and durable attempt allowance as core compatibility.
 Collection and the independent saved-evidence oracle require no additional
 model call. The synthetic items need review as test data, not product incidents.
