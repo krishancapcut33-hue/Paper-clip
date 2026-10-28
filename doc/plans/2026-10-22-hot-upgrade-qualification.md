@@ -1572,3 +1572,30 @@ was issued before the necessary server fix superseded that source. These are
 retained incomplete/failed attempts, not passing evidence. All new heads require
 fresh CI and review. No new hosted deployment, paid harness turn, active-agent
 comparison, or A/B upgrade qualification was run.
+
+
+### Server slice merged; qualification retargeted to master
+
+PR #17439 source `5de803c2cdbdd24d88e411add590edc21954516a` merged into
+master as `09ad9adce2cf4742944353a3707a2f908e9bb35e` after all 60 current-head
+checks completed cleanly, legacy status passed, Greptile completed at 5/5, the
+formal Paperclip review completed at 5/5, and actionable feedback was resolved.
+Qualification now targets master. Its diff contains only qualification code and
+this evidence document; the server implementation is not repeated in its scope.
+
+Current-source Linux job 122593415890 executes all 20 project-tool tests
+successfully (9.480 seconds), including the committed-project lost-response
+regression; the shard has 1,627 passes and three unrelated skips. Job
+122593415907 executes all 940 native-session-executor tests successfully (61.431
+seconds); its shard has 2,358 passes and one skip. The earlier macOS skips remain
+local evidence limits and do not replace this actual database execution.
+
+Runner job 122593415475 passes 2,215 cases with one skip in its first lane and
+115 native cases with five container-only skips. It includes the encrypted
+checkpoint binding guard, fresh remote preparation (63.189 seconds), blocked
+claim lock (1.226 seconds), and recovery beyond 101 blocked owners (3.897
+seconds). Its real-Postgres SQL cost sample reports zero idle SQL and zero
+streaming SQL for both output volumes. These are component correctness and cost
+receipts; they do not establish production capacity or hosted active-agent and
+A/B upgrade acceptance. All previously retained failures and hosted limits still
+apply. The retargeted qualification head needs fresh CI and reviews.
