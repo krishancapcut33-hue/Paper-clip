@@ -1,18 +1,19 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { registerTaskDrainExpiryWork, readTaskDrain, startTaskDrain, stopTaskDrain } from "./task-admission.js";
-import { createDeliveryWorkCoordinator } from "./delivery-work-coordinator.js";
+import { registerTaskDrainExpiryWork, readTaskDrain, startTaskDrain, stopTaskDrain } from "../services/task-admission.js";
+import { createDeliveryWorkCoordinator } from "../services/delivery-work-coordinator.js";
 import { installDatabaseWorkSignals } from "../../../packages/db/src/work-signals.js";
 
 describe("task drain deadline", () => {
   let coordinator: ReturnType<typeof createDeliveryWorkCoordinator>;
   let worker: ReturnType<typeof registerTaskDrainExpiryWork>;
-  let resume: ReturnType<typeof vi.fn>;
+  let resume = vi.fn<() => void>();
   const execute = vi.fn(async () => []);
+  const transaction = async () => { throw new Error("No transaction is expected for a process-local deadline"); };
   beforeEach(async () => {
     vi.useFakeTimers();
-    resume = vi.fn();
+    resume = vi.fn<() => void>();
     execute.mockClear();
-    coordinator = createDeliveryWorkCoordinator({ owner: installDatabaseWorkSignals({ execute }), canRun: () => false,
+    coordinator = createDeliveryWorkCoordinator({ owner: installDatabaseWorkSignals({ execute, transaction }), canRun: () => false,
       canReconcile: () => true, onError: error => { throw error; } });
     worker = registerTaskDrainExpiryWork(coordinator, resume);
     await worker.ready;
@@ -60,7 +61,7 @@ describe("task drain deadline", () => {
     expect(readTaskDrain(new Date())).toBeNull();
     expect(resume).not.toHaveBeenCalled();
     startTaskDrain({ ttlMs: 1000 });
-    const next = createDeliveryWorkCoordinator({ owner: installDatabaseWorkSignals({ execute }), canRun: () => true, onError: vi.fn() });
+    const next = createDeliveryWorkCoordinator({ owner: installDatabaseWorkSignals({ execute, transaction }), canRun: () => true, onError: vi.fn() });
     const resumed = vi.fn();
     const nextWorker = registerTaskDrainExpiryWork(next, resumed);
     try {
