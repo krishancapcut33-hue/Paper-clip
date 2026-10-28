@@ -1,5 +1,5 @@
 {
-  "commandDigest": "sha256:6326444af8fd447032ca8ad10ce3a1280af9aeeddacd563cf48b430202dbbefd",
+  "commandDigest": "sha256:754e74c58bc9b22b49d38e0b9ff0a4708caff46abf6ac531975ea2d91c27de41",
   "declaration": {
     "schema": "paperclip.acpx_profile_declaration.v1",
     "agent": "copilot",
@@ -77,7 +77,7 @@
     "metadataProbeSourceSha256": "be4c8416edd27061109bc1f33d0c26071b4facbb3f651beaae6b3c0275cce727",
     "permissionToolIdentitySourceSha256": "770b47305e571a81f344883057d0e4a482a1cd59ac77d045836593a8e739deb1",
     "semanticContinuationSourceSha256": "c9cc0fd516b3df92a6655f56ee9bef37615a889c371e2e137d8ac5c1176de811",
-    "runtimeHostSourceSha256": "f12712a06c9d25ba78f61883d6582237de405e79f38586e20419522e5a7059f2",
+    "runtimeHostSourceSha256": "be14218ad4477e083cfc32f6680fcfed776056a4084615d6b0efd1e521e66232",
     "runtimeAdapterSourceSha256": "7c47c05306ebe7d1ca6b5d046a96f5726a48adec4d27e7c16788f505f25b5db2",
     "runtimeSandboxSourceSha256": "981449a4c6d10f682ecf86d834eed07faca30a7d9b419fb8db4973a442a343ec",
     "cancellationSourceSha256": "a07d1a9e982dec0ae130c1ad1efa5bc75c6a39e013b730ba3ee45256f09ceeca",

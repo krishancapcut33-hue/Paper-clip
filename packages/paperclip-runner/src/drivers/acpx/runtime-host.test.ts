@@ -203,6 +203,35 @@ afterEach(async () => {
 });
 
 describe("ACPX runtime host", () => {
+  it("retains the admission stage when provider classification replaces the error", async () => {
+    const fixture = await hostFixture();
+    const openRuntime = vi.fn(async () => { throw new Error("Unauthorized private-token-canary"); });
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent: "copilot", model: "gpt-5.6-sol",
+      permissionMode: "approve-all", environment: {COPILOT_GITHUB_TOKEN:"synthetic-test-token"} }, fixture.dependencies({openRuntime})).catch(error => error);
+    expect(failure).toMatchObject({code:"COPILOT_AUTH_REQUIRED"});
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_RUNTIME");
+    expect(failure.message).not.toContain("private-token-canary");
+    expect(openRuntime).toHaveBeenCalledOnce();
+    expect(fixture.commandClose).toHaveBeenCalledOnce();
+  });
+  it("reports failed Pi skill materialization as skills admission before launch", async () => {
+    const fixture = await hostFixture();
+    const digest = "0".repeat(64);
+    const bundle = {schema:NATIVE_RUNTIME_ASSET_SCHEMA,digest,manifestDigest:digest,
+      rootPath:join(fixture.root,"missing-assigned-skill"),fileCount:1,totalBytes:1};
+    const snapshot = {prompt:{revision:PAPERCLIP_EXECUTION_PROMPT_REVISION,text:PAPERCLIP_EXECUTION_PROMPT,digest:nativeRuntimePromptDigest()},
+      instructions:{entryPath:"AGENTS.md",bundle},skills:[{key:"assigned",runtimeName:"assigned",versionId:"v1",bundle}],
+      mcp:{assignmentSetId:"none",digest,bindingId:null}};
+    const context = {...snapshot,aggregateDigest:canonicalNativeRuntimeContextDigest(snapshot)};
+    const openRuntime = vi.fn(async () => runtimePort());
+    const failure = await AcpxRuntimeHost.open({ ...fixture.options, agent:"pi",model:"anthropic/claude-sonnet-5",
+      piThinkingLevel:"low",permissionMode:"approve-all",providerPolicy:{readOnly:false},runtimeContext:context },fixture.dependencies({openRuntime})).catch(error => error);
+    expect(failure).toBeInstanceOf(Error);
+    expect(failure.message).toContain("missing-assigned-skill");
+    expect(acpxSidecarErrorCode(failure)).toBe("ACPX_ADMISSION_SKILLS");
+    expect(openRuntime).not.toHaveBeenCalled();
+    expect(fixture.commandClose).not.toHaveBeenCalled();
+  });
   it.each(["installation", "sandbox", "credential", "runtime"] as const)("retains the failed %s admission stage through the sidecar boundary", async stage => {
     const fixture = await hostFixture();
     const failure = new Error("private-token-canary");
