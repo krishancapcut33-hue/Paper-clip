@@ -40,6 +40,7 @@ import { markGitRestorePointExpired } from "./services/git-restore-point-storage
 import { subscribeAllCompanyLiveEvents } from "./services/live-events.js";
 import { DELIVERY_QUEUES } from "./services/delivery-work-notifications.js";
 import { registerBudgetEnforcementWork, registerCostAccountingWork } from "./services/budget-enforcement-worker.js";
+import { registerUpstreamRecoveryReprobeWork } from "./services/upstream-recovery-reprobe-work.js";
 import { caseHandoffDeliveryService } from "./services/case-handoff-delivery.js";
 import { registerScheduledWork } from "./services/scheduled-work.js";
 import type { createDeliveryWorkCoordinator } from "./services/delivery-work-coordinator.js";
@@ -1381,6 +1382,8 @@ async function startServerWithDatabaseTeardown(
     cancelWorkForScope: accountingHeartbeat.cancelBudgetScopeWork,
   });
   const accountingWorker = registerCostAccountingWork(db, deliveryWork, accountingHeartbeat.reconcileCostAccounting);
+  const upstreamRecoveryReprobeWorker = registerUpstreamRecoveryReprobeWork(
+    deliveryWork, scope => accountingHeartbeat.promoteEarlyUpstreamRecoveryRetries(scope));
   server.on("close", accountingWorker.stop);
   skillSourceSync.start(deliveryWork);
   const caseHandoffDeliveries = caseHandoffDeliveryService(db as any, { heartbeat: environmentLeaseCleanupHeartbeat });
@@ -1736,6 +1739,7 @@ async function startServerWithDatabaseTeardown(
         }
 
         const promotion = await timeStartupRecovery("scheduled_retries", () => heartbeat.promoteDueScheduledRetries());
+        await timeStartupRecovery("early_upstream_reprobe", () => upstreamRecoveryReprobeWorker.ready);
         await timeStartupRecovery("queued_runs", () => heartbeat.resumeQueuedRuns());
         const recoveredGoalActions = await timeStartupRecovery("goal_actions", () => heartbeat.recoverPendingSessionGoalActions());
         if (
