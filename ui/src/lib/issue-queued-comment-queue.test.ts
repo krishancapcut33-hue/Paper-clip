@@ -37,7 +37,6 @@ describe("normalizeIssueQueuedCommentQueue", () => {
     expect(ids([{ ...run, contextIssueId: "other-issue" }])).toEqual([]);
     expect(ids([])).toEqual([]);
     expect(ids([run], { ...queue, targetRunId: "previous", state: "deferred" })).toEqual([]);
-    expect(ids([run], { ...queue, executionWait: { reason: "remote_cleanup", message: "Previous execution still owns the environment." } })).toEqual([]);
     expect(ids([run], { ...queue, entries: [{ ...queue.entries[0]!, source: { kind: "interaction", interactionId: "decision", interactionKind: "request_confirmation", requiresFreshSession: false } }] })).toEqual([]);
   });
   it("retains the immutable response and fresh-turn requirement", () => {

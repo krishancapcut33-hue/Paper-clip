@@ -3468,7 +3468,7 @@ describe("IssueDetail", () => {
     });
   });
 
-  it.each([false, true])("keeps a queued turn's starting input in history after reopen (maintenance=%s)", async maintenance => {
+  it("keeps a queued turn's starting input in history after reopen", async () => {
     const opener = createIssueComment({ id: "reopen-input" });
     const followUp = createIssueComment({ id: "later-input", createdAt: new Date("2026-04-21T00:00:07.000Z") });
     mockIssuesApi.get.mockResolvedValue(createIssue({ status: "todo", assigneeAgentId: "agent-1", executionRunId: null }));
@@ -3484,7 +3484,6 @@ describe("IssueDetail", () => {
     mockActivityApi.runsForIssue.mockResolvedValue(queuedRuns);
     const queue = createQueuedCommentQueue({
       queueId: "reopen-wake", state: "queued", targetRunId: null,
-      executionWait: maintenance ? { reason: "task_drain", message: "Waiting for maintenance" } : null,
       steeringDisposition: "temporarily_unavailable",
       entries: [opener, followUp].map((comment, position) => ({ comment, position, canEdit: true, canDiscard: true })),
     });

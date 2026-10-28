@@ -12,8 +12,7 @@ export function startingQueuedCommentIds(
   queue: IssueQueuedCommentQueue | null | undefined,
   runs: readonly RunForIssue[],
 ): ReadonlySet<string> {
-  if (!queue?.queueId || queue.state !== "queued" || queue.targetRunId ||
-    (queue.executionWait && queue.executionWait.reason !== "task_drain")) return new Set();
+  if (!queue?.queueId || queue.state !== "queued" || queue.targetRunId) return new Set();
   const owners = runs.filter(run => run.contextIssueId === queue.issueId &&
     run.wakeupRequestId === queue.queueId && run.status === "queued" &&
     !run.startedAt && !run.retryOfRunId);
