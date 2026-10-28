@@ -1722,3 +1722,17 @@ token gates. Runner vendor preparation rebuilds the current master inputs before
 those tests. No new browser journey or hosted experiment is claimed. The old
 browser receipts remain attributed to their source; new-head CI and reviews are
 still required before the transcript slice can merge.
+
+
+### Qualification slice merged; transcript slice retargeted to master
+
+PR #17455 source `8f1d6ec02f5bf6c90e7b27da8156953cabd9a180` merged as
+`6987c2f20bf2978c84f9c69b9840586407dfad29` after all 57 current-head checks
+completed cleanly, legacy status passed, both completed reviews scored 5/5, and
+actionable feedback was resolved. The transcript slice now targets master.
+Its evidence-document add/add conflict retains every line of the merged
+qualification record and the transcript evidence additions. No production code
+changes during this retarget; the 50 server/91 UI cases, typechecks and token
+checks retain their prior source attribution. Fresh exact-head CI and reviews
+remain required. The hosted active-agent matrix and genuine A/B upgrades remain
+open acceptance work; these merges do not qualify them.
