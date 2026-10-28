@@ -1612,3 +1612,37 @@ identical non-comment tokens. The six-file server delivery lane passes all 50
 cases, six affected UI suites pass all 91 cases, and token gates pass. No new
 test or runtime behavior is introduced; fresh exact-head CI and review remain
 required for the new transcript head.
+
+### Eighth master integration after reviewer continuation
+
+Master `2cd747d1b6` is integrated in server `051769955e`. It includes the
+published Copilot v70 profiles and new upstream Runner fixes. Those profile
+files and every published migration remain byte-identical to master. The
+generated checkpoint migration is `0394_conscious_whizzer.sql`, with the same
+idempotent DDL; snapshots 0390–0394 remain. Migration checks, the Runner vendor
+rebuild and replay parity, server typecheck and all 13 warm-owner variants
+pass. The warm cases also pass after the vendor rebuild finishes. Master's
+report-lock patch keeps its required context whitespace; the feature delta
+passes whitespace checks.
+
+Before integration, server `f2db8a6568` passes all Actions checks and Greptile
+5/5. Its workspace setup job 122555672441 fails the 30-second health deadline
+while the CLI reports doctor startup, before its server-start step. UI 4,169
+cases and CLI 285 cases pass, with one skip. Identical CLI/server/database
+source on qualification `a866619d7b` passes the setup and all 286 CLI cases.
+The single diagnostic retry, job 122561057225, passes the setup in 33.048
+seconds and all 286 CLI cases at 00:49:47 UTC on October 28. This retains the
+original failure; its exact timing cause remains unproven. No unchanged retry
+may repeat. That old head's Linux native-executor suite passes 938 cases;
+native recovery passes 115 with five container-only skips, including fresh
+preparation (64.160 s), claim-lock (2.693 s) and 101-owner fairness (3.352 s).
+These receipts do not qualify the newly integrated source or a hosted harness.
+
+The existing external server review is resumed after explicit authorization.
+It must submit a validated assessment of the current head. New exact-head CI,
+Greptile, feedback resolution and normal eligibility remain required. No
+deployment, paid harness experiment, hosted fixture or access change is made.
+
+After integration, all 146 cases across 12 qualification support, report-lock
+and workflow suites pass, with E2E typecheck. These use local controlled faults,
+configuration subprocesses, filesystem packaging and inert process fixtures.
