@@ -66,4 +66,3 @@ export async function readRestartRequest(restartRequestPath: string, executionId
     ...(crashAfterResult === undefined ? {} : { crashAfterResult: parseFinalizationCrashBinding(crashAfterResult) }) };
 
 }
-
