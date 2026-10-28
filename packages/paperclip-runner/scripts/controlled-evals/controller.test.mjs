@@ -50,11 +50,16 @@ test('expected ACPX profile reaches the child through function and command-line 
 });
 
 test('malformed profile arguments fail before opening controlled evidence', async t => {
-  const f = await fixture(t, { providerProfile: 'claude' });
-  for (const expectedAcpxProfile of [null, [], 'profile', { overflow: 'x'.repeat(4097) }]) {
-    await assert.rejects(runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: {}, expectedAcpxProfile }), /Expected ACPX profile/);
+  for (const [providerProfile, profiles] of [
+    ['claude', [null, [], 'profile', { overflow: 'x'.repeat(4097) }]],
+    ['codex', [{}]],
+  ]) {
+    const f = await fixture(t, { providerProfile });
+    for (const expectedAcpxProfile of profiles) {
+      await assert.rejects(runControlledEval({ manifestPath: f.manifestPath, ...f.requests[0], environment: {}, expectedAcpxProfile }), /Expected ACPX profile/);
+    }
+    await assert.rejects(stat(f.manifest.outputDirectory), { code: 'ENOENT' });
   }
-  await assert.rejects(stat(f.manifest.outputDirectory), { code: 'ENOENT' });
 });
 
 test('real child requests reserve before dispatch, stop at the cap and retain only controller credentials', async t => {
