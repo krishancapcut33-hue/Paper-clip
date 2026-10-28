@@ -410,6 +410,15 @@ export class PaperclipRunnerToolAuthority {
       return result === undefined ? null : { result };
     }
     const input = record(call.arguments);
+    if (call.tool === "create_project") {
+      const apiUrl = this.binding.apiUrl ?? process.env.PAPERCLIP_API_URL;
+      const token = this.#apiToken(context);
+      if (!apiUrl || !token) throw new Error("Project tool authentication is unavailable");
+      const result = await callProjectTool({ name: call.tool, arguments: input, apiUrl, token,
+        companyId: this.binding.companyId, issueId: this.binding.issueId, agentId: this.binding.agentId,
+        conversation: Boolean(context.issue.conversationAgentId), receiptOnly: true });
+      return result === undefined ? null : { result };
+    }
     if (call.tool === "update_agent_instructions" || call.tool === "restore_agent_instructions") {
       const receipt = record(record(run.resultJson?.semanticToolReceipts)[`instruction:${call.callId}`]);
       if (!Object.hasOwn(receipt, "result")) return null;

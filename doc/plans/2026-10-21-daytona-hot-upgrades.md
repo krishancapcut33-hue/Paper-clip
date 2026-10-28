@@ -555,3 +555,23 @@ without changing the saved checkpoint. It fails on the prior writer and passes
 with the fix. Both phases remain one SQL statement and database round trip.
 The repeated 8/512-chunk cost gate still measures eight checkpoint writes, seven
 transactions and fourteen changed rows, with zero streaming or idle SQL.
+
+
+### Project creation receipt recovery
+
+`create_project` stores its committed result identity in the existing
+`project.created` activity receipt, scoped to company, actor, source task and
+idempotency key. Recovery asks the normal authenticated project creation route
+for that receipt with `X-Paperclip-Receipt-Only: true`. The route retains its
+normal parsed input, fingerprint validation and access checks. It checks current
+run authority again after acquiring the receipt lock. A matching receipt returns
+the existing project. An absent receipt returns HTTP 204 before any project or
+audit write; recovery holds the uncertain mutation. A missing key is rejected.
+This adds no checkpoint table writes or recurring work during ordinary execution.
+
+The real-Postgres/API regression loses the successful HTTP response after commit,
+then uses fresh tool authorities to recover concurrently. It checks one project
+and one audit receipt, input mismatch rejection, company isolation, cancellation,
+and the no-receipt/no-effect path. The transport test separately checks the
+receipt-only request and empty response. macOS skips the embedded-Postgres suite;
+a passing transport test is not a substitute for its Linux CI result.

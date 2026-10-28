@@ -1646,3 +1646,28 @@ deployment, paid harness experiment, hosted fixture or access change is made.
 After integration, all 146 cases across 12 qualification support, report-lock
 and workflow suites pass, with E2E typecheck. These use local controlled faults,
 configuration subprocesses, filesystem packaging and inert process fixtures.
+
+
+### Project receipt recovery review correction
+
+Server source `5de803c2cd` fixes recovery of a committed `create_project` result
+whose HTTP response was lost. Recovery uses the existing project route and audit
+receipt owner with receipt-only semantics, current authorization after the receipt
+lock, and unchanged input normalization and fingerprint checks. An absent receipt
+returns no result before any mutation. Normal execution adds no persistence work.
+
+The transport regression first has two failures and five passes. After correction
+and fixing the test's incorrect expectation about schema defaults, all seven
+transport cases pass and server typecheck passes. The new real-Postgres/API lost
+response, concurrent replay, input conflict, company isolation, cancellation and
+no-effect cases belong to the existing chat-project-tools suite. All 20 cases in
+that file skip on this Mac. Their Linux CI result is required; a local transport
+pass does not prove the database or route behavior.
+
+On prior qualification source `57d3767eac`, jobs 122590643944, 122590643983 and
+122590644161 end after runner shutdown/cancellation at 02:18:59–02:19:11 UTC.
+They contain no final Vitest result. The host shutdown cause is unproven. No retry
+was issued before the necessary server fix superseded that source. These are
+retained incomplete/failed attempts, not passing evidence. All new heads require
+fresh CI and review. No new hosted deployment, paid harness turn, active-agent
+comparison, or A/B upgrade qualification was run.
