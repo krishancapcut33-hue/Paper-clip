@@ -4399,9 +4399,8 @@ async function listIssueBlockerAttentionMap(
       attentionMap.set(
         root.id,
         createIssueBlockerAttention({
-          state: "needs_attention",
-          reason: "attention_required",
-          terminalBlockerIssueId: root.id,
+          state: "covered",
+          reason: "blockers_resolved",
         }),
       );
       continue;
