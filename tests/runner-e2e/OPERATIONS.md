@@ -958,7 +958,7 @@ The trusted report job applies a reviewed `report-lock.patch` before its frozen
 install. `report-lock.json` pins the input lock, patch and resulting lock hashes.
 This updates existing patch identities and the already declared yaml dependency
 without registry resolution. The worker target and its lock artifact never
-control report dependencies. An unknown committed lock fails before install;
+control report dependencies. An already-reviewed output lock is used unchanged. An unknown committed lock fails before install;
 update and review this correction when dependency inputs change. The original
 failed run remains failed when retained evidence gets a new presentation.
 

@@ -1282,7 +1282,7 @@ stay unchanged. The correction adds exactly yaml@2.9.1 with pinned integrity. Th
 trusted authorization job rejects unknown locks before paid work. Manual history
 publication uses the same reviewed correction. Qualification image builds apply
 it only to a target equal to the workflow revision; other targets keep their own
-lock. Unknown lock contents fail before installation. The
+lock. An already-reviewed output lock is used unchanged. Unknown lock contents fail before installation. The
 workflow definition, runner-group permission, and protected-environment
 deployment still come from the default branch. Do not select the target branch
 in GitHub's **Use workflow from** control.
