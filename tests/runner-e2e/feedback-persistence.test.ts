@@ -64,11 +64,12 @@ describe("feedback persistence oracle", () => {
       "feedback-persistence.runner-acpx-claude.daytona.complaint-and-suggestion",
     ]);
     expect(selected.every(execution => execution.task.automaticRetryPolicy === "single_attempt")).toBe(true);
+    expect(selected.every(execution => execution.task.attemptTimeoutMs.local === 5 * 60_000)).toBe(true);
     for (const execution of selected.filter(entry => entry.environment.id === "daytona")) {
       expect(execution.requiredCredentials).toEqual(expect.arrayContaining([execution.profile.credential, "DAYTONA_API_KEY"]));
       expect(execution.requiredCredentials).toHaveLength(2);
       expect(execution.task.expectedRunCount).toBe(1);
-      expect(execution.task.attemptTimeoutMs.daytona).toBe(300_000);
+      expect(execution.task.attemptTimeoutMs.daytona).toBe(15 * 60_000);
       const secretRefs = { DAYTONA_API_KEY: { type: "secret_ref" as const, secretId: "22222222-2222-4222-8222-222222222222", version: "latest" as const } };
       expect(() => execution.environment.buildEnvironment({ executionId: execution.id, secretRefs, daytonaImage: "runner:latest" })).toThrow("immutable");
       const payload = execution.environment.buildEnvironment({ executionId: execution.id, secretRefs, daytonaImage: `runner@sha256:${"a".repeat(64)}` });

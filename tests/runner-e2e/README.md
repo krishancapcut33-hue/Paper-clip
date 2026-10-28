@@ -2988,8 +2988,9 @@ from live qualification and lists remaining billing/reporting coverage gaps.
 `--suite feedback-persistence` selects four native Claude/Codex cells across local and Daytona execution.
 Each creates one standard task through the browser, asks for two distinct
 synthetic feedback items, and requires the real `submit_complaint` and
-`submit_suggestion` tools. The five-minute case expects one task work run and
-disables automatic retries. Company and agent accounted-work budgets are $10.
+`submit_suggestion` tools. The case expects one task work run and disables
+automatic retries. Local attempts have five minutes; Daytona inherits the
+15-minute remote deadline. Company and agent accounted-work budgets are $10.
 Setup probes and any background work must also pass through the separately
 budgeted gateway when using an operations manifest. Local compute is unmetered.
 Daytona cells require an immutable image and the existing provider credential.
