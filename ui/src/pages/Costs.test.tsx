@@ -148,6 +148,132 @@ describe("Shared Costs surfaces", () => {
     expect(container.textContent).not.toContain("tokens have an unknown billing type");
   });
 
+  describe("scoped to one agent on its own page", () => {
+    const policy = (scopeType: string, scopeId: string, scopeName: string) => ({
+      policyId: `policy-${scopeId}`, companyId: "company-1", scopeType, scopeId, scopeName, metric: "billed_cents", windowKind: "calendar_month_utc",
+      amount: 500, warnPercent: 80, hardStopEnabled: true, notifyEnabled: false, isActive: true, unpricedUsagePolicy: "allow", reservationCents: "0",
+      observedAmount: 0, remainingAmount: 500, utilizationPercent: 0, unpricedEventCount: 0, pendingRunCount: 0, status: "ok", paused: false, pauseReason: null,
+    });
+    const incident = (scopeType: string, scopeId: string, scopeName: string) => ({
+      id: `incident-${scopeId}`, scopeType, scopeId, scopeName, status: "open", thresholdType: "hard", amountObserved: 200, amountLimit: 100,
+    });
+    const agentRow = (agentId: string, agentName: string, costCents: number) => ({
+      agentId, agentName, agentStatus: "active", eventCount: 1, estimatedEventCount: 0, costCents, inputTokens: 10, cachedInputTokens: 0, outputTokens: 5,
+      apiRunCount: 1, subscriptionRunCount: 0, subscriptionCachedInputTokens: 0, subscriptionInputTokens: 0, subscriptionOutputTokens: 0,
+    });
+
+    beforeEach(() => {
+      for (const mock of Object.values(costsApiMocks)) mock.mockResolvedValue([]);
+      costsApiMocks.byUser.mockResolvedValue({ activeUserCount: 1, rows: [] });
+      costsApiMocks.summary.mockResolvedValue({ spendCents: 900, budgetCents: 0, pricingComplete: true });
+      costsApiMocks.financeSummary.mockResolvedValue({ netCents: 0, debitCents: 0, creditCents: 0, estimatedDebitCents: 0, eventCount: 0 });
+      costsApiMocks.byAgent.mockResolvedValue([agentRow("agent-a", "Agent A", 300), agentRow("agent-b", "Agent B", 600)]);
+      costsApiMocks.byProject.mockResolvedValue([{ projectId: "p1", projectName: "Unrelated project", costCents: 900, eventCount: 2, estimatedEventCount: 0 }]);
+      budgetOverviewMock.mockResolvedValue({
+        policies: [policy("company", "company-1", "Org budget"), policy("agent", "agent-a", "Agent A"), policy("agent", "agent-b", "Agent B"), policy("project", "p1", "Unrelated project")],
+        activeIncidents: [incident("agent", "agent-a", "Agent A"), incident("agent", "agent-b", "Agent B"), incident("project", "p1", "Unrelated project")],
+        pendingApprovalCount: 4, pausedAgentCount: 2, pausedProjectCount: 1,
+      });
+    });
+
+    async function renderScoped(props: Parameters<typeof Costs>[0]) {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      root = createRoot(container);
+      await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs agentId="agent-a" {...props} /></QueryClientProvider></MemoryRouter>));
+      return queryClient;
+    }
+
+    it("shows only this agent's budget policies and incidents, not other agents', projects' or the organization's", async () => {
+      const queryClient = await renderScoped({ embedded: true, initialTab: "budgets", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Agent A")); });
+      expect(container.querySelectorAll("[data-slot='card']").length).toBeGreaterThan(0);
+      expect(container.textContent).not.toContain("Agent B");
+      expect(container.textContent).not.toContain("Unrelated project");
+      expect(container.textContent).not.toContain("Org budget");
+      expect(container.textContent).not.toContain("Organization-wide monthly policy");
+      // One incident and one policy remain, so nothing else can be edited from this page.
+      expect(container.textContent?.match(/Raise budget & resume/g)).toHaveLength(1);
+      expect(container.textContent).not.toContain("Pending approvals");
+      expect(container.textContent).not.toContain("Paused projects");
+      queryClient.clear();
+    });
+
+    it.each([
+      ["only unpriced usage", { eventCount: 2, costCents: 0, unpricedEventCount: 2 }, "—", "2 costs unavailable"],
+      ["some unpriced usage", { eventCount: 3, costCents: 300, unpricedEventCount: 1 }, "$3.00", "1 cost unavailable"],
+    ])("does not show $0.00 or a complete total for an agent with %s", async (_name, usage, spend, warning) => {
+      costsApiMocks.byAgent.mockResolvedValue([{ ...agentRow("agent-a", "Agent A", usage.costCents), ...usage }]);
+      const queryClient = await renderScoped({ embedded: true, initialTab: "overview", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain(warning)); });
+      expect(container.textContent).toContain("so the total is incomplete");
+      expect(container.textContent).toContain(`Spend${spend}`);
+      queryClient.clear();
+    });
+
+    it("does not claim 'no budget' until the budget request has finished", async () => {
+      let resolveBudget: (value: unknown) => void = () => {};
+      budgetOverviewMock.mockReturnValue(new Promise((resolve) => { resolveBudget = resolve; }));
+      const queryClient = await renderScoped({ embedded: true, initialTab: "overview", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Budget is loading")); });
+      expect(container.textContent).not.toContain("No budget configured for this agent");
+      await act(async () => resolveBudget({ policies: [], activeIncidents: [], pendingApprovalCount: 0, pausedAgentCount: 0, pausedProjectCount: 0 }));
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("No budget configured for this agent")); });
+      queryClient.clear();
+    });
+
+    it("says budget status is unavailable when the budget request fails", async () => {
+      budgetOverviewMock.mockRejectedValue(new Error("unavailable"));
+      const queryClient = await renderScoped({ embedded: true, initialTab: "overview", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Budget status is unavailable")); });
+      expect(container.textContent).not.toContain("No budget configured for this agent");
+      queryClient.clear();
+    });
+
+    it("says so when this agent has no budget policy, even if others do", async () => {
+      budgetOverviewMock.mockResolvedValue({ policies: [policy("agent", "agent-b", "Agent B")], activeIncidents: [], pendingApprovalCount: 0, pausedAgentCount: 0, pausedProjectCount: 0 });
+      const queryClient = await renderScoped({ embedded: true, initialTab: "budgets", lockTab: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("This agent has no budget policy yet.")); });
+      expect(container.textContent).not.toContain("Agent B");
+      queryClient.clear();
+    });
+
+    it("still lists every policy and incident without an agent scope", async () => {
+      const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
+      root = createRoot(container);
+      await act(async () => root.render(<MemoryRouter><QueryClientProvider client={queryClient}><Costs embedded initialTab="budgets" lockTab /></QueryClientProvider></MemoryRouter>));
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Agent B")); });
+      expect(container.textContent).toContain("Org budget");
+      expect(container.textContent).toContain("Unrelated project");
+      queryClient.clear();
+    });
+
+    it("shows only this agent's spend and hides organization-wide sections and tabs", async () => {
+      const queryClient = await renderScoped({ embedded: true, hideBudgetsTab: true, hideHeader: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("Agent A")); });
+      expect(container.textContent).toContain("$3.00");
+      expect(container.textContent).not.toContain("Agent B");
+      expect(container.textContent).not.toContain("$6.00");
+      expect(container.textContent).not.toContain("$9.00");
+      expect(container.textContent).not.toContain("Unrelated project");
+      expect(container.textContent).not.toContain("By project");
+      expect(container.querySelectorAll('[role="tab"]')).toHaveLength(0);
+      // Subscription, finance and per-user reports are organization-wide, so they are not even requested.
+      expect(subscriptionsMocks.report).not.toHaveBeenCalled();
+      expect(costsApiMocks.financeSummary).not.toHaveBeenCalled();
+      expect(costsApiMocks.byUser).not.toHaveBeenCalled();
+      queryClient.clear();
+    });
+
+    it("shows an empty state, not another agent's spend, when this agent has no events", async () => {
+      costsApiMocks.byAgent.mockResolvedValue([agentRow("agent-b", "Agent B", 600)]);
+      const queryClient = await renderScoped({ embedded: true, hideBudgetsTab: true, hideHeader: true });
+      await act(async () => { await vi.waitFor(() => expect(container.textContent).toContain("No cost events yet.")); });
+      expect(container.textContent).not.toContain("Agent B");
+      expect(container.textContent).not.toContain("$6.00");
+      queryClient.clear();
+    });
+  });
+
   it("renders a focused Budgets section without duplicate Costs chrome or spend queries", async () => {
     const queryClient = new QueryClient({ defaultOptions: { queries: { retry: false } } });
     root = createRoot(container);

@@ -117,6 +117,7 @@ export interface CostByAgent {
   /** Ledger events in this group and selected date range, not distinct runs. */
   eventCount: number;
   estimatedEventCount: number;
+  unpricedEventCount?: number;
   costCents: number;
   costCentsExact?: string;
   inputTokens: number;

@@ -19,14 +19,27 @@ import {
   type AuditSection,
 } from "./audit-navigation";
 
-export function AuditHub({ section }: { section: AuditSection }) {
+export function AuditHub({
+  section,
+  agentId,
+}: {
+  section: AuditSection;
+  /**
+   * Embedded on an agent page (`/agents/:ref/<section>`): the agent rail is the
+   * navigation, so the page owns the title, tabs, and breadcrumbs.
+   */
+  agentId?: string;
+}) {
   const navigate = useNavigate();
   const { selectedCompanyId } = useCompany();
   const { setBreadcrumbs } = useBreadcrumbs();
   const [searchParams, setSearchParams] = useSearchParams();
-  const scope = auditScopeFromSearchParams(searchParams);
+  const urlScope = auditScopeFromSearchParams(searchParams);
+  const scope = agentId ? { ...urlScope, mode: "agents" as const, agentId } : urlScope;
   const mode: AuditFeedMode = scope.mode === "agents" ? "agents" : "all";
-  const routineId = scope.entityType === "routine" ? scope.entityId ?? undefined : undefined;
+  // The routine-only views list every record of a routine and cannot be narrowed to one agent, so an agent
+  // page never uses them: Activity falls back to the agent-locked feed, Runs to the agent's own runs.
+  const routineId = !agentId && scope.entityType === "routine" ? scope.entityId ?? undefined : undefined;
   const actionParam = searchParams.get("action");
   const actionDomain = [
     "issue.",
@@ -42,12 +55,13 @@ export function AuditHub({ section }: { section: AuditSection }) {
   ].includes(actionParam ?? "") ? actionParam! : "__all";
 
   useEffect(() => {
+    if (agentId) return;
     const current = AUDIT_SECTIONS.find((candidate) => candidate.value === section);
     setBreadcrumbs([
       { label: "Audit", href: section === "activity" ? undefined : "/activity" },
       ...(section === "activity" || !current ? [] : [{ label: current.label }]),
     ]);
-  }, [section, setBreadcrumbs]);
+  }, [agentId, section, setBreadcrumbs]);
 
   const handleModeChange = useCallback(
     (next: AuditFeedMode) => {
@@ -114,19 +128,23 @@ export function AuditHub({ section }: { section: AuditSection }) {
 
   return (
     <div className="space-y-6">
-      <div>
-        <h1 className="text-3xl font-semibold tracking-tight text-foreground">Audit</h1>
-      </div>
+      {agentId ? null : (
+        <>
+          <div>
+            <h1 className="text-3xl font-semibold tracking-tight text-foreground">Audit</h1>
+          </div>
 
-      <Tabs
-        value={section}
-        onValueChange={(value) => {
-          const next = value as AuditSection;
-          navigate(auditSectionHref(next, scope));
-        }}
-      >
-        <PageTabBar items={AUDIT_SECTIONS} value={section} align="start" />
-      </Tabs>
+          <Tabs
+            value={section}
+            onValueChange={(value) => {
+              const next = value as AuditSection;
+              navigate(auditSectionHref(next, scope));
+            }}
+          >
+            <PageTabBar items={AUDIT_SECTIONS} value={section} align="start" />
+          </Tabs>
+        </>
+      )}
 
       {section === "commentary" ? (
         <AgentCommentary key={selectedCompanyId} companyId={selectedCompanyId} />
@@ -154,13 +172,13 @@ export function AuditHub({ section }: { section: AuditSection }) {
           }
         />
       ) : section === "runs" ? (
-        <AuditRuns companyId={selectedCompanyId} routineId={routineId} />
+        <AuditRuns companyId={selectedCompanyId} routineId={routineId} lockedAgentId={agentId} hideHeader={Boolean(agentId)} />
       ) : section === "budgets" ? (
-        <Costs embedded initialTab="budgets" lockTab />
+        <Costs embedded initialTab="budgets" lockTab agentId={agentId} />
       ) : section === "timeline" ? (
         <Timeline embedded />
       ) : (
-        <Costs embedded initialTab="overview" hideBudgetsTab />
+        <Costs embedded initialTab="overview" hideBudgetsTab hideHeader={Boolean(agentId)} agentId={agentId} />
       )}
     </div>
   );

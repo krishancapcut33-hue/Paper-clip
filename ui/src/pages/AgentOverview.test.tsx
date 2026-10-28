@@ -90,7 +90,10 @@ describe("AgentOverview", () => {
     expect(markup).toContain("Design Guide");
     expect(markup).toContain("Simplify agent information architecture");
     expect(markup).toContain("PAP-42");
-    expect(markup).toContain('href="/activity/costs?agentId=agent-1"');
+    for (const section of ["activity", "runs", "costs", "budgets"]) {
+      expect(markup).toContain(`href="/agents/codexcoder/${section}"`);
+    }
+    expect(markup).not.toContain("agentId=agent-1");
     expect(markup).not.toContain("Run Activity");
     expect(markup).not.toContain("Tasks by Status");
     expect(markup).not.toContain("Created by");

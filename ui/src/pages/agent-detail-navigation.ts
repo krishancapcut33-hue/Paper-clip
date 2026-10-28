@@ -1,4 +1,4 @@
-import { auditSectionHref, type AuditSection } from "./audit/audit-navigation";
+import type { AuditSection } from "./audit/audit-navigation";
 
 export type AgentDetailView =
   | "overview"
@@ -63,7 +63,18 @@ export function agentDetailHref(agentRef: string, view: AgentLocalDetailView = "
   return `/agents/${agentRef}/${view}`;
 }
 
-export function agentLegacyAuditSection(value: string | null): AuditSection | null {
+/** Audit sections an agent page hosts at `/agents/:ref/<section>`, scoped to that agent. */
+export type AgentAuditSection = Extract<AuditSection, "activity" | "runs" | "costs" | "budgets">;
+
+export const AGENT_AUDIT_SECTIONS: ReadonlyArray<{ value: AgentAuditSection; label: string }> = [
+  { value: "activity", label: "Activity" },
+  { value: "runs", label: "Runs" },
+  { value: "costs", label: "Costs" },
+  { value: "budgets", label: "Budgets" },
+];
+
+/** Maps an agent tab segment (including legacy aliases) onto its Audit section. */
+export function parseAgentAuditSection(value: string | null): AgentAuditSection | null {
   if (value === "runs") return "runs";
   if (value === "audit" || value === "activity") return "activity";
   if (value === "cost" || value === "costs") return "costs";
@@ -71,9 +82,32 @@ export function agentLegacyAuditSection(value: string | null): AuditSection | nu
   return null;
 }
 
-export function agentScopedAuditHref(agentId: string, section: AuditSection) {
-  return auditSectionHref(section, {
-    mode: section === "activity" ? "agents" : undefined,
-    agentId,
-  });
+export function agentScopedAuditHref(agentRef: string, section: AgentAuditSection) {
+  return `/agents/${agentRef}/${section}`;
+}
+
+/**
+ * Where an agent URL should be rewritten to, or `null` when it is already canonical. Fixes a non-canonical
+ * agent ref and legacy tab names. Every redirect except a run detail keeps `search`, so filters such as `?action=` survive.
+ */
+export function agentRouteRedirect(input: {
+  routeAgentRef: string | undefined;
+  canonicalAgentRef: string;
+  runId: string | undefined;
+  tab: string | undefined;
+  view: AgentDetailView;
+  auditSection: AgentAuditSection | null;
+  search: string;
+}): string | null {
+  const refIsCanonical = input.routeAgentRef === input.canonicalAgentRef;
+  if (input.runId) {
+    return refIsCanonical ? null : `/agents/${input.canonicalAgentRef}/runs/${input.runId}`;
+  }
+  if (input.auditSection) {
+    if (refIsCanonical && input.tab === input.auditSection) return null;
+    return `${agentScopedAuditHref(input.canonicalAgentRef, input.auditSection)}${input.search}`;
+  }
+  const canonicalTab = input.view === "run-detail" ? "overview" : input.view;
+  if (refIsCanonical && input.tab === canonicalTab) return null;
+  return `${agentDetailHref(input.canonicalAgentRef, canonicalTab)}${input.search}`;
 }

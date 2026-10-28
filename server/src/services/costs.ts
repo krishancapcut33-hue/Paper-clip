@@ -454,6 +454,7 @@ export function costService(db: Db, _budgetHooks: BudgetServiceHooks = {}) {
           agentStatus: agents.status,
           eventCount: sql<number>`count(*)::int`,
           estimatedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'estimated')::int`,
+          unpricedEventCount: sql<number>`count(*) filter (where ${costEvents.costStatus} = 'unpriced' and ${costEvents.billingType} <> 'subscription_included')::int`,
           costCents: sumAsNumber(costEvents.costCents),
           costCentsExact: sql<string>`coalesce(sum(${costEvents.costCents}), 0)::text`,
           inputTokens: sumAsNumber(ordinaryInputTokens),
