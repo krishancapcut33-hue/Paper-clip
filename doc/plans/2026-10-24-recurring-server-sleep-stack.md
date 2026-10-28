@@ -17,7 +17,7 @@ Do not mark an item done from a timer removal or a green check alone.
 | 03 | Run and task recovery | Orphan runs and active leases; shutdown workspace settlement; scheduled retries; queued runs; stranded assignments; resolved dependencies; task watchdogs; silent-run monitoring; stale locks | Pending |
 | 04 | Decision retention and notifications | Retention deadlines and notification delivery are separate reasons | Approval retention [#17497](https://github.com/paperclipai/paperclip/pull/17497) and archive delivery [#17475](https://github.com/paperclipai/paperclip/pull/17475) merged; other source retention pending |
 | 05 | Decision expiry and interrupted effects | Expiry, effect recovery, continuation recovery | Continuations [#17478](https://github.com/paperclipai/paperclip/pull/17478) merged; expiry [#17479](https://github.com/paperclipai/paperclip/pull/17479) merged; effects [#17482](https://github.com/paperclipai/paperclip/pull/17482) merged; targets [#17486](https://github.com/paperclipai/paperclip/pull/17486) merged |
-| 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | #17554 repaired at `8c1d293d1a`; fresh CI/review in progress |
+| 06 | Tool connection health | Configuration/use activation and defined proactive health deadlines | [#17554](https://github.com/paperclipai/paperclip/pull/17554) merged after all checks and both 5/5 reviews |
 | 07 | Secret proposals, tool reviews, gateway tokens | Separate expiry/scrub/recovery owners | Slices 02–07 merged: [secret proposals](https://github.com/paperclipai/paperclip/pull/17446), [credentials](https://github.com/paperclipai/paperclip/pull/17450), [review expiry](https://github.com/paperclipai/paperclip/pull/17453), [approved recovery](https://github.com/paperclipai/paperclip/pull/17454), [interrupted claims](https://github.com/paperclipai/paperclip/pull/17458), [projection](https://github.com/paperclipai/paperclip/pull/17468) |
 | 08 | GitHub connection events and continuity | Event discovery/replay and credential continuity separately | Pending |
 | 09 | Merged-PR confirmations | Candidate writes, webhook activation where supported, outstanding-candidate fallback | Pending |
@@ -1483,6 +1483,42 @@ loops or changing domain backoff. All 152 selected command/coordinator/health,
 producer/Slack, delivery/standby/startup cases and server types/build pass. Publish
 for fresh CI/review. The full inventory, #17490 CI failure, and stack/master
 reconciliation remain open; no merge authority is implied.
+
+
+## Slice 20 receiver implementation
+
+Receiver discovery now uses scoped committed configuration changes, startup
+reconstruction, foreign-lease deadlines, and listener-stop completion. Voice and
+all other maintenance reasons remain separate. See
+[the receiver audit](2026-10-25-chat-receiver-discovery-sleep-audit.md).
+A failed-scope deadline regression and a real concurrent listener-stop race were
+reproduced and repaired. All 218 selected receiver/startup, Discord, Photon,
+command/delivery and standby cases pass, with workspace typechecking passing.
+Workspace build also passes; publication and fresh remote gates remain open. This is not
+completion of the slice or the full stack. Master is refreshed at 0d73505098;
+final stack/master reconciliation remains required.
+
+Parent Discord #17557 at d3187f76a4 and company cleanup #17561 at e8febb30eb now
+have no failed or pending checks (Paperclip Review skipped). No merge was made.
+The older #17490 E2E cancellation failure remains unresolved. The entire original
+inventory stays in scope, with voice the next separate reason after receivers.
+
+
+## Receiver review repair
+
+The real company-removal producer regression reproduced two inventory reads for
+one observed removal. Discovery-initiated stops now suppress their own completion
+wake; independent token loss still wakes discovery after listener retirement.
+A full reconstruction also covers its already-pending scoped hints. Hints that
+arrive during the load remain dirty, and narrower writes cannot bypass a failed
+full reconstruction's retry deadline.
+
+Both redundant-load regressions failed before repair. All 45 selected receiver,
+startup and real Discord producer tests pass after repair, including the added
+full-refresh failure/backoff case. Server typecheck and build pass. Prior broad
+consumer/workspace verification remains recorded above; these 45 overlap that
+coverage and are not an additional unique total. Publication requires fresh
+remote CI and review. The full migration inventory remains outstanding.
 ## Acceptance follow-up after the plugin parent merged (October 27)
 
 Eighteen preceding sleep PRs are merged through plugin scheduling #17518 at
@@ -1498,6 +1534,16 @@ status and test counts above are historical. The original remaining inventory
 is still in scope beyond the 65 published numbered slices; native backups and
 the remaining aggregate duties have not been migrated by this follow-up.
 
+## Receiver follow-up with current Discord parent, October 27
+
+Nineteen sleep PRs are merged through health #17554. Receiver discovery #17572
+now includes current Discord parent `cedf2030c4`, retaining the original 27-file
+scope. Its existing slow-failure and stop-wake repairs have guarded mutation
+proofs, 131 targeted cases pass, and both newly supported external fixtures
+self-migrate. See [the owning audit](2026-10-25-chat-receiver-discovery-sleep-audit.md#current-parent-and-review-acceptance-october-27)
+for exact evidence and the older CI runner-loss failure. Fresh CI/reviews and
+parent landing are still required. The original remaining-duty inventory is unchanged.
+
 
 ## Discord registration landing compatibility, October 27
 
@@ -1505,3 +1551,11 @@ Company deletion has landed. The Discord command slice retains only its original
 26-file delta against the landed parent and current master at `f8563d2507`. All
 141 targeted cases, server typecheck and build pass. The [owning audit](2026-10-25-discord-command-registration-sleep-audit.md#acceptance-after-the-company-deletion-parent-landed-october-27)
 records exact scope, fixture setup and remaining remote gates.
+
+
+## Receiver integration with landed foundations, October 27
+
+Receiver discovery keeps its 27-file scope on Discord parent `547fdf2139` and
+preserves current master queue declarations. All 131 targeted cases, server
+typecheck and build pass. See the [receiver audit](2026-10-25-chat-receiver-discovery-sleep-audit.md#landed-foundation-integration-acceptance-october-27).
+Fresh exact-head review, CI and parent landing remain required.
