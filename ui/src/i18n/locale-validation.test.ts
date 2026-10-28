@@ -14,8 +14,18 @@ describe("locale validation", () => {
   it("accepts registered locale files", () => {
     expect(Object.keys(localeMessages)).toContain("en");
     for (const [locale, messages] of Object.entries(localeMessages)) {
-      expect(validateLocaleMessages(messages), locale).toEqual([]);
+      expect(validateLocaleMessages(messages, en, { allowMissing: locale !== "en" }), locale).toEqual([]);
     }
+  });
+
+  it("allows incomplete translations without weakening validation of provided messages", () => {
+    const reference = { existing: "Hello {{name}}", newMessage: "New message" };
+    expect(validateLocaleMessages({ existing: "Hello {{name}}" }, reference, { allowMissing: true })).toEqual([]);
+    expect(validateLocaleMessages({ existing: "Hello" }, reference, { allowMissing: true })).toEqual([
+      'existing interpolation placeholders must match English exactly: expected ["name"], received []',
+    ]);
+    expect(validateLocaleMessages({ unknown: "Unknown" }, reference, { allowMissing: true })).toContain("unknown is not defined in English");
+    expect(validateLocaleMessages({ existing: 42 }, reference, { allowMissing: true })).toContain("existing must be a string");
   });
 
   it("rejects missing and extra nested keys", () => {

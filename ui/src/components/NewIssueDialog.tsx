@@ -45,6 +45,7 @@ import { useSidebar } from "../context/SidebarContext";
 import { InlineBanner } from "./InlineBanner";
 import { InlineEntitySelector, type InlineEntityOption } from "./InlineEntitySelector";
 import { getTrustPreset } from "../lib/trust-policy-ui";
+import { useTranslation } from "@/i18n";
 
 const DRAFT_KEY = "paperclip:issue-draft";
 const DEBOUNCE_MS = 800;
@@ -277,6 +278,7 @@ function isWorkModeEscapeShortcut(e: Pick<KeyboardEvent, "key" | "metaKey">) {
 }
 
 export function NewIssueDialog() {
+  const { t } = useTranslation();
   const { visible: workspaceIsolationControlsVisible } = useWorkspaceIsolationControls();
   const { newIssueOpen, newIssueDefaults, closeNewIssue } = useDialog();
   const visualViewportLayout = useVisualViewportLayout(newIssueOpen);
@@ -1135,7 +1137,7 @@ export function NewIssueDialog() {
           }
         }}
       >
-        <DialogTitle className="sr-only">{isSubIssueMode ? "New sub-task" : "New task"}</DialogTitle>
+        <DialogTitle className="sr-only">{isSubIssueMode ? t("newIssue.newSubTask", { defaultValue: "New sub-task" }) : t("newIssue.newTask", { defaultValue: "New task" })}</DialogTitle>
         <div
           ref={dialogBodyRef}
           className={cn("min-h-0 overflow-y-auto overscroll-contain", isFileDragOver && "bg-accent/20")}
@@ -1149,7 +1151,7 @@ export function NewIssueDialog() {
               workMode={workMode}
               onWorkModeChange={setWorkMode}
               disabled={createIssue.isPending || !effectiveCompanyId}
-              placeholder="Describe a task…"
+              placeholder={t("newIssue.descriptionPlaceholder", { defaultValue: "Describe a task…" })}
               mobile={isMobile}
               mentions={mentionOptions}
               onImageUpload={async (file) => {
@@ -1194,7 +1196,7 @@ export function NewIssueDialog() {
                     }
                   },
                 },
-                submitLabel: isSubIssueMode ? "Create sub-task" : "Create task",
+                submitLabel: isSubIssueMode ? t("newIssue.createSubTask", { defaultValue: "Create sub-task" }) : t("newIssue.createTask", { defaultValue: "Create task" }),
                 canSubmitWithoutBody: Boolean(title.trim()),
                 onSelectFiles: stageFiles,
                 runSettings: composerSettings,
@@ -1204,7 +1206,7 @@ export function NewIssueDialog() {
                     <div className="mb-3 flex flex-col gap-2 text-xs">
                       {hasTitle ? (
                         <input
-                          aria-label="Task title"
+                          aria-label={t("newIssue.taskTitle", { defaultValue: "Task title" })}
                           value={title}
                           disabled={createIssue.isPending}
                           className="w-full bg-transparent text-sm text-foreground outline-none"
@@ -1385,8 +1387,8 @@ export function NewIssueDialog() {
                       value={projectId}
                       options={projectOptions}
                       recentOptionIds={recentProjectIds}
-                      placeholder="Project"
-                      mobileTitle="Select project"
+                      placeholder={t("newIssue.project", { defaultValue: "Project" })}
+                      mobileTitle={t("newIssue.selectProject", { defaultValue: "Select project" })}
                       modal
                       className="h-8 min-w-0 flex-1 gap-1.5 border-0 bg-transparent px-2 text-xs shadow-none hover:bg-accent focus-visible:bg-accent focus-visible:ring-0 sm:max-w-64 sm:flex-none"
                       disabled={createIssue.isPending}
@@ -1408,7 +1410,7 @@ export function NewIssueDialog() {
                         ) : (
                           <>
                             <Folder className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-                            <span className="truncate text-muted-foreground">Project</span>
+                            <span className="truncate text-muted-foreground">{t("newIssue.project", { defaultValue: "Project" })}</span>
                             <ChevronDown className="size-3 shrink-0 text-muted-foreground" aria-hidden />
                           </>
                         )
