@@ -112,3 +112,12 @@ it("uses current hosted totals only when every selected definition matches", () 
   expect(forecast.hostedModelUsd).toBe("0.428650100");
   expect(forecast.hostedAttemptMs).toBe(107286);
 });
+
+it.each([
+  { measurementHost: undefined }, { measurementHost: "" },
+  { finalModelRequests: 0 }, { finalModelRequests: 1.5 },
+])("rejects invalid host or final-receipt provenance %j", patch => {
+  const snapshot = structuredClone(measurements);
+  Object.assign(snapshot.samples[0]!, patch);
+  expect(() => scheduledForecast(selected("daily"), models, snapshot)).toThrow("provenance");
+});
