@@ -1,3 +1,6 @@
+import { taskChatHashAnchor } from "@/components/task-chat/scroll-navigation";
+import { useCoordinatorWorkspaceEnabled } from "@/hooks/useCoordinatorWorkspaceEnabled";
+import { CoordinatorAgentSwitcher } from "@/components/CoordinatorAgentSwitcher";
 import { mergeWindowComments, useIssueHistoryWindow } from "../hooks/useIssueHistoryWindow";
 import type { IssueQueuedCommentQueue } from "@paperclipai/shared";
 import { useTaskRunLiveUpdates } from "../context/LiveUpdatesProvider";
@@ -971,17 +974,20 @@ function useTaskDetailInterfaceMode(conversationMode = false) {
     enabled: classicTaskInterfacePreferenceEnabled,
     loaded: classicTaskInterfaceLoaded,
   } = useClassicTaskInterfaceEnabled();
-  const { enabled: streamlinedUiEnabled, loaded: streamlinedUiLoaded } =
+  const { enabled: classicStreamlinedUiEnabled, loaded: streamlinedUiLoaded } =
     useStreamlinedUiEnabled();
-  const classicTaskInterfaceEnabled = classicTaskInterfacePreferenceEnabled && !conversationMode;
+  const { enabled: coordinatorWorkspaceEnabled, loaded: coordinatorLoaded } = useCoordinatorWorkspaceEnabled();
+  const streamlinedUiEnabled = classicStreamlinedUiEnabled || coordinatorWorkspaceEnabled;
+  const classicTaskInterfaceEnabled = classicTaskInterfacePreferenceEnabled && !conversationMode && !coordinatorWorkspaceEnabled;
   const taskChatShellEnabled = !classicTaskInterfaceEnabled;
 
   return {
+    coordinatorWorkspaceEnabled,
     classicTaskInterfaceEnabled,
     taskChatShellEnabled,
     streamlinedTaskDetailEnabled: streamlinedUiEnabled && taskChatShellEnabled,
     streamlinedUiEnabled,
-    loaded: classicTaskInterfaceLoaded && streamlinedUiLoaded,
+    loaded: classicTaskInterfaceLoaded && streamlinedUiLoaded && coordinatorLoaded,
   };
 }
 
@@ -3211,9 +3217,10 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     streamlinedTaskDetailEnabled,
     streamlinedUiEnabled,
     loaded: taskInterfaceSettingsLoaded,
+    coordinatorWorkspaceEnabled,
   } = useTaskDetailInterfaceMode(!!conversation);
   const designSandbox = useDesignSandbox();
-  const proposedTaskHeader = designSandbox && streamlinedTaskDetailEnabled;
+  const proposedTaskHeader = (designSandbox || coordinatorWorkspaceEnabled) && streamlinedTaskDetailEnabled;
   // Chat-style: the page wrapper spans the full center pane so the thread's
   // scroll viewport (and its scrollbar) reaches the properties-pane border;
   // every non-thread section re-centers itself at the 60rem shell cap instead.
@@ -3989,6 +3996,40 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     openTaskSidePanel();
     if (isMobile) setMobilePropsOpen(true);
   }, [issue?.id, openTaskSidePanel, isMobile]);
+  const decisionAttachmentOpened = useRef<string | null>(null);
+  useEffect(() => {
+    if (!coordinatorWorkspaceEnabled || !issue?.id) return;
+    const params = new URLSearchParams(location.hash.split("&").slice(1).join("&"));
+    const attachmentId = params.get("attachment") ?? new URLSearchParams(location.search).get("attachmentId");
+    if (!attachmentId) { decisionAttachmentOpened.current = null; return; }
+    const key = `${issue.id}:${location.key}:${attachmentId}`;
+    if (decisionAttachmentOpened.current === key) return;
+    const attachment = attachments?.find(item => item.id === attachmentId);
+    if (!attachment) return;
+    decisionAttachmentOpened.current = key;
+    handleOpenTextAttachment(attachment.id, attachment.originalFilename ?? "Attachment");
+  }, [coordinatorWorkspaceEnabled, issue?.id, location.hash, location.search, location.key, attachments, handleOpenTextAttachment]);
+
+  // History links restore the exact point of decision while its artifact opens
+  // in the side pane. Wait for the real thread to mount, without guessing a row.
+  useEffect(() => {
+    if (!coordinatorWorkspaceEnabled || !issue?.id) return;
+    const anchor = taskChatHashAnchor(location.hash);
+    if (!anchor || (!anchor.startsWith("interaction-") && !anchor.startsWith("decision-"))) return;
+    const focusDecision = () => {
+      const target = document.getElementById(anchor);
+      if (!target) return false;
+      target.tabIndex = -1;
+      target.scrollIntoView({ block: "center", behavior: "instant" });
+      target.focus({ preventScroll: true });
+      return true;
+    };
+    if (focusDecision()) return;
+    const observer = new MutationObserver(() => { if (focusDecision()) observer.disconnect(); });
+    observer.observe(document.getElementById("main-content") ?? document.body, { subtree: true, childList: true });
+    const timeout = window.setTimeout(() => observer.disconnect(), 10_000);
+    return () => { observer.disconnect(); window.clearTimeout(timeout); };
+  }, [coordinatorWorkspaceEnabled, issue?.id, location.hash, location.key]);
   const pluginPanels = useTaskPluginPanels(issue, taskChatShellEnabled);
   const revealedPluginPanels = useRef(new Set<string>());
   const openedPluginPanelKeys = useRef(new Set<string>());
@@ -4364,6 +4405,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
           return next;
         },
       );
+      queryClient.invalidateQueries({ queryKey: ["issues", "pending-questions"] });
+      queryClient.invalidateQueries({ queryKey: ["issues", "decision-receipts"] });
+      queryClient.invalidateQueries({ queryKey: queryKeys.attention(interaction.companyId) });
     },
     [issueId, queryClient],
   );
@@ -4962,11 +5006,24 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
   });
 
   const addComment = useMutation({
-    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId }: {
-      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string;
+    mutationFn: async ({ body, reopen, interrupt, attachmentIds, clientRequestId, runSettings }: {
+      body: string; reopen?: boolean; interrupt?: boolean; attachmentIds?: string[]; clientRequestId?: string; runSettings?: ComposerRunSettings;
     }) => {
       if (issue?.conversationAgentId) clearLegacyChatMessageRequests(`${issue.companyId}:${currentUserId}:${issue.conversationAgentId}`);
-      return issuesApi.addComment(await resolveWritableIssueId(), body, reopen, interrupt, attachmentIds, clientRequestId ?? crypto.randomUUID());
+      const writableIssueId = await resolveWritableIssueId();
+      // Conversation messages use the ordered, idempotent comments endpoint.
+      // Save the conversation's run preferences before admitting the next message.
+      if (runSettings && issue?.conversationAgentId) {
+        const updated = await issuesApi.update(writableIssueId, {
+          assigneeAdapterOverrides: mergeComposerRunSettings(
+            issue.assigneeAdapterOverrides,
+            (conversation?.agent ?? agentMap.get(issue.conversationAgentId))?.adapterType,
+            runSettings,
+          ),
+        });
+        queryClient.setQueryData(queryKeys.issues.detail(writableIssueId), updated);
+      }
+      return issuesApi.addComment(writableIssueId, body, reopen, interrupt, attachmentIds, clientRequestId ?? crypto.randomUUID());
     },
     onMutate: async ({ body, reopen, interrupt }) => {
       // Start cache cancellation immediately but do not put it in front of the
@@ -5874,8 +5931,8 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         label: conversationAgent.name,
         leading: <AgentAvatar agent={conversationAgent} size={24} />,
         leadingKey: `agent:${conversationAgent.id}:${JSON.stringify(conversationAgent.appearance)}`,
-        trailing: <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
-        trailingKey: `configure:${conversationAgent.id}`,
+        trailing: coordinatorWorkspaceEnabled ? <CoordinatorAgentSwitcher agent={conversationAgent} /> : <Button variant="ghost" size="icon-xs" asChild aria-label={`Configure ${conversationAgent.name}`}><Link to={agentDetailHref(conversationAgent.id, "runtime")}><ChatSettings /></Link></Button>,
+        trailingKey: `${coordinatorWorkspaceEnabled ? "switch" : "configure"}:${conversationAgent.id}`,
       }]);
       return;
     }
@@ -5892,6 +5949,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     ]);
   }, [
     conversationAgent,
+    coordinatorWorkspaceEnabled,
     breadcrumbTitle,
     breadcrumbIdentifier,
     hasLiveRuns,
@@ -6164,7 +6222,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
             onBrowserOpened={handleBrowserOpened}
             key={panelIssue.id}
             {...sharedProps}
-            accountScope={currentUserId ?? "anonymous"}
+            accountScope={coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous"}
             fileTabsEnabled={fileViewerEnabled}
             streamlinedTabs={streamlinedTaskDetailEnabled}
             showSubtasksTab={streamlinedTaskDetailEnabled}
@@ -6214,6 +6272,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
     documentDeepLink,
     taskChatShellEnabled,
     currentUserId,
+    coordinatorWorkspaceEnabled,
     fileViewerEnabled,
     resolvedTasksTab,
     artifactsOpenRequest,
@@ -6738,7 +6797,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
       clientRequestId?: string,
       runSettings?: ComposerRunSettings,
     ) => {
-      if (reassignment || runSettings) {
+      if (!issue?.conversationAgentId && (reassignment || runSettings)) {
         await addCommentAndReassign.mutateAsync({
           body,
           reopen,
@@ -6749,9 +6808,9 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
         });
         return;
       }
-      await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId });
+      await addComment.mutateAsync({ body, reopen, attachmentIds, clientRequestId, runSettings });
     },
-    [addComment, addCommentAndReassign],
+    [addComment, addCommentAndReassign, issue?.conversationAgentId],
   );
   const handleCommentImageUpload = useCallback(
     async (file: File) => {
@@ -8765,7 +8824,7 @@ export function TaskDetailSurface({ conversation, tasksTab }: { tasksTab?: TaskS
                     onBrowserOpened={handleBrowserOpened}
                     key={`${issue.id}:mobile`}
                     issue={issue}
-                    accountScope={currentUserId ?? "anonymous"}
+                    accountScope={coordinatorWorkspaceEnabled ? `coordinator:${currentUserId ?? "anonymous"}` : currentUserId ?? "anonymous"}
                     childIssues={childIssues}
                     issueLinkState={
                       streamlinedTaskDetailEnabled
