@@ -1,3 +1,5 @@
+import { createChatReconciliationCoordinator } from "../app.js";
+import { subscribeDatabaseWork } from "@paperclipai/db";
 import * as voiceReplyNotifications from "../services/voice/voice-reply-notifications.js";
 import { voiceReplySchedule } from "../services/voice/voice-reply-schedule.js";
 import { registerVoiceReplyWork } from "../services/voice/voice-reply-work.js";
@@ -79,6 +81,80 @@ const support = external ? { supported: true } : await getEmbeddedPostgresTestSu
     }
     return { companyId, endpointId, agentId, connectionId, issueId, conversationId, callerId, sessionId, store, request, reserved, accept, toolInput, publication };
   }
+
+  it("limits a new pre-call wake to its admission instead of scanning endpoint history", async () => {
+    const f = await inboundFixture(); const hints: string[] = [];
+    const unsubscribe = subscribeDatabaseWork(db, DELIVERY_QUEUES.voiceInboundRetention,
+      (event, scopes) => { if (event === "settled") hints.push(...scopes ?? ["*"]); });
+    try {
+      const id = randomUUID(), incoming = f.sign({ ...f.event, session_id: id, call_id: id });
+      await f.service.inbound.lifecycle(f.endpoint.publicId, incoming.body, incoming.headers);
+      const [saved] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.providerSessionId, id));
+      expect(hints).toEqual([`admission:${saved.id}`]);
+    } finally {
+      unsubscribe(); await db.delete(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.companyId, f.companyId));
+    }
+  });
+
+  it("leaves due history intact during chat maintenance and deletes it through retention", async () => {
+    const f = await inboundFixture();
+    const ended = f.sign({ type: "call.status", call_id: f.call.providerSessionId, status: "ended" });
+    await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+    await db.update(chatVoiceInboundCalls).set({ expiresAt: new Date(0), updatedAt: new Date(0) }).where(eq(chatVoiceInboundCalls.id, f.call.id));
+    const onError = vi.fn();
+    const maintenance = createChatReconciliationCoordinator({
+      reconcileVoiceSessions: () => f.service.reconcileMaintenance(),
+      processPendingDeliveries: async () => undefined, projectRunMilestones: async () => 0,
+      flushPublications: async () => undefined, onError,
+    });
+    try {
+      maintenance.reconcile(); await maintenance.drain();
+      expect(await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id))).toHaveLength(1);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { maintenance.stop(); await maintenance.drain(); }
+    const coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    try {
+      await f.service.inbound.registerRetentionWork(coordinator, () => true).ready;
+      expect(await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id))).toHaveLength(0);
+      expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); }
+  });
+
+  it.each(["signed callback", "cleanup receipt"])("schedules retained history from a real %s", async confirmation => {
+    const f = await inboundFixture();
+    vi.useFakeTimers({ toFake: ["Date", "setTimeout", "clearTimeout"], shouldAdvanceTime: true });
+    const onError = vi.fn(), coordinator = createDeliveryWorkCoordinator({ owner: db, canRun: () => true, onError });
+    const settle = () => vi.waitFor(async () => {
+      await vi.advanceTimersByTimeAsync(1000); expect(idleWorkSnapshot().active).toBe(0);
+    }, { timeout: 5000 });
+    const quiet = async (ms = 120_000) => {
+      const reads = vi.spyOn(db, "select"), transactions = vi.spyOn(db, "transaction");
+      try { await vi.advanceTimersByTimeAsync(ms); expect(reads).not.toHaveBeenCalled(); expect(transactions).not.toHaveBeenCalled(); }
+      finally { reads.mockRestore(); transactions.mockRestore(); }
+    };
+    try {
+      await f.service.inbound.registerRetentionWork(coordinator, () => true).ready;
+      await settle(); expect(coordinator.nextWakeAt()).toBeNull(); await quiet(10_000);
+      if (confirmation === "signed callback") {
+        const ended = f.sign({ type: "call.status", call_id: f.call.providerSessionId, status: "ended" });
+        await f.service.inbound.lifecycle(f.endpoint.publicId, ended.body, ended.headers);
+      } else {
+        await f.service.inbound.registerCleanupWork(coordinator, () => true).ready;
+        await f.service.inbound.decide(f.companyId, f.endpointId, f.call.id, f.input.caller,
+          { approve: false, approvalCode: f.call.approvalCode });
+        await settle();
+        expect(f.transport.endSession).toHaveBeenCalledWith(f.call.providerSessionId);
+      }
+      await settle();
+      const [saved] = await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id));
+      expect(saved.cleanupConfirmedAt).not.toBeNull();
+      const dueAt = Math.max(saved.updatedAt.getTime(), saved.expiresAt.getTime()) + 7 * 86_400_000;
+      expect(coordinator.nextWakeAt()).toBe(dueAt); await quiet();
+      await vi.advanceTimersByTimeAsync(dueAt - Date.now() + 1000); await settle();
+      expect(await db.select().from(chatVoiceInboundCalls).where(eq(chatVoiceInboundCalls.id, f.call.id))).toHaveLength(0);
+      expect(coordinator.nextWakeAt()).toBeNull(); await quiet(); expect(onError).not.toHaveBeenCalled();
+    } finally { await coordinator.stop(); vi.useRealTimers(); }
+  });
 
   it("returns a committed denial while provider cleanup is still waiting", async () => {
     const f = await inboundFixture();
