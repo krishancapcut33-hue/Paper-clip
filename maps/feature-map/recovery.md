@@ -58,6 +58,38 @@ Agent access: [companion](../agent-access-map/recovery.md).
 
 ## How to get to it (user POV)
 
+For `recovery/reconnect`, also interrupt a write response after the server accepts
+it. Keep a title draft bound to its original task while navigating. Restore a
+new-task draft with its files selected in another order and require the same
+creation key and one task. Verify lost document-create and decision responses,
+including an interrupted verification read. Once the bounded retry budget ends,
+require a visible **Resend now** action. Use
+[durable autosave tests](../../ui/src/hooks/useDurableAutosave.test.tsx) and
+[task creation tests](../../ui/src/components/NewIssueDialog.test.tsx) for the
+controlled source cases; repeat the real browser journey for acceptance.
+Switch accounts while an inline edit is open or a channel send waits to retry:
+the next account must see neither private text nor a retry from the first account.
+Returning to the original account restores its retained channel request with the
+same key for explicit retry. Unowned legacy receipts stay held for Activity
+inspection until a person explicitly discards their browser record; discard does
+not replay the text or cancel an accepted update. Typing before the first session
+lookup survives that initial lookup and is backed up under the resolved owner. Component evidence lives in the
+[inline editor tests](../../ui/src/components/InlineEditor.test.tsx) and
+[connected-channel tests](../../ui/src/components/chat/ExternallyConnectedTaskBanner.test.tsx);
+these controlled session changes do not establish hosted authentication acceptance.
+Also switch accounts during a restored task create and while its files are
+uploading: later uploads stop, the next account sees a fresh form, and the
+original request key remains owned by the first account. Reselect colliding
+text-document filenames in reverse order and verify their original keys and
+contents. Switch between cached document subjects without copying either draft.
+A receipt arriving before an in-flight resend must preserve the next message.
+The startup browser journey in
+[disconnect recovery](../../tests/e2e/disconnect-write-recovery.spec.ts) holds the
+first session response while a title save waits, simulates an offline event with
+API failures while keeping static assets reachable, then verifies the real saved
+server title after account resolution and reload. Provider calls remain outside
+this controlled browser fixture.
+
 ### `source-task`
 
 Open the affected task from Tasks, Inbox/Blocked, search, or a direct task link.
